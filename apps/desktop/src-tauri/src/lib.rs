@@ -29,6 +29,23 @@ struct LatestMetadata {
     version: String,
     released_at: Option<String>,
     download_page_url: Option<String>,
+    platforms: Option<std::collections::HashMap<String, LatestPlatformAsset>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LatestPlatformAsset {
+    sha256: String,
+    size: u64,
+    filename: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdatePlatformAsset {
+    key: String,
+    sha256: String,
+    size: u64,
+    filename: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -40,6 +57,8 @@ struct UpdateCheckResult {
     has_update: bool,
     released_at: Option<String>,
     download_page_url: Option<String>,
+    current_platform_key: String,
+    current_platform_asset: Option<UpdatePlatformAsset>,
 }
 
 #[tauri::command]
@@ -208,6 +227,21 @@ fn is_newer_version(latest: &str, current: &str) -> bool {
     false
 }
 
+fn current_platform_key() -> &'static str {
+    #[cfg(target_os = "windows")]
+    {
+        "windows-x64"
+    }
+    #[cfg(target_os = "macos")]
+    {
+        "macos-arm64"
+    }
+    #[cfg(target_os = "linux")]
+    {
+        "linux-x64"
+    }
+}
+
 #[tauri::command]
 async fn check_for_updates(
     metadata_url: Option<String>,
@@ -239,6 +273,17 @@ async fn check_for_updates(
         .map_err(|e| e.to_string())?;
 
     let has_update = is_newer_version(&latest.version, &current_version);
+    let platform_key = current_platform_key().to_string();
+    let current_platform_asset = latest
+        .platforms
+        .as_ref()
+        .and_then(|m| m.get(&platform_key))
+        .map(|a| UpdatePlatformAsset {
+            key: platform_key.clone(),
+            sha256: a.sha256.clone(),
+            size: a.size,
+            filename: a.filename.clone(),
+        });
 
     Ok(UpdateCheckResult {
         metadata_url,
@@ -247,6 +292,8 @@ async fn check_for_updates(
         has_update,
         released_at: latest.released_at,
         download_page_url: latest.download_page_url,
+        current_platform_key: platform_key,
+        current_platform_asset,
     })
 }
 

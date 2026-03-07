@@ -43,7 +43,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--download-page-url", required=True, help="Public GitHub release page URL")
     parser.add_argument("--windows-zip", required=True, help="Path to windows x64 ZIP")
     parser.add_argument("--mac-zip", required=True, help="Path to macOS arm64 ZIP")
-    parser.add_argument("--out", required=True, help="Output latest.json path")
+    parser.add_argument(
+        "--out",
+        default="apps/landing/public/latest.json",
+        help="Output latest.json path (default: apps/landing/public/latest.json)",
+    )
     return parser.parse_args()
 
 

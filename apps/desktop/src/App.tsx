@@ -67,6 +67,15 @@ type UpdateCheckResult = {
   hasUpdate: boolean;
   releasedAt: string | null;
   downloadPageUrl: string | null;
+  currentPlatformKey: string;
+  currentPlatformAsset:
+    | {
+        key: string;
+        sha256: string;
+        size: number;
+        filename: string;
+      }
+    | null;
 };
 
 export default function App() {
@@ -195,7 +204,9 @@ export default function App() {
       });
       setUpdateResult(r);
       setUpdateProbe(
-        `current=${r.currentVersion} latest=${r.latestVersion} hasUpdate=${r.hasUpdate} releasedAt=${r.releasedAt ?? "-"}`
+        `current=${r.currentVersion} latest=${r.latestVersion} hasUpdate=${r.hasUpdate} releasedAt=${
+          r.releasedAt ?? "-"
+        } platform=${r.currentPlatformKey} asset=${r.currentPlatformAsset?.filename ?? "(none)"}`
       );
     } catch (error) {
       setUpdateProbe(`error: ${String(error)}`);

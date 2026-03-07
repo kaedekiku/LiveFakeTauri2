@@ -33,11 +33,11 @@ python scripts/generate_latest_json.py `
   --released-at 2026-03-07T15:30:00+09:00 `
   --download-page-url "https://github.com/kiyohken2000/5ch-browser-template/releases/tag/v0.2.0" `
   --windows-zip "C:\path\to\5ch-browser-win-x64.zip" `
-  --mac-zip "C:\path\to\5ch-browser-mac-arm64.zip" `
-  --out "C:\path\to\landing\public\latest.json"
+  --mac-zip "C:\path\to\5ch-browser-mac-arm64.zip"
 ```
 
-This script calculates SHA-256 hashes and file sizes.
+This script calculates SHA-256 hashes and file sizes and writes to:
+- `apps/landing/public/latest.json` (default)
 
 ## 5. Cloudflare Pages Deploy
 1. Place generated `latest.json` in landing project `public/latest.json`.
