@@ -13,6 +13,7 @@ venv/
 # Node
 node_modules/
 apps/desktop/node_modules/
+apps/desktop/dist/
 
 # Env files
 .env
@@ -21,6 +22,9 @@ apps/desktop/.env.local
 
 # Local temp artifacts
 docs/_tmp_*.html
+
+target/
+apps/desktop/src-tauri/gen/
 
 zzz_memo.txt
 _temp

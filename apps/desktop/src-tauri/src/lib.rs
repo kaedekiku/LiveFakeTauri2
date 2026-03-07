@@ -3,7 +3,8 @@ use core_fetch::{
     build_cookie_client, fetch_bbsmenu_json, fetch_post_form_tokens, normalize_5ch_url, probe_post_cookie_scope,
     seed_cookie, submit_post_confirm, PostConfirmResult, PostCookieReport, PostFormTokens,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::process::Command;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -19,6 +20,24 @@ struct AuthEnvStatus {
     be_password_set: bool,
     uplift_email_set: bool,
     uplift_password_set: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct LatestMetadata {
+    version: String,
+    released_at: Option<String>,
+    download_page_url: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateCheckResult {
+    metadata_url: String,
+    current_version: String,
+    latest_version: String,
+    has_update: bool,
+    released_at: Option<String>,
+    download_page_url: Option<String>,
 }
 
 #[tauri::command]
@@ -125,6 +144,105 @@ async fn probe_post_confirm_empty(thread_url: String) -> Result<PostConfirmResul
         .map_err(|e| e.to_string())
 }
 
+fn parse_version_numbers(version: &str) -> Vec<u64> {
+    let head = version.split('-').next().unwrap_or(version);
+    head.split('.')
+        .map(|s| s.trim().parse::<u64>().unwrap_or(0))
+        .collect::<Vec<_>>()
+}
+
+fn is_newer_version(latest: &str, current: &str) -> bool {
+    let l = parse_version_numbers(latest);
+    let c = parse_version_numbers(current);
+    let max_len = l.len().max(c.len());
+    for i in 0..max_len {
+        let lv = *l.get(i).unwrap_or(&0);
+        let cv = *c.get(i).unwrap_or(&0);
+        if lv > cv {
+            return true;
+        }
+        if lv < cv {
+            return false;
+        }
+    }
+    false
+}
+
+#[tauri::command]
+async fn check_for_updates(
+    metadata_url: Option<String>,
+    current_version: Option<String>,
+) -> Result<UpdateCheckResult, String> {
+    let metadata_url = metadata_url
+        .or_else(|| std::env::var("UPDATE_METADATA_URL").ok())
+        .ok_or_else(|| "metadata_url is required (or set UPDATE_METADATA_URL)".to_string())?;
+
+    let current_version = current_version.unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+
+    let client = reqwest::Client::builder()
+        .user_agent("5ch-browser-template/0.1")
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let response = client
+        .get(&metadata_url)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("metadata fetch failed: status={}", response.status()));
+    }
+
+    let latest = response
+        .json::<LatestMetadata>()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let has_update = is_newer_version(&latest.version, &current_version);
+
+    Ok(UpdateCheckResult {
+        metadata_url,
+        current_version,
+        latest_version: latest.version,
+        has_update,
+        released_at: latest.released_at,
+        download_page_url: latest.download_page_url,
+    })
+}
+
+#[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("rundll32")
+            .args(["url.dll,FileProtocolHandler", &url])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(&url)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        Command::new("xdg-open")
+            .arg(&url)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    #[allow(unreachable_code)]
+    Err("unsupported platform".to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -134,7 +252,9 @@ pub fn run() {
             probe_auth_logins,
             probe_post_cookie_scope_simulation,
             probe_thread_post_form,
-            probe_post_confirm_empty
+            probe_post_confirm_empty,
+            check_for_updates,
+            open_external_url
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -46,6 +46,15 @@ type PostConfirmResult = {
   bodyPreview: string;
 };
 
+type UpdateCheckResult = {
+  metadataUrl: string;
+  currentVersion: string;
+  latestVersion: string;
+  hasUpdate: boolean;
+  releasedAt: string | null;
+  downloadPageUrl: string | null;
+};
+
 export default function App() {
   const [status, setStatus] = useState("not fetched");
   const [authStatus, setAuthStatus] = useState("not checked");
@@ -54,6 +63,10 @@ export default function App() {
   const [threadUrl, setThreadUrl] = useState("https://mao.5ch.io/test/read.cgi/ngt/9240230711/");
   const [postFormProbe, setPostFormProbe] = useState("not run");
   const [postConfirmProbe, setPostConfirmProbe] = useState("not run");
+  const [metadataUrl, setMetadataUrl] = useState("");
+  const [currentVersion, setCurrentVersion] = useState("0.1.0");
+  const [updateResult, setUpdateResult] = useState<UpdateCheckResult | null>(null);
+  const [updateProbe, setUpdateProbe] = useState("not run");
 
   const fetchMenu = async () => {
     setStatus("loading...");
@@ -130,10 +143,34 @@ export default function App() {
     }
   };
 
+  const checkForUpdates = async () => {
+    setUpdateProbe("running...");
+    setUpdateResult(null);
+    try {
+      const r = await invoke<UpdateCheckResult>("check_for_updates", {
+        metadataUrl: metadataUrl.trim() || null,
+        currentVersion: currentVersion.trim() || null,
+      });
+      setUpdateResult(r);
+      setUpdateProbe(
+        `current=${r.currentVersion} latest=${r.latestVersion} hasUpdate=${r.hasUpdate} releasedAt=${r.releasedAt ?? "-"}`
+      );
+    } catch (error) {
+      setUpdateProbe(`error: ${String(error)}`);
+    }
+  };
+
+  const openDownloadPage = async () => {
+    if (!updateResult?.downloadPageUrl) {
+      return;
+    }
+    await invoke("open_external_url", { url: updateResult.downloadPageUrl });
+  };
+
   return (
     <main className="app-root">
-      <h1>5ch Browser (Phase 1 auth/fetch)</h1>
-      <p>Auth probes and post form token extraction are wired.</p>
+      <h1>5ch Browser (Phase 1 auth/fetch/update)</h1>
+      <p>Auth probes, post token extraction, and update check are wired.</p>
       <button onClick={fetchMenu}>Fetch bbsmenu.json</button>
       <pre>{status}</pre>
       <button onClick={checkAuthEnv}>Check auth env</button>
@@ -144,16 +181,25 @@ export default function App() {
       <pre>{postCookieProbe}</pre>
       <label>
         Thread URL
-        <input
-          style={{ width: "100%" }}
-          value={threadUrl}
-          onChange={(e) => setThreadUrl(e.target.value)}
-        />
+        <input style={{ width: "100%" }} value={threadUrl} onChange={(e) => setThreadUrl(e.target.value)} />
       </label>
       <button onClick={probeThreadPostForm}>Probe dynamic bbs/key/time</button>
       <pre>{postFormProbe}</pre>
       <button onClick={probePostConfirmEmpty}>Probe confirm with empty message</button>
       <pre>{postConfirmProbe}</pre>
+      <label>
+        latest.json URL
+        <input style={{ width: "100%" }} value={metadataUrl} onChange={(e) => setMetadataUrl(e.target.value)} />
+      </label>
+      <label>
+        Current Version
+        <input style={{ width: "100%" }} value={currentVersion} onChange={(e) => setCurrentVersion(e.target.value)} />
+      </label>
+      <button onClick={checkForUpdates}>Check for updates</button>
+      <pre>{updateProbe}</pre>
+      <button onClick={openDownloadPage} disabled={!updateResult?.hasUpdate || !updateResult.downloadPageUrl}>
+        Open download page
+      </button>
     </main>
   );
 }

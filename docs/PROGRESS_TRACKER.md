@@ -7,14 +7,14 @@
 - [x] `core-auth` 実装
 - [x] `core-fetch` 投稿Cookie同居実装
 - [x] `core-fetch` `bbs/key/time` 動的取得 + confirm観測実装
-- [ ] 更新チェック実装（`latest.json`）
+- [x] 更新チェック実装（`latest.json`）
 - [ ] 配布運用ドキュメント最終化
 
 ## 直近タスク（優先順）
-1. `apps/desktop`: 更新通知UI + 外部リンク誘導
-2. `docs`: 運用手順（Pages deploy / Releases作成 / latest.json更新）
-3. `release`: `latest.json` 署名/ハッシュ更新フローの自動化
-4. `core-fetch`: 実投稿フロー（confirm -> submit）最終実装
+1. `docs`: 運用手順（Pages deploy / Releases作成 / latest.json更新）
+2. `release`: `latest.json` 署名/ハッシュ更新フローの自動化
+3. `core-fetch`: 実投稿フロー（confirm -> submit）最終実装
+4. `apps/desktop`: Live5ch `geronimo` 互換UIの本実装
 
 ## 決定事項
 - `5ch.net` は入力時点で `5ch.io` に正規化
