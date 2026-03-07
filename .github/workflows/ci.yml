@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  rust-check-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install desktop deps
+        run: npm ci
+        working-directory: apps/desktop
+
+      - name: Cargo check workspace
+        run: cargo check --workspace
+
+      - name: Desktop build
+        run: npm run build
+        working-directory: apps/desktop
+
+  landing-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install landing deps
+        run: npm ci
+        working-directory: apps/landing
+
+      - name: Validate latest.json
+        run: npm run check:latest
+        working-directory: apps/landing
+
+      - name: Landing build
+        run: npm run build
+        working-directory: apps/landing
