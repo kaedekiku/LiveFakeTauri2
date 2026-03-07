@@ -12,11 +12,11 @@
 
 ## 3. 対応プラットフォーム
 - Windows 10/11 (x64)
-- macOS 13 以降 (Apple Silicon / Intel)
+- macOS 13 以降 (Apple Silicon)
 
 ## 4. 配布形態
 - Windows: `AppName-win-x64.zip`
-- macOS: `AppName-mac-universal.zip`
+- macOS: `AppName-mac-arm64.zip`
 - いずれも展開後に実行可能とする（インストーラー不要）。
 
 ## 5. 技術構成（初期案）
@@ -358,11 +358,11 @@
 ## 24. 配布・更新運用仕様（2026-03-07確定）
 
 ### 24.1 配布チャネル
-- ランディングページ: Cloudflare Pages
+- ランディングページ: Cloudflare Pages（Vite + React）
 - ZIP配布実体: GitHub Releases
 - サポート対象ZIP:
   - Windows x64
-  - macOS universal
+  - macOS arm64
 
 ### 24.2 更新メタデータ
 - 更新確認エンドポイントは Pages 配下の `latest.json` を正とする。

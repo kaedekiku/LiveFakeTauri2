@@ -19,7 +19,7 @@
 - `5ch.net` 入力は `5ch.io` に正規化
 
 ## 配布・更新方針（確定）
-- ランディング: Cloudflare Pages
+- ランディング: Cloudflare Pages（Vite + React）
 - ZIP配布: GitHub Releases
 - 更新メタデータ: Pages配下 `latest.json`
 - アプリ内更新確認: 新版があれば配布ページへ誘導（自動インストールなし）

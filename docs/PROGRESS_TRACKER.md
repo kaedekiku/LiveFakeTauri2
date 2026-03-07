@@ -21,7 +21,7 @@
 - BBS MENU は `https://menu.5ch.io/bbsmenu.json`
 - BEログインは `be.5ch.net` ではなく `5ch.io/_login`
 - 投稿時主要Cookieは `Be3M`,`Be3D`,`sid`
-- ZIP配布は GitHub Releases、ランディングと更新メタは Cloudflare Pages
+- ZIP配布は GitHub Releases、ランディングと更新メタは Cloudflare Pages（Vite + React）
 
 ## 進捗更新ルール
 - 大きな観測結果が出たら必ず本ファイルを更新

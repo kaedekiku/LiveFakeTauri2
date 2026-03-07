@@ -3,7 +3,7 @@
 ## 現在地（2026-03-07 JST）
 - 仕様書: `docs/5ch_browser_spec.md` は `v1.0`。
 - BE/UPLIFT/どんぐり の通信仕様は観測ベースで実装可能な粒度まで整理済み。
-- 配布方針は確定: `Cloudflare Pages + GitHub Releases`。
+- 配布方針は確定: `Cloudflare Pages (Vite + React) + GitHub Releases`。
 - Git は初期化済みで、`safe.directory` 設定済み（この環境から `git` 操作可能）。
 
 ## 仕様確定ポイント（重要）
@@ -32,7 +32,7 @@
    - semver比較
    - 更新ありなら配布ページを外部ブラウザで開く
 3. 配布運用文書
-   - Pages公開手順
+   - Pages公開手順（Vite + React）
    - Releases作成手順
    - `latest.json` 更新手順
 
