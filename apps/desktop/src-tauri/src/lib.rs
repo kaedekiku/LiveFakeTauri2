@@ -1,7 +1,7 @@
 use core_auth::{login_be_front, login_donguri, login_uplift, LoginOutcome};
 use core_fetch::{
-    build_cookie_client, fetch_bbsmenu_json, normalize_5ch_url, probe_post_cookie_scope, seed_cookie,
-    PostCookieReport,
+    build_cookie_client, fetch_bbsmenu_json, fetch_post_form_tokens, normalize_5ch_url, probe_post_cookie_scope,
+    seed_cookie, submit_post_confirm, PostConfirmResult, PostCookieReport, PostFormTokens,
 };
 use serde::Serialize;
 
@@ -102,6 +102,29 @@ fn probe_post_cookie_scope_simulation() -> Result<PostCookieReport, String> {
     probe_post_cookie_scope(&jar, "https://mao.5ch.io/test/bbs.cgi").map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn probe_thread_post_form(thread_url: String) -> Result<PostFormTokens, String> {
+    let client = reqwest::Client::builder()
+        .user_agent("5ch-browser-template/0.1")
+        .build()
+        .map_err(|e| e.to_string())?;
+    fetch_post_form_tokens(&client, &thread_url).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn probe_post_confirm_empty(thread_url: String) -> Result<PostConfirmResult, String> {
+    let client = reqwest::Client::builder()
+        .user_agent("5ch-browser-template/0.1")
+        .build()
+        .map_err(|e| e.to_string())?;
+    let tokens = fetch_post_form_tokens(&client, &thread_url)
+        .await
+        .map_err(|e| e.to_string())?;
+    submit_post_confirm(&client, &tokens, "", "", "")
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -109,7 +132,9 @@ pub fn run() {
             fetch_bbsmenu_summary,
             check_auth_env_status,
             probe_auth_logins,
-            probe_post_cookie_scope_simulation
+            probe_post_cookie_scope_simulation,
+            probe_thread_post_form,
+            probe_post_confirm_empty
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
