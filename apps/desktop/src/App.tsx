@@ -248,6 +248,14 @@ export default function App() {
     await invoke("open_external_url", { url: updateResult.downloadPageUrl });
   };
 
+  const beState = authStatus.includes("BE(email:true, pass:true)") ? "ON" : "OFF";
+  const upliftState = authStatus.includes("UPLIFT(email:true, pass:true)") ? "ON" : "OFF";
+  const updateState = updateResult
+    ? updateResult.hasUpdate
+      ? `UPDATE ${updateResult.latestVersion}`
+      : "UP-TO-DATE"
+    : "UPDATE N/A";
+
   const onComposeBodyKeyDown: KeyboardEventHandler<HTMLTextAreaElement> = (e) => {
     if (!composeEnterSubmit) return;
     if (e.key === "Enter" && !e.shiftKey) {
@@ -348,7 +356,9 @@ export default function App() {
           <pre>{updateProbe}</pre>
         </section>
       </main>
-      <footer className="status-bar">BE/UPLIFT/DONGURI | API: standby</footer>
+      <footer className="status-bar">
+        BE:{beState} | UPLIFT:{upliftState} | DONGURI:EXPERIMENTAL | {updateState}
+      </footer>
       {composeOpen && (
         <section className="compose-window" role="dialog" aria-label="Write">
           <header className="compose-header">
