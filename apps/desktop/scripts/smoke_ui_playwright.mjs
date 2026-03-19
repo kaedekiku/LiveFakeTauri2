@@ -44,6 +44,28 @@ try {
   console.log("smoke-ui: pane resize ok");
 
   await page.waitForSelector(".threads tbody tr");
+  const selectedThreadNoBefore = await page.$eval(".threads tbody tr.selected-row td:first-child", (el) => Number(el.textContent));
+  await page.evaluate(() => {
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", ctrlKey: true, bubbles: true }));
+  });
+  const selectedThreadNoAfter = await page.$eval(".threads tbody tr.selected-row td:first-child", (el) => Number(el.textContent));
+  assert(selectedThreadNoAfter >= selectedThreadNoBefore, "thread keyboard navigation did not advance selection");
+  console.log("smoke-ui: thread keyboard navigation ok");
+
+  const selectedResponseNoBefore = await page.$eval(".response-table tbody tr.selected-row td.response-no", (el) =>
+    Number(el.textContent)
+  );
+  await page.evaluate(() => {
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "ArrowDown", ctrlKey: true, shiftKey: true, bubbles: true })
+    );
+  });
+  const selectedResponseNoAfter = await page.$eval(".response-table tbody tr.selected-row td.response-no", (el) =>
+    Number(el.textContent)
+  );
+  assert(selectedResponseNoAfter >= selectedResponseNoBefore, "response keyboard navigation did not advance selection");
+  console.log("smoke-ui: response keyboard navigation ok");
+
   const rowsBefore = await page.$$eval(".threads tbody tr", (rows) => rows.length);
   await page.click(".threads tbody tr:first-child", { button: "right" });
   await page.click('.thread-menu button:has-text("Close Thread")');
