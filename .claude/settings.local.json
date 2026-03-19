@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -E \"\\(^[^/]*$|src/\\)\")",
+      "Bash(powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_post_flow_probe.ps1 -Timeout 15 2>&1)",
+      "Bash(npm run:*)",
+      "Bash(cargo test:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(grep -r bbsmenu C:Usersalldeveloppython5ch-browser-template --include=*.rs --include=*.ts --include=*.tsx)",
+      "Bash(cargo check:*)",
+      "Bash(powershell -NoProfile -Command \"try { \\(Invoke-WebRequest -Uri 'http://127.0.0.1:9229/json/version' -UseBasicParsing -TimeoutSec 2\\).Content } catch { $_.Exception.Message }\")",
+      "Bash(python3:*)",
+      "Bash(python:*)",
+      "Bash(node -c scripts/e2e_playwright.mjs)",
+      "Bash(powershell -ExecutionPolicy Bypass -File scripts/run_e2e.ps1)"
+    ]
+  }
+}
