@@ -90,6 +90,9 @@
   - `apps/desktop`: 栞機能（レス位置保存/復元 + ナビバーボタン + スレダブルクリック）
   - `apps/desktop`: 設定パネル（表示/書き込み/認証/情報）
   - `apps/desktop`: smoke-ui 68項目
+  - `apps/desktop`: 書き込み履歴パネル（直近50件の投稿ログ表示）
+  - `apps/desktop`: 勢いバー色グラデーション化
+  - `apps/desktop`: smoke-ui 70項目
 - Git は初期化済みで、`safe.directory` 設定済み（この環境から `git` 操作可能）。
 - safe probe 実環境検証 (2026-03-19):
   - 全4モード（anonymous/uplift/be_front/be_uplift）で GET=200, confirm=200
@@ -127,6 +130,7 @@
   - `83ab141` (`desktop: add compose preview, text selection quoting, and row striping`)
   - `b9daef6` (`desktop: add dark theme, NG regex, and bookmark navigation`)
   - `ff4ad16` (`desktop: add settings panel, thread double-click bookmark jump`)
+  - `0616542` (`desktop: add post history panel and speed gradient coloring`)
 
 ## 仕様確定ポイント（重要）
 - 5ch基盤:
