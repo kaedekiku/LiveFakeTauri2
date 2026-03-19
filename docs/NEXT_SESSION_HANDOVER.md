@@ -15,11 +15,15 @@
   - `apps/desktop`: 3ペインのドラッグリサイズ（横2本 + レス縦1本）を追加
   - `apps/desktop`: ペインレイアウトの永続化（localStorage）と `Reset Layout` を追加
   - `apps/desktop`: レイアウト調整ショートカット追加（`Ctrl/Cmd+Alt+Arrow`）
+  - `apps/desktop`: Threads/Responses ペインに行情報バーを追加
+  - `apps/desktop`: 右クリックメニュー動作を拡張（スレ閉じる系、レス引用/URLコピー/IDコピー）
 - Git は初期化済みで、`safe.directory` 設定済み（この環境から `git` 操作可能）。
 - 直近反映コミット:
   - `d7d1666` (`desktop: add draggable pane splitters for three-pane layout`)
   - `f62ef0e` (`desktop: persist pane sizes and add layout reset`)
   - `3eb6fd8` (`desktop: add keyboard resizing shortcuts for pane layout`)
+  - `b87e563` (`desktop: add row info bars and thread menu actions`)
+  - `8cad916` (`desktop: wire response menu actions to compose and clipboard`)
 
 ## 仕様確定ポイント（重要）
 - 5ch基盤:
@@ -49,7 +53,7 @@
    - ダウンロード導線文言/注意文言の調整
    - Cloudflare Pages プロジェクト設定（build dir: `apps/landing/dist`）
 4. geronimo互換UI本実装
-   - 行情報表示、メニュー動作（右クリック系）の詰め
+   - 表示文言・ショートカット・操作感の詰め
 
 ## 参照ドキュメント
 - 仕様: `docs/5ch_browser_spec.md`
