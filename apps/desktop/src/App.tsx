@@ -149,7 +149,7 @@ const renderResponseBody = (html: string): { __html: string } => {
     /(https?:\/\/[^\s<>&]+\.(?:jpg|jpeg|png|gif|webp)(?:\?[^\s<>&]*(?:&amp;[^\s<>&]*)*)?)/gi,
     (match) => {
       const href = match.replace(/&amp;/g, "&");
-      return `<a class="thumb-link" href="${href}" target="_blank" rel="noopener">${match}<br><img class="response-thumb" src="${href}" loading="lazy" alt="" /></a>`;
+      return `<span class="thumb-link" data-lightbox-src="${href}">${match}<br><img class="response-thumb" src="${href}" loading="lazy" alt="" /></span>`;
     }
   );
   safe = safe.replace(
@@ -210,9 +210,12 @@ export default function App() {
   const [closedThreadHistory, setClosedThreadHistory] = useState<number[]>([]);
   const [selectedResponse, setSelectedResponse] = useState<number>(1);
   const [threadReadMap, setThreadReadMap] = useState<Record<number, boolean>>({ 1: false, 2: true });
+  const [threadLastReadCount, setThreadLastReadCount] = useState<Record<number, number>>({});
   const [threadMenu, setThreadMenu] = useState<{ x: number; y: number; threadId: number } | null>(null);
   const [responseMenu, setResponseMenu] = useState<{ x: number; y: number; responseId: number } | null>(null);
   const [anchorPopup, setAnchorPopup] = useState<{ x: number; y: number; responseId: number } | null>(null);
+  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+  const [tabDragIndex, setTabDragIndex] = useState<number | null>(null);
   const [boardPanePx, setBoardPanePx] = useState(DEFAULT_BOARD_PANE_PX);
   const [threadPanePx, setThreadPanePx] = useState(DEFAULT_THREAD_PANE_PX);
   const [responseTopRatio, setResponseTopRatio] = useState(DEFAULT_RESPONSE_TOP_RATIO);
@@ -264,12 +267,15 @@ export default function App() {
       const all = await invoke<Record<string, Record<string, number>>>("load_read_status");
       const boardStatus = all[boardUrl] ?? {};
       const readMap: Record<number, boolean> = {};
+      const lastReadMap: Record<number, number> = {};
       threads.forEach((t, i) => {
         const id = i + 1;
         const lastRead = boardStatus[t.threadKey] ?? 0;
         readMap[id] = lastRead > 0;
+        lastReadMap[id] = lastRead;
       });
       setThreadReadMap(readMap);
+      setThreadLastReadCount(lastReadMap);
     } catch {
       // ignore
     }
@@ -1058,6 +1064,10 @@ export default function App() {
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && lightboxUrl) {
+        setLightboxUrl(null);
+        return;
+      }
       if (isTypingTarget(e.target)) return;
       if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "r") {
         e.preventDefault();
@@ -1469,6 +1479,7 @@ export default function App() {
                   レス{threadSortKey === "res" ? (threadSortAsc ? " \u25B2" : " \u25BC") : ""}
                 </th>
                 <th>既得</th>
+                <th>新着</th>
                 <th className="sortable-th" onClick={() => toggleThreadSort("speed")}>
                   勢い{threadSortKey === "speed" ? (threadSortAsc ? " \u25B2" : " \u25BC") : ""}
                 </th>
@@ -1487,6 +1498,7 @@ export default function App() {
                       setSelectedThread(t.id);
                       setSelectedResponse(1);
                       setThreadReadMap((prev) => ({ ...prev, [t.id]: true }));
+                      setThreadLastReadCount((prev) => ({ ...prev, [t.id]: t.res }));
                       if ("threadUrl" in t && typeof t.threadUrl === "string") {
                         openThreadInTab(t.threadUrl, t.title);
                         // persist read status
@@ -1500,6 +1512,9 @@ export default function App() {
                     <td className="thread-title-cell">{t.title}</td>
                     <td>{t.res}</td>
                     <td>{t.got}</td>
+                    <td className={`new-count ${(threadLastReadCount[t.id] ?? 0) > 0 && t.res - (threadLastReadCount[t.id] ?? 0) > 0 ? "has-new" : ""}`}>
+                      {(threadLastReadCount[t.id] ?? 0) > 0 ? Math.max(0, t.res - threadLastReadCount[t.id]) : "-"}
+                    </td>
                     <td>{t.speed.toFixed(1)}</td>
                     <td>{t.lastLoad}</td>
                     <td>{t.lastPost}</td>
@@ -1523,9 +1538,25 @@ export default function App() {
               {threadTabs.map((tab, i) => (
                 <div
                   key={tab.threadUrl}
-                  className={`thread-tab ${i === activeTabIndex ? "active" : ""}`}
+                  className={`thread-tab ${i === activeTabIndex ? "active" : ""} ${tabDragIndex !== null && tabDragIndex !== i ? "drag-target" : ""}`}
+                  draggable
                   onClick={() => onTabClick(i)}
                   onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); closeTab(i); } }}
+                  onDragStart={() => setTabDragIndex(i)}
+                  onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add("drag-over"); }}
+                  onDragLeave={(e) => { e.currentTarget.classList.remove("drag-over"); }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    e.currentTarget.classList.remove("drag-over");
+                    if (tabDragIndex === null || tabDragIndex === i) return;
+                    const next = [...threadTabs];
+                    const [moved] = next.splice(tabDragIndex, 1);
+                    next.splice(i, 0, moved);
+                    setThreadTabs(next);
+                    setActiveTabIndex(tabDragIndex === activeTabIndex ? i : tabDragIndex < activeTabIndex && i >= activeTabIndex ? activeTabIndex - 1 : tabDragIndex > activeTabIndex && i <= activeTabIndex ? activeTabIndex + 1 : activeTabIndex);
+                    setTabDragIndex(null);
+                  }}
+                  onDragEnd={() => setTabDragIndex(null)}
                   title={tab.threadUrl}
                 >
                   <span className="thread-tab-title">{tab.title}</span>
@@ -1588,6 +1619,12 @@ export default function App() {
               className="response-viewer"
               onClick={(e) => {
                 const target = e.target as HTMLElement;
+                const thumbLink = target.closest<HTMLElement>("[data-lightbox-src]");
+                if (thumbLink) {
+                  e.preventDefault();
+                  setLightboxUrl(thumbLink.dataset.lightboxSrc ?? null);
+                  return;
+                }
                 const anchor = target.closest<HTMLElement>(".anchor-ref");
                 if (!anchor) return;
                 const no = Number(anchor.dataset.anchor);
@@ -1839,6 +1876,17 @@ export default function App() {
           </div>
         );
       })()}
+      {lightboxUrl && (
+        <div className="lightbox-overlay" onClick={() => setLightboxUrl(null)}>
+          <div className="lightbox-content" onClick={(e) => e.stopPropagation()}>
+            <img src={lightboxUrl} alt="" />
+            <div className="lightbox-actions">
+              <a href={lightboxUrl} target="_blank" rel="noopener" className="lightbox-open">新しいタブで開く</a>
+              <button onClick={() => setLightboxUrl(null)}>閉じる</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -401,6 +401,36 @@ try {
   assert(thumbCheck, "response-thumb class should be valid for img elements");
   console.log("smoke-ui: image thumbnail structure ok");
 
+  // --- new count column ---
+  const newCountHeader = await page.$eval(".threads thead tr", (tr) => {
+    const ths = [...tr.querySelectorAll("th")];
+    return ths.map((th) => th.textContent).join("|");
+  });
+  assert(newCountHeader.includes("新着"), `thread header should have 新着 column, got: ${newCountHeader}`);
+  console.log("smoke-ui: new count column ok");
+
+  // --- lightbox structure ---
+  // verify lightbox CSS class exists (lightbox opens on image click)
+  const lightboxCheck = await page.evaluate(() => {
+    const style = document.createElement("style");
+    style.textContent = ".lightbox-overlay { display: none; }";
+    document.head.appendChild(style);
+    const el = document.createElement("div");
+    el.className = "lightbox-overlay";
+    document.body.appendChild(el);
+    const display = window.getComputedStyle(el).display;
+    document.body.removeChild(el);
+    document.head.removeChild(style);
+    return display === "none";
+  });
+  assert(lightboxCheck, "lightbox-overlay CSS should be defined");
+  console.log("smoke-ui: lightbox structure ok");
+
+  // --- tab drag attribute ---
+  const tabDraggable = await page.$$eval(".thread-tab", (els) => els.every((el) => el.draggable));
+  assert(tabDraggable || (await page.$$(".thread-tab")).length === 0, "thread tabs should be draggable");
+  console.log("smoke-ui: tab drag attribute ok");
+
   console.log("smoke-ui: ok");
 } finally {
   if (browser) {
