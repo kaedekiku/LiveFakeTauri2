@@ -23,11 +23,19 @@ jobs:
         run: npm ci
         working-directory: apps/desktop
 
+      - name: Install Playwright Chromium
+        run: npx playwright install chromium
+        working-directory: apps/desktop
+
       - name: Cargo check workspace
         run: cargo check --workspace
 
       - name: Desktop build
         run: npm run build
+        working-directory: apps/desktop
+
+      - name: Desktop smoke UI
+        run: npm run test:smoke-ui
         working-directory: apps/desktop
 
   landing-build:
