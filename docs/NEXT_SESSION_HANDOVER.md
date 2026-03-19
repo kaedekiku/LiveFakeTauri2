@@ -17,6 +17,7 @@
   - `apps/desktop`: レイアウト調整ショートカット追加（`Ctrl/Cmd+Alt+Arrow`）
   - `apps/desktop`: Threads/Responses ペインに行情報バーを追加
   - `apps/desktop`: 右クリックメニュー動作を拡張（スレ閉じる系、レス引用/URLコピー/IDコピー）
+  - `apps/desktop`: Playwright UIスモークテストを追加（`npm run test:smoke-ui`）
 - Git は初期化済みで、`safe.directory` 設定済み（この環境から `git` 操作可能）。
 - 直近反映コミット:
   - `d7d1666` (`desktop: add draggable pane splitters for three-pane layout`)
@@ -24,6 +25,8 @@
   - `3eb6fd8` (`desktop: add keyboard resizing shortcuts for pane layout`)
   - `b87e563` (`desktop: add row info bars and thread menu actions`)
   - `8cad916` (`desktop: wire response menu actions to compose and clipboard`)
+  - `3dae2f9` (`desktop: add keyboard navigation for thread and response rows`)
+  - `79b18d2` (`desktop: add playwright smoke test runner for ui interactions`)
 
 ## 仕様確定ポイント（重要）
 - 5ch基盤:
@@ -54,6 +57,7 @@
    - Cloudflare Pages プロジェクト設定（build dir: `apps/landing/dist`）
 4. geronimo互換UI本実装
    - 表示文言・ショートカット・操作感の詰め
+   - スモークテスト対象ケースの拡張（右ペイン操作/ショートカット）
 
 ## 参照ドキュメント
 - 仕様: `docs/5ch_browser_spec.md`
