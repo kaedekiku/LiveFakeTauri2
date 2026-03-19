@@ -89,6 +89,10 @@ type FavoriteBoard = { boardName: string; url: string };
 type FavoriteThread = { threadUrl: string; title: string; boardUrl: string };
 type FavoritesData = { boards: FavoriteBoard[]; threads: FavoriteThread[] };
 type NgFilters = { words: string[]; ids: string[]; names: string[] };
+type ThreadTab = {
+  threadUrl: string;
+  title: string;
+};
 
 const MIN_BOARD_PANE_PX = 160;
 const MIN_THREAD_PANE_PX = 280;
@@ -142,6 +146,13 @@ const renderResponseBody = (html: string): { __html: string } => {
     .replace(/"/g, "&quot;");
   safe = safe.replace(/\n/g, "<br>");
   safe = safe.replace(
+    /(https?:\/\/[^\s<>&]+\.(?:jpg|jpeg|png|gif|webp)(?:\?[^\s<>&]*(?:&amp;[^\s<>&]*)*)?)/gi,
+    (match) => {
+      const href = match.replace(/&amp;/g, "&");
+      return `<a class="thumb-link" href="${href}" target="_blank" rel="noopener">${match}<br><img class="response-thumb" src="${href}" loading="lazy" alt="" /></a>`;
+    }
+  );
+  safe = safe.replace(
     /&gt;&gt;(\d+)/g,
     '<span class="anchor-ref" data-anchor="$1" role="link" tabindex="0">&gt;&gt;$1</span>'
   );
@@ -188,6 +199,9 @@ export default function App() {
   const [threadSearchQuery, setThreadSearchQuery] = useState("");
   const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(false);
   const [autoRefreshInterval, setAutoRefreshInterval] = useState(60);
+  const [threadTabs, setThreadTabs] = useState<ThreadTab[]>([]);
+  const [activeTabIndex, setActiveTabIndex] = useState(-1);
+  const tabCacheRef = useRef<Map<string, { responses: ThreadResponseItem[]; selectedResponse: number }>>(new Map());
   const [selectedBoard, setSelectedBoard] = useState("Favorite");
   const [selectedThread, setSelectedThread] = useState<number | null>(1);
   const [closedThreadIds, setClosedThreadIds] = useState<number[]>([]);
@@ -365,6 +379,92 @@ export default function App() {
     });
   };
 
+  const openThreadInTab = (url: string, title: string) => {
+    const existingIndex = threadTabs.findIndex((t) => t.threadUrl === url);
+    if (existingIndex >= 0) {
+      if (existingIndex === activeTabIndex) return;
+      if (activeTabIndex >= 0 && activeTabIndex < threadTabs.length) {
+        const curUrl = threadTabs[activeTabIndex].threadUrl;
+        const cached = tabCacheRef.current.get(curUrl);
+        if (cached) cached.selectedResponse = selectedResponse;
+      }
+      setActiveTabIndex(existingIndex);
+      const cached = tabCacheRef.current.get(url);
+      if (cached && cached.responses.length > 0) {
+        setFetchedResponses(cached.responses);
+        setSelectedResponse(cached.selectedResponse);
+      }
+      setThreadUrl(url);
+      setLocationInput(url);
+      return;
+    }
+    if (activeTabIndex >= 0 && activeTabIndex < threadTabs.length) {
+      const curUrl = threadTabs[activeTabIndex].threadUrl;
+      const cached = tabCacheRef.current.get(curUrl);
+      if (cached) cached.selectedResponse = selectedResponse;
+    }
+    const newTabs = [...threadTabs, { threadUrl: url, title }];
+    setThreadTabs(newTabs);
+    setActiveTabIndex(newTabs.length - 1);
+    setFetchedResponses([]);
+    setSelectedResponse(1);
+    setThreadUrl(url);
+    setLocationInput(url);
+    void fetchResponsesFromCurrent(url);
+  };
+
+  const closeTab = (index: number) => {
+    if (index < 0 || index >= threadTabs.length) return;
+    tabCacheRef.current.delete(threadTabs[index].threadUrl);
+    const nextTabs = threadTabs.filter((_, i) => i !== index);
+    setThreadTabs(nextTabs);
+    if (nextTabs.length === 0) {
+      setActiveTabIndex(-1);
+      setFetchedResponses([]);
+      setSelectedResponse(1);
+      return;
+    }
+    let nextIndex: number;
+    if (index === activeTabIndex) {
+      nextIndex = index >= nextTabs.length ? nextTabs.length - 1 : index;
+    } else if (index < activeTabIndex) {
+      nextIndex = activeTabIndex - 1;
+    } else {
+      nextIndex = activeTabIndex;
+    }
+    setActiveTabIndex(nextIndex);
+    const tab = nextTabs[nextIndex];
+    const cached = tabCacheRef.current.get(tab.threadUrl);
+    if (cached) {
+      setFetchedResponses(cached.responses);
+      setSelectedResponse(cached.selectedResponse);
+    }
+    setThreadUrl(tab.threadUrl);
+    setLocationInput(tab.threadUrl);
+  };
+
+  const onTabClick = (index: number) => {
+    if (index === activeTabIndex) return;
+    if (activeTabIndex >= 0 && activeTabIndex < threadTabs.length) {
+      const curUrl = threadTabs[activeTabIndex].threadUrl;
+      const cached = tabCacheRef.current.get(curUrl);
+      if (cached) cached.selectedResponse = selectedResponse;
+    }
+    setActiveTabIndex(index);
+    const tab = threadTabs[index];
+    const cached = tabCacheRef.current.get(tab.threadUrl);
+    if (cached) {
+      setFetchedResponses(cached.responses);
+      setSelectedResponse(cached.selectedResponse);
+    } else {
+      setFetchedResponses([]);
+      setSelectedResponse(1);
+      void fetchResponsesFromCurrent(tab.threadUrl);
+    }
+    setThreadUrl(tab.threadUrl);
+    setLocationInput(tab.threadUrl);
+  };
+
   const selectBoard = (board: BoardEntry) => {
     setSelectedBoard(board.boardName);
     setLocationInput(board.url);
@@ -480,6 +580,7 @@ export default function App() {
       });
       setFetchedResponses(rows);
       setSelectedResponse(rows.length > 0 ? rows[0].responseNo : 1);
+      tabCacheRef.current.set(url, { responses: rows, selectedResponse: rows.length > 0 ? rows[0].responseNo : 1 });
       setResponseListProbe(`ok rows=${rows.length}`);
       setStatus(`responses loaded: ${rows.length}`);
     } catch (error) {
@@ -577,6 +678,7 @@ export default function App() {
         setComposeResult({ ok: false, message: `Post failed: ${r.bodyPreview}` });
       } else {
         setComposeResult({ ok: true, message: `Post submitted (status ${r.status})` });
+        void fetchResponsesFromCurrent();
       }
     } catch (error) {
       setPostFinalizeSubmitProbe(`error: ${String(error)}`);
@@ -610,6 +712,7 @@ export default function App() {
         setComposeResult({ ok: false, message: `Post failed: ${r.submitSummary}` });
       } else if (r.submitSummary) {
         setComposeResult({ ok: true, message: `Post submitted: ${r.submitSummary}` });
+        void fetchResponsesFromCurrent();
       }
     } catch (error) {
       setPostFlowTraceProbe(`error: ${String(error)}`);
@@ -659,8 +762,8 @@ export default function App() {
   const composeMailValue = composeSage ? "sage" : composeMail;
   const boardItems = ["お気に入り", "ニュース", "ソフトウェア", "ネットワーク", "NGT (テスト)"];
   const fallbackThreadItems = [
-    { id: 1, title: "プローブスレッド", res: 999, got: 24, speed: 2.5, lastLoad: "14:42", lastPost: "14:44" },
-    { id: 2, title: "認証テスト", res: 120, got: 8, speed: 0.8, lastLoad: "13:08", lastPost: "13:09" },
+    { id: 1, title: "プローブスレッド", res: 999, got: 24, speed: 2.5, lastLoad: "14:42", lastPost: "14:44", threadUrl: "https://mao.5ch.io/test/read.cgi/ngt/1/"},
+    { id: 2, title: "認証テスト", res: 120, got: 8, speed: 0.8, lastLoad: "13:08", lastPost: "13:09", threadUrl: "https://mao.5ch.io/test/read.cgi/ngt/2/" },
   ];
   const threadItems = (
     fetchedThreads.length > 0
@@ -977,6 +1080,13 @@ export default function App() {
         setSelectedResponse(ids[nextIdx]);
         return;
       }
+      if (e.key === "Tab" && (e.ctrlKey || e.metaKey) && threadTabs.length > 1) {
+        e.preventDefault();
+        const dir = e.shiftKey ? -1 : 1;
+        const next = (activeTabIndex + dir + threadTabs.length) % threadTabs.length;
+        onTabClick(next);
+        return;
+      }
       if (e.key.toLowerCase() === "r" && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
         e.preventDefault();
         appendComposeQuote(`>>${selectedResponse}`);
@@ -1263,9 +1373,7 @@ export default function App() {
                       <button
                         className="board-item"
                         onClick={() => {
-                          setThreadUrl(ft.threadUrl);
-                          setLocationInput(ft.threadUrl);
-                          void fetchResponsesFromCurrent(ft.threadUrl);
+                          openThreadInTab(ft.threadUrl, ft.title);
                           setStatus(`loading fav thread: ${ft.title}`);
                         }}
                         title={ft.threadUrl}
@@ -1327,9 +1435,7 @@ export default function App() {
                       setSelectedResponse(1);
                       setThreadReadMap((prev) => ({ ...prev, [t.id]: true }));
                       if ("threadUrl" in t && typeof t.threadUrl === "string") {
-                        setThreadUrl(t.threadUrl);
-                        setLocationInput(t.threadUrl);
-                        void fetchResponsesFromCurrent(t.threadUrl);
+                        openThreadInTab(t.threadUrl, t.title);
                         // persist read status
                         const ft = fetchedThreads[t.id - 1];
                         if (ft) void persistReadStatus(threadUrl, ft.threadKey, ft.responseCount);
@@ -1359,6 +1465,27 @@ export default function App() {
           onClick={(e) => e.stopPropagation()}
         />
         <section className="pane responses">
+          {threadTabs.length > 0 && (
+            <div className="thread-tab-bar">
+              {threadTabs.map((tab, i) => (
+                <div
+                  key={tab.threadUrl}
+                  className={`thread-tab ${i === activeTabIndex ? "active" : ""}`}
+                  onClick={() => onTabClick(i)}
+                  onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); closeTab(i); } }}
+                  title={tab.threadUrl}
+                >
+                  <span className="thread-tab-title">{tab.title}</span>
+                  <button
+                    className="thread-tab-close"
+                    onClick={(e) => { e.stopPropagation(); closeTab(i); }}
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
           <h2>レス</h2>
           <div className="pane-meta">
             <strong>表示</strong> {visibleResponseItems.length}/{responseItems.length}

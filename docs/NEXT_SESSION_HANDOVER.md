@@ -57,6 +57,10 @@
   - `apps/desktop`: 自動更新トグル（60秒間隔レスリロード）
   - `apps/desktop`: 板ペインに Boards/Fav タブ切り替え + お気に入りスレ一覧表示
   - `apps/desktop`: smoke-ui 35項目（検索/自動更新/タブ切り替え追加）
+  - `apps/desktop`: タブ式スレ表示（複数スレ並行閲覧、タブ切替/閉じ/Ctrl+Tab/中クリック閉じ）
+  - `apps/desktop`: レス書き込み後の自動リロード（投稿成功時にレス再取得）
+  - `apps/desktop`: 画像URL自動サムネイル（jpg/png/gif/webp → インラインサムネイル）
+  - `apps/desktop`: smoke-ui 40項目（タブ作成/切替/閉じ/サムネイル構造追加）
 - Git は初期化済みで、`safe.directory` 設定済み（この環境から `git` 操作可能）。
 - safe probe 実環境検証 (2026-03-19):
   - 全4モード（anonymous/uplift/be_front/be_uplift）で GET=200, confirm=200
@@ -111,9 +115,9 @@
    - 必要時のみ `-AllowRealSubmit -RealSubmitToken I_UNDERSTAND_REAL_POST -Message "<non-empty>"` で実送信検証
    - board URL 入力（例: `https://mao.5ch.io/ngt/`）でのスレ一覧取得を実環境確認
 2. geronimo互換UI継続改善
-   - タブ式スレ表示（複数スレを並行閲覧）
-   - レス書き込み時の自動リロード
-   - 画像URL自動サムネイル
+   - 画像サムネイルクリック → 拡大表示/ダウンロード
+   - レス本文コピー機能
+   - スレ一覧ソート（勢い/レス数/最終書込）
 3. リリース運用実地
    - `scripts/prepare_release_metadata.py` で実ZIPから `latest.json` 生成 + strict検証
    - `apps/landing/public/latest.json` へ反映

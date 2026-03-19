@@ -774,6 +774,78 @@ pre {
   color: #c02020;
 }
 
+.thread-tab-bar {
+  display: flex;
+  gap: 0;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--line);
+  background: #e4dccf;
+  min-height: 26px;
+  scrollbar-width: thin;
+}
+
+.thread-tab {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px;
+  font-size: 11px;
+  border: 1px solid var(--line);
+  border-bottom: none;
+  background: #ddd4c5;
+  cursor: pointer;
+  max-width: 200px;
+  min-width: 60px;
+  flex-shrink: 0;
+}
+
+.thread-tab.active {
+  background: var(--panel);
+  border-bottom: 1px solid var(--panel);
+  font-weight: 600;
+}
+
+.thread-tab:not(.active):hover {
+  background: #d4cbb9;
+}
+
+.thread-tab-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thread-tab-close {
+  padding: 0 2px;
+  font-size: 12px;
+  line-height: 1;
+  border: none;
+  background: transparent;
+  color: var(--sub);
+  cursor: pointer;
+}
+
+.thread-tab-close:hover {
+  color: #a04040;
+}
+
+.thumb-link {
+  display: inline-block;
+}
+
+.response-thumb {
+  max-width: 200px;
+  max-height: 200px;
+  border: 1px solid #beb29d;
+  margin: 4px 0;
+  cursor: pointer;
+}
+
+.response-thumb:hover {
+  border-color: var(--accent);
+}
+
 @media (max-width: 980px) {
   .shell {
     grid-template-rows: 26px auto auto 1fr 24px;

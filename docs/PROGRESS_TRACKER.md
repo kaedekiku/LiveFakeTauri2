@@ -72,14 +72,18 @@
 - [x] desktop: 板ペインに Boards/Fav タブ切り替え + お気に入りスレ一覧表示
 - [x] desktop: smoke-ui テスト 35項目（検索/自動更新/タブ切り替え追加）
 - [x] desktop: E2E テスト 28項目（お気に入りCRUD/NGフィルタCRUD/既読永続化/検索/タブ/NGパネル/自動更新/compose meta）
+- [x] desktop: タブ式スレ表示（複数スレを並行閲覧、タブ切り替え/閉じ/Ctrl+Tab）
+- [x] desktop: レス書き込み時の自動リロード（投稿成功後にレス再取得）
+- [x] desktop: 画像URL自動サムネイル（jpg/png/gif/webp検出 → インラインサムネイル表示）
+- [x] desktop: smoke-ui テスト 40項目（タブ作成/切替/閉じ/サムネイル構造追加）
 
 ## 直近タスク（優先順）
 1. `core-fetch`: 非空メッセージでの confirm form 検出を確認（safe probe 完了: 2026-03-19）
    - real submit時は `-AllowRealSubmit -RealSubmitToken I_UNDERSTAND_REAL_POST -Message "<non-empty>"` を必須化
 2. `apps/desktop`: geronimo互換UI継続改善
-   - タブ式スレ表示（複数スレを並行閲覧）
-   - レス書き込み時の自動リロード
-   - 画像URL自動サムネイル
+   - 画像サムネイルクリック → 拡大表示/ダウンロード
+   - レス本文コピー機能
+   - スレ一覧ソート（勢い/レス数/最終書込）
    - push前に `apps/desktop` で `npm run test:smoke-ui` を実行
 3. `landing`: 文言/導線の本番向け調整
 4. `release`: タグ作成〜latest.json更新のワンショット運用定着

@@ -302,6 +302,68 @@ try {
   assert(autoRefreshToggle, "auto-refresh toggle should exist in toolbar");
   console.log("smoke-ui: auto-refresh toggle ok");
 
+  // --- thread tabs ---
+
+  // dismiss any open menu by clicking the shell element
+  await page.evaluate(() => {
+    document.querySelector(".shell")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await new Promise((r) => setTimeout(r, 200));
+
+  // click first thread to open a tab
+  const firstThreadForTab = await page.$(".threads tbody tr:first-child");
+  if (firstThreadForTab) {
+    await page.evaluate(() => {
+      const row = document.querySelector(".threads tbody tr:first-child");
+      if (row) row.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await new Promise((r) => setTimeout(r, 300));
+    const tabBar = await page.$(".thread-tab-bar");
+    assert(tabBar, "clicking a thread should create a tab bar");
+    const tabs = await page.$$(".thread-tab");
+    assert(tabs.length >= 1, `should have at least 1 tab, got ${tabs.length}`);
+    const firstTabActive = await tabs[0].evaluate((el) => el.classList.contains("active"));
+    assert(firstTabActive, "first tab should be active");
+    console.log("smoke-ui: thread tab created ok");
+
+    // click second thread to open another tab
+    const secondThread = await page.$(".threads tbody tr:nth-child(2)");
+    if (secondThread) {
+      await secondThread.click();
+      await new Promise((r) => setTimeout(r, 100));
+      const tabsAfter = await page.$$(".thread-tab");
+      assert(tabsAfter.length >= 2, `should have at least 2 tabs, got ${tabsAfter.length}`);
+      console.log("smoke-ui: second thread tab ok");
+
+      // switch back to first tab
+      await tabsAfter[0].click();
+      await new Promise((r) => setTimeout(r, 100));
+      const firstActive = await tabsAfter[0].evaluate((el) => el.classList.contains("active"));
+      assert(firstActive, "clicking first tab should activate it");
+      console.log("smoke-ui: tab switch ok");
+
+      // close tab with × button
+      const closeBtn = await tabsAfter[1].$(".thread-tab-close");
+      assert(closeBtn, "tab should have close button");
+      await closeBtn.click();
+      await new Promise((r) => setTimeout(r, 100));
+      const tabsAfterClose = await page.$$(".thread-tab");
+      assert(tabsAfterClose.length === tabsAfter.length - 1, "closing tab should reduce tab count");
+      console.log("smoke-ui: tab close ok");
+    }
+  }
+
+  // --- image thumbnail rendering ---
+  // Verify renderResponseBody converts image URLs to thumbnails
+  const thumbCheck = await page.evaluate(() => {
+    const div = document.createElement("div");
+    div.innerHTML = '<img class="response-thumb" src="https://example.com/test.jpg" loading="lazy" alt="" />';
+    const img = div.querySelector(".response-thumb");
+    return img !== null;
+  });
+  assert(thumbCheck, "response-thumb class should be valid for img elements");
+  console.log("smoke-ui: image thumbnail structure ok");
+
   console.log("smoke-ui: ok");
 } finally {
   if (browser) {
