@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 
-$proc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c npm run dev -- --host 127.0.0.1 --port 1420" -WorkingDirectory "." -PassThru
+$proc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c npm run dev -- --host 127.0.0.1 --port 1420" -WorkingDirectory "." -WindowStyle Hidden -PassThru
 
 try {
   $ok = $false
@@ -26,4 +26,12 @@ try {
   if ($proc -and -not $proc.HasExited) {
     Stop-Process -Id $proc.Id -Force
   }
+  $leftovers = Get-CimInstance Win32_Process | Where-Object {
+    $_.Name -ieq "cmd.exe" -and (
+      $_.CommandLine -match "vite --port 1420" -or
+      $_.CommandLine -match "vite --host 127\.0\.0\.1 --port 1420" -or
+      $_.CommandLine -match "smoke_ui_playwright\.mjs"
+    )
+  }
+  $leftovers | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
 }
