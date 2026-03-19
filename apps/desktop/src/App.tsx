@@ -941,7 +941,7 @@ export default function App() {
   };
 
   const runResponseAction = async (
-    action: "quote" | "quote-with-name" | "copy-url" | "add-ng-id" | "copy-id" | "settings"
+    action: "quote" | "quote-with-name" | "copy-url" | "add-ng-id" | "copy-id" | "copy-body" | "add-ng-name" | "settings"
   ) => {
     if (!responseMenu) return;
     const id = responseMenu.responseId;
@@ -984,12 +984,37 @@ export default function App() {
       setResponseMenu(null);
       return;
     }
+    if (action === "copy-body") {
+      const plainText = resp.text
+        .replace(/<br\s*\/?>/gi, "\n")
+        .replace(/<[^>]+>/g, "")
+        .replace(/&amp;/g, "&")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'");
+      try {
+        await navigator.clipboard.writeText(plainText);
+        setStatus(`response body copied: #${id}`);
+      } catch {
+        setStatus(`copy failed for #${id}`);
+      }
+      setResponseMenu(null);
+      return;
+    }
     if (action === "add-ng-id") {
       const idMatch = resp.time.match(/ID:([^\s]+)/);
       if (idMatch) {
         addNgEntry("ids", idMatch[1]);
       } else {
         setStatus(`no ID found in response #${id}`);
+      }
+      setResponseMenu(null);
+      return;
+    }
+    if (action === "add-ng-name") {
+      if (resp.name.trim()) {
+        addNgEntry("names", resp.name.trim());
       }
       setResponseMenu(null);
       return;
@@ -1794,10 +1819,11 @@ export default function App() {
         <div className="thread-menu response-menu" style={{ left: responseMenu.x, top: responseMenu.y }} onClick={(e) => e.stopPropagation()}>
           <button onClick={() => void runResponseAction("quote")}>このレスを引用</button>
           <button onClick={() => void runResponseAction("quote-with-name")}>名前付き引用</button>
+          <button onClick={() => void runResponseAction("copy-body")}>本文をコピー</button>
           <button onClick={() => void runResponseAction("copy-url")}>レスURLをコピー</button>
-          <button onClick={() => void runResponseAction("add-ng-id")}>NGIDに追加</button>
           <button onClick={() => void runResponseAction("copy-id")}>IDをコピー</button>
-          <button onClick={() => void runResponseAction("settings")}>レス設定</button>
+          <button onClick={() => void runResponseAction("add-ng-id")}>NGIDに追加</button>
+          <button onClick={() => void runResponseAction("add-ng-name")}>NG名前に追加</button>
         </div>
       )}
       {anchorPopup && (() => {

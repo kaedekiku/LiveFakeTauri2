@@ -109,6 +109,25 @@ try {
   const composeText = await page.$eval(".compose-window textarea.compose-body", (el) => el.value);
   assert(composeText.includes(">>1"), "quote action did not append response anchor");
 
+  // close compose window if open
+  const composeWin = await page.$(".compose-window");
+  if (composeWin) {
+    await page.click(".compose-header button:has-text('閉じる')");
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  // response menu has copy body and NG name actions
+  await page.click(".response-no", { button: "left" });
+  const copyBodyBtn = await page.$('.response-menu button:has-text("本文をコピー")');
+  assert(copyBodyBtn, "response menu should have 本文をコピー button");
+  const ngNameBtn = await page.$('.response-menu button:has-text("NG名前に追加")');
+  assert(ngNameBtn, "response menu should have NG名前に追加 button");
+  // close menu
+  await page.evaluate(() => {
+    document.querySelector(".shell")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await new Promise((r) => setTimeout(r, 100));
+  console.log("smoke-ui: response menu actions ok");
+
   // --- geronimo UI improvements ---
 
   // menu bar has individual items with hover support
