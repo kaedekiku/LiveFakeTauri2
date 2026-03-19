@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite --port 1420",
     "build": "tsc && vite build",
+    "test:smoke-ui": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_smoke_ui.ps1",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"
   },
