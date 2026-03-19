@@ -71,7 +71,7 @@ try {
 
   const rowsBefore = await page.$$eval(".threads tbody tr", (rows) => rows.length);
   await page.click(".threads tbody tr:first-child", { button: "right" });
-  await page.click('.thread-menu button:has-text("Close Thread")');
+  await page.click('.thread-menu button:has-text("スレを閉じる")');
   const rowsAfterClose = await page.$$eval(".threads tbody tr", (rows) => rows.length);
   assert(rowsAfterClose === Math.max(rowsBefore - 1, 0), "close thread action did not reduce rows");
   console.log("smoke-ui: close thread ok");
@@ -83,28 +83,28 @@ try {
   assert(rowsAfterShortcutClose === Math.max(rowsBefore - 2, 0), "close thread shortcut did not reduce rows");
   console.log("smoke-ui: close thread shortcut ok");
 
-  await page.click(".tool-bar button:has-text('Undo Close')");
+  await page.click(".tool-bar button:has-text('閉じたスレを戻す')");
   const rowsAfterUndoClose = await page.$$eval(".threads tbody tr", (rows) => rows.length);
   assert(rowsAfterUndoClose >= rowsAfterShortcutClose + 1, "undo close button did not reopen one thread");
   console.log("smoke-ui: undo close button ok");
 
   await page.click(".threads tbody tr:first-child", { button: "right" });
-  await page.click('.thread-menu button:has-text("Reopen Last")');
+  await page.click('.thread-menu button:has-text("最後に閉じたスレを開く")');
   const rowsAfterReopenLast = await page.$$eval(".threads tbody tr", (rows) => rows.length);
   assert(rowsAfterReopenLast >= rowsBefore, "reopen last action did not restore thread row");
   console.log("smoke-ui: reopen last ok");
 
   await page.click(".threads tbody tr:first-child", { button: "right" });
-  await page.click('.thread-menu button:has-text("Close Thread")');
+  await page.click('.thread-menu button:has-text("スレを閉じる")');
 
   await page.click(".threads tbody tr:first-child", { button: "right" });
-  await page.click('.thread-menu button:has-text("Reopen All")');
+  await page.click('.thread-menu button:has-text("すべて開く")');
   const rowsAfterReopen = await page.$$eval(".threads tbody tr", (rows) => rows.length);
   assert(rowsAfterReopen >= rowsBefore, "reopen all action did not restore thread rows");
   console.log("smoke-ui: reopen all ok");
 
   await page.click(".response-no", { button: "left" });
-  await page.click('.response-menu button:has-text("Quote This Response")');
+  await page.click('.response-menu button:has-text("このレスを引用")');
   await page.waitForSelector(".compose-window textarea.compose-body");
   const composeText = await page.$eval(".compose-window textarea.compose-body", (el) => el.value);
   assert(composeText.includes(">>1"), "quote action did not append response anchor");
@@ -114,8 +114,8 @@ try {
   // menu bar has individual items with hover support
   const menuItems = await page.$$eval(".menu-bar .menu-item", (els) => els.map((el) => el.textContent));
   assert(menuItems.length === 7, `menu bar should have 7 items, got ${menuItems.length}`);
-  assert(menuItems.includes("File"), "menu bar should include File item");
-  assert(menuItems.includes("Help"), "menu bar should include Help item");
+  assert(menuItems.includes("ファイル"), "menu bar should include ファイル item");
+  assert(menuItems.includes("ヘルプ"), "menu bar should include ヘルプ item");
   console.log("smoke-ui: menu bar items ok");
 
   // unread thread row has bold styling
@@ -192,17 +192,17 @@ try {
   console.log("smoke-ui: board tab switch ok");
 
   // compose window shows target and char count
-  await page.click(".tool-bar button:has-text('Write')");
+  await page.click(".tool-bar button:has-text('書き込み')");
   await page.waitForSelector(".compose-window");
   const composeTarget = await page.$(".compose-target");
   assert(composeTarget, "compose window should show target thread info");
   const composeMeta = await page.$(".compose-meta");
   assert(composeMeta, "compose window should show char/line count");
   const metaText = await composeMeta.evaluate((el) => el.textContent || "");
-  assert(metaText.includes("chars"), `compose meta should show chars, got: ${metaText}`);
-  assert(metaText.includes("lines"), `compose meta should show lines, got: ${metaText}`);
+  assert(metaText.includes("文字"), `compose meta should show 文字, got: ${metaText}`);
+  assert(metaText.includes("行"), `compose meta should show 行, got: ${metaText}`);
   // close compose
-  await page.click(".compose-header button:has-text('Close')");
+  await page.click(".compose-header button:has-text('閉じる')");
   console.log("smoke-ui: compose target and meta ok");
 
   // anchor-ref spans have data-anchor attribute
@@ -214,7 +214,7 @@ try {
   // first close any open compose window
   const openCompose = await page.$(".compose-window");
   if (openCompose) {
-    await page.click(".compose-header button:has-text('Close')");
+    await page.click(".compose-header button:has-text('閉じる')");
   }
   const responseRow = await page.$(".response-table tbody tr:first-child");
   if (responseRow) {
@@ -223,7 +223,7 @@ try {
     const dblclickText = await page.$eval(".compose-window textarea.compose-body", (el) => el.value);
     assert(dblclickText.includes(">>"), "double-click should insert quote anchor into compose body");
     // close compose
-    await page.click(".compose-header button:has-text('Close')");
+    await page.click(".compose-header button:has-text('閉じる')");
   }
   console.log("smoke-ui: double-click reply ok");
 
@@ -234,15 +234,15 @@ try {
   await page.waitForSelector(".compose-window textarea.compose-body");
   const rKeyText = await page.$eval(".compose-window textarea.compose-body", (el) => el.value);
   assert(rKeyText.includes(">>"), "R key should insert quote anchor into compose body");
-  await page.click(".compose-header button:has-text('Close')");
+  await page.click(".compose-header button:has-text('閉じる')");
   console.log("smoke-ui: R key reply ok");
 
   // --- favorites and NG filter UI ---
 
   // fav-star elements exist in board items (fallback mode may not have them, but CSS class should exist)
   // In WEB mode without categories, there's no board-tree, but the NG panel should work
-  const ngFilterBtn = await page.$(".tool-bar button:has-text('NG Filter')");
-  assert(ngFilterBtn, "toolbar should have NG Filter button");
+  const ngFilterBtn = await page.$(".tool-bar button:has-text('NGフィルタ')");
+  assert(ngFilterBtn, "toolbar should have NGフィルタ button");
   console.log("smoke-ui: ng filter button ok");
 
   // open NG panel
@@ -254,7 +254,7 @@ try {
 
   // add an NG word
   await page.fill(".ng-panel-add input", "testngword");
-  await page.click(".ng-panel-add button:has-text('Add')");
+  await page.click(".ng-panel-add button:has-text('追加')");
   const ngListItems = await page.$$eval(".ng-list li", (els) => els.map((el) => el.textContent));
   assert(ngListItems.some((t) => t.includes("testngword")), "NG word should appear in list after adding");
   console.log("smoke-ui: ng add word ok");
@@ -266,22 +266,22 @@ try {
   console.log("smoke-ui: ng remove word ok");
 
   // close NG panel
-  await page.click(".ng-panel-header button:has-text('Close')");
+  await page.click(".ng-panel-header button:has-text('閉じる')");
   const ngPanelAfterClose = await page.$(".ng-panel");
   assert(!ngPanelAfterClose, "NG panel should be closed after clicking Close");
   console.log("smoke-ui: ng panel close ok");
 
   // thread context menu has Favorite Thread option
   await page.click(".threads tbody tr:first-child", { button: "right" });
-  const favThreadBtn = await page.$('.thread-menu button:has-text("Favorite Thread")');
-  assert(favThreadBtn, "thread menu should have Favorite Thread option");
+  const favThreadBtn = await page.$('.thread-menu button:has-text("お気に入りに追加")');
+  assert(favThreadBtn, "thread menu should have お気に入りに追加 option");
   // close menu
   await page.click("body");
   console.log("smoke-ui: favorite thread menu ok");
 
   // response pane meta shows NG count when applicable
   const responseMeta = await page.$eval(".responses .pane-meta", (el) => el.textContent || "");
-  assert(responseMeta.includes("Rows"), "response pane meta should show Rows");
+  assert(responseMeta.includes("表示"), "response pane meta should show 表示");
   console.log("smoke-ui: response pane meta ok");
 
   // thread search input exists and filters

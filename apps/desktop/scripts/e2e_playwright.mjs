@@ -141,7 +141,7 @@ try {
     const btn = document.querySelector(".tool-bar button");
     // Find Write button
     document.querySelectorAll(".tool-bar button").forEach((b) => {
-      if (b.textContent === "Write") b.click();
+      if (b.textContent === "書き込み") b.click();
     });
   });
   await new Promise((r) => setTimeout(r, 300));
@@ -287,7 +287,7 @@ try {
   // Open NG panel via toolbar button
   await page.evaluate(() => {
     document.querySelectorAll(".tool-bar button").forEach((b) => {
-      if (b.textContent === "NG Filter") b.click();
+      if (b.textContent === "NGフィルタ") b.click();
     });
   });
   await new Promise((r) => setTimeout(r, 300));
@@ -344,7 +344,7 @@ try {
   // Open compose window
   await page.evaluate(() => {
     document.querySelectorAll(".tool-bar button").forEach((b) => {
-      if (b.textContent === "Write") b.click();
+      if (b.textContent === "書き込み") b.click();
     });
   });
   await new Promise((r) => setTimeout(r, 300));
@@ -353,7 +353,7 @@ try {
 
   // Verify compose-meta shows chars/lines
   const metaText = await page.$eval(".compose-meta", (el) => el.textContent || "");
-  assert(metaText.includes("chars") && metaText.includes("lines"), `compose meta should show chars/lines, got: ${metaText}`);
+  assert(metaText.includes("文字") && metaText.includes("行"), `compose meta should show 文字/行, got: ${metaText}`);
   console.log("e2e: [PASS] compose window with meta info");
 
   // Close compose

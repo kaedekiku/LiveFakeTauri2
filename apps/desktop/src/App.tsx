@@ -657,10 +657,10 @@ export default function App() {
   };
 
   const composeMailValue = composeSage ? "sage" : composeMail;
-  const boardItems = ["Favorite", "News", "Software", "Network", "NGT (test)"];
+  const boardItems = ["お気に入り", "ニュース", "ソフトウェア", "ネットワーク", "NGT (テスト)"];
   const fallbackThreadItems = [
-    { id: 1, title: "Probe thread", res: 999, got: 24, speed: 2.5, lastLoad: "14:42", lastPost: "14:44" },
-    { id: 2, title: "Auth test", res: 120, got: 8, speed: 0.8, lastLoad: "13:08", lastPost: "13:09" },
+    { id: 1, title: "プローブスレッド", res: 999, got: 24, speed: 2.5, lastLoad: "14:42", lastPost: "14:44" },
+    { id: 2, title: "認証テスト", res: 120, got: 8, speed: 0.8, lastLoad: "13:08", lastPost: "13:09" },
   ];
   const threadItems = (
     fetchedThreads.length > 0
@@ -695,9 +695,9 @@ export default function App() {
           text: r.body || "",
         }))
       : [
-          { id: 1, name: "Anonymous", time: "2026/03/07 10:00", text: "post flow trace ready" },
-          { id: 2, name: "Anonymous", time: "2026/03/07 10:02", text: "be/uplift/donguri login checked" },
-          { id: 3, name: "Anonymous", time: "2026/03/07 10:04", text: "next: subject/dat fetch integration" },
+          { id: 1, name: "名無しさん", time: "2026/03/07 10:00", text: "投稿フロートレース準備完了" },
+          { id: 2, name: "名無しさん", time: "2026/03/07 10:02", text: "BE/UPLIFT/どんぐりログイン確認済み" },
+          { id: 3, name: "名無しさん", time: "2026/03/07 10:04", text: "次: subject/dat取得連携" },
         ]),
   ];
   const ngFilteredCount = responseItems.filter((r) => isNgFiltered(r)).length;
@@ -1115,21 +1115,21 @@ export default function App() {
       }}
     >
       <header className="menu-bar">
-        {["File", "Edit", "View", "Board", "Thread", "Tools", "Help"].map((label) => (
+        {["ファイル", "編集", "表示", "板", "スレッド", "ツール", "ヘルプ"].map((label) => (
           <span key={label} className="menu-item">{label}</span>
         ))}
       </header>
       <div className="tool-bar">
-        <button onClick={() => { void fetchMenu(); void fetchBoardCategories(); }}>Refresh Menu</button>
-        <button onClick={() => fetchThreadListFromCurrent()}>Load Threads</button>
-        <button onClick={() => fetchResponsesFromCurrent()}>Load Responses</button>
+        <button onClick={() => { void fetchMenu(); void fetchBoardCategories(); }}>更新</button>
+        <button onClick={() => fetchThreadListFromCurrent()}>スレ取得</button>
+        <button onClick={() => fetchResponsesFromCurrent()}>レス取得</button>
         <span className="tool-sep" />
-        <button onClick={checkAuthEnv}>Auth Status</button>
-        <button onClick={probeAuth}>Auth Probe</button>
+        <button onClick={checkAuthEnv}>認証状態</button>
+        <button onClick={probeAuth}>認証テスト</button>
         <span className="tool-sep" />
-        <button onClick={() => setComposeOpen(true)}>Write</button>
+        <button onClick={() => setComposeOpen(true)}>書き込み</button>
         <button onClick={reopenLastClosedThread} disabled={!hasReopenableClosedThread}>
-          Undo Close
+          閉じたスレを戻す
         </button>
         <label className="auto-refresh-toggle">
           <input
@@ -1137,10 +1137,10 @@ export default function App() {
             checked={autoRefreshEnabled}
             onChange={(e) => setAutoRefreshEnabled(e.target.checked)}
           />
-          Auto ({autoRefreshInterval}s)
+          自動更新 ({autoRefreshInterval}秒)
         </label>
-        <button onClick={() => setNgPanelOpen((v) => !v)}>NG Filter</button>
-        <button onClick={resetLayout}>Reset Layout</button>
+        <button onClick={() => setNgPanelOpen((v) => !v)}>NGフィルタ</button>
+        <button onClick={resetLayout}>レイアウトリセット</button>
         <span className="shortcut-hint">
           Ctrl+Shift+R | Ctrl/Cmd+W | Ctrl/Cmd+Shift+W | Ctrl+Alt+/ | Ctrl/Cmd+Alt+Arrows
         </span>
@@ -1149,7 +1149,7 @@ export default function App() {
         <span>URL</span>
         <input value={locationInput} onChange={(e) => setLocationInput(e.target.value)} onKeyDown={onLocationInputKeyDown} />
         <button onClick={goFromLocationInput}>
-          Go
+          移動
         </button>
       </div>
       <main
@@ -1165,17 +1165,17 @@ export default function App() {
                 className={`board-tab ${boardPaneTab === "boards" ? "active" : ""}`}
                 onClick={() => setBoardPaneTab("boards")}
               >
-                Boards
+                板一覧
               </button>
               <button
                 className={`board-tab ${boardPaneTab === "fav-threads" ? "active" : ""}`}
                 onClick={() => setBoardPaneTab("fav-threads")}
               >
-                Fav ({favorites.threads.length})
+                お気に入り ({favorites.threads.length})
               </button>
             </div>
             {boardPaneTab === "boards" && (
-              <button className="boards-fetch" onClick={fetchBoardCategories}>Fetch</button>
+              <button className="boards-fetch" onClick={fetchBoardCategories}>取得</button>
             )}
           </div>
           {boardPaneTab === "boards" ? (
@@ -1188,7 +1188,7 @@ export default function App() {
                       onClick={() => toggleCategory("__favorites__")}
                     >
                       <span className="category-arrow">{expandedCategories.has("__favorites__") ? "\u25BC" : "\u25B6"}</span>
-                      Favorites ({favorites.boards.length})
+                      お気に入り ({favorites.boards.length})
                     </button>
                     {expandedCategories.has("__favorites__") && (
                       <ul className="category-boards">
@@ -1255,7 +1255,7 @@ export default function App() {
           ) : (
             <div className="fav-threads-list">
               {favorites.threads.length === 0 ? (
-                <span className="ng-empty">(no favorite threads)</span>
+                <span className="ng-empty">(お気に入りスレッドなし)</span>
               ) : (
                 <ul className="category-boards">
                   {favorites.threads.map((ft) => (
@@ -1290,29 +1290,29 @@ export default function App() {
         />
         <section className="pane threads">
           <div className="threads-header">
-            <h2>Threads</h2>
+            <h2>スレッド</h2>
             <input
               className="thread-search"
               value={threadSearchQuery}
               onChange={(e) => setThreadSearchQuery(e.target.value)}
-              placeholder="Search..."
+              placeholder="検索..."
             />
           </div>
           <div className="pane-meta">
-            <strong>Rows</strong> {visibleThreadItems.length}/{threadItems.length} | <strong>Closed</strong>{" "}
-            {closedThreadIds.length} | <strong>Selected</strong>{" "}
-            {selectedThreadItem ? `#${selectedThreadItem.id} ${selectedThreadItem.res}res` : "(none)"}
+            <strong>表示</strong> {visibleThreadItems.length}/{threadItems.length} | <strong>閉</strong>{" "}
+            {closedThreadIds.length} | <strong>選択</strong>{" "}
+            {selectedThreadItem ? `#${selectedThreadItem.id} ${selectedThreadItem.res}レス` : "(なし)"}
           </div>
           <table>
             <thead>
               <tr>
-                <th>No</th>
-                <th>Title</th>
-                <th>Res</th>
-                <th>Got</th>
-                <th>Speed</th>
-                <th>Last Load</th>
-                <th>Last Post</th>
+                <th>番号</th>
+                <th>タイトル</th>
+                <th>レス</th>
+                <th>既得</th>
+                <th>勢い</th>
+                <th>最終取得</th>
+                <th>最終書込</th>
               </tr>
             </thead>
             <tbody ref={threadTbodyRef}>
@@ -1359,12 +1359,12 @@ export default function App() {
           onClick={(e) => e.stopPropagation()}
         />
         <section className="pane responses">
-          <h2>Responses</h2>
+          <h2>レス</h2>
           <div className="pane-meta">
-            <strong>Rows</strong> {visibleResponseItems.length}/{responseItems.length}
+            <strong>表示</strong> {visibleResponseItems.length}/{responseItems.length}
             {ngFilteredCount > 0 && <> | <strong>NG</strong> {ngFilteredCount}</>}
-            {" "}| <strong>Selected</strong> #{activeResponse?.id ?? "-"}/
-            {visibleResponseItems.length} | <strong>Split</strong> {Math.round(responseTopRatio)}%
+            {" "}| <strong>選択</strong> #{activeResponse?.id ?? "-"}/
+            {visibleResponseItems.length} | <strong>分割</strong> {Math.round(responseTopRatio)}%
           </div>
           <div
             ref={responseLayoutRef}
@@ -1374,9 +1374,9 @@ export default function App() {
             <table className="response-table">
               <thead>
                 <tr>
-                  <th>No</th>
-                  <th>Name</th>
-                  <th>Time</th>
+                  <th>番号</th>
+                  <th>名前</th>
+                  <th>日時</th>
                 </tr>
               </thead>
               <tbody ref={responseTbodyRef}>
@@ -1442,10 +1442,10 @@ export default function App() {
             </article>
           </div>
           <details className="dev-panel">
-            <summary>Developer Tools</summary>
+            <summary>開発者ツール</summary>
             <div className="dev-grid">
               <label>
-                Thread URL
+                スレッドURL
                 <input value={threadUrl} onChange={(e) => setThreadUrl(e.target.value)} />
               </label>
               <label>
@@ -1453,19 +1453,19 @@ export default function App() {
                 <input value={metadataUrl} onChange={(e) => setMetadataUrl(e.target.value)} />
               </label>
               <label>
-                Current Version
+                現在のバージョン
                 <input value={currentVersion} onChange={(e) => setCurrentVersion(e.target.value)} />
               </label>
             </div>
             <div className="dev-actions">
-              <button onClick={probePostCookieScope}>Cookie Scope</button>
-              <button onClick={probeThreadPostForm}>Post Tokens</button>
-              <button onClick={probePostConfirmEmpty}>Confirm</button>
-              <button onClick={probePostFinalizePreview}>Finalize Form</button>
-              <button onClick={probePostFinalizeSubmitEmpty}>Finalize Submit</button>
-              <button onClick={checkForUpdates}>Check Update</button>
+              <button onClick={probePostCookieScope}>Cookie範囲</button>
+              <button onClick={probeThreadPostForm}>投稿トークン</button>
+              <button onClick={probePostConfirmEmpty}>確認</button>
+              <button onClick={probePostFinalizePreview}>最終フォーム</button>
+              <button onClick={probePostFinalizeSubmitEmpty}>最終送信</button>
+              <button onClick={checkForUpdates}>更新確認</button>
               <button onClick={openDownloadPage} disabled={!updateResult?.hasUpdate || !updateResult.downloadPageUrl}>
-                Open Download Page
+                ダウンロードページを開く
               </button>
               <label className="check">
                 <input
@@ -1473,7 +1473,7 @@ export default function App() {
                   checked={allowRealSubmit}
                   onChange={(e) => setAllowRealSubmit(e.target.checked)}
                 />
-                allow real final submit
+                実送信を許可
               </label>
             </div>
             <pre>{status}</pre>
@@ -1497,21 +1497,21 @@ export default function App() {
         DONGURI:EXPERIMENTAL | {updateState}
       </footer>
       {composeOpen && (
-        <section className="compose-window" role="dialog" aria-label="Write">
+        <section className="compose-window" role="dialog" aria-label="書き込み">
           <header className="compose-header">
-            <strong>Write</strong>
+            <strong>書き込み</strong>
             <span className="compose-target" title={threadUrl}>
               {selectedThreadItem ? selectedThreadItem.title : threadUrl}
             </span>
-            <button onClick={() => setComposeOpen(false)}>Close</button>
+            <button onClick={() => setComposeOpen(false)}>閉じる</button>
           </header>
           <div className="compose-grid">
             <label>
-              Name
+              名前
               <input value={composeName} onChange={(e) => setComposeName(e.target.value)} />
             </label>
             <label>
-              Mail
+              メール
               <input value={composeMailValue} onChange={(e) => setComposeMail(e.target.value)} disabled={composeSage} />
             </label>
             <label className="check">
@@ -1520,7 +1520,7 @@ export default function App() {
             </label>
             <label className="check">
               <input type="checkbox" checked={composePreview} onChange={(e) => setComposePreview(e.target.checked)} />
-              preview
+              プレビュー
             </label>
             <label className="check">
               <input
@@ -1528,7 +1528,7 @@ export default function App() {
                 checked={composeEnterSubmit}
                 onChange={(e) => setComposeEnterSubmit(e.target.checked)}
               />
-              enter submit
+              Enter送信
             </label>
           </div>
           <textarea
@@ -1536,20 +1536,20 @@ export default function App() {
             value={composeBody}
             onChange={(e) => setComposeBody(e.target.value)}
             onKeyDown={onComposeBodyKeyDown}
-            placeholder="message"
+            placeholder="本文を入力"
           />
           <div className="compose-meta">
-            <span>{composeBody.length} chars</span>
-            <span>{composeBody.split("\n").length} lines</span>
+            <span>{composeBody.length}文字</span>
+            <span>{composeBody.split("\n").length}行</span>
           </div>
-          {composePreview && <pre className="compose-preview">{composeBody || "(empty)"}</pre>}
+          {composePreview && <pre className="compose-preview">{composeBody || "(空)"}</pre>}
           <div className="compose-actions">
-            <button onClick={probePostConfirmFromCompose}>Confirm</button>
-            <button onClick={probePostFinalizePreviewFromCompose}>Finalize Form</button>
+            <button onClick={probePostConfirmFromCompose}>確認</button>
+            <button onClick={probePostFinalizePreviewFromCompose}>最終フォーム</button>
             <button onClick={probePostFinalizeSubmitFromCompose} disabled={!allowRealSubmit}>
-              Submit
+              送信
             </button>
-            <button onClick={probePostFlowTraceFromCompose}>Flow Trace</button>
+            <button onClick={probePostFlowTraceFromCompose}>フロートレース</button>
           </div>
           {composeResult && (
             <div className={`compose-result ${composeResult.ok ? "compose-result-ok" : "compose-result-err"}`}>
@@ -1559,19 +1559,19 @@ export default function App() {
         </section>
       )}
       {ngPanelOpen && (
-        <section className="ng-panel" role="dialog" aria-label="NG Filter">
+        <section className="ng-panel" role="dialog" aria-label="NGフィルタ">
           <header className="ng-panel-header">
-            <strong>NG Filter</strong>
+            <strong>NGフィルタ</strong>
             <span className="ng-panel-count">
-              {ngFilters.words.length}W / {ngFilters.ids.length}ID / {ngFilters.names.length}N
+              {ngFilters.words.length}語 / {ngFilters.ids.length}ID / {ngFilters.names.length}名
             </span>
-            <button onClick={() => setNgPanelOpen(false)}>Close</button>
+            <button onClick={() => setNgPanelOpen(false)}>閉じる</button>
           </header>
           <div className="ng-panel-add">
             <select value={ngInputType} onChange={(e) => setNgInputType(e.target.value as "words" | "ids" | "names")}>
-              <option value="words">Word</option>
+              <option value="words">ワード</option>
               <option value="ids">ID</option>
-              <option value="names">Name</option>
+              <option value="names">名前</option>
             </select>
             <input
               value={ngInput}
@@ -1582,16 +1582,16 @@ export default function App() {
                   setNgInput("");
                 }
               }}
-              placeholder={`Add NG ${ngInputType}`}
+              placeholder={ngInputType === "words" ? "NGワードを入力" : ngInputType === "ids" ? "NG IDを入力" : "NG名前を入力"}
             />
-            <button onClick={() => { addNgEntry(ngInputType, ngInput); setNgInput(""); }}>Add</button>
+            <button onClick={() => { addNgEntry(ngInputType, ngInput); setNgInput(""); }}>追加</button>
           </div>
           <div className="ng-panel-lists">
             {(["words", "ids", "names"] as const).map((type) => (
               <div key={type} className="ng-list-section">
-                <h4>{type === "words" ? "Words" : type === "ids" ? "IDs" : "Names"} ({ngFilters[type].length})</h4>
+                <h4>{type === "words" ? "ワード" : type === "ids" ? "ID" : "名前"} ({ngFilters[type].length})</h4>
                 {ngFilters[type].length === 0 ? (
-                  <span className="ng-empty">(none)</span>
+                  <span className="ng-empty">(なし)</span>
                 ) : (
                   <ul className="ng-list">
                     {ngFilters[type].map((v) => (
@@ -1609,17 +1609,17 @@ export default function App() {
       )}
       {threadMenu && (
         <div className="thread-menu" style={{ left: threadMenu.x, top: threadMenu.y }} onClick={(e) => e.stopPropagation()}>
-          <button onClick={() => markThreadRead(threadMenu.threadId, true)}>Mark as Read</button>
-          <button onClick={() => markThreadRead(threadMenu.threadId, false)}>Mark as Unread</button>
-          <button onClick={() => closeThread(threadMenu.threadId)}>Close Thread</button>
-          <button onClick={() => closeOtherThreads(threadMenu.threadId)}>Close Others</button>
+          <button onClick={() => markThreadRead(threadMenu.threadId, true)}>既読にする</button>
+          <button onClick={() => markThreadRead(threadMenu.threadId, false)}>未読にする</button>
+          <button onClick={() => closeThread(threadMenu.threadId)}>スレを閉じる</button>
+          <button onClick={() => closeOtherThreads(threadMenu.threadId)}>他を閉じる</button>
           <button onClick={reopenLastClosedThread} disabled={!hasReopenableClosedThread}>
-            Reopen Last
+            最後に閉じたスレを開く
           </button>
           <button onClick={reopenAllThreads} disabled={closedThreadIds.length === 0}>
-            Reopen All
+            すべて開く
           </button>
-          <button onClick={() => void copyThreadUrl(threadMenu.threadId)}>Copy Thread URL</button>
+          <button onClick={() => void copyThreadUrl(threadMenu.threadId)}>スレURLをコピー</button>
           <button onClick={() => {
             const t = threadItems.find((item) => item.id === threadMenu.threadId);
             if (t && "threadUrl" in t && typeof t.threadUrl === "string") {
@@ -1630,19 +1630,19 @@ export default function App() {
             {(() => {
               const t = threadItems.find((item) => item.id === threadMenu.threadId);
               const isFav = t && "threadUrl" in t && favorites.threads.some((f) => f.threadUrl === t.threadUrl);
-              return isFav ? "Unfavorite Thread" : "Favorite Thread";
+              return isFav ? "お気に入り解除" : "お気に入りに追加";
             })()}
           </button>
         </div>
       )}
       {responseMenu && (
         <div className="thread-menu response-menu" style={{ left: responseMenu.x, top: responseMenu.y }} onClick={(e) => e.stopPropagation()}>
-          <button onClick={() => void runResponseAction("quote")}>Quote This Response</button>
-          <button onClick={() => void runResponseAction("quote-with-name")}>Quote with Name</button>
-          <button onClick={() => void runResponseAction("copy-url")}>Copy Response URL</button>
-          <button onClick={() => void runResponseAction("add-ng-id")}>Add to NG ID</button>
-          <button onClick={() => void runResponseAction("copy-id")}>Copy ID</button>
-          <button onClick={() => void runResponseAction("settings")}>Response Settings</button>
+          <button onClick={() => void runResponseAction("quote")}>このレスを引用</button>
+          <button onClick={() => void runResponseAction("quote-with-name")}>名前付き引用</button>
+          <button onClick={() => void runResponseAction("copy-url")}>レスURLをコピー</button>
+          <button onClick={() => void runResponseAction("add-ng-id")}>NGIDに追加</button>
+          <button onClick={() => void runResponseAction("copy-id")}>IDをコピー</button>
+          <button onClick={() => void runResponseAction("settings")}>レス設定</button>
         </div>
       )}
       {anchorPopup && (() => {
