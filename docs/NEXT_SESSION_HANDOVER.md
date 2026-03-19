@@ -47,7 +47,7 @@
   - `apps/desktop`: smoke-ui 25件（板/書き込み/ダブルクリック/Rキー/アンカー他）
   - `fetch_board_categories`: bbsmenu.json パーサー修正（`menu_list` → `category_content`、49カテゴリ/1115板取得成功）
   - `apps/desktop`: E2E テスト追加（`npm run test:e2e` = Tauri + Playwright via WebView2 CDP）
-  - E2E 12項目 PASS: runtime検出/bbsmenu取得/板カテゴリ/スレ一覧/レス取得/auth状態/投稿フォーム/DOM操作/書き込みUI
+  - E2E 28項目 PASS: runtime検出/bbsmenu取得/板カテゴリ/スレ一覧/レス取得/auth状態/投稿フォーム/DOM操作/書き込みUI/お気に入りCRUD/NGフィルタCRUD/既読永続化/検索フィルタ/タブ切替/NGパネル操作/自動更新/compose meta
   - `apps/desktop`: お気に入り板/スレ管理（core-store永続化 + Favoritesカテゴリ + 星トグル）
   - `apps/desktop`: NGワード/ID/名前フィルタリング（NGパネルUI + レスポンス非表示 + 永続化）
   - `apps/desktop`: 既読管理の永続化（core-store read_status.json）
@@ -86,6 +86,7 @@
   - `33f74ec` (`desktop: add read status persistence and post result feedback`)
   - `3b40eb8` (`desktop: add thread search filter and auto-refresh toggle`)
   - `470230c` (`desktop: add board pane tabs with favorite threads view`)
+  - `b481fa4` (`desktop: extend E2E tests to 28 items covering new features`)
 
 ## 仕様確定ポイント（重要）
 - 5ch基盤:

@@ -71,6 +71,7 @@
 - [x] desktop: 自動更新トグル（デフォルト60秒間隔でレス定期リロード）
 - [x] desktop: 板ペインに Boards/Fav タブ切り替え + お気に入りスレ一覧表示
 - [x] desktop: smoke-ui テスト 35項目（検索/自動更新/タブ切り替え追加）
+- [x] desktop: E2E テスト 28項目（お気に入りCRUD/NGフィルタCRUD/既読永続化/検索/タブ/NGパネル/自動更新/compose meta）
 
 ## 直近タスク（優先順）
 1. `core-fetch`: 非空メッセージでの confirm form 検出を確認（safe probe 完了: 2026-03-19）
