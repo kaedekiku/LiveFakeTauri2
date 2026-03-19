@@ -826,6 +826,29 @@ try {
   await new Promise((r) => setTimeout(r, 100));
   console.log("smoke-ui: settings panel ok");
 
+  // --- post history panel ---
+  const fileMenuForHistory = await page.$('.menu-item:has-text("ファイル")');
+  await fileMenuForHistory.click();
+  await new Promise((r) => setTimeout(r, 100));
+  const historyBtn = await page.$('.menu-dropdown button:has-text("書き込み履歴")');
+  assert(historyBtn, "file menu should have post history button");
+  await historyBtn.click();
+  await new Promise((r) => setTimeout(r, 200));
+  const historyPanel = await page.$(".post-history-body");
+  assert(historyPanel, "post history panel should open");
+  // should show empty message
+  const emptyMsg = await historyPanel.textContent();
+  assert(emptyMsg.includes("まだ書き込みがありません"), `history should be empty, got ${emptyMsg}`);
+  // close
+  await page.click('.settings-header button:has-text("閉じる")');
+  await new Promise((r) => setTimeout(r, 100));
+  console.log("smoke-ui: post history panel ok");
+
+  // --- speed gradient coloring ---
+  const speedBarStyle = await page.$eval(".speed-bar", (el) => el.getAttribute("style"));
+  assert(speedBarStyle?.includes("background"), "speed bar should have inline background style");
+  console.log("smoke-ui: speed gradient ok");
+
   console.log("smoke-ui: ok");
 } finally {
   if (browser) {

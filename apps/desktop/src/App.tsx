@@ -195,6 +195,8 @@ export default function App() {
   const [composePreview, setComposePreview] = useState(false);
   const [composeEnterSubmit, setComposeEnterSubmit] = useState(false);
   const [composeResult, setComposeResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [postHistory, setPostHistory] = useState<{ time: string; threadUrl: string; body: string; ok: boolean }[]>([]);
+  const [postHistoryOpen, setPostHistoryOpen] = useState(false);
   const [postFlowTraceProbe, setPostFlowTraceProbe] = useState("not run");
   const [threadListProbe, setThreadListProbe] = useState("not run");
   const [responseListProbe, setResponseListProbe] = useState("not run");
@@ -784,15 +786,15 @@ export default function App() {
       setPostFinalizeSubmitProbe(
         `status=${r.status} type=${r.contentType ?? "-"} error=${r.containsError} preview=${r.bodyPreview}`
       );
-      if (r.containsError) {
-        setComposeResult({ ok: false, message: `Post failed: ${r.bodyPreview}` });
-      } else {
-        setComposeResult({ ok: true, message: `Post submitted (status ${r.status})` });
-        void fetchResponsesFromCurrent();
-      }
+      const ok = !r.containsError;
+      const msg = ok ? `Post submitted (status ${r.status})` : `Post failed: ${r.bodyPreview}`;
+      setComposeResult({ ok, message: msg });
+      setPostHistory((prev) => [{ time: new Date().toLocaleTimeString(), threadUrl, body: composeBody.slice(0, 100), ok }, ...prev].slice(0, 50));
+      if (ok) void fetchResponsesFromCurrent();
     } catch (error) {
       setPostFinalizeSubmitProbe(`error: ${String(error)}`);
       setComposeResult({ ok: false, message: `Error: ${String(error)}` });
+      setPostHistory((prev) => [{ time: new Date().toLocaleTimeString(), threadUrl, body: composeBody.slice(0, 100), ok: false }, ...prev].slice(0, 50));
     }
   };
 
@@ -820,13 +822,16 @@ export default function App() {
         setComposeResult({ ok: false, message: "Flow blocked (real submit disabled)" });
       } else if (r.submitSummary?.includes("error=true")) {
         setComposeResult({ ok: false, message: `Post failed: ${r.submitSummary}` });
+        setPostHistory((prev) => [{ time: new Date().toLocaleTimeString(), threadUrl, body: composeBody.slice(0, 100), ok: false }, ...prev].slice(0, 50));
       } else if (r.submitSummary) {
         setComposeResult({ ok: true, message: `Post submitted: ${r.submitSummary}` });
+        setPostHistory((prev) => [{ time: new Date().toLocaleTimeString(), threadUrl, body: composeBody.slice(0, 100), ok: true }, ...prev].slice(0, 50));
         void fetchResponsesFromCurrent();
       }
     } catch (error) {
       setPostFlowTraceProbe(`error: ${String(error)}`);
       setComposeResult({ ok: false, message: `Error: ${String(error)}` });
+      setPostHistory((prev) => [{ time: new Date().toLocaleTimeString(), threadUrl, body: composeBody.slice(0, 100), ok: false }, ...prev].slice(0, 50));
     }
   };
 
@@ -1456,6 +1461,7 @@ export default function App() {
             { text: "レス取得", action: () => fetchResponsesFromCurrent() },
             { text: "sep" },
             { text: "書き込み", action: () => { setComposeOpen(true); setComposePos(null); } },
+            { text: "書き込み履歴", action: () => setPostHistoryOpen(true) },
             { text: "sep" },
             { text: "設定", action: () => setSettingsOpen(true) },
             { text: "sep" },
@@ -1768,7 +1774,10 @@ export default function App() {
                       {(threadLastReadCount[t.id] ?? 0) > 0 ? Math.max(0, t.res - threadLastReadCount[t.id]) : "-"}
                     </td>
                     <td className="speed-cell">
-                      <span className="speed-bar" style={{ width: `${Math.min(100, t.speed * 2)}%` }} />
+                      <span className="speed-bar" style={{
+                        width: `${Math.min(100, t.speed * 2)}%`,
+                        background: t.speed >= 20 ? "rgba(200,40,40,0.25)" : t.speed >= 5 ? "rgba(200,120,40,0.2)" : "rgba(200,80,40,0.15)",
+                      }} />
                       <span className="speed-val">{t.speed.toFixed(1)}</span>
                     </td>
                     <td>{t.lastLoad}</td>
@@ -2357,6 +2366,29 @@ export default function App() {
                 <div className="settings-row"><span>バージョン</span><span>{currentVersion}</span></div>
                 <div className="settings-row"><span>スモークテスト</span><span>67項目</span></div>
               </fieldset>
+            </div>
+          </div>
+        </div>
+      )}
+      {postHistoryOpen && (
+        <div className="lightbox-overlay" onClick={() => setPostHistoryOpen(false)}>
+          <div className="settings-panel" onClick={(e) => e.stopPropagation()}>
+            <header className="settings-header">
+              <strong>書き込み履歴 ({postHistory.length}件)</strong>
+              <button onClick={() => setPostHistoryOpen(false)}>閉じる</button>
+            </header>
+            <div className="post-history-body">
+              {postHistory.length === 0 ? (
+                <p style={{ padding: "8px", color: "var(--sub)" }}>まだ書き込みがありません</p>
+              ) : (
+                postHistory.map((h, i) => (
+                  <div key={i} className={`post-history-item ${h.ok ? "post-ok" : "post-ng"}`}>
+                    <span className="post-history-time">{h.time}</span>
+                    <span className={`post-history-status ${h.ok ? "" : "post-ng-status"}`}>{h.ok ? "OK" : "NG"}</span>
+                    <span className="post-history-body">{h.body}</span>
+                  </div>
+                ))
+              )}
             </div>
           </div>
         </div>

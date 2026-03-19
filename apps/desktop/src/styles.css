@@ -1212,6 +1212,41 @@ pre {
   border-color: #555;
 }
 
+.post-history-body {
+  padding: 4px 8px;
+  max-height: 400px;
+  overflow-y: auto;
+}
+.post-history-item {
+  display: flex;
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px solid #e0d8c8;
+  font-size: 11px;
+  align-items: center;
+}
+.post-history-time {
+  color: var(--sub);
+  min-width: 60px;
+}
+.post-history-status {
+  font-weight: 700;
+  min-width: 24px;
+  color: #2a8a2a;
+}
+.post-ng-status {
+  color: #c04020;
+}
+.post-history-body {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+.dark .post-history-item {
+  border-color: #3c3c3c;
+}
+
 .thread-tab[draggable="true"] {
   cursor: grab;
 }
