@@ -302,6 +302,24 @@ try {
   assert(autoRefreshToggle, "auto-refresh toggle should exist in toolbar");
   console.log("smoke-ui: auto-refresh toggle ok");
 
+  // --- sortable thread headers ---
+  const sortableHeaders = await page.$$(".sortable-th");
+  assert(sortableHeaders.length >= 3, `should have at least 3 sortable headers, got ${sortableHeaders.length}`);
+  // click res header to sort
+  await sortableHeaders[2].click();
+  await new Promise((r) => setTimeout(r, 100));
+  const resHeaderText = await sortableHeaders[2].evaluate((el) => el.textContent);
+  assert(resHeaderText.includes("\u25B2") || resHeaderText.includes("\u25BC"), "clicking sortable header should show sort indicator");
+  // click again to reverse
+  await sortableHeaders[2].click();
+  await new Promise((r) => setTimeout(r, 100));
+  const resHeaderText2 = await sortableHeaders[2].evaluate((el) => el.textContent);
+  assert(resHeaderText2 !== resHeaderText, "clicking same header again should toggle sort direction");
+  // reset to default sort (click 番号)
+  await sortableHeaders[0].click();
+  await new Promise((r) => setTimeout(r, 100));
+  console.log("smoke-ui: sortable thread headers ok");
+
   // --- thread tabs ---
 
   // dismiss any open menu by clicking the shell element

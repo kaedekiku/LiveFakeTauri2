@@ -199,6 +199,8 @@ export default function App() {
   const [threadSearchQuery, setThreadSearchQuery] = useState("");
   const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(false);
   const [autoRefreshInterval, setAutoRefreshInterval] = useState(60);
+  const [threadSortKey, setThreadSortKey] = useState<"id" | "title" | "res" | "speed">("id");
+  const [threadSortAsc, setThreadSortAsc] = useState(true);
   const [threadTabs, setThreadTabs] = useState<ThreadTab[]>([]);
   const [activeTabIndex, setActiveTabIndex] = useState(-1);
   const tabCacheRef = useRef<Map<string, { responses: ThreadResponseItem[]; selectedResponse: number }>>(new Map());
@@ -463,6 +465,15 @@ export default function App() {
     }
     setThreadUrl(tab.threadUrl);
     setLocationInput(tab.threadUrl);
+  };
+
+  const toggleThreadSort = (key: "id" | "title" | "res" | "speed") => {
+    if (threadSortKey === key) {
+      setThreadSortAsc((prev) => !prev);
+    } else {
+      setThreadSortKey(key);
+      setThreadSortAsc(key === "id" || key === "title");
+    }
   };
 
   const selectBoard = (board: BoardEntry) => {
@@ -779,13 +790,22 @@ export default function App() {
         }))
       : fallbackThreadItems
   ).slice(0, 80);
-  const visibleThreadItems = threadItems.filter((t) => {
-    if (closedThreadIds.includes(t.id)) return false;
-    if (threadSearchQuery.trim()) {
-      return t.title.toLowerCase().includes(threadSearchQuery.trim().toLowerCase());
-    }
-    return true;
-  });
+  const visibleThreadItems = threadItems
+    .filter((t) => {
+      if (closedThreadIds.includes(t.id)) return false;
+      if (threadSearchQuery.trim()) {
+        return t.title.toLowerCase().includes(threadSearchQuery.trim().toLowerCase());
+      }
+      return true;
+    })
+    .sort((a, b) => {
+      let cmp = 0;
+      if (threadSortKey === "id") cmp = a.id - b.id;
+      else if (threadSortKey === "title") cmp = a.title.localeCompare(b.title);
+      else if (threadSortKey === "res") cmp = a.res - b.res;
+      else if (threadSortKey === "speed") cmp = a.speed - b.speed;
+      return threadSortAsc ? cmp : -cmp;
+    });
   const selectedThreadItem = visibleThreadItems.find((t) => t.id === selectedThread) ?? null;
   const unreadThreadCount = visibleThreadItems.filter((t) => !threadReadMap[t.id]).length;
   const selectedThreadLabel = selectedThreadItem ? `#${selectedThreadItem.id}` : "-";
@@ -1414,11 +1434,19 @@ export default function App() {
           <table>
             <thead>
               <tr>
-                <th>番号</th>
-                <th>タイトル</th>
-                <th>レス</th>
+                <th className="sortable-th" onClick={() => toggleThreadSort("id")}>
+                  番号{threadSortKey === "id" ? (threadSortAsc ? " \u25B2" : " \u25BC") : ""}
+                </th>
+                <th className="sortable-th" onClick={() => toggleThreadSort("title")}>
+                  タイトル{threadSortKey === "title" ? (threadSortAsc ? " \u25B2" : " \u25BC") : ""}
+                </th>
+                <th className="sortable-th" onClick={() => toggleThreadSort("res")}>
+                  レス{threadSortKey === "res" ? (threadSortAsc ? " \u25B2" : " \u25BC") : ""}
+                </th>
                 <th>既得</th>
-                <th>勢い</th>
+                <th className="sortable-th" onClick={() => toggleThreadSort("speed")}>
+                  勢い{threadSortKey === "speed" ? (threadSortAsc ? " \u25B2" : " \u25BC") : ""}
+                </th>
                 <th>最終取得</th>
                 <th>最終書込</th>
               </tr>

@@ -774,6 +774,15 @@ pre {
   color: #c02020;
 }
 
+.sortable-th {
+  cursor: pointer;
+  user-select: none;
+}
+
+.sortable-th:hover {
+  background: linear-gradient(180deg, #ddd5c5 0%, #cac0a8 100%);
+}
+
 .thread-tab-bar {
   display: flex;
   gap: 0;
