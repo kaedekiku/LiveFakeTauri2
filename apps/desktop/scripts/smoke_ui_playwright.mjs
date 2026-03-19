@@ -176,10 +176,20 @@ try {
   assert(boardTree || boardFallback, "board pane should render tree or fallback list");
   console.log("smoke-ui: board pane ok");
 
-  // boards header has fetch button
+  // boards header has fetch button and tabs
   const fetchBtn = await page.$(".boards-fetch");
   assert(fetchBtn, "board pane should have fetch button");
+  const boardTabs = await page.$$(".board-tab");
+  assert(boardTabs.length === 2, `board pane should have 2 tabs, got ${boardTabs.length}`);
   console.log("smoke-ui: board fetch button ok");
+
+  // fav threads tab switches view
+  await page.click(".board-tab:nth-child(2)");
+  const favThreadsList = await page.$(".fav-threads-list");
+  assert(favThreadsList, "clicking Fav tab should show fav threads list");
+  // switch back
+  await page.click(".board-tab:nth-child(1)");
+  console.log("smoke-ui: board tab switch ok");
 
   // compose window shows target and char count
   await page.click(".tool-bar button:has-text('Write')");

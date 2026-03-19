@@ -182,6 +182,7 @@ export default function App() {
   const [favorites, setFavorites] = useState<FavoritesData>({ boards: [], threads: [] });
   const [ngFilters, setNgFilters] = useState<NgFilters>({ words: [], ids: [], names: [] });
   const [ngPanelOpen, setNgPanelOpen] = useState(false);
+  const [boardPaneTab, setBoardPaneTab] = useState<"boards" | "fav-threads">("boards");
   const [ngInput, setNgInput] = useState("");
   const [ngInputType, setNgInputType] = useState<"words" | "ids" | "names">("words");
   const [threadSearchQuery, setThreadSearchQuery] = useState("");
@@ -1159,81 +1160,124 @@ export default function App() {
       >
         <section className="pane boards">
           <div className="boards-header">
-            <h2>Boards</h2>
-            <button className="boards-fetch" onClick={fetchBoardCategories}>Fetch</button>
-          </div>
-          {boardCategories.length > 0 ? (
-            <div className="board-tree">
-              {favorites.boards.length > 0 && (
-                <div className="board-category">
-                  <button
-                    className="category-toggle fav-category"
-                    onClick={() => toggleCategory("__favorites__")}
-                  >
-                    <span className="category-arrow">{expandedCategories.has("__favorites__") ? "\u25BC" : "\u25B6"}</span>
-                    Favorites ({favorites.boards.length})
-                  </button>
-                  {expandedCategories.has("__favorites__") && (
-                    <ul className="category-boards">
-                      {favorites.boards.map((b) => (
-                        <li key={b.url}>
-                          <button
-                            className={`board-item ${selectedBoard === b.boardName ? "selected" : ""}`}
-                            onClick={() => selectBoard(b)}
-                            title={b.url}
-                          >
-                            <span className="fav-star active" onClick={(e) => { e.stopPropagation(); toggleFavoriteBoard(b); }}>★</span>
-                            {b.boardName}
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              )}
-              {boardCategories.map((cat) => (
-                <div key={cat.categoryName} className="board-category">
-                  <button
-                    className="category-toggle"
-                    onClick={() => toggleCategory(cat.categoryName)}
-                  >
-                    <span className="category-arrow">{expandedCategories.has(cat.categoryName) ? "\u25BC" : "\u25B6"}</span>
-                    {cat.categoryName} ({cat.boards.length})
-                  </button>
-                  {expandedCategories.has(cat.categoryName) && (
-                    <ul className="category-boards">
-                      {cat.boards.map((b) => (
-                        <li key={b.url}>
-                          <button
-                            className={`board-item ${selectedBoard === b.boardName ? "selected" : ""}`}
-                            onClick={() => selectBoard(b)}
-                            title={b.url}
-                          >
-                            <span
-                              className={`fav-star ${isFavoriteBoard(b.url) ? "active" : ""}`}
-                              onClick={(e) => { e.stopPropagation(); toggleFavoriteBoard(b); }}
-                            >
-                              {isFavoriteBoard(b.url) ? "★" : "☆"}
-                            </span>
-                            {b.boardName}
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              ))}
+            <div className="board-tabs">
+              <button
+                className={`board-tab ${boardPaneTab === "boards" ? "active" : ""}`}
+                onClick={() => setBoardPaneTab("boards")}
+              >
+                Boards
+              </button>
+              <button
+                className={`board-tab ${boardPaneTab === "fav-threads" ? "active" : ""}`}
+                onClick={() => setBoardPaneTab("fav-threads")}
+              >
+                Fav ({favorites.threads.length})
+              </button>
             </div>
+            {boardPaneTab === "boards" && (
+              <button className="boards-fetch" onClick={fetchBoardCategories}>Fetch</button>
+            )}
+          </div>
+          {boardPaneTab === "boards" ? (
+            boardCategories.length > 0 ? (
+              <div className="board-tree">
+                {favorites.boards.length > 0 && (
+                  <div className="board-category">
+                    <button
+                      className="category-toggle fav-category"
+                      onClick={() => toggleCategory("__favorites__")}
+                    >
+                      <span className="category-arrow">{expandedCategories.has("__favorites__") ? "\u25BC" : "\u25B6"}</span>
+                      Favorites ({favorites.boards.length})
+                    </button>
+                    {expandedCategories.has("__favorites__") && (
+                      <ul className="category-boards">
+                        {favorites.boards.map((b) => (
+                          <li key={b.url}>
+                            <button
+                              className={`board-item ${selectedBoard === b.boardName ? "selected" : ""}`}
+                              onClick={() => selectBoard(b)}
+                              title={b.url}
+                            >
+                              <span className="fav-star active" onClick={(e) => { e.stopPropagation(); toggleFavoriteBoard(b); }}>★</span>
+                              {b.boardName}
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                )}
+                {boardCategories.map((cat) => (
+                  <div key={cat.categoryName} className="board-category">
+                    <button
+                      className="category-toggle"
+                      onClick={() => toggleCategory(cat.categoryName)}
+                    >
+                      <span className="category-arrow">{expandedCategories.has(cat.categoryName) ? "\u25BC" : "\u25B6"}</span>
+                      {cat.categoryName} ({cat.boards.length})
+                    </button>
+                    {expandedCategories.has(cat.categoryName) && (
+                      <ul className="category-boards">
+                        {cat.boards.map((b) => (
+                          <li key={b.url}>
+                            <button
+                              className={`board-item ${selectedBoard === b.boardName ? "selected" : ""}`}
+                              onClick={() => selectBoard(b)}
+                              title={b.url}
+                            >
+                              <span
+                                className={`fav-star ${isFavoriteBoard(b.url) ? "active" : ""}`}
+                                onClick={(e) => { e.stopPropagation(); toggleFavoriteBoard(b); }}
+                              >
+                                {isFavoriteBoard(b.url) ? "★" : "☆"}
+                              </span>
+                              {b.boardName}
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <ul>
+                {boardItems.map((name) => (
+                  <li key={name}>
+                    <button className={`board-item ${selectedBoard === name ? "selected" : ""}`} onClick={() => setSelectedBoard(name)}>
+                      {name}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )
           ) : (
-            <ul>
-              {boardItems.map((name) => (
-                <li key={name}>
-                  <button className={`board-item ${selectedBoard === name ? "selected" : ""}`} onClick={() => setSelectedBoard(name)}>
-                    {name}
-                  </button>
-                </li>
-              ))}
-            </ul>
+            <div className="fav-threads-list">
+              {favorites.threads.length === 0 ? (
+                <span className="ng-empty">(no favorite threads)</span>
+              ) : (
+                <ul className="category-boards">
+                  {favorites.threads.map((ft) => (
+                    <li key={ft.threadUrl}>
+                      <button
+                        className="board-item"
+                        onClick={() => {
+                          setThreadUrl(ft.threadUrl);
+                          setLocationInput(ft.threadUrl);
+                          void fetchResponsesFromCurrent(ft.threadUrl);
+                          setStatus(`loading fav thread: ${ft.title}`);
+                        }}
+                        title={ft.threadUrl}
+                      >
+                        <span className="fav-star active" onClick={(e) => { e.stopPropagation(); toggleFavoriteThread(ft); }}>★</span>
+                        {ft.title}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           )}
         </section>
         <div
