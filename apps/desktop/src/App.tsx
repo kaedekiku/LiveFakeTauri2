@@ -104,6 +104,8 @@ const DEFAULT_RESPONSE_TOP_RATIO = 42;
 const LAYOUT_PREFS_KEY = "desktop.layoutPrefs.v1";
 const COMPOSE_PREFS_KEY = "desktop.composePrefs.v1";
 const BOOKMARK_KEY = "desktop.bookmarks.v1";
+const BOARD_CACHE_KEY = "desktop.boardCategories.v1";
+const EXPANDED_CATS_KEY = "desktop.expandedCategories.v1";
 const MENU_EDGE_PADDING = 8;
 
 type ResizeDragState =
@@ -266,6 +268,7 @@ export default function App() {
     try {
       const cats = await invoke<BoardCategory[]>("fetch_board_categories");
       setBoardCategories(cats);
+      try { localStorage.setItem(BOARD_CACHE_KEY, JSON.stringify(cats)); } catch { /* ignore */ }
       setStatus(`boards loaded: ${cats.length} categories, ${cats.reduce((s, c) => s + c.boards.length, 0)} boards`);
     } catch (error) {
       setStatus(`board load error: ${String(error)}`);
@@ -433,6 +436,7 @@ export default function App() {
     setExpandedCategories((prev) => {
       const next = new Set(prev);
       if (next.has(name)) next.delete(name); else next.add(name);
+      try { localStorage.setItem(EXPANDED_CATS_KEY, JSON.stringify([...next])); } catch { /* ignore */ }
       return next;
     });
   };
@@ -1316,6 +1320,24 @@ export default function App() {
     } catch {
       // ignore
     }
+    // Restore board categories cache
+    try {
+      const boardRaw = localStorage.getItem(BOARD_CACHE_KEY);
+      if (boardRaw) {
+        const cached = JSON.parse(boardRaw) as BoardCategory[];
+        if (Array.isArray(cached) && cached.length > 0) setBoardCategories(cached);
+      }
+    } catch { /* ignore */ }
+    // Restore expanded categories
+    try {
+      const expRaw = localStorage.getItem(EXPANDED_CATS_KEY);
+      if (expRaw) {
+        const arr = JSON.parse(expRaw) as string[];
+        if (Array.isArray(arr)) setExpandedCategories(new Set(arr));
+      }
+    } catch { /* ignore */ }
+    // Silently refresh board list from server
+    void fetchBoardCategories();
     void loadFavorites();
     void loadNgFilters();
   }, []);

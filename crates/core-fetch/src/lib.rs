@@ -135,7 +135,9 @@ pub async fn fetch_subject_threads(
     if !status.is_success() {
         return Err(FetchError::HttpStatus(status));
     }
-    let body = response.text().await?;
+    let bytes = response.bytes().await?;
+    let (decoded, _, _) = SHIFT_JIS.decode(&bytes);
+    let body = decoded.into_owned();
 
     let subject = Url::parse(&subject_url)?;
     let host = subject
