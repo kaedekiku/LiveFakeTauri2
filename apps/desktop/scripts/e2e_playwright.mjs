@@ -152,6 +152,217 @@ try {
     console.log("e2e: [SKIP] compose window did not open via CDP click");
   }
 
+  // --- 9. IPC: favorites CRUD ---
+  // Save a favorite board
+  const testFavBoard = { boardName: "e2e-test-board", url: "https://mao.5ch.io/e2etest/" };
+  const favData = { boards: [testFavBoard], threads: [{ threadUrl: firstThread.threadUrl, title: firstThread.title, boardUrl: testBoardUrl }] };
+  await page.evaluate(async (data) => {
+    return window.__TAURI_INTERNALS__.invoke("save_favorites", { favorites: data });
+  }, favData);
+  console.log("e2e: [PASS] save_favorites succeeded");
+
+  // Load favorites back and validate
+  const loadedFavs = await page.evaluate(() =>
+    window.__TAURI_INTERNALS__.invoke("load_favorites", {})
+  );
+  assert(loadedFavs.boards.length === 1, `expected 1 fav board, got ${loadedFavs.boards.length}`);
+  assert(loadedFavs.boards[0].boardName === "e2e-test-board", `fav board name mismatch: ${loadedFavs.boards[0].boardName}`);
+  assert(loadedFavs.threads.length === 1, `expected 1 fav thread, got ${loadedFavs.threads.length}`);
+  assert(loadedFavs.threads[0].threadUrl === firstThread.threadUrl, "fav thread url mismatch");
+  console.log(`e2e: [PASS] load_favorites: ${loadedFavs.boards.length} boards, ${loadedFavs.threads.length} threads`);
+
+  // Clean up favorites
+  await page.evaluate(async () => {
+    return window.__TAURI_INTERNALS__.invoke("save_favorites", { favorites: { boards: [], threads: [] } });
+  });
+  const cleanedFavs = await page.evaluate(() =>
+    window.__TAURI_INTERNALS__.invoke("load_favorites", {})
+  );
+  assert(cleanedFavs.boards.length === 0, "fav boards should be empty after cleanup");
+  assert(cleanedFavs.threads.length === 0, "fav threads should be empty after cleanup");
+  console.log("e2e: [PASS] favorites cleanup verified");
+
+  // --- 10. IPC: NG filters CRUD ---
+  const testNg = { words: ["e2e-ng-word"], ids: ["e2e-ng-id"], names: ["e2e-ng-name"] };
+  await page.evaluate(async (data) => {
+    return window.__TAURI_INTERNALS__.invoke("save_ng_filters", { filters: data });
+  }, testNg);
+  console.log("e2e: [PASS] save_ng_filters succeeded");
+
+  const loadedNg = await page.evaluate(() =>
+    window.__TAURI_INTERNALS__.invoke("load_ng_filters", {})
+  );
+  assert(loadedNg.words.length === 1 && loadedNg.words[0] === "e2e-ng-word", `ng words mismatch: ${JSON.stringify(loadedNg.words)}`);
+  assert(loadedNg.ids.length === 1 && loadedNg.ids[0] === "e2e-ng-id", `ng ids mismatch: ${JSON.stringify(loadedNg.ids)}`);
+  assert(loadedNg.names.length === 1 && loadedNg.names[0] === "e2e-ng-name", `ng names mismatch: ${JSON.stringify(loadedNg.names)}`);
+  console.log(`e2e: [PASS] load_ng_filters: ${loadedNg.words.length}W/${loadedNg.ids.length}ID/${loadedNg.names.length}N`);
+
+  // Clean up NG filters
+  await page.evaluate(async () => {
+    return window.__TAURI_INTERNALS__.invoke("save_ng_filters", { filters: { words: [], ids: [], names: [] } });
+  });
+  console.log("e2e: [PASS] ng filters cleanup done");
+
+  // --- 11. IPC: read status CRUD ---
+  const testReadStatus = { [testBoardUrl]: { [firstThread.threadKey]: firstThread.responseCount } };
+  await page.evaluate(async (data) => {
+    return window.__TAURI_INTERNALS__.invoke("save_read_status", { status: data });
+  }, testReadStatus);
+  console.log("e2e: [PASS] save_read_status succeeded");
+
+  const loadedRead = await page.evaluate(() =>
+    window.__TAURI_INTERNALS__.invoke("load_read_status", {})
+  );
+  assert(typeof loadedRead === "object", "read status should be an object");
+  assert(loadedRead[testBoardUrl], `read status should have entry for ${testBoardUrl}`);
+  assert(loadedRead[testBoardUrl][firstThread.threadKey] === firstThread.responseCount,
+    `read count mismatch: expected ${firstThread.responseCount}, got ${loadedRead[testBoardUrl][firstThread.threadKey]}`);
+  console.log(`e2e: [PASS] load_read_status: ${firstThread.threadKey}=${loadedRead[testBoardUrl][firstThread.threadKey]}`);
+
+  // Clean up read status
+  await page.evaluate(async () => {
+    return window.__TAURI_INTERNALS__.invoke("save_read_status", { status: {} });
+  });
+  console.log("e2e: [PASS] read status cleanup done");
+
+  // --- 12. DOM: thread search filter ---
+  const threadSearchInput = await page.$(".thread-search");
+  assert(threadSearchInput, "thread search input should exist");
+  // Type a nonsense query to filter all threads out
+  await page.evaluate(() => {
+    const input = document.querySelector(".thread-search");
+    if (input) {
+      const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      nativeInputValueSetter.call(input, "zzz_nonexistent_e2e_xyz");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+  });
+  await new Promise((r) => setTimeout(r, 200));
+  const filteredRowCount = await page.$$eval(".threads tbody tr", (rows) => rows.length);
+  assert(filteredRowCount === 0, `search filter should hide all rows, got ${filteredRowCount}`);
+  console.log("e2e: [PASS] thread search filters rows to 0");
+
+  // Clear search
+  await page.evaluate(() => {
+    const input = document.querySelector(".thread-search");
+    if (input) {
+      const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      nativeInputValueSetter.call(input, "");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+  });
+  await new Promise((r) => setTimeout(r, 200));
+  const restoredRowCount = await page.$$eval(".threads tbody tr", (rows) => rows.length);
+  assert(restoredRowCount > 0, `clearing search should restore rows, got ${restoredRowCount}`);
+  console.log(`e2e: [PASS] thread search clear restores ${restoredRowCount} rows`);
+
+  // --- 13. DOM: board pane tabs ---
+  const boardTabs = await page.$$(".board-tab");
+  assert(boardTabs.length === 2, `expected 2 board tabs, got ${boardTabs.length}`);
+
+  // Click Fav tab
+  await page.evaluate(() => {
+    const tabs = document.querySelectorAll(".board-tab");
+    if (tabs[1]) tabs[1].click();
+  });
+  await new Promise((r) => setTimeout(r, 200));
+  const favThreadsList = await page.$(".fav-threads-list");
+  assert(favThreadsList, "clicking Fav tab should show fav-threads-list");
+  console.log("e2e: [PASS] board Fav tab shows fav threads list");
+
+  // Click Boards tab back
+  await page.evaluate(() => {
+    const tabs = document.querySelectorAll(".board-tab");
+    if (tabs[0]) tabs[0].click();
+  });
+  await new Promise((r) => setTimeout(r, 200));
+  const boardTree = await page.$(".board-tree");
+  const boardFallback = await page.$(".boards ul");
+  assert(boardTree || boardFallback, "clicking Boards tab should show board-tree or fallback list");
+  const favThreadsListGone = await page.$(".fav-threads-list");
+  assert(!favThreadsListGone, "fav-threads-list should not be visible on Boards tab");
+  console.log("e2e: [PASS] board Boards tab shows board content");
+
+  // --- 14. DOM: NG filter panel ---
+  // Open NG panel via toolbar button
+  await page.evaluate(() => {
+    document.querySelectorAll(".tool-bar button").forEach((b) => {
+      if (b.textContent === "NG Filter") b.click();
+    });
+  });
+  await new Promise((r) => setTimeout(r, 300));
+  const ngPanel = await page.$(".ng-panel");
+  assert(ngPanel, "NG filter panel should be visible after clicking button");
+  console.log("e2e: [PASS] NG filter panel opens");
+
+  // Add an NG word via DOM
+  await page.evaluate(() => {
+    const input = document.querySelector(".ng-panel-add input");
+    if (input) {
+      const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      nativeInputValueSetter.call(input, "e2e-test-word");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+  });
+  await page.evaluate(() => {
+    const addBtn = document.querySelector(".ng-panel-add button");
+    if (addBtn) addBtn.click();
+  });
+  await new Promise((r) => setTimeout(r, 200));
+  const ngItems = await page.$$eval(".ng-list li", (els) => els.map((el) => el.textContent));
+  assert(ngItems.some((t) => t.includes("e2e-test-word")), `NG word should appear in list, got: ${JSON.stringify(ngItems)}`);
+  console.log("e2e: [PASS] NG word added via panel");
+
+  // Remove the NG word
+  await page.evaluate(() => {
+    const removeBtn = document.querySelector(".ng-remove");
+    if (removeBtn) removeBtn.click();
+  });
+  await new Promise((r) => setTimeout(r, 200));
+  const ngItemsAfter = await page.$$eval(".ng-list li", (els) => els.length);
+  assert(ngItemsAfter === 0, `NG list should be empty after removal, got ${ngItemsAfter}`);
+  console.log("e2e: [PASS] NG word removed via panel");
+
+  // Close NG panel
+  await page.evaluate(() => {
+    const closeBtn = document.querySelector(".ng-panel-header button");
+    if (closeBtn) closeBtn.click();
+  });
+  await new Promise((r) => setTimeout(r, 200));
+  const ngPanelAfter = await page.$(".ng-panel");
+  assert(!ngPanelAfter, "NG panel should be hidden after close");
+  console.log("e2e: [PASS] NG panel closes");
+
+  // --- 15. DOM: auto-refresh toggle ---
+  const autoRefreshToggle = await page.$(".auto-refresh-toggle input");
+  assert(autoRefreshToggle, "auto-refresh toggle should exist");
+  const autoRefreshChecked = await page.$eval(".auto-refresh-toggle input", (el) => el.checked);
+  assert(autoRefreshChecked === false, "auto-refresh should be off by default");
+  console.log("e2e: [PASS] auto-refresh toggle present and off by default");
+
+  // --- 16. DOM: compose result feedback area ---
+  // Open compose window
+  await page.evaluate(() => {
+    document.querySelectorAll(".tool-bar button").forEach((b) => {
+      if (b.textContent === "Write") b.click();
+    });
+  });
+  await new Promise((r) => setTimeout(r, 300));
+  const composeWindow = await page.$(".compose-window");
+  assert(composeWindow, "compose window should be open");
+
+  // Verify compose-meta shows chars/lines
+  const metaText = await page.$eval(".compose-meta", (el) => el.textContent || "");
+  assert(metaText.includes("chars") && metaText.includes("lines"), `compose meta should show chars/lines, got: ${metaText}`);
+  console.log("e2e: [PASS] compose window with meta info");
+
+  // Close compose
+  await page.evaluate(() => {
+    const closeBtn = document.querySelector(".compose-header button");
+    if (closeBtn) closeBtn.click();
+  });
+  await new Promise((r) => setTimeout(r, 200));
+
   console.log("\ne2e: ALL TESTS PASSED");
 } catch (err) {
   console.error(`\ne2e: FAILED - ${err.message}`);
