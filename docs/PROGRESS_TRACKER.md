@@ -31,9 +31,12 @@
 - [x] Playwright UIスモークテストを追加（ペインリサイズ/メニュー操作/引用挿入）
 - [x] スレ復元操作を追加（Reopen Last / `Ctrl/Cmd+Shift+W`）
 - [x] CIに desktop UIスモークテストを追加（Windows job）
+- [x] `scripts/probe_post_flow.py` を拡張（confirm解析 + finalize解析 + real submit二重ガード）
 
 ## 直近タスク（優先順）
 1. `core-fetch`: 実投稿フロー（confirm -> submit）本実装の実環境検証
+   - `python scripts/probe_post_flow.py --timeout 15` で safe probe
+   - real submit時は `--allow-real-submit --real-submit-token I_UNDERSTAND_REAL_POST` を必須化
 2. `apps/desktop`: Live5ch `geronimo` 互換UIの詳細調整（表示文言と操作感の詰め）
    - push前に `apps/desktop` で `npm run test:smoke-ui` を実行
    - CI（GitHub Actions）でも smoke-ui を自動実行
