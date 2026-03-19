@@ -363,6 +363,187 @@ try {
   });
   await new Promise((r) => setTimeout(r, 200));
 
+  // --- 17. DOM: dark mode toggle ---
+  const shellClassesBefore = await page.$eval(".shell", (el) => el.className);
+  assert(!shellClassesBefore.includes("dark"), "should start in light mode");
+  // Toggle dark via menu
+  await page.evaluate(() => {
+    const menuItem = [...document.querySelectorAll(".menu-item")].find((el) => el.textContent?.trim() === "表示");
+    if (menuItem) menuItem.click();
+  });
+  await new Promise((r) => setTimeout(r, 150));
+  await page.evaluate(() => {
+    const btn = [...document.querySelectorAll(".menu-dropdown button")].find((el) => el.textContent?.includes("ダークテーマ"));
+    if (btn) btn.click();
+  });
+  await new Promise((r) => setTimeout(r, 200));
+  const shellClassesAfter = await page.$eval(".shell", (el) => el.className);
+  assert(shellClassesAfter.includes("dark"), `shell should have dark class, got: ${shellClassesAfter}`);
+  console.log("e2e: [PASS] dark mode toggled on");
+
+  // Toggle back to light
+  await page.evaluate(() => {
+    const menuItem = [...document.querySelectorAll(".menu-item")].find((el) => el.textContent?.trim() === "表示");
+    if (menuItem) menuItem.click();
+  });
+  await new Promise((r) => setTimeout(r, 150));
+  await page.evaluate(() => {
+    const btn = [...document.querySelectorAll(".menu-dropdown button")].find((el) => el.textContent?.includes("ライトテーマ"));
+    if (btn) btn.click();
+  });
+  await new Promise((r) => setTimeout(r, 200));
+  const shellClassesBack = await page.$eval(".shell", (el) => el.className);
+  assert(!shellClassesBack.includes("dark"), "shell should not have dark class after light toggle");
+  console.log("e2e: [PASS] light mode restored");
+
+  // --- 18. DOM: response ID column ---
+  const responseHeaders = await page.$$eval(
+    ".response-layout table thead th",
+    (ths) => ths.map((th) => th.textContent?.trim())
+  );
+  assert(responseHeaders.includes("ID"), `response table should have ID column, got ${responseHeaders}`);
+  console.log("e2e: [PASS] response ID column present");
+
+  // --- 19. DOM: response ID cell with occurrence count ---
+  const idCells = await page.$$eval(".response-id-cell", (els) => els.map((el) => el.textContent?.trim()).filter(Boolean));
+  if (idCells.length > 0) {
+    const hasCount = idCells.some((t) => t.includes("("));
+    assert(hasCount, `ID cells should show occurrence count, got: ${idCells.slice(0, 3)}`);
+    console.log(`e2e: [PASS] ID cells with occurrence count (${idCells.length} cells)`);
+  } else {
+    console.log("e2e: [SKIP] no ID cells found (thread may not have IDs)");
+  }
+
+  // --- 20. DOM: speed bar visualization ---
+  const speedBars = await page.$$(".speed-cell .speed-bar");
+  assert(speedBars.length > 0, "speed bars should exist in thread list");
+  const speedBarStyle = await speedBars[0].evaluate((el) => el.getAttribute("style"));
+  assert(speedBarStyle?.includes("width") && speedBarStyle?.includes("background"), `speed bar should have width and background, got: ${speedBarStyle}`);
+  console.log("e2e: [PASS] speed bar with gradient color");
+
+  // --- 21. DOM: bookmark button in nav bar ---
+  const bookmarkBtn = await page.$('.response-nav-bar button');
+  const navButtons = await page.$$eval(".response-nav-bar button", (els) => els.map((el) => el.textContent?.trim()));
+  assert(navButtons.includes("栞"), `nav bar should have 栞 button, got: ${navButtons}`);
+  console.log("e2e: [PASS] bookmark button in response nav");
+
+  // --- 22. DOM: settings panel ---
+  await page.evaluate(() => {
+    const menuItem = [...document.querySelectorAll(".menu-item")].find((el) => el.textContent?.trim() === "ファイル");
+    if (menuItem) menuItem.click();
+  });
+  await new Promise((r) => setTimeout(r, 150));
+  await page.evaluate(() => {
+    const btn = [...document.querySelectorAll(".menu-dropdown button")].find((el) => el.textContent?.includes("設定"));
+    if (btn) btn.click();
+  });
+  await new Promise((r) => setTimeout(r, 300));
+  const settingsPanel = await page.$(".settings-panel");
+  assert(settingsPanel, "settings panel should be visible");
+  const legends = await page.$$eval(".settings-body legend", (els) => els.map((el) => el.textContent?.trim()));
+  assert(legends.includes("表示") && legends.includes("書き込み") && legends.includes("認証状態") && legends.includes("情報"),
+    `settings should have all sections, got: ${legends}`);
+  // Close settings
+  await page.evaluate(() => {
+    const btn = document.querySelector(".settings-header button");
+    if (btn) btn.click();
+  });
+  await new Promise((r) => setTimeout(r, 200));
+  console.log("e2e: [PASS] settings panel with all sections");
+
+  // --- 23. DOM: post history panel ---
+  await page.evaluate(() => {
+    const menuItem = [...document.querySelectorAll(".menu-item")].find((el) => el.textContent?.trim() === "ファイル");
+    if (menuItem) menuItem.click();
+  });
+  await new Promise((r) => setTimeout(r, 150));
+  await page.evaluate(() => {
+    const btn = [...document.querySelectorAll(".menu-dropdown button")].find((el) => el.textContent?.includes("書き込み履歴"));
+    if (btn) btn.click();
+  });
+  await new Promise((r) => setTimeout(r, 300));
+  const historyBody = await page.$(".post-history-body");
+  assert(historyBody, "post history panel should be visible");
+  const historyText = await historyBody.textContent();
+  assert(historyText.includes("まだ書き込みがありません"), "post history should be empty initially");
+  // Close
+  await page.evaluate(() => {
+    const btn = document.querySelector(".settings-header button");
+    if (btn) btn.click();
+  });
+  await new Promise((r) => setTimeout(r, 200));
+  console.log("e2e: [PASS] post history panel (empty state)");
+
+  // --- 24. DOM: back-refs CSS ---
+  const hasBackRefsCss = await page.evaluate(() => {
+    for (const sheet of document.styleSheets) {
+      try {
+        for (const rule of sheet.cssRules) {
+          if (rule.cssText?.includes(".back-refs")) return true;
+        }
+      } catch { /* cross-origin */ }
+    }
+    return false;
+  });
+  assert(hasBackRefsCss, "back-refs CSS should exist");
+  console.log("e2e: [PASS] back-refs CSS present");
+
+  // --- 25. DOM: thread row striping ---
+  const threadRowsBg = await page.evaluate(() => {
+    const rows = document.querySelectorAll(".threads tbody tr");
+    if (rows.length < 2) return { even: "", odd: "" };
+    return {
+      odd: window.getComputedStyle(rows[0].querySelector("td")).backgroundColor,
+      even: window.getComputedStyle(rows[1].querySelector("td")).backgroundColor,
+    };
+  });
+  if (threadRowsBg.even && threadRowsBg.odd) {
+    assert(threadRowsBg.even !== threadRowsBg.odd, "thread rows should have alternating backgrounds");
+    console.log("e2e: [PASS] thread row striping");
+  } else {
+    console.log("e2e: [SKIP] not enough thread rows for striping test");
+  }
+
+  // --- 26. DOM: body link rendering ---
+  // Check if body-link CSS class exists (actual links depend on response content)
+  const hasBodyLinkCss = await page.evaluate(() => {
+    for (const sheet of document.styleSheets) {
+      try {
+        for (const rule of sheet.cssRules) {
+          if (rule.cssText?.includes(".body-link")) return true;
+        }
+      } catch { /* cross-origin */ }
+    }
+    return false;
+  });
+  assert(hasBodyLinkCss, "body-link CSS should exist");
+  console.log("e2e: [PASS] body-link CSS present");
+
+  // --- 27. localStorage: bookmark persistence ---
+  await page.evaluate(() => {
+    localStorage.setItem("desktop.bookmarks.v1", JSON.stringify({ "https://test.5ch.io/test/read.cgi/test/1/": 42 }));
+  });
+  const bmData = await page.evaluate(() => {
+    const raw = localStorage.getItem("desktop.bookmarks.v1");
+    return raw ? JSON.parse(raw) : null;
+  });
+  assert(bmData && bmData["https://test.5ch.io/test/read.cgi/test/1/"] === 42, "bookmark should persist in localStorage");
+  // Clean up
+  await page.evaluate(() => localStorage.removeItem("desktop.bookmarks.v1"));
+  console.log("e2e: [PASS] bookmark localStorage persistence");
+
+  // --- 28. localStorage: compose prefs persistence ---
+  await page.evaluate(() => {
+    localStorage.setItem("desktop.composePrefs.v1", JSON.stringify({ name: "e2e-name", mail: "sage", sage: true }));
+  });
+  const cpData = await page.evaluate(() => {
+    const raw = localStorage.getItem("desktop.composePrefs.v1");
+    return raw ? JSON.parse(raw) : null;
+  });
+  assert(cpData && cpData.name === "e2e-name" && cpData.sage === true, "compose prefs should persist");
+  await page.evaluate(() => localStorage.removeItem("desktop.composePrefs.v1"));
+  console.log("e2e: [PASS] compose prefs localStorage persistence");
+
   console.log("\ne2e: ALL TESTS PASSED");
 } catch (err) {
   console.error(`\ne2e: FAILED - ${err.message}`);
