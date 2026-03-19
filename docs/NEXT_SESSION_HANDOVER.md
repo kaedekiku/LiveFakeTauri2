@@ -25,6 +25,7 @@
   - `CI`: Windowsジョブで desktop smoke-ui を実行するよう更新
   - `scripts/probe_post_flow.py`: confirm/finalize解析を追加し、real submit を二重ガード化
   - `scripts/probe_post_flow.py`: real submit時は非空 `--message` 必須（空本文を事前拒否）
+  - `scripts/run_post_flow_probe.ps1`: post flow probe 実行ラッパーを追加（終了コード伝播あり）
 - Git は初期化済みで、`safe.directory` 設定済み（この環境から `git` 操作可能）。
 - 直近反映コミット:
   - `d7d1666` (`desktop: add draggable pane splitters for three-pane layout`)
@@ -62,8 +63,8 @@
 
 ## 実装優先タスク（次セッション）
 1. `core-fetch` 実環境検証
-   - `python scripts/probe_post_flow.py --timeout 15` で confirm/finalize safe probe
-   - 必要時のみ `--allow-real-submit --real-submit-token I_UNDERSTAND_REAL_POST` で実送信検証
+   - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_post_flow_probe.ps1 -Timeout 15` で confirm/finalize safe probe
+   - 必要時のみ `-AllowRealSubmit -RealSubmitToken I_UNDERSTAND_REAL_POST -Message "<non-empty>"` で実送信検証
    - board URL 入力（例: `https://mao.5ch.io/ngt/`）でのスレ一覧取得を実環境確認
 2. リリース運用実地
    - `scripts/prepare_release_metadata.py` で実ZIPから `latest.json` 生成 + strict検証

@@ -33,14 +33,15 @@
 - [x] CIに desktop UIスモークテストを追加（Windows job）
 - [x] `scripts/probe_post_flow.py` を拡張（confirm解析 + finalize解析 + real submit二重ガード）
 - [x] `scripts/probe_post_flow.py` real submit時に空本文を拒否する事前ガードを追加
+- [x] `scripts/run_post_flow_probe.ps1` を追加（safe/real-submit実行ラッパー）
 - [x] ツールバーに `Undo Close` を追加し、`Ctrl/Cmd+W` 経由の履歴復元も統一
 - [x] ステータスバーを実データ連動化（TS/US/Board/Thread/Res/Runtime）
 - [x] Webプレビュー時の `fetch_thread_list` 呼び出しをガード（Tauri必須を明示）
 
 ## 直近タスク（優先順）
 1. `core-fetch`: 実投稿フロー（confirm -> submit）本実装の実環境検証
-   - `python scripts/probe_post_flow.py --timeout 15` で safe probe
-   - real submit時は `--allow-real-submit --real-submit-token I_UNDERSTAND_REAL_POST` を必須化
+   - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_post_flow_probe.ps1 -Timeout 15` で safe probe
+   - real submit時は `-AllowRealSubmit -RealSubmitToken I_UNDERSTAND_REAL_POST -Message "<non-empty>"` を必須化
 2. `apps/desktop`: Live5ch `geronimo` 互換UIの詳細調整（表示文言と操作感の詰め）
    - push前に `apps/desktop` で `npm run test:smoke-ui` を実行
    - CI（GitHub Actions）でも smoke-ui を自動実行
