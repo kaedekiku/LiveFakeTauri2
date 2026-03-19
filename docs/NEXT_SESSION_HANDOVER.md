@@ -45,6 +45,9 @@
   - `apps/desktop`: 板ペインに折りたたみ式カテゴリツリー + 板クリック → スレ取得
   - `apps/desktop`: レス行ダブルクリック / `R` キー → 引用書き込みフロート
   - `apps/desktop`: smoke-ui 25件（板/書き込み/ダブルクリック/Rキー/アンカー他）
+  - `fetch_board_categories`: bbsmenu.json パーサー修正（`menu_list` → `category_content`、49カテゴリ/1115板取得成功）
+  - `apps/desktop`: E2E テスト追加（`npm run test:e2e` = Tauri + Playwright via WebView2 CDP）
+  - E2E 12項目 PASS: runtime検出/bbsmenu取得/板カテゴリ/スレ一覧/レス取得/auth状態/投稿フォーム/DOM操作/書き込みUI
 - Git は初期化済みで、`safe.directory` 設定済み（この環境から `git` 操作可能）。
 - safe probe 実環境検証 (2026-03-19):
   - 全4モード（anonymous/uplift/be_front/be_uplift）で GET=200, confirm=200

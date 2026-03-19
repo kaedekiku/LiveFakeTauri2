@@ -60,6 +60,8 @@
 - [x] desktop: レス行ダブルクリック → 引用書き込みフロート起動
 - [x] desktop: `R` キー → 選択レス引用でフロート起動
 - [x] desktop: smoke-ui テスト追加（板/書き込み/ダブルクリック/Rキー/アンカー）
+- [x] `fetch_board_categories` の bbsmenu.json パーサー修正（`menu_list` → `category_content` 構造対応、49カテゴリ/1115板取得成功）
+- [x] desktop: E2E テスト追加（Tauri + Playwright via WebView2 CDP、実サーバー検証 12項目 PASS）
 
 ## 直近タスク（優先順）
 1. `core-fetch`: 非空メッセージでの confirm form 検出を確認（safe probe 完了: 2026-03-19）
