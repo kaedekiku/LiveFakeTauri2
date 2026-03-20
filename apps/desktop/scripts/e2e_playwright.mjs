@@ -131,7 +131,7 @@ try {
       if (row) row.click();
     });
     await new Promise((r) => setTimeout(r, 200));
-    const selectedNo = await page.$eval(".threads tbody tr.selected-row td:first-child", (el) => el.textContent);
+    const selectedNo = await page.$eval(".threads tbody tr.selected-row td:nth-child(2)", (el) => el.textContent);
     assert(selectedNo === "2", `expected selected thread #2, got #${selectedNo}`);
     console.log("e2e: [PASS] thread click selection works");
   }
@@ -287,7 +287,7 @@ try {
   // Open NG panel via toolbar button
   await page.evaluate(() => {
     document.querySelectorAll(".tool-bar button").forEach((b) => {
-      if (b.textContent === "NGフィルタ") b.click();
+      if (b.textContent === "NG") b.click();
     });
   });
   await new Promise((r) => setTimeout(r, 300));
