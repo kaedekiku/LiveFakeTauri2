@@ -155,6 +155,24 @@ const decodeHtmlEntities = (s: string) =>
       const cp = Number.parseInt(hex, 16);
       return Number.isFinite(cp) && cp > 0 ? String.fromCodePoint(cp) : _m;
     });
+const escapeHtml = (s: string) =>
+  s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const highlightHtmlPreservingTags = (html: string, query: string) => {
+  const q = query.trim();
+  if (!q) return html;
+  const re = new RegExp(escapeRegExp(q), "gi");
+  return html
+    .split(/(<[^>]+>)/g)
+    .map((part) => (part.startsWith("<") ? part : part.replace(re, (m) => `<mark class="search-hit">${m}</mark>`)))
+    .join("");
+};
+const renderHighlightedPlainText = (text: string, query: string): { __html: string } =>
+  ({ __html: highlightHtmlPreservingTags(escapeHtml(text), query) });
 const normalizeExternalUrl = (raw: string): string | null => {
   const v = raw.replace(/&amp;/g, "&");
   if (/^https?:\/\//i.test(v)) return v;
@@ -222,6 +240,10 @@ const renderResponseBody = (html: string): { __html: string } => {
     (_match, path) => `<img class="be-icon" src="https://${path}" loading="lazy" alt="BE" />`
   );
   return { __html: safe };
+};
+const renderResponseBodyHighlighted = (html: string, query: string): { __html: string } => {
+  const rendered = renderResponseBody(html).__html;
+  return { __html: highlightHtmlPreservingTags(rendered, query) };
 };
 
 const extractBeNumber = (...sources: string[]): string | null => {
@@ -2046,7 +2068,10 @@ export default function App() {
                   >
                     <td className="thread-fetched-cell">{threadReadMap[t.id] ? "\u25CF" : ""}</td>
                     <td>{t.id}</td>
-                    <td className="thread-title-cell">{t.title}</td>
+                    <td
+                      className="thread-title-cell"
+                      dangerouslySetInnerHTML={renderHighlightedPlainText(t.title, threadSearchQuery)}
+                    />
                     <td>{t.res}</td>
                     <td>{t.got > 0 ? t.got : "-"}</td>
                     <td className={`new-count ${t.got > 0 && t.res - t.got > 0 ? "has-new" : ""}`}>
@@ -2255,7 +2280,10 @@ export default function App() {
                       <span className="response-no" onClick={(e) => onResponseNoClick(e, r.id)}>
                         {r.id}
                       </span>
-                      <span className="response-name">{r.name}</span>
+                      <span
+                        className="response-name"
+                        dangerouslySetInnerHTML={renderHighlightedPlainText(r.name, responseSearchQuery)}
+                      />
                       {backRefMap.has(r.id) && (
                         <span
                           className="back-ref-trigger"
@@ -2269,7 +2297,10 @@ export default function App() {
                       )}
                       <span className="response-header-right">
                         {isNew && <span className="response-new-marker">New!</span>}
-                        <span className="response-date">{formatResponseDate(r.time)}</span>
+                        <span
+                          className="response-date"
+                          dangerouslySetInnerHTML={renderHighlightedPlainText(formatResponseDate(r.time), responseSearchQuery)}
+                        />
                         {id && (
                           <span
                             className="response-id-cell"
@@ -2306,7 +2337,7 @@ export default function App() {
                         )}
                       </span>
                     </div>
-                    <div className="response-body" dangerouslySetInnerHTML={renderResponseBody(r.text)} />
+                    <div className="response-body" dangerouslySetInnerHTML={renderResponseBodyHighlighted(r.text, responseSearchQuery)} />
                   </div>
                 );
               })}
