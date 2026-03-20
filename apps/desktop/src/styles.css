@@ -1132,13 +1132,26 @@ pre {
 .response-thumb {
   max-width: 200px;
   max-height: 200px;
+  min-width: 80px;
+  min-height: 60px;
   border: 1px solid #d0d0d0;
   margin: 4px 0;
   cursor: pointer;
+  background: #f0f0f0;
+  object-fit: contain;
 }
 
 .response-thumb:hover {
   border-color: var(--accent);
+}
+
+.response-thumb[loading] {
+  animation: thumb-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes thumb-pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
 }
 
 .body-link {
