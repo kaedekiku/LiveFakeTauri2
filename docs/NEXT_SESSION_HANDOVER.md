@@ -1,6 +1,6 @@
 ﻿# NEXT SESSION HANDOVER
 
-## 現在地（2026-03-19 JST 更新）
+## 現在地（2026-03-20 JST 更新）
 - 仕様書: `docs/5ch_browser_spec.md` は `v1.0`。
 - BE/UPLIFT/どんぐり の通信仕様は観測ベースで実装可能な粒度まで整理済み。
 - 配布方針は確定: `Cloudflare Pages (Vite + React) + GitHub Releases`。
@@ -93,6 +93,13 @@
   - `apps/desktop`: 書き込み履歴パネル（直近50件の投稿ログ表示）
   - `apps/desktop`: 勢いバー色グラデーション化
   - `apps/desktop`: smoke-ui 70項目
+  - `apps/desktop`: 2ペインレイアウト（板 | 右ペイン[スレ/レス上下分割]）
+  - `apps/desktop`: レスビューアをテーブルからブロック表示に変更
+  - `apps/desktop`: sssp:// BEアイコン表示
+  - `apps/desktop`: 勢い計算をthreadKeyタイムスタンプから算出
+  - `apps/desktop`: スレタブにレス数バッジ + 新着ジャンプボタン
+  - `apps/desktop`: ダークテーマのブロックビュー対応
+  - `apps/desktop`: smoke-ui 76項目
 - Git は初期化済みで、`safe.directory` 設定済み（この環境から `git` 操作可能）。
 - safe probe 実環境検証 (2026-03-19):
   - 全4モード（anonymous/uplift/be_front/be_uplift）で GET=200, confirm=200
@@ -131,6 +138,9 @@
   - `b9daef6` (`desktop: add dark theme, NG regex, and bookmark navigation`)
   - `ff4ad16` (`desktop: add settings panel, thread double-click bookmark jump`)
   - `0616542` (`desktop: add post history panel and speed gradient coloring`)
+  - `dfeb6cf` (`desktop: refactor to 2-pane layout with block response viewer and UI polish`)
+  - `032fd45` (`desktop: improve auto-refresh selection retention and new response tracking`)
+  - `1243c4e` (`desktop: add tab response count badge, new-response jump button, and dark theme for block view`)
 
 ## 仕様確定ポイント（重要）
 - 5ch基盤:
@@ -157,9 +167,9 @@
 2. geronimo互換UI継続改善
    - スレ一覧の列幅ドラッグリサイズ
    - レス本文の画像プレフェッチ/キャッシュ
-   - スレ書き込みログ/履歴
    - ポータブル `data/` ディレクトリ対応
    - ファイルログ出力
+   - 書き込み欄のフォント/行間設定
 3. リリース運用実地
    - `scripts/prepare_release_metadata.py` で実ZIPから `latest.json` 生成 + strict検証
    - `apps/landing/public/latest.json` へ反映

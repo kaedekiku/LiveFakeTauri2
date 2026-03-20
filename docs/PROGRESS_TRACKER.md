@@ -113,6 +113,18 @@
 - [x] desktop: 書き込み履歴パネル（ファイル → 書き込み履歴、直近50件の投稿ログ）
 - [x] desktop: 勢いバーの色グラデーション化（低→中→高で緑→橙→赤）
 - [x] desktop: smoke-ui テスト 70項目
+- [x] desktop: 2ペインレイアウトに変更（板 | 右ペイン[スレ/レス上下分割]）
+- [x] desktop: レスビューアをテーブルからブロック表示に変更
+- [x] desktop: sssp:// BEアイコンのhttps変換+画像表示
+- [x] desktop: 勢い計算を threadKey タイムスタンプから算出
+- [x] desktop: スレ/レス取得件数制限を撤廃
+- [x] desktop: 配色をベージュ系からニュートラルグレー系に変更
+- [x] desktop: レスブロック偶数行色分け + 新レスマーカー
+- [x] desktop: 自動更新時の選択位置保持
+- [x] desktop: スレタブにレス数バッジ表示
+- [x] desktop: レスナビバーに「新着▼」ジャンプボタン追加
+- [x] desktop: ダークテーマのブロックビュー/行分割/右ペイン対応
+- [x] desktop: smoke-ui テスト 76項目
 
 ## 直近タスク（優先順）
 1. `core-fetch`: 非空メッセージでの confirm form 検出を確認（safe probe 完了: 2026-03-19）
