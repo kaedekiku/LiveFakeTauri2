@@ -111,8 +111,20 @@ fn parse_login_form_action(html: &str) -> Option<String> {
     None
 }
 
+fn contains_login_failed_marker(html: &str) -> bool {
+    html.contains("ログインできません")
+        || html.contains("メールアドレスとパスワードを確認してください")
+        || html.contains("/err")
+}
+
+fn extract_be_login_error(html: &str) -> Option<String> {
+    if html.contains("ログインできません") {
+        return Some("ログインできません。メールアドレスとパスワードを確認してください。".to_string());
+    }
+    None
+}
+
 pub async fn login_be_front(email: &str, password: &str) -> Result<LoginOutcome, AuthError> {
-    // BE login needs to follow redirects to receive Be3M/Be3D cookies
     let jar = Arc::new(Jar::default());
     let client = Client::builder()
         .user_agent(UA)
@@ -131,20 +143,19 @@ pub async fn login_be_front(email: &str, password: &str) -> Result<LoginOutcome,
 
     let response = client
         .post(&post_url)
-        .form(&[("mail", email), ("pass", password), ("login", "ログイン")])
+        .form(&[("mail", email.trim()), ("pass", password.trim()), ("login", "login")])
         .send()
         .await?;
 
     let status = response.status().as_u16();
     let final_url = response.url().to_string();
     let body_preview = response.text().await.unwrap_or_default();
-    let body_snippet = if body_preview.len() > 200 {
-        &body_preview[..200]
+    let body_snippet = if body_preview.len() > 220 {
+        &body_preview[..220]
     } else {
         &body_preview
     };
 
-    // Check cookies on both domains
     let mut cookie_names = cookie_names_for(&jar, "https://be.5ch.io/")?;
     let cookie_names_5ch = cookie_names_for(&jar, "https://5ch.io/")?;
     for n in cookie_names_5ch {
@@ -152,18 +163,33 @@ pub async fn login_be_front(email: &str, password: &str) -> Result<LoginOutcome,
             cookie_names.push(n);
         }
     }
-    let success = cookie_names.iter().any(|n| n == "Be3M") || cookie_names.iter().any(|n| n == "Be3D");
+
+    let has_be_cookie = cookie_names
+        .iter()
+        .any(|n| n == "Be3M" || n == "Be3D" || n.eq_ignore_ascii_case("be3m") || n.eq_ignore_ascii_case("be3d"));
+    let url_login_error = final_url.contains("/err");
+    let has_login_form = has_input_name(&body_preview, "mail") && has_input_name(&body_preview, "pass");
+    let contains_login_error = contains_login_failed_marker(&body_preview);
+    let success = has_be_cookie || (!url_login_error && !has_login_form && !contains_login_error);
+
+    let body_note = extract_be_login_error(&body_preview).unwrap_or_else(|| {
+        body_snippet.replace('\n', " ").replace('\r', "")
+    });
 
     Ok(LoginOutcome {
         provider: AuthProvider::Be,
         success,
         status,
-        location: Some(final_url),
+        location: Some(final_url.clone()),
         cookie_names,
         note: format!(
-            "be login(action={}): {}",
+            "be login(action={}, final={}, err={}, form={}, be_cookie={}): {}",
             action,
-            body_snippet.replace('\n', " ").replace('\r', "")
+            final_url,
+            url_login_error,
+            has_login_form,
+            has_be_cookie,
+            body_note
         ),
     })
 }
@@ -173,7 +199,7 @@ pub async fn login_uplift(email: &str, password: &str) -> Result<LoginOutcome, A
 
     let response = client
         .post("https://uplift.5ch.io/log")
-        .form(&[("usr", email), ("pwd", password), ("log", "ログイン")])
+        .form(&[("usr", email), ("pwd", password), ("log", "login")])
         .send()
         .await?;
 

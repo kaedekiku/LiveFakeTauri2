@@ -297,6 +297,7 @@ export default function App() {
   const hoverPreviewImgRef = useRef<HTMLImageElement | null>(null);
   const hoverPreviewSrcRef = useRef<string | null>(null);
   const hoverPreviewZoomRef = useRef(100);
+  const hoverPreviewHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [tabDragIndex, setTabDragIndex] = useState<number | null>(null);
   const [tabMenu, setTabMenu] = useState<{ x: number; y: number; tabIndex: number } | null>(null);
   const [openMenu, setOpenMenu] = useState<string | null>(null);
@@ -1600,6 +1601,10 @@ export default function App() {
     const onKeyUp = (event: KeyboardEvent) => {
       if (event.key === "Control" && hoverPreviewSrcRef.current) {
         hoverPreviewSrcRef.current = null;
+        if (hoverPreviewHideTimerRef.current) {
+          clearTimeout(hoverPreviewHideTimerRef.current);
+          hoverPreviewHideTimerRef.current = null;
+        }
         if (hoverPreviewRef.current) hoverPreviewRef.current.style.display = "none";
       }
     };
@@ -1608,6 +1613,10 @@ export default function App() {
     window.addEventListener("mouseup", onMouseUp);
     window.addEventListener("keyup", onKeyUp);
     return () => {
+      if (hoverPreviewHideTimerRef.current) {
+        clearTimeout(hoverPreviewHideTimerRef.current);
+        hoverPreviewHideTimerRef.current = null;
+      }
       window.removeEventListener("mousemove", onMouseMove);
       window.removeEventListener("mouseup", onMouseUp);
       window.removeEventListener("keyup", onKeyUp);
@@ -2129,6 +2138,10 @@ export default function App() {
                 if (e.ctrlKey && thumb) {
                   const src = thumb.getAttribute("src");
                   if (src && hoverPreviewSrcRef.current !== src) {
+                    if (hoverPreviewHideTimerRef.current) {
+                      clearTimeout(hoverPreviewHideTimerRef.current);
+                      hoverPreviewHideTimerRef.current = null;
+                    }
                     hoverPreviewSrcRef.current = src;
                     hoverPreviewZoomRef.current = 100;
                     if (hoverPreviewImgRef.current) {
@@ -2152,8 +2165,14 @@ export default function App() {
               onMouseOut={(e) => {
                 const target = e.target as HTMLElement;
                 if (target.closest("img.response-thumb")) {
-                  hoverPreviewSrcRef.current = null;
-                  if (hoverPreviewRef.current) hoverPreviewRef.current.style.display = "none";
+                  if (hoverPreviewHideTimerRef.current) {
+                    clearTimeout(hoverPreviewHideTimerRef.current);
+                  }
+                  hoverPreviewHideTimerRef.current = setTimeout(() => {
+                    hoverPreviewSrcRef.current = null;
+                    if (hoverPreviewRef.current) hoverPreviewRef.current.style.display = "none";
+                    hoverPreviewHideTimerRef.current = null;
+                  }, 90);
                   return;
                 }
                 if (target.closest(".anchor-ref")) {
@@ -2786,6 +2805,10 @@ export default function App() {
         style={{ display: "none" }}
         onClick={() => {
           hoverPreviewSrcRef.current = null;
+          if (hoverPreviewHideTimerRef.current) {
+            clearTimeout(hoverPreviewHideTimerRef.current);
+            hoverPreviewHideTimerRef.current = null;
+          }
           if (hoverPreviewRef.current) hoverPreviewRef.current.style.display = "none";
         }}
         onWheel={(e) => {
