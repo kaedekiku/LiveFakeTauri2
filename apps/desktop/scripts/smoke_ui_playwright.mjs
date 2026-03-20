@@ -917,6 +917,24 @@ try {
   assert(responseWithData, "response blocks should have data-response-no attribute");
   console.log("smoke-ui: response data attribute ok");
 
+  // --- nav jump input ---
+  const navJumpInput = await page.$(".nav-jump-input");
+  assert(navJumpInput, "response nav bar should have jump input");
+  console.log("smoke-ui: nav jump input ok");
+
+  // --- compose font size in settings ---
+  const fileMenuCompose = await page.$('.menu-item:has-text("ファイル")');
+  await fileMenuCompose.click();
+  await new Promise((r) => setTimeout(r, 100));
+  const settingsBtnCompose = await page.$('.menu-dropdown button:has-text("設定")');
+  await settingsBtnCompose.click();
+  await new Promise((r) => setTimeout(r, 200));
+  const composeFontInput = await page.$('.settings-body input[type="number"][min="10"][max="24"]');
+  assert(composeFontInput, "settings should have compose font size input");
+  await page.click('.settings-header button:has-text("閉じる")');
+  await new Promise((r) => setTimeout(r, 100));
+  console.log("smoke-ui: compose font size setting ok");
+
   console.log("smoke-ui: ok");
 } finally {
   if (browser) {

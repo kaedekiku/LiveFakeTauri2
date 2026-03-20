@@ -138,6 +138,23 @@ const ENTITY_MAP: Record<string, string> = {
 const decodeHtmlEntities = (s: string) =>
   s.replace(/&(?:amp|lt|gt|quot|nbsp|#39|#44);/g, (m) => ENTITY_MAP[m] ?? m);
 
+const ID_COLORS = [
+  "#c41a1a", "#1a8fc4", "#1aaa3e", "#b06d15", "#8c1ac4",
+  "#c41a8a", "#0d8a7a", "#6b6b00", "#2d5faa", "#aa2d5f",
+  "#4a7a0d", "#8a4a00", "#0d5f8a", "#7a0d5f", "#5f8a0d",
+  "#aa0d2d", "#2d8aaa", "#5f0d8a", "#8a7a0d", "#0d8a3a",
+];
+const idColorMap = new Map<string, string>();
+const getIdColor = (id: string): string => {
+  if (!id) return "inherit";
+  let color = idColorMap.get(id);
+  if (!color) {
+    color = ID_COLORS[idColorMap.size % ID_COLORS.length];
+    idColorMap.set(id, color);
+  }
+  return color;
+};
+
 const renderResponseBody = (html: string): { __html: string } => {
   let safe = html
     .replace(/<br\s*\/?>/gi, "\n")
@@ -245,6 +262,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [fontSize, setFontSize] = useState(12);
   const [darkMode, setDarkMode] = useState(false);
+  const [composeFontSize, setComposeFontSize] = useState(13);
   const [idPopup, setIdPopup] = useState<{ x: number; y: number; id: string } | null>(null);
   const [composePos, setComposePos] = useState<{ x: number; y: number } | null>(null);
   const composeDragRef = useRef<{ startX: number; startY: number; startPosX: number; startPosY: number } | null>(null);
@@ -705,6 +723,7 @@ export default function App() {
         limit: null,
       });
       const prevCount = fetchedResponses.length;
+      if (!opts?.keepSelection) idColorMap.clear();
       setFetchedResponses(rows);
       if (opts?.keepSelection) {
         // auto-refresh: keep current selection, don't reset
@@ -1960,6 +1979,7 @@ export default function App() {
                       {id && (
                         <span
                           className="response-id-cell"
+                          style={{ color: getIdColor(id) }}
                           onClick={(e) => {
                             e.stopPropagation();
                             const rect = (e.target as HTMLElement).getBoundingClientRect();
@@ -2021,6 +2041,20 @@ export default function App() {
               <button onClick={() => { if (visibleResponseItems.length > 0) setSelectedResponse(visibleResponseItems[visibleResponseItems.length - 1].id); }}>
                 最新
               </button>
+              <input
+                className="nav-jump-input"
+                placeholder=">>"
+                onKeyDown={(e) => {
+                  if (e.key !== "Enter") return;
+                  const val = (e.target as HTMLInputElement).value.replace(/^>>?/, "").trim();
+                  const no = Number(val);
+                  if (no > 0 && visibleResponseItems.some((r) => r.id === no)) {
+                    setSelectedResponse(no);
+                    (e.target as HTMLInputElement).value = "";
+                    setStatus(`>>${no}`);
+                  }
+                }}
+              />
               <span className="nav-info">
                 <span>レス:{visibleResponseItems.length}</span>
                 <span>受信日時:{lastFetchTime ?? "-"}</span>
@@ -2104,6 +2138,7 @@ export default function App() {
             onChange={(e) => setComposeBody(e.target.value)}
             onKeyDown={onComposeBodyKeyDown}
             placeholder="本文を入力"
+            style={{ fontSize: `${composeFontSize}px` }}
           />
           <div className="compose-meta">
             <span>{composeBody.length}文字</span>
@@ -2343,6 +2378,10 @@ export default function App() {
                 <label className="settings-row">
                   <input type="checkbox" checked={composeSage} onChange={(e) => setComposeSage(e.target.checked)} />
                   <span>sage</span>
+                </label>
+                <label className="settings-row">
+                  <span>書き込み文字サイズ</span>
+                  <input type="number" value={composeFontSize} min={10} max={24} onChange={(e) => setComposeFontSize(Number(e.target.value))} />
                 </label>
               </fieldset>
               <fieldset>
