@@ -127,7 +127,7 @@ pub fn resolve_subject_url_from_thread_url(thread_url: &str) -> Result<String, F
 pub async fn fetch_subject_threads(
     client: &Client,
     thread_url: &str,
-    limit: usize,
+    _limit: usize,
 ) -> Result<Vec<SubjectThread>, FetchError> {
     let subject_url = resolve_subject_url_from_thread_url(thread_url)?;
     let response = client.get(&subject_url).send().await?;
@@ -168,9 +168,6 @@ pub async fn fetch_subject_threads(
                     entry.thread_key
                 ),
             });
-            if out.len() >= limit {
-                break;
-            }
         }
     }
     Ok(out)

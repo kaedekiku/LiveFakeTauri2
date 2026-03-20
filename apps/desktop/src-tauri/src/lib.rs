@@ -203,7 +203,7 @@ async fn fetch_thread_list(thread_url: String, limit: Option<usize>) -> Result<V
         .user_agent("5ch-browser-template/0.1")
         .build()
         .map_err(|e| e.to_string())?;
-    let limit = limit.unwrap_or(80).clamp(1, 300);
+    let limit = limit.unwrap_or(usize::MAX);
     let rows = fetch_subject_threads(&client, &thread_url, limit)
         .await
         .map_err(|e| e.to_string())?;

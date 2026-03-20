@@ -396,13 +396,22 @@ try {
   assert(!shellClassesBack.includes("dark"), "shell should not have dark class after light toggle");
   console.log("e2e: [PASS] light mode restored");
 
-  // --- 18. DOM: response ID column ---
-  const responseHeaders = await page.$$eval(
-    ".response-layout table thead th",
-    (ths) => ths.map((th) => th.textContent?.trim())
-  );
-  assert(responseHeaders.includes("ID"), `response table should have ID column, got ${responseHeaders}`);
-  console.log("e2e: [PASS] response ID column present");
+  // --- 18. DOM: response blocks in continuous scroll view ---
+  // Click first thread to ensure responses are loaded
+  await page.evaluate(() => {
+    const row = document.querySelector(".threads tbody tr:first-child");
+    if (row) row.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await new Promise((r) => setTimeout(r, 2000));
+  const responseBlocks = await page.$$(".response-scroll .response-block");
+  assert(responseBlocks.length > 0, `response scroll should have response blocks, got ${responseBlocks.length}`);
+  // ID cells are conditional (only shown when response has ID in dateAndId)
+  const responseIdCells = await page.$$(".response-scroll .response-id-cell");
+  if (responseIdCells.length > 0) {
+    console.log(`e2e: [PASS] response continuous view with ID cells (${responseIdCells.length})`);
+  } else {
+    console.log(`e2e: [PASS] response continuous view (${responseBlocks.length} blocks, no IDs in this thread)`);
+  }
 
   // --- 19. DOM: response ID cell with occurrence count ---
   const idCells = await page.$$eval(".response-id-cell", (els) => els.map((el) => el.textContent?.trim()).filter(Boolean));

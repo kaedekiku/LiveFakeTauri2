@@ -170,6 +170,11 @@ const renderResponseBody = (html: string): { __html: string } => {
     /&gt;&gt;(\d+)/g,
     '<span class="anchor-ref" data-anchor="$1" role="link" tabindex="0">&gt;&gt;$1</span>'
   );
+  // Convert sssp:// BE icons to https:// img preview
+  safe = safe.replace(
+    /sssp:\/\/(img\.5ch\.net\/[^\s<>&]+|img\.5ch\.io\/[^\s<>&]+)/gi,
+    (_match, path) => `<img class="be-icon" src="https://${path}" loading="lazy" alt="BE" />`
+  );
   return { __html: safe };
 };
 
@@ -215,7 +220,7 @@ export default function App() {
   const [threadSearchQuery, setThreadSearchQuery] = useState("");
   const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(false);
   const [autoRefreshInterval, setAutoRefreshInterval] = useState(60);
-  const [threadSortKey, setThreadSortKey] = useState<"id" | "title" | "res" | "speed">("id");
+  const [threadSortKey, setThreadSortKey] = useState<"fetched" | "id" | "title" | "res" | "speed">("id");
   const [threadSortAsc, setThreadSortAsc] = useState(true);
   const [threadTabs, setThreadTabs] = useState<ThreadTab[]>([]);
   const [activeTabIndex, setActiveTabIndex] = useState(-1);
@@ -247,7 +252,9 @@ export default function App() {
   const resizeDragRef = useRef<ResizeDragState | null>(null);
   const responseLayoutRef = useRef<HTMLDivElement | null>(null);
   const threadTbodyRef = useRef<HTMLTableSectionElement | null>(null);
-  const responseTbodyRef = useRef<HTMLTableSectionElement | null>(null);
+  const responseScrollRef = useRef<HTMLDivElement | null>(null);
+  const [lastFetchTime, setLastFetchTime] = useState<string | null>(null);
+  const [newResponseStart, setNewResponseStart] = useState<number | null>(null);
 
   const fetchMenu = async () => {
     setStatus("loading...");
@@ -557,7 +564,7 @@ export default function App() {
     setSelectedResponse(1);
   };
 
-  const toggleThreadSort = (key: "id" | "title" | "res" | "speed") => {
+  const toggleThreadSort = (key: "fetched" | "id" | "title" | "res" | "speed") => {
     if (threadSortKey === key) {
       setThreadSortAsc((prev) => !prev);
     } else {
@@ -644,7 +651,7 @@ export default function App() {
     try {
       const rows = await invoke<ThreadListItem[]>("fetch_thread_list", {
         threadUrl: url,
-        limit: 80,
+        limit: null,
       });
       setFetchedThreads(rows);
       setClosedThreadIds([]);
@@ -672,7 +679,7 @@ export default function App() {
     try {
       const rows = await invoke<ThreadListItem[]>("fetch_thread_list", {
         threadUrl: url,
-        limit: 80,
+        limit: null,
       });
       setFetchedThreads(rows);
       void loadReadStatusForBoard(url, rows);
@@ -692,11 +699,18 @@ export default function App() {
     try {
       const rows = await invoke<ThreadResponseItem[]>("fetch_thread_responses_command", {
         threadUrl: url,
-        limit: 800,
+        limit: null,
       });
+      const prevCount = fetchedResponses.length;
       setFetchedResponses(rows);
       setSelectedResponse(rows.length > 0 ? rows[0].responseNo : 1);
       tabCacheRef.current.set(url, { responses: rows, selectedResponse: rows.length > 0 ? rows[0].responseNo : 1 });
+      setLastFetchTime(new Date().toLocaleTimeString());
+      if (prevCount > 0 && rows.length > prevCount) {
+        setNewResponseStart(prevCount + 1);
+      } else {
+        setNewResponseStart(null);
+      }
       setResponseListProbe(`ok rows=${rows.length}`);
       setStatus(`responses loaded: ${rows.length}`);
     } catch (error) {
@@ -886,18 +900,24 @@ export default function App() {
   ];
   const threadItems = (
     fetchedThreads.length > 0
-      ? fetchedThreads.map((t, i) => ({
-          id: i + 1,
-          title: t.title,
-          res: t.responseCount,
-          got: Math.max(t.responseCount - 1, 0),
-          speed: Number((Math.max(t.responseCount, 1) / 120).toFixed(1)),
-          lastLoad: "-",
-          lastPost: "-",
-          threadUrl: t.threadUrl,
-        }))
+      ? fetchedThreads.map((t, i) => {
+          const created = Number(t.threadKey) * 1000;
+          const elapsedDays = Math.max((Date.now() - created) / 86400000, 0.01);
+          const speed = Number((t.responseCount / elapsedDays).toFixed(1));
+          const readCount = threadLastReadCount[i + 1] ?? 0;
+          return {
+            id: i + 1,
+            title: t.title,
+            res: t.responseCount,
+            got: readCount > 0 ? readCount : 0,
+            speed,
+            lastLoad: lastFetchTime ?? "-",
+            lastPost: "-",
+            threadUrl: t.threadUrl,
+          };
+        })
       : fallbackThreadItems
-  ).slice(0, 80);
+  );
   const visibleThreadItems = threadItems
     .filter((t) => {
       if (closedThreadIds.includes(t.id)) return false;
@@ -909,7 +929,8 @@ export default function App() {
     })
     .sort((a, b) => {
       let cmp = 0;
-      if (threadSortKey === "id") cmp = a.id - b.id;
+      if (threadSortKey === "fetched") cmp = (threadReadMap[b.id] ? 1 : 0) - (threadReadMap[a.id] ? 1 : 0);
+      else if (threadSortKey === "id") cmp = a.id - b.id;
       else if (threadSortKey === "title") cmp = a.title.localeCompare(b.title);
       else if (threadSortKey === "res") cmp = a.res - b.res;
       else if (threadSortKey === "speed") cmp = a.speed - b.speed;
@@ -1346,16 +1367,10 @@ export default function App() {
     const ensurePaneBounds = () => {
       const maxBoard = Math.max(
         MIN_BOARD_PANE_PX,
-        window.innerWidth - MIN_THREAD_PANE_PX - MIN_RESPONSE_PANE_PX - SPLITTER_PX * 2
+        window.innerWidth - MIN_RESPONSE_PANE_PX - SPLITTER_PX
       );
       const nextBoard = clamp(boardPanePx, MIN_BOARD_PANE_PX, maxBoard);
-      const maxThread = Math.max(
-        MIN_THREAD_PANE_PX,
-        window.innerWidth - nextBoard - MIN_RESPONSE_PANE_PX - SPLITTER_PX * 2
-      );
-      const nextThread = clamp(threadPanePx, MIN_THREAD_PANE_PX, maxThread);
       if (nextBoard !== boardPanePx) setBoardPanePx(nextBoard);
-      if (nextThread !== threadPanePx) setThreadPanePx(nextThread);
     };
 
     ensurePaneBounds();
@@ -1387,24 +1402,11 @@ export default function App() {
       if (drag.mode === "board-thread") {
         const maxBoard = Math.max(
           MIN_BOARD_PANE_PX,
-          window.innerWidth - MIN_THREAD_PANE_PX - MIN_RESPONSE_PANE_PX - SPLITTER_PX * 2
+          window.innerWidth - MIN_RESPONSE_PANE_PX - SPLITTER_PX
         );
         const nextBoard = clamp(drag.startBoardPx + deltaX, MIN_BOARD_PANE_PX, maxBoard);
-        const maxThread = Math.max(
-          MIN_THREAD_PANE_PX,
-          window.innerWidth - nextBoard - MIN_RESPONSE_PANE_PX - SPLITTER_PX * 2
-        );
         setBoardPanePx(nextBoard);
-        setThreadPanePx((prev) => clamp(prev, MIN_THREAD_PANE_PX, maxThread));
-        return;
       }
-
-      const maxThread = Math.max(
-        MIN_THREAD_PANE_PX,
-        window.innerWidth - drag.startBoardPx - MIN_RESPONSE_PANE_PX - SPLITTER_PX * 2
-      );
-      const nextThread = clamp(drag.startThreadPx + deltaX, MIN_THREAD_PANE_PX, maxThread);
-      setThreadPanePx(nextThread);
     };
 
     const onMouseUp = () => {
@@ -1450,9 +1452,9 @@ export default function App() {
   }, [selectedThread]);
 
   useEffect(() => {
-    if (!responseTbodyRef.current) return;
-    const row = responseTbodyRef.current.querySelector<HTMLTableRowElement>(".selected-row");
-    row?.scrollIntoView({ block: "nearest" });
+    if (!responseScrollRef.current) return;
+    const block = responseScrollRef.current.querySelector<HTMLDivElement>(".response-block.selected");
+    block?.scrollIntoView({ block: "nearest" });
   }, [selectedResponse]);
 
   useEffect(() => {
@@ -1591,7 +1593,7 @@ export default function App() {
       <main
         className="layout"
         style={{
-          gridTemplateColumns: `${boardPanePx}px ${SPLITTER_PX}px ${threadPanePx}px ${SPLITTER_PX}px minmax(${MIN_RESPONSE_PANE_PX}px, 1fr)`,
+          gridTemplateColumns: `${boardPanePx}px ${SPLITTER_PX}px 1fr`,
         }}
       >
         <section className="pane boards">
@@ -1718,10 +1720,15 @@ export default function App() {
           className="pane-splitter"
           role="separator"
           aria-orientation="vertical"
-          aria-label="Resize boards and threads"
+          aria-label="Resize boards pane"
           onMouseDown={(e) => beginHorizontalResize("board-thread", e)}
           onClick={(e) => e.stopPropagation()}
         />
+        <div
+          ref={responseLayoutRef}
+          className="right-pane"
+          style={{ gridTemplateRows: `${responseTopRatio}% ${SPLITTER_PX}px 1fr` }}
+        >
         <section className="pane threads">
           <div className="threads-header">
             <h2>スレッド</h2>
@@ -1740,6 +1747,9 @@ export default function App() {
           <table>
             <thead>
               <tr>
+                <th className="sortable-th" onClick={() => toggleThreadSort("fetched")} title="取得済みスレを上にソート">
+                  {threadSortKey === "fetched" ? (threadSortAsc ? "\u25B2" : "\u25BC") : ""}
+                </th>
                 <th className="sortable-th" onClick={() => toggleThreadSort("id")}>
                   番号{threadSortKey === "id" ? (threadSortAsc ? " \u25B2" : " \u25BC") : ""}
                 </th>
@@ -1747,15 +1757,13 @@ export default function App() {
                   タイトル{threadSortKey === "title" ? (threadSortAsc ? " \u25B2" : " \u25BC") : ""}
                 </th>
                 <th className="sortable-th" onClick={() => toggleThreadSort("res")}>
-                  レス{threadSortKey === "res" ? (threadSortAsc ? " \u25B2" : " \u25BC") : ""}
+                  レス数{threadSortKey === "res" ? (threadSortAsc ? " \u25B2" : " \u25BC") : ""}
                 </th>
-                <th>既得</th>
+                <th>既読</th>
                 <th>新着</th>
                 <th className="sortable-th" onClick={() => toggleThreadSort("speed")}>
                   勢い{threadSortKey === "speed" ? (threadSortAsc ? " \u25B2" : " \u25BC") : ""}
                 </th>
-                <th>最終取得</th>
-                <th>最終書込</th>
               </tr>
             </thead>
             <tbody ref={threadTbodyRef}>
@@ -1788,12 +1796,13 @@ export default function App() {
                     }}
                     onContextMenu={(e) => onThreadContextMenu(e, t.id)}
                   >
+                    <td className="thread-fetched-cell">{threadReadMap[t.id] ? "\u25CF" : ""}</td>
                     <td>{t.id}</td>
                     <td className="thread-title-cell">{t.title}</td>
                     <td>{t.res}</td>
-                    <td>{t.got}</td>
-                    <td className={`new-count ${(threadLastReadCount[t.id] ?? 0) > 0 && t.res - (threadLastReadCount[t.id] ?? 0) > 0 ? "has-new" : ""}`}>
-                      {(threadLastReadCount[t.id] ?? 0) > 0 ? Math.max(0, t.res - threadLastReadCount[t.id]) : "-"}
+                    <td>{t.got > 0 ? t.got : "-"}</td>
+                    <td className={`new-count ${t.got > 0 && t.res - t.got > 0 ? "has-new" : ""}`}>
+                      {t.got > 0 ? Math.max(0, t.res - t.got) : "-"}
                     </td>
                     <td className="speed-cell">
                       <span className="speed-bar" style={{
@@ -1802,8 +1811,6 @@ export default function App() {
                       }} />
                       <span className="speed-val">{t.speed.toFixed(1)}</span>
                     </td>
-                    <td>{t.lastLoad}</td>
-                    <td>{t.lastPost}</td>
                   </tr>
                 );
               })}
@@ -1811,11 +1818,11 @@ export default function App() {
           </table>
         </section>
         <div
-          className="pane-splitter"
+          className="row-splitter"
           role="separator"
-          aria-orientation="vertical"
+          aria-orientation="horizontal"
           aria-label="Resize threads and responses"
-          onMouseDown={(e) => beginHorizontalResize("thread-response", e)}
+          onMouseDown={beginResponseRowResize}
           onClick={(e) => e.stopPropagation()}
         />
         <section className="pane responses">
@@ -1867,7 +1874,7 @@ export default function App() {
             <strong>表示</strong> {visibleResponseItems.length}/{responseItems.length}
             {ngFilteredCount > 0 && <> | <strong>NG</strong> {ngFilteredCount}</>}
             {" "}| <strong>選択</strong> #{activeResponse?.id ?? "-"}/
-            {visibleResponseItems.length} | <strong>分割</strong> {Math.round(responseTopRatio)}%
+            {visibleResponseItems.length}
             {" "}| <input
               className="response-jump"
               type="number"
@@ -1886,82 +1893,11 @@ export default function App() {
             />
           </div>
           <div
-            ref={responseLayoutRef}
             className="response-layout"
-            style={{ gridTemplateRows: `minmax(120px, ${responseTopRatio}%) ${SPLITTER_PX}px 1fr` }}
           >
-            <table className="response-table">
-              <thead>
-                <tr>
-                  <th>番号</th>
-                  <th>名前</th>
-                  <th>ID</th>
-                  <th>日時</th>
-                </tr>
-              </thead>
-              <tbody ref={responseTbodyRef}>
-                {visibleResponseItems.map((r) => (
-                  <tr
-                    key={r.id}
-                    className={selectedResponse === r.id ? "selected-row" : ""}
-                    onClick={() => setSelectedResponse(r.id)}
-                    onDoubleClick={() => appendComposeQuote(`>>${r.id}`)}
-                  >
-                    <td className="response-no" onClick={(e) => onResponseNoClick(e, r.id)}>
-                      {r.id}
-                    </td>
-                    <td>{r.name}</td>
-                    <td
-                      className="response-id-cell"
-                      onClick={(e) => {
-                        const id = extractId(r.time);
-                        if (id) {
-                          e.stopPropagation();
-                          const rect = (e.target as HTMLElement).getBoundingClientRect();
-                          setIdPopup({ x: rect.left, y: rect.bottom + 2, id });
-                        }
-                      }}
-                    >
-                      {(() => {
-                        const id = extractId(r.time);
-                        const count = id ? (idCountMap.get(id) ?? 0) : 0;
-                        return id ? `${id}(${count})` : "";
-                      })()}
-                    </td>
-                    <td>{r.time}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            <div className="response-nav-bar">
-              <button onClick={() => { if (visibleResponseItems.length > 0) setSelectedResponse(visibleResponseItems[0].id); }}>
-                先頭
-              </button>
-              <div
-                className="row-splitter-inline"
-                role="separator"
-                aria-orientation="horizontal"
-                aria-label="Resize response list and viewer"
-                onMouseDown={beginResponseRowResize}
-                onClick={(e) => e.stopPropagation()}
-              />
-              <button onClick={() => {
-                const bm = loadBookmark(threadUrl);
-                if (bm && visibleResponseItems.some((r) => r.id === bm)) {
-                  setSelectedResponse(bm);
-                  setStatus(`栞: >>${bm}`);
-                } else {
-                  setStatus("栞なし");
-                }
-              }}>
-                栞
-              </button>
-              <button onClick={() => { if (visibleResponseItems.length > 0) setSelectedResponse(visibleResponseItems[visibleResponseItems.length - 1].id); }}>
-                最新
-              </button>
-            </div>
-            <article
-              className="response-viewer"
+            <div
+              className="response-scroll"
+              ref={responseScrollRef}
               onClick={(e) => {
                 const target = e.target as HTMLElement;
                 const thumbLink = target.closest<HTMLElement>("[data-lightbox-src]");
@@ -1996,29 +1932,83 @@ export default function App() {
                 }
               }}
             >
-              <header>
-                <span className="response-viewer-no">{activeResponse.id}</span> {activeResponse.name}
-              </header>
-              <time>{activeResponse.time}</time>
-              <div className="response-body" dangerouslySetInnerHTML={renderResponseBody(activeResponse.text)} />
-              {backRefMap.has(activeResponse.id) && (
-                <div className="back-refs">
-                  被参照:{" "}
-                  {backRefMap.get(activeResponse.id)!.map((refNo) => (
-                    <span
-                      key={refNo}
-                      className="anchor-ref"
-                      data-anchor={refNo}
-                      role="link"
-                      tabIndex={0}
-                      onClick={() => setSelectedResponse(refNo)}
-                    >
-                      &gt;&gt;{refNo}
-                    </span>
-                  ))}
-                </div>
-              )}
-            </article>
+              {visibleResponseItems.map((r) => {
+                const id = extractId(r.time);
+                const count = id ? (idCountMap.get(id) ?? 0) : 0;
+                return (
+                  <div
+                    key={r.id}
+                    className={`response-block ${selectedResponse === r.id ? "selected" : ""}`}
+                    onClick={() => setSelectedResponse(r.id)}
+                    onDoubleClick={() => appendComposeQuote(`>>${r.id}`)}
+                  >
+                    <div className="response-header">
+                      <span className="response-no" onClick={(e) => onResponseNoClick(e, r.id)}>
+                        {r.id}
+                      </span>
+                      {newResponseStart !== null && r.id >= newResponseStart && (
+                        <span className="response-new-marker">New</span>
+                      )}
+                      名前：<span className="response-name">{r.name}</span>
+                      投稿日：<span className="response-date">{r.time}</span>
+                      {id && (
+                        <span
+                          className="response-id-cell"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const rect = (e.target as HTMLElement).getBoundingClientRect();
+                            setIdPopup({ x: rect.left, y: rect.bottom + 2, id });
+                          }}
+                        >
+                          {id}({count})
+                        </span>
+                      )}
+                    </div>
+                    <div className="response-body" dangerouslySetInnerHTML={renderResponseBody(r.text)} />
+                    {backRefMap.has(r.id) && (
+                      <div className="back-refs">
+                        被参照:{" "}
+                        {backRefMap.get(r.id)!.map((refNo) => (
+                          <span
+                            key={refNo}
+                            className="anchor-ref"
+                            data-anchor={refNo}
+                            role="link"
+                            tabIndex={0}
+                            onClick={() => setSelectedResponse(refNo)}
+                          >
+                            &gt;&gt;{refNo}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            <div className="response-nav-bar">
+              <button onClick={() => { if (visibleResponseItems.length > 0) setSelectedResponse(visibleResponseItems[0].id); }}>
+                先頭
+              </button>
+              <button onClick={() => {
+                const bm = loadBookmark(threadUrl);
+                if (bm && visibleResponseItems.some((r) => r.id === bm)) {
+                  setSelectedResponse(bm);
+                  setStatus(`栞: >>${bm}`);
+                } else {
+                  setStatus("栞なし");
+                }
+              }}>
+                栞
+              </button>
+              <button onClick={() => { if (visibleResponseItems.length > 0) setSelectedResponse(visibleResponseItems[visibleResponseItems.length - 1].id); }}>
+                最新
+              </button>
+              <span className="nav-info">
+                <span>レス:{visibleResponseItems.length}</span>
+                <span>受信日時:{lastFetchTime ?? "-"}</span>
+              </span>
+            </div>
           </div>
           <details className="dev-panel">
             <summary>開発者ツール</summary>
@@ -2069,11 +2059,19 @@ export default function App() {
             <pre>{updateProbe}</pre>
           </details>
         </section>
+        </div>
       </main>
       <footer className="status-bar">
-        TS:{visibleThreadItems.length} | US:{unreadThreadCount} | Board:{selectedBoard} | Thread:{selectedThreadLabel} |
-        Res:{selectedResponseLabel} | Runtime:{runtimeState} | API:ON | Ronin:ON | BE:{beState} | UPLIFT:{upliftState} |
-        DONGURI:EXPERIMENTAL | {updateState}
+        <span>dat取得予定残{visibleThreadItems.length}</span>
+        <span>(板情報レス:{responseItems.length} サイズ:{Math.round(responseItems.reduce((s, r) => s + r.text.length, 0) / 1024)}KB)</span>
+        <span>TS:{visibleThreadItems.length}</span>
+        <span>US:{unreadThreadCount}</span>
+        <span>API:ON</span>
+        <span>Ronin:ON</span>
+        <span>BE:{beState}</span>
+        <span>UPLIFT:{upliftState}</span>
+        <span>DONGURI:EXPERIMENTAL</span>
+        <span>Runtime:{runtimeState}</span>
       </footer>
       {composeOpen && (
         <section
