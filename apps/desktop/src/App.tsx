@@ -318,6 +318,7 @@ export default function App() {
   const [composeFontSize, setComposeFontSize] = useState(13);
   const [idPopup, setIdPopup] = useState<{ right: number; y: number; id: string } | null>(null);
   const idPopupCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const anchorPopupCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [backRefPopup, setBackRefPopup] = useState<{ x: number; y: number; responseIds: number[] } | null>(null);
   const [composePos, setComposePos] = useState<{ x: number; y: number } | null>(null);
   const composeDragRef = useRef<{ startX: number; startY: number; startPosX: number; startPosY: number } | null>(null);
@@ -1561,6 +1562,15 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    return () => {
+      if (anchorPopupCloseTimer.current) {
+        clearTimeout(anchorPopupCloseTimer.current);
+        anchorPopupCloseTimer.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     const ensurePaneBounds = () => {
       const maxBoard = Math.max(
         MIN_BOARD_PANE_PX,
@@ -2204,15 +2214,25 @@ export default function App() {
                 if (!anchor) { return; }
                 const no = Number(anchor.dataset.anchor);
                 if (no > 0 && responseItems.some((r) => r.id === no)) {
+                  if (anchorPopupCloseTimer.current) {
+                    clearTimeout(anchorPopupCloseTimer.current);
+                    anchorPopupCloseTimer.current = null;
+                  }
                   const rect = anchor.getBoundingClientRect();
-                  setAnchorPopup({ x: rect.left, y: rect.bottom + 4, responseId: no });
+                  const popupWidth = Math.min(620, window.innerWidth - 24);
+                  const x = Math.max(8, Math.min(rect.left, window.innerWidth - popupWidth - 8));
+                  setAnchorPopup({ x, y: rect.bottom + 4, responseId: no });
                 }
               }}
               onMouseOut={(e) => {
                 const target = e.target as HTMLElement;
                 if (target.closest(".anchor-ref")) {
-                  setAnchorPopup(null);
-                  setNestedPopups([]);
+                  if (anchorPopupCloseTimer.current) clearTimeout(anchorPopupCloseTimer.current);
+                  anchorPopupCloseTimer.current = setTimeout(() => {
+                    setAnchorPopup(null);
+                    setNestedPopups([]);
+                    anchorPopupCloseTimer.current = null;
+                  }, 220);
                 }
               }}
             >
@@ -2559,6 +2579,20 @@ export default function App() {
           <div
             className="anchor-popup"
             style={{ left: anchorPopup.x, top: anchorPopup.y }}
+            onMouseEnter={() => {
+              if (anchorPopupCloseTimer.current) {
+                clearTimeout(anchorPopupCloseTimer.current);
+                anchorPopupCloseTimer.current = null;
+              }
+            }}
+            onMouseLeave={() => {
+              if (anchorPopupCloseTimer.current) clearTimeout(anchorPopupCloseTimer.current);
+              anchorPopupCloseTimer.current = setTimeout(() => {
+                setAnchorPopup(null);
+                setNestedPopups([]);
+                anchorPopupCloseTimer.current = null;
+              }, 220);
+            }}
             onMouseOver={(ev) => {
               const t = ev.target as HTMLElement;
               const a = t.closest<HTMLElement>(".anchor-ref");

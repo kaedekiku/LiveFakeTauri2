@@ -705,14 +705,15 @@ body {
 .anchor-popup {
   position: fixed;
   z-index: 60;
-  max-width: 480px;
-  max-height: 240px;
+  width: min(620px, calc(100vw - 24px));
+  max-width: 620px;
+  max-height: 300px;
   overflow-y: auto;
   border: 1px solid #a0a0a0;
   background: #ffffff;
   box-shadow: 0 4px 12px rgba(20, 20, 20, 0.22);
   padding: 6px 8px;
-  pointer-events: none;
+  pointer-events: auto;
 }
 .back-ref-popup {
   pointer-events: auto;
