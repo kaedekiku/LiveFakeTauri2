@@ -1864,6 +1864,9 @@ export default function App() {
                   title={tab.threadUrl}
                 >
                   <span className="thread-tab-title">{tab.title}</span>
+                  {tabCacheRef.current.has(tab.threadUrl) && (
+                    <span className="tab-res-count">({tabCacheRef.current.get(tab.threadUrl)!.responses.length})</span>
+                  )}
                   <button
                     className="thread-tab-close"
                     onClick={(e) => { e.stopPropagation(); closeTab(i); }}
@@ -2006,6 +2009,17 @@ export default function App() {
               }}>
                 栞
               </button>
+              {newResponseStart !== null && (
+                <button
+                  className="nav-new-btn"
+                  onClick={() => {
+                    const first = visibleResponseItems.find((r) => r.id >= newResponseStart);
+                    if (first) setSelectedResponse(first.id);
+                  }}
+                >
+                  新着▼
+                </button>
+              )}
               <button onClick={() => { if (visibleResponseItems.length > 0) setSelectedResponse(visibleResponseItems[visibleResponseItems.length - 1].id); }}>
                 最新
               </button>
