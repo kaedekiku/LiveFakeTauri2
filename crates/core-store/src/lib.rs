@@ -20,8 +20,27 @@ pub enum StoreError {
 
 static DB: Mutex<Option<Connection>> = Mutex::new(None);
 
+fn default_data_dir() -> Result<PathBuf, StoreError> {
+    #[cfg(target_os = "macos")]
+    {
+        let base = dirs::data_dir().ok_or_else(|| StoreError::Other("failed to resolve data dir".into()))?;
+        return Ok(base.join("Ember"));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(std::env::current_dir()?.join("data"))
+    }
+}
+
 pub fn portable_data_dir() -> Result<PathBuf, StoreError> {
-    Ok(std::env::current_dir()?.join("data"))
+    if let Ok(custom) = std::env::var("EMBER_DATA_DIR") {
+        let trimmed = custom.trim();
+        if !trimmed.is_empty() {
+            return Ok(PathBuf::from(trimmed));
+        }
+    }
+    default_data_dir()
 }
 
 pub fn init_portable_layout() -> Result<PathBuf, StoreError> {
