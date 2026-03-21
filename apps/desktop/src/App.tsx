@@ -118,6 +118,8 @@ const NAME_HISTORY_KEY = "desktop.nameHistory.v1";
 const BOOKMARK_KEY = "desktop.bookmarks.v1";
 const BOARD_CACHE_KEY = "desktop.boardCategories.v1";
 const EXPANDED_CATS_KEY = "desktop.expandedCategories.v1";
+const LANDING_PAGE_URL = "https://ember-5ch.pages.dev";
+const BUY_ME_A_COFFEE_URL = "https://buymeacoffee.com/votepurchase";
 const BOARD_TREE_SCROLL_KEY = "desktop.boardTreeScrollTop.v1";
 const SCROLL_POS_KEY = "desktop.scrollPositions.v1";
 const NEW_THREAD_SIZE_KEY = "desktop.newThreadDialogSize.v1";
@@ -3171,6 +3173,32 @@ export default function App() {
                 5ch専用ブラウザ<br />
                 Runtime: {runtimeState}<br />
                 BE: {beState} / UPLIFT: {roninState}
+              </div>
+              <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+                <button
+                  onClick={() => {
+                    const url = LANDING_PAGE_URL;
+                    if (isTauriRuntime()) {
+                      void invoke("open_external_url", { url }).catch(() => window.open(url, "_blank"));
+                    } else {
+                      window.open(url, "_blank");
+                    }
+                  }}
+                >
+                  ランディングページ
+                </button>
+                <button
+                  onClick={() => {
+                    const url = BUY_ME_A_COFFEE_URL;
+                    if (isTauriRuntime()) {
+                      void invoke("open_external_url", { url }).catch(() => window.open(url, "_blank"));
+                    } else {
+                      window.open(url, "_blank");
+                    }
+                  }}
+                >
+                  Buy me a coffee
+                </button>
               </div>
             </div>
           </div>
