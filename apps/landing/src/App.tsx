@@ -171,6 +171,9 @@ export default function App() {
               <li>ZIPを展開し、`ember.exe` を実行します。</li>
               <li>初回起動後、板一覧を取得して利用開始します。</li>
             </ol>
+            <p className="lead" style={{ marginTop: 8 }}>
+              更新時はアプリ終了後、`ember.exe` を新しいものに上書きしてください。
+            </p>
           </div>
           <div className="install-platform">
             <h3>Mac版</h3>
@@ -179,6 +182,9 @@ export default function App() {
               <li>ZIPを展開し、`Ember_0.0.1_aarch64.dmg` を開きます。</li>
               <li>アプリをApplicationsへ移動して起動します。</li>
             </ol>
+            <p className="lead" style={{ marginTop: 8 }}>
+              更新時は新しいDMGを開き、`Ember.app` を Applications に上書きしてください。
+            </p>
           </div>
         </section>
 
