@@ -185,6 +185,11 @@ export default function App() {
             <p className="lead" style={{ marginTop: 8 }}>
               更新時は新しいDMGを開き、`Ember.app` を Applications に上書きしてください。
             </p>
+            <p className="lead" style={{ marginTop: 8 }}>
+              「壊れているため開けません」と表示される場合は、ターミナルで
+              `xattr -dr com.apple.quarantine /Applications/Ember.app`
+              を実行してから再度起動してください。
+            </p>
           </div>
         </section>
 
