@@ -1,4 +1,4 @@
-use core_auth::{login_be_front, login_donguri, login_uplift, LoginOutcome};
+﻿use core_auth::{login_be_front, login_donguri, login_uplift, LoginOutcome};
 use core_fetch::{
     build_cookie_client, create_thread, fetch_bbsmenu_json, fetch_post_form_tokens, fetch_subject_threads,
     fetch_thread_responses, normalize_5ch_url, parse_confirm_submit_form, probe_post_cookie_scope, seed_cookie, submit_post_confirm,
@@ -549,12 +549,14 @@ async fn probe_post_flow_trace(
     .map_err(|e| format!("{:?}", e))?;
 
     let contains_ok = confirm.body_preview.contains("書きこみが終わりました")
+        || confirm.body_preview.contains("書き込みが終わりました")
         || confirm.body_preview.contains("投稿が完了")
         || (!confirm.contains_error && confirm.status == 200);
+    let error_flag = if contains_ok { false } else { confirm.contains_error || confirm.status >= 400 };
     let submit_summary = Some(format!(
         "status={} error={} type={}",
         confirm.status,
-        confirm.contains_error,
+        error_flag,
         confirm.content_type.unwrap_or_else(|| "-".to_string())
     ));
 

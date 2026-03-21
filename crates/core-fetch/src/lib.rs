@@ -457,7 +457,14 @@ fn curl_exec(
     args.push(write_fmt);
     args.push(url.into());
 
-    let output = Command::new("curl")
+    let mut cmd = Command::new("curl");
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        // Prevent transient console windows when called from a GUI app.
+        cmd.creation_flags(0x08000000);
+    }
+    let output = cmd
         .args(&args)
         .output()
         .map_err(|e| FetchError::Parse(format!("curl: {}", e)))?;
