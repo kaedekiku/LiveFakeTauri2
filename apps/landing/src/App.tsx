@@ -7,6 +7,8 @@ import screenshot3 from "./assets/images/screen_shot_3.jpg";
 
 const REPO_RELEASES_URL = "https://github.com/kiyohken2000/5ch-browser-template/releases";
 const GITHUB_URL = "https://github.com/kiyohken2000/5ch-browser-template";
+const ISSUES_URL = "https://github.com/kiyohken2000/5ch-browser-template/issues";
+const X_URL = "https://x.com/votepurchase";
 const BMC_URL = "https://buymeacoffee.com/votepurchase";
 
 type PlatformAsset = {
@@ -63,9 +65,7 @@ export default function App() {
   useEffect(() => {
     if (!zoomedImage) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setZoomedImage(null);
-      }
+      if (event.key === "Escape") setZoomedImage(null);
     };
     document.body.classList.add("zoom-open");
     window.addEventListener("keydown", onKeyDown);
@@ -87,9 +87,9 @@ export default function App() {
             <p className="kicker">Ember</p>
             <h1>Live5chライクな専ブラを、現代技術で作り直す。</h1>
             <p className="lead">
-              PCの専ブラの選択肢がなさすぎる。SikiはLive5chからの乗り換えには向かなすぎる。
-              だからWindowsでもMacでも同じように5ちゃんを見たい。
-              その動機で始めた、Live5chライクな専ブラプロジェクトです。
+              PC向け専ブラの選択肢が少なく、既存ツールではLive5chからの移行がしづらい。
+              だからこそ、WindowsとMacのどちらでも同じ感覚で5ちゃんを読める専ブラを作る。
+              その課題感から始めたプロジェクトがEmberです。
             </p>
             <div className="actions">
               <a className="btn primary" href={primaryDownloadUrl} target="_blank" rel="noreferrer">
@@ -98,10 +98,16 @@ export default function App() {
               <a className="btn" href={GITHUB_URL} target="_blank" rel="noreferrer">
                 GitHub
               </a>
+              <a className="btn" href={X_URL} target="_blank" rel="noreferrer">
+                X
+              </a>
               <a className="btn" href="/latest.json" target="_blank" rel="noreferrer">
                 latest.json を見る
               </a>
             </div>
+            <p className="lead" style={{ marginTop: 12 }}>
+              不具合報告・要望は <a href={ISSUES_URL} target="_blank" rel="noreferrer">GitHub Issues</a> へお願いします。
+            </p>
             <a className="bmc-link" href={BMC_URL} target="_blank" rel="noreferrer">
               <img src={bmcButton} alt="Buy Me a Coffee" />
             </a>
