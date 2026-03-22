@@ -2,5 +2,9 @@
   "identifier": "default",
   "description": "Default desktop capability",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-set-position",
+    "core:window:allow-set-size"
+  ]
 }

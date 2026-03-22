@@ -9,6 +9,8 @@ import {
   type UIEventHandler,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { PhysicalPosition, PhysicalSize } from "@tauri-apps/api/dpi";
 
 type MenuInfo = { topLevelKeys: number; normalizedSample: string };
 type AuthEnvStatus = {
@@ -124,6 +126,7 @@ const BOARD_TREE_SCROLL_KEY = "desktop.boardTreeScrollTop.v1";
 const SCROLL_POS_KEY = "desktop.scrollPositions.v1";
 const NEW_THREAD_SIZE_KEY = "desktop.newThreadDialogSize.v1";
 const THREAD_FETCH_TIMES_KEY = "desktop.threadFetchTimes.v1";
+const WINDOW_STATE_KEY = "desktop.windowState.v1";
 const MENU_EDGE_PADDING = 8;
 
 type ResizeDragState =
@@ -295,7 +298,7 @@ export default function App() {
   const [postFinalizeSubmitProbe, setPostFinalizeSubmitProbe] = useState("not run");
   const [allowRealSubmit, setAllowRealSubmit] = useState(false);
   const [metadataUrl, setMetadataUrl] = useState("https://ember-5ch.pages.dev/latest.json");
-  const [currentVersion, setCurrentVersion] = useState("0.0.4");
+  const [currentVersion, setCurrentVersion] = useState("0.0.5");
   const [updateResult, setUpdateResult] = useState<UpdateCheckResult | null>(null);
   const [updateProbe, setUpdateProbe] = useState("not run");
   const [composeOpen, setComposeOpen] = useState(false);
@@ -1931,6 +1934,18 @@ export default function App() {
       const ftRaw = localStorage.getItem(THREAD_FETCH_TIMES_KEY);
       if (ftRaw) threadFetchTimesRef.current = JSON.parse(ftRaw);
     } catch { /* ignore */ }
+    // Restore window position and size
+    if (isTauriRuntime()) {
+      try {
+        const ws = localStorage.getItem(WINDOW_STATE_KEY);
+        if (ws) {
+          const s = JSON.parse(ws) as { x: number; y: number; width: number; height: number };
+          const win = getCurrentWindow();
+          void win.setPosition(new PhysicalPosition(s.x, s.y));
+          void win.setSize(new PhysicalSize(s.width, s.height));
+        }
+      } catch { /* ignore */ }
+    }
     // Silently refresh board list from server
     void fetchBoardCategories();
     void loadFavorites();
@@ -1957,6 +1972,19 @@ export default function App() {
         }
       }).catch(() => {});
     }
+  }, []);
+
+  // Save window position and size periodically
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    const saveWindowState = () => {
+      try {
+        const state = { x: window.screenX, y: window.screenY, width: window.outerWidth, height: window.outerHeight };
+        localStorage.setItem(WINDOW_STATE_KEY, JSON.stringify(state));
+      } catch { /* ignore */ }
+    };
+    const interval = setInterval(saveWindowState, 5000);
+    return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
@@ -2238,13 +2266,12 @@ export default function App() {
           { label: "ツール", items: [
             { text: "認証状態", action: checkAuthEnv },
             { text: "認証テスト", action: probeAuth },
-            { text: "sep" },
-            { text: "更新確認", action: checkForUpdates },
           ]},
           { label: "ヘルプ", items: [
             { text: "ショートカット一覧", action: () => setShortcutsOpen(true) },
+            { text: "更新確認", action: checkForUpdates },
             { text: "sep" },
-            { text: "バージョン情報", action: () => requestAnimationFrame(() => setAboutOpen(true)) },
+            { text: "バージョン情報", action: () => requestAnimationFrame(() => { setAboutOpen(true); void checkForUpdates(); }) },
           ]},
         ].map(({ label, items }) => (
           <div key={label} className="menu-item-wrap" onClick={(e) => e.stopPropagation()}>
@@ -3396,6 +3423,14 @@ export default function App() {
                 Runtime: {runtimeState}<br />
                 BE: {beState} / UPLIFT: {roninState}
               </div>
+              <div style={{ fontSize: "0.85em", color: updateResult?.hasUpdate ? "#cc3300" : "var(--sub)", marginTop: 4 }}>
+                {updateProbe === "running..." ? "更新確認中..." : updateResult ? (updateResult.hasUpdate ? `新しいバージョンがあります: v${updateResult.latestVersion}` : `最新版です (v${currentVersion})`) : ""}
+              </div>
+              {updateResult?.hasUpdate && (
+                <button onClick={openDownloadPage} style={{ marginTop: 4 }}>
+                  ダウンロードページを開く
+                </button>
+              )}
               <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
                 <button
                   onClick={() => {
@@ -3407,7 +3442,7 @@ export default function App() {
                     }
                   }}
                 >
-                  ランディングページ
+                  公式サイト
                 </button>
                 <button
                   onClick={() => {
