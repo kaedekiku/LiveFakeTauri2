@@ -367,6 +367,8 @@ export default function App() {
   const hoverPreviewZoomRef = useRef(100);
   const hoverPreviewHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [tabDragIndex, setTabDragIndex] = useState<number | null>(null);
+  const tabDragRef = useRef<{ srcIndex: number; startX: number } | null>(null);
+  const tabDragOverRef = useRef<number | null>(null);
   const [tabMenu, setTabMenu] = useState<{ x: number; y: number; tabIndex: number } | null>(null);
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
@@ -1041,7 +1043,8 @@ export default function App() {
         ?? fetchedThreads.find((t) => t.threadUrl === url)?.title
         ?? "";
       invoke("save_thread_cache", { threadUrl: url, title: tabTitle, responsesJson: JSON.stringify(rows) }).catch(() => {});
-      const timeStr = new Date().toLocaleTimeString();
+      const now = new Date();
+      const timeStr = `${now.getMonth() + 1}/${now.getDate()} ${now.toLocaleTimeString()}`;
       setLastFetchTime(timeStr);
       threadFetchTimesRef.current[url] = timeStr;
       try { localStorage.setItem(THREAD_FETCH_TIMES_KEY, JSON.stringify(threadFetchTimesRef.current)); } catch { /* ignore */ }
@@ -2648,8 +2651,7 @@ export default function App() {
               <div
                 key={tab.threadUrl}
                 className={`thread-tab ${i === activeTabIndex ? "active" : ""} ${tabDragIndex !== null && tabDragIndex !== i ? "drag-target" : ""}`}
-                draggable
-                onClick={() => onTabClick(i)}
+                onClick={() => { if (tabDragRef.current) return; onTabClick(i); }}
                 onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); closeTab(i); } }}
                 onContextMenu={(e) => {
                   e.preventDefault();
@@ -2657,21 +2659,51 @@ export default function App() {
                   const p = clampMenuPosition(e.clientX, e.clientY, 160, 120);
                   setTabMenu({ x: p.x, y: p.y, tabIndex: i });
                 }}
-                onDragStart={() => setTabDragIndex(i)}
-                onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add("drag-over"); }}
-                onDragLeave={(e) => { e.currentTarget.classList.remove("drag-over"); }}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  e.currentTarget.classList.remove("drag-over");
-                  if (tabDragIndex === null || tabDragIndex === i) return;
-                  const next = [...threadTabs];
-                  const [moved] = next.splice(tabDragIndex, 1);
-                  next.splice(i, 0, moved);
-                  setThreadTabs(next);
-                  setActiveTabIndex(tabDragIndex === activeTabIndex ? i : tabDragIndex < activeTabIndex && i >= activeTabIndex ? activeTabIndex - 1 : tabDragIndex > activeTabIndex && i <= activeTabIndex ? activeTabIndex + 1 : activeTabIndex);
-                  setTabDragIndex(null);
+                onMouseDown={(e) => {
+                  if (e.button !== 0) return;
+                  tabDragRef.current = { srcIndex: i, startX: e.clientX };
+                  tabDragOverRef.current = null;
+                  const onMove = (ev: MouseEvent) => {
+                    if (!tabDragRef.current) return;
+                    if (Math.abs(ev.clientX - tabDragRef.current.startX) < 5) return;
+                    ev.preventDefault();
+                    window.getSelection()?.removeAllRanges();
+                    setTabDragIndex(tabDragRef.current.srcIndex);
+                    const els = tabBarRef.current?.querySelectorAll<HTMLElement>(".thread-tab:not(.placeholder)");
+                    if (!els) return;
+                    els.forEach((el) => el.classList.remove("drag-over"));
+                    for (let j = 0; j < els.length; j++) {
+                      const rect = els[j].getBoundingClientRect();
+                      if (ev.clientX >= rect.left && ev.clientX < rect.right) {
+                        if (j !== tabDragRef.current.srcIndex) {
+                          els[j].classList.add("drag-over");
+                          tabDragOverRef.current = j;
+                        }
+                        break;
+                      }
+                    }
+                  };
+                  const onUp = () => {
+                    window.removeEventListener("mousemove", onMove);
+                    window.removeEventListener("mouseup", onUp);
+                    const src = tabDragRef.current?.srcIndex ?? null;
+                    const dst = tabDragOverRef.current;
+                    tabDragRef.current = null;
+                    tabDragOverRef.current = null;
+                    setTabDragIndex(null);
+                    tabBarRef.current?.querySelectorAll<HTMLElement>(".drag-over").forEach((el) => el.classList.remove("drag-over"));
+                    if (src === null || dst === null || src === dst) return;
+                    setThreadTabs((prev) => {
+                      const next = [...prev];
+                      const [moved] = next.splice(src, 1);
+                      next.splice(dst, 0, moved);
+                      return next;
+                    });
+                    setActiveTabIndex((prev) => src === prev ? dst : src < prev && dst >= prev ? prev - 1 : src > prev && dst <= prev ? prev + 1 : prev);
+                  };
+                  window.addEventListener("mousemove", onMove);
+                  window.addEventListener("mouseup", onUp);
                 }}
-                onDragEnd={() => setTabDragIndex(null)}
                 title={tab.threadUrl}
               >
                 <span className="thread-tab-title">{tab.title}</span>

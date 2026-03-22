@@ -403,7 +403,7 @@ body {
 .threads th:nth-child(4) { width: 42px; }
 .threads th:nth-child(5) { width: 36px; }
 .threads th:nth-child(6) { width: 36px; }
-.threads th:nth-child(7) { width: 64px; }
+.threads th:nth-child(7) { width: 96px; }
 .threads th:nth-child(8) { width: 54px; }
 
 .thread-fetched-cell {
@@ -1727,7 +1727,7 @@ pre {
   border-color: #3c3c3c;
 }
 
-.thread-tab[draggable="true"] {
+.thread-tab {
   cursor: grab;
 }
 
