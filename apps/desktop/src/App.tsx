@@ -9,8 +9,6 @@ import {
   type UIEventHandler,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { PhysicalPosition, PhysicalSize } from "@tauri-apps/api/dpi";
 
 type MenuInfo = { topLevelKeys: number; normalizedSample: string };
 type AuthEnvStatus = {
@@ -1934,17 +1932,20 @@ export default function App() {
       const ftRaw = localStorage.getItem(THREAD_FETCH_TIMES_KEY);
       if (ftRaw) threadFetchTimesRef.current = JSON.parse(ftRaw);
     } catch { /* ignore */ }
-    // Restore window position and size
+    // Restore window position and size (delayed to ensure window is ready)
     if (isTauriRuntime()) {
-      try {
-        const ws = localStorage.getItem(WINDOW_STATE_KEY);
-        if (ws) {
+      setTimeout(async () => {
+        try {
+          const ws = localStorage.getItem(WINDOW_STATE_KEY);
+          if (!ws) return;
           const s = JSON.parse(ws) as { x: number; y: number; width: number; height: number };
+          const { getCurrentWindow } = await import("@tauri-apps/api/window");
+          const { PhysicalPosition, PhysicalSize } = await import("@tauri-apps/api/dpi");
           const win = getCurrentWindow();
-          void win.setPosition(new PhysicalPosition(s.x, s.y));
-          void win.setSize(new PhysicalSize(s.width, s.height));
-        }
-      } catch { /* ignore */ }
+          await win.setPosition(new PhysicalPosition(s.x, s.y));
+          await win.setSize(new PhysicalSize(s.width, s.height));
+        } catch { /* ignore */ }
+      }, 500);
     }
     // Silently refresh board list from server
     void fetchBoardCategories();
