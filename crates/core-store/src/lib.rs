@@ -21,13 +21,13 @@ pub enum StoreError {
 static DB: Mutex<Option<Connection>> = Mutex::new(None);
 
 fn default_data_dir() -> Result<PathBuf, StoreError> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
         let base = dirs::data_dir().ok_or_else(|| StoreError::Other("failed to resolve data dir".into()))?;
         return Ok(base.join("Ember"));
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         Ok(std::env::current_dir()?.join("data"))
     }
