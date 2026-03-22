@@ -295,7 +295,7 @@ export default function App() {
   const [postFinalizeSubmitProbe, setPostFinalizeSubmitProbe] = useState("not run");
   const [allowRealSubmit, setAllowRealSubmit] = useState(false);
   const [metadataUrl, setMetadataUrl] = useState("https://ember-5ch.pages.dev/latest.json");
-  const [currentVersion, setCurrentVersion] = useState("0.0.3");
+  const [currentVersion, setCurrentVersion] = useState("0.0.4");
   const [updateResult, setUpdateResult] = useState<UpdateCheckResult | null>(null);
   const [updateProbe, setUpdateProbe] = useState("not run");
   const [composeOpen, setComposeOpen] = useState(false);
