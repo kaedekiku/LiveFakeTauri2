@@ -43,21 +43,29 @@ Compress-Archive -Path ember.exe -DestinationPath ember-win-x64.zip
 
 Mac環境で:
 ```bash
-cd apps/desktop
-npm install
-npx tauri build
+bash scripts/build_mac_release.sh
 ```
 
-成果物を `ember-mac-arm64.zip` として作成。
+`git pull` → `npm install` → `npx tauri build` → DMGをZIP化 → `out/ember-mac-arm64.zip` を生成。
+ハッシュとサイズは `out/build-info.txt` に出力される。
 
-### 5. ハッシュ・サイズ取得
+### 5. Linux ビルド（任意）
 
+Linux環境で:
+```bash
+bash scripts/build_linux_release.sh
+```
+
+AppImage / .deb / .rpm を生成し、`out/ember-linux-x64.zip` を作成。
+
+### 6. ハッシュ・サイズ取得
+
+Mac/Linuxビルドは `out/build-info.txt` を参照。Windows:
 ```bash
 sha256sum ember-win-x64.zip && wc -c < ember-win-x64.zip
-sha256sum ember-mac-arm64.zip && wc -c < ember-mac-arm64.zip
 ```
 
-### 6. latest.json 更新
+### 7. latest.json 更新
 
 `apps/landing/public/latest.json` を更新:
 
@@ -88,7 +96,7 @@ sha256sum ember-mac-arm64.zip && wc -c < ember-mac-arm64.zip
 
 コミット & プッシュ。
 
-### 7. GitHub Release 作成
+### 8. GitHub Release 作成
 
 ```bash
 gh release create vX.Y.Z \
@@ -98,14 +106,14 @@ gh release create vX.Y.Z \
   --notes "## Changes\n\n- ..."
 ```
 
-### 8. Cloudflare Pages デプロイ
+### 9. Cloudflare Pages デプロイ
 
 ```bash
 cd apps/landing
 npx wrangler pages deploy public --project-name ember-5ch
 ```
 
-### 9. リリース後の確認
+### 10. リリース後の確認
 
 - 旧バージョンのアプリで更新チェック → `hasUpdate=true`
 - 新バージョンのアプリで更新チェック → `hasUpdate=false`（最新版です）
