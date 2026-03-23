@@ -9,8 +9,8 @@
       "filename": "ember-win-x64.zip"
     },
     "macos-arm64": {
-      "sha256": "20df3d72514403779ef52b5dc38b977d3de89224c0976809fef1324a7042b97e",
-      "size": 6047488,
+      "sha256": "640485abe5eef989fcf69f4004d3b041566ce5fbb2dd8bb193e190be125c4c20",
+      "size": 6047664,
       "filename": "ember-mac-arm64.zip"
     },
     "linux-x64": {
