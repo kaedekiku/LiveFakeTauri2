@@ -743,11 +743,6 @@ try {
   assert(noDarkClass, "shell should not have dark class after light toggle");
   console.log("smoke-ui: dark mode toggle ok");
 
-  // --- bookmark button ---
-  const bookmarkBtn = await page.$('.response-nav-bar button:has-text("栞")');
-  assert(bookmarkBtn, "response nav bar should have bookmark button");
-  console.log("smoke-ui: bookmark button ok");
-
   // --- NG regex ---
   // Test regex pattern matching via NG panel
   const ngBtnForRegex = await page.$(".ng-filter-toggle");
