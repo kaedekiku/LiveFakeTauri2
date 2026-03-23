@@ -4,7 +4,7 @@
   "download_page_url": "https://github.com/kiyohken2000/5ch-browser-template/releases/tag/v0.0.10",
   "platforms": {
     "windows-x64": {
-      "sha256": "a72dd369615cef5435e911140e9b32e973898524d29d0d40bd33f2e73e51d36c",
+      "sha256": "fa8b07dcd15ec1713e9b94974a4109dbbd292b5df5abab07dc47ff1df039ac10",
       "size": 5649281,
       "filename": "ember-win-x64.zip"
     },
