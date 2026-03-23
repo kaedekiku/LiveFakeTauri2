@@ -502,9 +502,5 @@ git push origin main                     # メインブランチにプッシュ
 
 | ファイル | 内容 |
 |---------|------|
-| `docs/5ch_browser_spec.md` | アプリケーション仕様書 v1.0 |
+| `docs/DEPLOYMENT_RUNBOOK.md` | リリース・デプロイ手順書 |
 | `docs/PROGRESS_TRACKER.md` | 実装進捗トラッカー |
-| `docs/NEXT_SESSION_HANDOVER.md` | セッション引継ぎ情報 |
-| `docs/DEPLOYMENT_RUNBOOK.md` | リリース・配布手順書 |
-| `docs/BE_UPLIFT_RESEARCH_2026-03-07.md` | 認証プロバイダ調査結果 |
-| `docs/START_HERE.md` | 初回セットアップガイド |

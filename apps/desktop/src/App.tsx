@@ -1213,21 +1213,18 @@ export default function App() {
           });
         }
         setComposeOpen(false);
-        const postResult = await invoke<{ responses: ThreadResponseItem[]; title: string | null }>("fetch_thread_responses_command", {
-          threadUrl: threadUrl.trim(),
-          limit: null,
-        }).catch(() => null);
-        if (postResult) {
-          const rows = postResult.responses;
-          setFetchedResponses(rows);
-          tabCacheRef.current.set(threadUrl.trim(), { responses: rows, selectedResponse: rows.length > 0 ? rows[rows.length - 1].responseNo : 1 });
-          setSelectedResponse(rows.length > 0 ? rows[rows.length - 1].responseNo : 1);
-          setTimeout(() => {
-            if (responseScrollRef.current) {
-              responseScrollRef.current.scrollTop = responseScrollRef.current.scrollHeight;
-            }
-          }, 50);
-        }
+        // Re-fetch responses via standard path to update thread list counts, cache, and timestamps
+        await fetchResponsesFromCurrent(threadUrl.trim());
+        // Scroll to bottom to show the new post
+        setTimeout(() => {
+          const items = tabCacheRef.current.get(threadUrl.trim())?.responses;
+          if (items && items.length > 0) {
+            setSelectedResponse(items[items.length - 1].responseNo);
+          }
+          if (responseScrollRef.current) {
+            responseScrollRef.current.scrollTop = responseScrollRef.current.scrollHeight;
+          }
+        }, 100);
       }
     } catch (error) {
       setPostFlowTraceProbe(`error: ${String(error)}`);

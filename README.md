@@ -2,25 +2,75 @@
 
 5ch.io 専用ブラウザ（Tauri + React デスクトップアプリ）。
 
+## ダウンロード
+
+[GitHub Releases](https://github.com/kiyohken2000/5ch-browser-template/releases) から最新版のZIPをダウンロードして展開するだけで使えます。
+
+- **Windows**: `ember-win-x64.zip`
+- **macOS**: `ember-mac-arm64.zip`
+
+公式サイト: https://ember-5ch.pages.dev
+
+## 主な機能
+
+- 板一覧（カテゴリツリー + 検索フィルタ）
+- スレ一覧（ソート / 検索 / NG / 未読管理 / dat落ちキャッシュ）
+- レスビューア（アンカーポップアップ / ID色分け / 被参照表示 / 画像サムネイル・ライトボックス）
+- タブ式スレ閲覧（ドラッグ並べ替え / 右クリックメニュー）
+- 書き込み（引用 / プレビュー / 名前・メール永続化 / 履歴）
+- お気に入り（板 / スレ）
+- NGフィルタ（ワード / ID / 名前 / 正規表現対応）
+- ダークテーマ
+- 自動更新（60秒間隔）
+- 更新チェック（latest.json 経由）
+- BE / UPLIFT / どんぐり認証
+
 ## 構成
-- `apps/desktop`: Tauri + React のデスクトップアプリ置き場
-- `crates/core-fetch`: 取得処理
-- `crates/core-parse`: `bbsmenu.json` / `subject.txt` / dat パーサ
-- `crates/core-store`: 永続化（SQLite/設定）
-- `crates/core-auth`: `BE` / `UPLIFT` 認証連携
-- `docs`: 仕様・検証記録
-- `scripts`: 補助スクリプト
-- `data`: ポータブル保存先（実行時利用）
 
-## 最初にやること
-1. `docs/5ch_browser_spec.md` を最新化
-2. `scripts/validate_5ch_io.py` を実行して到達性を確認
-3. Tauri プロジェクト初期化
-4. core crate を workspace 化
+```
+5ch-browser-template/
+├── apps/
+│   ├── desktop/          # Tauri + React デスクトップアプリ
+│   └── landing/          # 公式サイト (Cloudflare Pages)
+├── crates/
+│   ├── core-auth/        # BE / UPLIFT / どんぐり認証
+│   ├── core-fetch/       # HTTP取得・投稿フロー
+│   ├── core-parse/       # dat / subject.txt / bbsmenu パーサ
+│   └── core-store/       # JSON永続化 / SQLiteキャッシュ
+├── docs/                 # ドキュメント
+└── scripts/              # ユーティリティスクリプト
+```
 
-## Linux ビルド
+## 開発
 
-### 必要なシステムパッケージ
+### 前提条件
+
+- Rust stable
+- Node.js v22+
+- Tauri CLI（devDependencies に含まれる）
+
+### セットアップ
+
+```bash
+cd apps/desktop
+npm install
+
+# 開発モード起動
+npx tauri dev
+
+# 本番ビルド
+npx tauri build
+```
+
+### テスト
+
+```bash
+cd apps/desktop
+npm run build && npm run test:smoke-ui   # UIスモークテスト
+npm run test:e2e                          # E2Eテスト（Tauri必須）
+```
+
+### Linux ビルド
 
 **Debian / Ubuntu:**
 ```bash
@@ -32,34 +82,16 @@ sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev
 sudo dnf install webkit2gtk4.1-devel gtk3-devel libappindicator-gtk3-devel librsvg2-devel patchelf
 ```
 
-**SUSE Linux Enterprise / openSUSE:**
-```bash
-sudo zypper install webkit2gtk3-devel gtk3-devel libappindicator3-devel librsvg-devel patchelf
-```
+## ドキュメント
 
-### ビルド・実行
-
-```bash
-cd apps/desktop
-npm install
-npm run tauri:dev      # 開発モード
-npm run tauri:build    # リリースビルド
-```
-
-リリースビルドスクリプト（AppImage / .deb / .rpm を一括生成）:
-```bash
-bash scripts/build_linux_release.sh
-```
-
-### 注意事項
-- X11 / Wayland の両方に対応（GTK が自動検出）
-- X11 を強制する場合: `GDK_BACKEND=x11 ./ember`
-- データは `~/.local/share/Ember/` に保存（`$XDG_DATA_HOME` 準拠）
-- カスタムデータディレクトリ: `export EMBER_DATA_DIR=/path/to/dir`
-- AppImage の実行: `chmod +x ember_*.AppImage && ./ember_*.AppImage`
+| ファイル | 内容 |
+|---------|------|
+| [docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md) | 技術仕様・アーキテクチャ・開発手順 |
+| [docs/DEPLOYMENT_RUNBOOK.md](docs/DEPLOYMENT_RUNBOOK.md) | リリース・デプロイ手順 |
+| [docs/PROGRESS_TRACKER.md](docs/PROGRESS_TRACKER.md) | 実装進捗・未実装タスク |
 
 ## 既定方針
+
 - ZIP 展開で即実行（インストーラーなし）
 - 5ch ドメインは `5ch.io` 正規化
-- `BE` / `UPLIFT` は MVP 必須
-
+- BE / UPLIFT は必須

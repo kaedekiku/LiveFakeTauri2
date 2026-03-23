@@ -1,116 +1,118 @@
 # デプロイ手順書
 
-## 1. 概要
-- ランディングページは Cloudflare Pages でホスティング（Vite + React 静的サイト）。
-- ZIP バイナリは GitHub Releases でホスティング。
-- アプリ更新メタデータは `latest.json` として Pages から配信。
+## 概要
 
-リポジトリ上の配置:
-- ランディングアプリ: `apps/landing`
-- メタデータファイル: `apps/landing/public/latest.json`
+- デスクトップバイナリ: GitHub Releases（ZIP配布）
+- 公式サイト + 更新メタデータ: Cloudflare Pages
+- メタデータ: `apps/landing/public/latest.json`
 
-## 2. リリース成果物
-- Windows: `ember-win-x64.zip`
-- macOS: `ember-mac-arm64.zip`
+## リリース手順
 
-自動化しやすいようファイル名は固定とする。
+### 1. バージョン更新
 
-## 3. GitHub Release 手順
-1. 両プラットフォーム用の ZIP 成果物をビルドする。
-2. リリースタグを作成する（例: `v0.2.0`）。
-3. ZIP ファイルをリリースにアップロードする。
-4. 公開リリースページの URL をコピーする。
+以下の3ファイルのバージョンを更新する:
 
-例:
-- `https://github.com/kiyohken2000/5ch-browser-template/releases/tag/v0.2.0`
+- `apps/desktop/package.json` → `"version": "X.Y.Z"`
+- `apps/desktop/src-tauri/tauri.conf.json` → `"version": "X.Y.Z"`
+- `apps/desktop/src-tauri/Cargo.toml` → `version = "X.Y.Z"`
 
-## 4. `latest.json` の生成
-リポジトリルートからワンショットスクリプトを実行:
+> フロントエンドのバージョン表示は `package.json` から自動取得（`vite.config.ts` の `__APP_VERSION__`）。
 
-```powershell
-python scripts/prepare_release_metadata.py `
-  --version 0.2.0 `
-  --released-at 2026-03-07T15:30:00+09:00 `
-  --download-page-url "https://github.com/kiyohken2000/5ch-browser-template/releases/tag/v0.2.0" `
-  --windows-zip "C:\path\to\ember-win-x64.zip" `
-  --mac-zip "C:\path\to\ember-mac-arm64.zip"
+### 2. コミット & プッシュ
+
+```bash
+git add -A && git commit -m "vX.Y.Z: <変更概要>" && git push
 ```
 
-このコマンドは以下を実行する:
-1. SHA-256 ハッシュとファイルサイズを含むメタデータを生成
-2. strict モードで結果を検証
+### 3. Windows ビルド
 
-出力先:
-- `apps/landing/public/latest.json`（デフォルト）
+```bash
+cd apps/desktop
+npx tauri build
+```
 
-## 5. Cloudflare Pages デプロイ
-1. 生成された `latest.json` をランディングプロジェクトの `public/latest.json` に配置する。
-2. 必要に応じてランディングページの内容を更新する。
-3. ランディングをビルドする:
+成果物: `target/release/ember.exe`
 
+ZIP作成:
 ```powershell
-cd apps/landing
+cd target/release
+Compress-Archive -Path ember.exe -DestinationPath ember-win-x64.zip
+```
+
+### 4. macOS ビルド
+
+Mac環境で:
+```bash
+cd apps/desktop
 npm install
-npm run build
+npx tauri build
 ```
 
-4. `apps/landing/dist` を使って Pages にデプロイする。
+成果物を `ember-mac-arm64.zip` として作成。
 
-デプロイ後の確認事項:
-- `https://<Pages ドメイン>/latest.json` が `200` を返すこと。
-- JSON の各フィールドがリリース内容と一致すること。
+### 5. ハッシュ・サイズ取得
 
-デプロイ前のローカル検証:
-
-```powershell
-cd apps/landing
-npm run check:latest
+```bash
+sha256sum ember-win-x64.zip && wc -c < ember-win-x64.zip
+sha256sum ember-mac-arm64.zip && wc -c < ember-mac-arm64.zip
 ```
 
-リリースメタデータの strict 検証（プレースホルダー不可）:
+### 6. latest.json 更新
 
-```powershell
-python scripts/validate_latest_json.py --file apps/landing/public/latest.json --strict
-```
-
-ランディング側のショートカット:
-
-```powershell
-cd apps/landing
-npm run check:latest:strict
-```
-
-## 6. `latest.json` のフォーマット
-例:
+`apps/landing/public/latest.json` を更新:
 
 ```json
 {
-  "version": "0.2.0",
-  "released_at": "2026-03-07T15:30:00+09:00",
-  "download_page_url": "https://github.com/kiyohken2000/5ch-browser-template/releases/tag/v0.2.0",
+  "version": "X.Y.Z",
+  "released_at": "2026-XX-XXTXX:XX:XX+09:00",
+  "download_page_url": "https://github.com/kiyohken2000/5ch-browser-template/releases/tag/vX.Y.Z",
   "platforms": {
     "windows-x64": {
-      "sha256": "...",
-      "size": 12345678,
+      "sha256": "<sha256>",
+      "size": <bytes>,
       "filename": "ember-win-x64.zip"
     },
     "macos-arm64": {
-      "sha256": "...",
-      "size": 23456789,
+      "sha256": "<sha256>",
+      "size": <bytes>,
       "filename": "ember-mac-arm64.zip"
+    },
+    "linux-x64": {
+      "sha256": "",
+      "size": 0,
+      "filename": "ember-linux-x64.zip"
     }
   }
 }
 ```
 
-## 7. リリース後の確認
-1. デスクトップアプリ: デプロイ済み `latest.json` に対して更新チェックを実行する。
-2. 確認事項:
-   - 古いバージョンのアプリでは `hasUpdate=true` となること
-   - 現行バージョンでは `hasUpdate=false` となること
-3. 「ダウンロードページを開く」でリリースページが開くことを確認する。
+コミット & プッシュ。
 
-## 8. 運用ルール
-- ZIP ファイルを Pages でホスティングしないこと。
-- `latest.json` のキャッシュ TTL は短く設定すること。
-- `latest.json` にシークレット情報を含めないこと。
+### 7. GitHub Release 作成
+
+```bash
+gh release create vX.Y.Z \
+  ember-win-x64.zip \
+  ember-mac-arm64.zip \
+  --title "vX.Y.Z" \
+  --notes "## Changes\n\n- ..."
+```
+
+### 8. Cloudflare Pages デプロイ
+
+```bash
+cd apps/landing
+npx wrangler pages deploy public --project-name ember-5ch
+```
+
+### 9. リリース後の確認
+
+- 旧バージョンのアプリで更新チェック → `hasUpdate=true`
+- 新バージョンのアプリで更新チェック → `hasUpdate=false`（最新版です）
+- ダウンロードページリンクが正しいこと
+
+## 運用ルール
+
+- ZIP ファイルは GitHub Releases でホスティング（Pages には置かない）
+- ファイル名は固定: `ember-win-x64.zip`, `ember-mac-arm64.zip`
+- `latest.json` にシークレット情報を含めない
