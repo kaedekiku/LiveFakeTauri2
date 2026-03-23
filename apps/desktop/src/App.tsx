@@ -1042,6 +1042,7 @@ export default function App() {
       // persist to SQLite
       const tabTitle = threadTabs.find((t) => t.threadUrl === url)?.title
         ?? fetchedThreads.find((t) => t.threadUrl === url)?.title
+        ?? result.title
         ?? "";
       invoke("save_thread_cache", { threadUrl: url, title: tabTitle, responsesJson: JSON.stringify(rows) }).catch(() => {});
       const now = new Date();
@@ -2411,13 +2412,28 @@ export default function App() {
                   if (isTauriRuntime()) {
                     invoke<[string, string, number][]>("load_all_cached_threads").then((list) => {
                       // Only show threads from the current board that are not in the active thread list (dat落ち)
-                      const currentBoardUrl = getBoardUrlFromThreadUrl(threadUrl);
+                      // Compare by board name only (ignore hostname differences like greta vs mao)
+                      const extractBoardName = (url: string): string => {
+                        try {
+                          const parts = new URL(url).pathname.split("/").filter(Boolean);
+                          if (parts.length >= 3 && parts[0] === "test" && parts[1] === "read.cgi") return parts[2];
+                          return parts[0] || "";
+                        } catch { return ""; }
+                      };
+                      const currentBoard = extractBoardName(threadUrl);
                       const activeUrls = new Set(fetchedThreads.map((t) => t.threadUrl));
                       const datOchiList = list
-                        .filter(([url]) => getBoardUrlFromThreadUrl(url) === currentBoardUrl)
-                        .filter(([url]) => !activeUrls.has(url))
-                        .filter(([, title]) => title && title.trim() !== "");
-                      setCachedThreadList(datOchiList.map(([threadUrl, title, count]) => ({ threadUrl, title, resCount: count })));
+                        .filter(([url]) => extractBoardName(url) === currentBoard)
+                        .filter(([url]) => !activeUrls.has(url));
+                      setCachedThreadList(datOchiList.map(([threadUrl, title, count]) => {
+                        const displayTitle = title && title.trim() !== "" ? title : (() => {
+                          try {
+                            const parts = new URL(threadUrl).pathname.split("/").filter(Boolean);
+                            return parts[parts.length - 1] || threadUrl;
+                          } catch { return threadUrl; }
+                        })();
+                        return { threadUrl, title: displayTitle, resCount: count };
+                      }));
                       setShowCachedOnly(true);
                     }).catch(() => {});
                   }
