@@ -116,6 +116,17 @@ const DEFAULT_BOARD_PANE_PX = 220;
 const DEFAULT_THREAD_PANE_PX = 420;
 const DEFAULT_RESPONSE_TOP_RATIO = 42;
 const LAYOUT_PREFS_KEY = "desktop.layoutPrefs.v1";
+const MIN_COL_WIDTH = 16;
+const DEFAULT_COL_WIDTHS: Record<string, number> = {
+  fetched: 18,
+  id: 36,
+  res: 42,
+  read: 36,
+  unread: 36,
+  lastFetch: 120,
+  speed: 54,
+};
+const COL_RESIZE_HANDLE_PX = 5;
 const COMPOSE_PREFS_KEY = "desktop.composePrefs.v1";
 const NAME_HISTORY_KEY = "desktop.nameHistory.v1";
 const BOOKMARK_KEY = "desktop.bookmarks.v1";
@@ -133,7 +144,8 @@ const MENU_EDGE_PADDING = 8;
 type ResizeDragState =
   | { mode: "board-thread"; startX: number; startBoardPx: number; startThreadPx: number }
   | { mode: "thread-response"; startX: number; startBoardPx: number; startThreadPx: number }
-  | { mode: "response-rows"; startY: number; startThreadPx: number; responseLayoutHeight: number };
+  | { mode: "response-rows"; startY: number; startThreadPx: number; responseLayoutHeight: number }
+  | { mode: "col-resize"; colKey: string; startX: number; startWidth: number; reverse: boolean };
 
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
 const clampMenuPosition = (x: number, y: number, width: number, height: number) => ({
@@ -398,6 +410,7 @@ export default function App() {
   const [threadPanePx, setThreadPanePx] = useState(DEFAULT_THREAD_PANE_PX);
   const [responseTopRatio, setResponseTopRatio] = useState(DEFAULT_RESPONSE_TOP_RATIO);
   const resizeDragRef = useRef<ResizeDragState | null>(null);
+  const [threadColWidths, setThreadColWidths] = useState<Record<string, number>>({ ...DEFAULT_COL_WIDTHS });
   const layoutPrefsLoadedRef = useRef(false);
   const threadScrollPositions = useRef<Record<string, number>>({});
   const boardTreeRef = useRef<HTMLDivElement | null>(null);
@@ -1681,6 +1694,7 @@ export default function App() {
     setBoardPanePx(DEFAULT_BOARD_PANE_PX);
     setThreadPanePx(DEFAULT_THREAD_PANE_PX);
     setResponseTopRatio(DEFAULT_RESPONSE_TOP_RATIO);
+    setThreadColWidths({ ...DEFAULT_COL_WIDTHS });
     localStorage.removeItem(LAYOUT_PREFS_KEY);
     setStatus("layout reset");
   };
@@ -1724,6 +1738,40 @@ export default function App() {
     };
     document.body.style.userSelect = "none";
     document.body.style.cursor = "row-resize";
+  };
+
+  const colResizeCursor = (side: "left" | "right", event: React.MouseEvent<HTMLTableCellElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const inHandle = side === "right"
+      ? event.clientX >= rect.right - COL_RESIZE_HANDLE_PX
+      : event.clientX <= rect.left + COL_RESIZE_HANDLE_PX;
+    event.currentTarget.style.cursor = inHandle ? "col-resize" : "";
+  };
+
+  const beginColResize = (colKey: string, side: "left" | "right", event: React.MouseEvent<HTMLTableCellElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    if (side === "right" && event.clientX < rect.right - COL_RESIZE_HANDLE_PX) return;
+    if (side === "left" && event.clientX > rect.left + COL_RESIZE_HANDLE_PX) return;
+    event.preventDefault();
+    event.stopPropagation();
+    resizeDragRef.current = {
+      mode: "col-resize",
+      colKey,
+      startX: event.clientX,
+      startWidth: threadColWidths[colKey] ?? DEFAULT_COL_WIDTHS[colKey] ?? 40,
+      reverse: side === "left",
+    };
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "col-resize";
+  };
+
+  const resetColWidth = (colKey: string, side: "left" | "right", event: React.MouseEvent<HTMLTableCellElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    if (side === "right" && event.clientX < rect.right - COL_RESIZE_HANDLE_PX) return;
+    if (side === "left" && event.clientX > rect.left + COL_RESIZE_HANDLE_PX) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setThreadColWidths((prev) => ({ ...prev, [colKey]: DEFAULT_COL_WIDTHS[colKey] ?? 40 }));
   };
 
   useEffect(() => {
@@ -1840,6 +1888,7 @@ export default function App() {
           fontSize?: number;
           darkMode?: boolean;
           fontFamily?: string;
+          threadColWidths?: Record<string, number>;
         };
         if (typeof parsed.boardPanePx === "number") setBoardPanePx(parsed.boardPanePx);
         if (typeof parsed.threadPanePx === "number") {
@@ -1853,6 +1902,9 @@ export default function App() {
         if (typeof parsed.fontSize === "number") setFontSize(parsed.fontSize);
         if (typeof parsed.darkMode === "boolean") setDarkMode(parsed.darkMode);
         if (typeof parsed.fontFamily === "string") setFontFamily(parsed.fontFamily);
+        if (parsed.threadColWidths && typeof parsed.threadColWidths === "object") {
+          setThreadColWidths((prev) => ({ ...prev, ...parsed.threadColWidths }));
+        }
       } catch { /* ignore */ }
     };
     // Try localStorage first, then file-based persistence
@@ -2047,6 +2099,13 @@ export default function App() {
       const drag = resizeDragRef.current;
       if (!drag) return;
 
+      if (drag.mode === "col-resize") {
+        const delta = event.clientX - drag.startX;
+        const newWidth = Math.max(MIN_COL_WIDTH, drag.reverse ? drag.startWidth - delta : drag.startWidth + delta);
+        setThreadColWidths((prev) => ({ ...prev, [drag.colKey]: newWidth }));
+        return;
+      }
+
       if (drag.mode === "response-rows") {
         const deltaY = event.clientY - drag.startY;
         const maxThread = Math.max(
@@ -2110,12 +2169,13 @@ export default function App() {
       fontSize,
       darkMode,
       fontFamily,
+      threadColWidths,
     });
     localStorage.setItem(LAYOUT_PREFS_KEY, payload);
     if (isTauriRuntime()) {
       void invoke("save_layout_prefs", { prefs: payload }).catch(() => {});
     }
-  }, [boardPanePx, threadPanePx, responseTopRatio, fontSize, darkMode, fontFamily]);
+  }, [boardPanePx, threadPanePx, responseTopRatio, fontSize, darkMode, fontFamily, threadColWidths]);
 
   useEffect(() => {
     if (isTauriRuntime()) {
@@ -2161,7 +2221,7 @@ export default function App() {
   return (
     <div
       className={`shell${darkMode ? " dark" : ""}`}
-      style={{ fontSize: `${fontSize}px`, fontFamily: fontFamily || undefined }}
+      style={{ fontFamily: fontFamily || undefined }}
       onClick={() => {
         setThreadMenu(null);
         setResponseMenu(null);
@@ -2268,7 +2328,8 @@ export default function App() {
         className="layout"
         style={{
           gridTemplateColumns: `${boardPanePx}px ${SPLITTER_PX}px 1fr`,
-        }}
+          '--fs-delta': `${fontSize - 12}px`,
+        } as React.CSSProperties}
       >
         <section className="pane boards">
           <div className="boards-header">
@@ -2510,28 +2571,28 @@ export default function App() {
           <table>
             <thead>
               <tr>
-                <th className="sortable-th" onClick={() => toggleThreadSort("fetched")} title="取得済みスレを上にソート">
+                <th className="sortable-th col-resizable" style={{ width: threadColWidths.fetched + "px" }} onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); if (e.clientX >= r.right - COL_RESIZE_HANDLE_PX) return; toggleThreadSort("fetched"); }} onMouseDown={(e) => beginColResize("fetched", "right", e)} onDoubleClick={(e) => resetColWidth("fetched", "right", e)} onMouseMove={(e) => colResizeCursor("right", e)} title="取得済みスレを上にソート">
                   !{threadSortKey === "fetched" ? (threadSortAsc ? "\u25B2" : "\u25BC") : ""}
                 </th>
-                <th className="sortable-th" onClick={() => toggleThreadSort("id")}>
+                <th className="sortable-th col-resizable" style={{ width: threadColWidths.id + "px" }} onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); if (e.clientX >= r.right - COL_RESIZE_HANDLE_PX) return; toggleThreadSort("id"); }} onMouseDown={(e) => beginColResize("id", "right", e)} onDoubleClick={(e) => resetColWidth("id", "right", e)} onMouseMove={(e) => colResizeCursor("right", e)}>
                   番号{threadSortKey === "id" ? (threadSortAsc ? " \u25B2" : " \u25BC") : ""}
                 </th>
                 <th className="sortable-th" onClick={() => toggleThreadSort("title")}>
                   タイトル{threadSortKey === "title" ? (threadSortAsc ? " \u25B2" : " \u25BC") : ""}
                 </th>
-                <th className="sortable-th" onClick={() => toggleThreadSort("res")}>
+                <th className="sortable-th col-resizable-left" style={{ width: threadColWidths.res + "px" }} onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); if (e.clientX <= r.left + COL_RESIZE_HANDLE_PX) return; toggleThreadSort("res"); }} onMouseDown={(e) => beginColResize("res", "left", e)} onDoubleClick={(e) => resetColWidth("res", "left", e)} onMouseMove={(e) => colResizeCursor("left", e)}>
                   レス{threadSortKey === "res" ? (threadSortAsc ? " \u25B2" : " \u25BC") : ""}
                 </th>
-                <th>
+                <th className="col-resizable-left" style={{ width: threadColWidths.read + "px" }} onMouseDown={(e) => beginColResize("read", "left", e)} onDoubleClick={(e) => resetColWidth("read", "left", e)} onMouseMove={(e) => colResizeCursor("left", e)}>
                   既読
                 </th>
-                <th>
+                <th className="col-resizable-left" style={{ width: threadColWidths.unread + "px" }} onMouseDown={(e) => beginColResize("unread", "left", e)} onDoubleClick={(e) => resetColWidth("unread", "left", e)} onMouseMove={(e) => colResizeCursor("left", e)}>
                   新着
                 </th>
-                <th>
+                <th className="col-resizable-left" style={{ width: threadColWidths.lastFetch + "px" }} onMouseDown={(e) => beginColResize("lastFetch", "left", e)} onDoubleClick={(e) => resetColWidth("lastFetch", "left", e)} onMouseMove={(e) => colResizeCursor("left", e)}>
                   最終取得
                 </th>
-                <th className="sortable-th" onClick={() => toggleThreadSort("speed")}>
+                <th className="sortable-th col-resizable-left" style={{ width: threadColWidths.speed + "px" }} onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); if (e.clientX <= r.left + COL_RESIZE_HANDLE_PX) return; toggleThreadSort("speed"); }} onMouseDown={(e) => beginColResize("speed", "left", e)} onDoubleClick={(e) => resetColWidth("speed", "left", e)} onMouseMove={(e) => colResizeCursor("left", e)}>
                   勢い{threadSortKey === "speed" ? (threadSortAsc ? " \u25B2" : " \u25BC") : ""}
                 </th>
               </tr>

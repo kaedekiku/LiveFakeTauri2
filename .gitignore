@@ -31,3 +31,9 @@ apps/desktop/src-tauri/data/
 zzz_memo.txt
 _temp
 _temp_*
+
+# Claude Code
+.claude/settings.local.json
+
+# Lock file
+apps/desktop/pnpm-lock.yaml
