@@ -547,7 +547,7 @@ async fn probe_post_flow_trace(
     ));
 
     let cookie_header = get_login_cookie_header();
-    let (confirm, _confirm_html) = submit_post_confirm_with_html(
+    let (confirm, confirm_html) = submit_post_confirm_with_html(
         &client,
         &tokens,
         from.as_deref().unwrap_or(""),
@@ -558,16 +558,17 @@ async fn probe_post_flow_trace(
     .await
     .map_err(|e| format!("{:?}", e))?;
 
-    let contains_ok = confirm.body_preview.contains("書きこみが終わりました")
-        || confirm.body_preview.contains("書き込みが終わりました")
-        || confirm.body_preview.contains("投稿が完了")
-        || (!confirm.contains_error && confirm.status == 200);
-    let error_flag = if contains_ok { false } else { confirm.contains_error || confirm.status >= 400 };
+    // Check full response body for success indicators (body_preview is only 240 chars)
+    let contains_ok = confirm_html.contains("書きこみが終わりました")
+        || confirm_html.contains("書き込みが終わりました")
+        || confirm_html.contains("投稿が完了");
+    let error_flag = !contains_ok;
     let submit_summary = Some(format!(
-        "status={} error={} type={}",
+        "status={} error={} type={} body={}",
         confirm.status,
         error_flag,
-        confirm.content_type.unwrap_or_else(|| "-".to_string())
+        confirm.content_type.unwrap_or_else(|| "-".to_string()),
+        confirm.body_preview.chars().take(120).collect::<String>()
     ));
 
     Ok(PostFlowTrace {
