@@ -24,6 +24,8 @@ type LatestJson = {
   platforms: {
     "windows-x64"?: PlatformAsset;
     "macos-arm64"?: PlatformAsset;
+    "linux-x64"?: PlatformAsset;
+    "linux-aarch64"?: PlatformAsset;
   };
 };
 
@@ -56,6 +58,8 @@ export default function App() {
   const [zoomedImage, setZoomedImage] = useState<ZoomImage | null>(null);
   const windowsAsset = meta?.platforms["windows-x64"] ?? null;
   const macAsset = meta?.platforms["macos-arm64"] ?? null;
+  const linuxX64Asset = meta?.platforms["linux-x64"] ?? null;
+  const linuxAarch64Asset = meta?.platforms["linux-aarch64"] ?? null;
   const primaryDownloadUrl = meta?.download_page_url || REPO_RELEASES_URL;
 
   useEffect(() => {
@@ -191,6 +195,18 @@ export default function App() {
               を実行してから再度起動してください。
             </p>
           </div>
+          <div className="install-platform">
+            <h3>Linux版 (x64 / AArch64)</h3>
+            <ol className="install-steps">
+              <li>「最新版をダウンロード」から `ember-linux-x64.zip` または `ember-linux-aarch64.zip` を取得します。</li>
+              <li>ZIPを展開し、AppImageファイルに実行権限を付与して起動します: `chmod +x *.AppImage && ./*.AppImage`</li>
+              <li>または .deb / .rpm パッケージを使用してインストールできます。</li>
+            </ol>
+            <p className="lead" style={{ marginTop: 8 }}>
+              Raspberry Pi (AArch64) では画面描画に問題がある場合、環境変数
+              `LIBGL_ALWAYS_SOFTWARE=1` を設定して起動してください。
+            </p>
+          </div>
         </section>
 
         <section className="card download-panel">
@@ -224,6 +240,32 @@ export default function App() {
                 )}
               </strong>
               <em>{macAsset ? formatBytes(macAsset.size) : "-"}</em>
+            </li>
+            <li>
+              <span>Linux x64</span>
+              <strong>
+                {linuxX64Asset && linuxX64Asset.size > 0 ? (
+                  <a href={buildAssetUrl(primaryDownloadUrl, linuxX64Asset.filename)} target="_blank" rel="noreferrer">
+                    {linuxX64Asset.filename}
+                  </a>
+                ) : (
+                  "-"
+                )}
+              </strong>
+              <em>{linuxX64Asset && linuxX64Asset.size > 0 ? formatBytes(linuxX64Asset.size) : "-"}</em>
+            </li>
+            <li>
+              <span>Linux AArch64</span>
+              <strong>
+                {linuxAarch64Asset && linuxAarch64Asset.size > 0 ? (
+                  <a href={buildAssetUrl(primaryDownloadUrl, linuxAarch64Asset.filename)} target="_blank" rel="noreferrer">
+                    {linuxAarch64Asset.filename}
+                  </a>
+                ) : (
+                  "-"
+                )}
+              </strong>
+              <em>{linuxAarch64Asset && linuxAarch64Asset.size > 0 ? formatBytes(linuxAarch64Asset.size) : "-"}</em>
             </li>
           </ul>
         </section>

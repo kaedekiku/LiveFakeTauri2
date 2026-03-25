@@ -614,9 +614,13 @@ fn current_platform_key() -> &'static str {
     {
         "macos-arm64"
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
         "linux-x64"
+    }
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    {
+        "linux-aarch64"
     }
 }
 

@@ -65,5 +65,9 @@
       "Bash(cp ../target/release/ember.exe .)",
       "Bash(powershell -Command \"Compress-Archive -Force -Path ember.exe -DestinationPath ember-win-x64.zip\")"
     ]
-  }
+  },
+  "enabledMcpjsonServers": [
+    "context7"
+  ],
+  "enableAllProjectMcpServers": true
 }
