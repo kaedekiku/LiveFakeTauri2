@@ -58,8 +58,6 @@ export default function App() {
   const [zoomedImage, setZoomedImage] = useState<ZoomImage | null>(null);
   const windowsAsset = meta?.platforms["windows-x64"] ?? null;
   const macAsset = meta?.platforms["macos-arm64"] ?? null;
-  const linuxX64Asset = meta?.platforms["linux-x64"] ?? null;
-  const linuxAarch64Asset = meta?.platforms["linux-aarch64"] ?? null;
   const primaryDownloadUrl = meta?.download_page_url || REPO_RELEASES_URL;
 
   useEffect(() => {
@@ -197,10 +195,11 @@ export default function App() {
           </div>
           <div className="install-platform">
             <h3>Linux版 (x64 / AArch64)</h3>
+            <p className="lead">Linux版はビルド済みバイナリを配布していません。ソースコードからビルドしてください。</p>
             <ol className="install-steps">
-              <li>「最新版をダウンロード」から `ember-linux-x64.zip` または `ember-linux-aarch64.zip` を取得します。</li>
-              <li>ZIPを展開し、AppImageファイルに実行権限を付与して起動します: `chmod +x *.AppImage && ./*.AppImage`</li>
-              <li>または .deb / .rpm パッケージを使用してインストールできます。</li>
+              <li><a href="https://github.com/kiyohken2000/5ch-browser-template" target="_blank" rel="noreferrer">GitHubリポジトリ</a>からソースコードをクローンまたはダウンロードします。</li>
+              <li>Rust, Node.js, および Tauri v2 の依存パッケージをインストールします。</li>
+              <li>`cd apps/desktop && npm install && npm run tauri:build` でビルドします。</li>
             </ol>
             <p className="lead" style={{ marginTop: 8 }}>
               Raspberry Pi (AArch64) では画面描画に問題がある場合、環境変数
@@ -242,30 +241,11 @@ export default function App() {
               <em>{macAsset ? formatBytes(macAsset.size) : "-"}</em>
             </li>
             <li>
-              <span>Linux x64</span>
+              <span>Linux (x64 / AArch64)</span>
               <strong>
-                {linuxX64Asset && linuxX64Asset.size > 0 ? (
-                  <a href={buildAssetUrl(primaryDownloadUrl, linuxX64Asset.filename)} target="_blank" rel="noreferrer">
-                    {linuxX64Asset.filename}
-                  </a>
-                ) : (
-                  "-"
-                )}
+                <a href="https://github.com/kiyohken2000/5ch-browser-template" target="_blank" rel="noreferrer">ソースからビルド</a>
               </strong>
-              <em>{linuxX64Asset && linuxX64Asset.size > 0 ? formatBytes(linuxX64Asset.size) : "-"}</em>
-            </li>
-            <li>
-              <span>Linux AArch64</span>
-              <strong>
-                {linuxAarch64Asset && linuxAarch64Asset.size > 0 ? (
-                  <a href={buildAssetUrl(primaryDownloadUrl, linuxAarch64Asset.filename)} target="_blank" rel="noreferrer">
-                    {linuxAarch64Asset.filename}
-                  </a>
-                ) : (
-                  "-"
-                )}
-              </strong>
-              <em>{linuxAarch64Asset && linuxAarch64Asset.size > 0 ? formatBytes(linuxAarch64Asset.size) : "-"}</em>
+              <em>-</em>
             </li>
           </ul>
         </section>
