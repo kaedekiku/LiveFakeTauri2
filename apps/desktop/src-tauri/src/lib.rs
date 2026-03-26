@@ -562,24 +562,66 @@ async fn probe_post_flow_trace(
     let contains_ok = confirm_html.contains("書きこみが終わりました")
         || confirm_html.contains("書き込みが終わりました")
         || confirm_html.contains("投稿が完了");
-    let error_flag = !contains_ok;
-    let submit_summary = Some(format!(
-        "status={} error={} type={} body={}",
+
+    let confirm_summary = Some(format!(
+        "status={} ok={} type={} body={}",
         confirm.status,
-        error_flag,
+        contains_ok,
         confirm.content_type.unwrap_or_else(|| "-".to_string()),
         confirm.body_preview.chars().take(120).collect::<String>()
     ));
 
-    Ok(PostFlowTrace {
-        thread_url,
-        allow_real_submit,
-        token_summary,
-        confirm_summary: submit_summary.clone(),
-        finalize_summary: None,
-        submit_summary,
-        blocked: false,
-    })
+    // If confirm step returned a confirmation page (not direct success), finalize the post
+    if contains_ok {
+        let submit_summary = confirm_summary.clone();
+        Ok(PostFlowTrace {
+            thread_url,
+            allow_real_submit,
+            token_summary,
+            confirm_summary,
+            finalize_summary: None,
+            submit_summary,
+            blocked: false,
+        })
+    } else {
+        // Need to submit the confirmation form to actually post
+        let finalize = submit_post_finalize_from_confirm(
+            &client,
+            &confirm_html,
+            &tokens.post_url,
+            cookie_header.as_deref(),
+        )
+        .await
+        .map_err(|e| format!("{:?}", e))?;
+
+        let finalize_body = finalize.body_preview.clone();
+        let finalize_ok = finalize_body.contains("書きこみが終わりました")
+            || finalize_body.contains("書き込みが終わりました")
+            || finalize_body.contains("投稿が完了");
+        let finalize_summary = Some(format!(
+            "status={} ok={} type={} body={}",
+            finalize.status,
+            finalize_ok,
+            finalize.content_type.unwrap_or_else(|| "-".to_string()),
+            finalize_body.chars().take(120).collect::<String>()
+        ));
+
+        let error_flag = !finalize_ok;
+        let submit_summary = Some(format!(
+            "status={} error={} finalized=true",
+            finalize.status, error_flag
+        ));
+
+        Ok(PostFlowTrace {
+            thread_url,
+            allow_real_submit,
+            token_summary,
+            confirm_summary,
+            finalize_summary,
+            submit_summary,
+            blocked: false,
+        })
+    }
 }
 
 fn parse_version_numbers(version: &str) -> Vec<u64> {

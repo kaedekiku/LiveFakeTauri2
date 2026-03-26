@@ -805,7 +805,9 @@ pub fn create_thread(
             // Verify it looks like a valid thread path (has a numeric ID)
             let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
             if parts.len() >= 4 && parts[3].chars().all(|c| c.is_ascii_digit()) {
-                Some(format!("{}://{}{}", parsed.scheme(), host, path))
+                // Build clean URL without suffixes like l50
+                let clean_path = format!("/test/read.cgi/{}/{}/", parts[2], parts[3]);
+                Some(format!("{}://{}{}", parsed.scheme(), host, clean_path))
             } else {
                 None
             }
@@ -919,7 +921,7 @@ pub async fn submit_post_finalize_from_confirm(
         curl_post_5ch(&thread_url, &form.action_url, &fields, extra_cookies)?;
 
     let contains_error = final_body.contains("error");
-    let body_preview: String = final_body.chars().take(240).collect();
+    let body_preview: String = final_body.chars().take(1000).collect();
     Ok(PostSubmitResult {
         action_url: form.action_url,
         status: final_status,
