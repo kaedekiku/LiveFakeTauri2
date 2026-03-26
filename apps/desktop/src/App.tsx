@@ -3118,6 +3118,7 @@ export default function App() {
             onChange={(e) => setComposeBody(e.target.value)}
             onKeyDown={onComposeBodyKeyDown}
             placeholder="本文を入力"
+            autoFocus
             style={{ fontSize: `${composeFontSize}px` }}
           />
           <div className="compose-meta">
