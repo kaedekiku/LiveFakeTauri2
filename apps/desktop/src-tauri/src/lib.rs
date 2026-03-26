@@ -558,10 +558,14 @@ async fn probe_post_flow_trace(
     .await
     .map_err(|e| format!("{:?}", e))?;
 
-    // Check full response body for success indicators (body_preview is only 240 chars)
-    let contains_ok = confirm_html.contains("書きこみが終わりました")
-        || confirm_html.contains("書き込みが終わりました")
-        || confirm_html.contains("投稿が完了");
+    // curl_post_5ch already handles confirm form auto-submit and consent pages internally.
+    // Check if the final response indicates success.
+    let is_ok = |html: &str| -> bool {
+        html.contains("書きこみが終わりました")
+            || html.contains("書き込みが終わりました")
+            || html.contains("投稿が完了")
+    };
+    let mut contains_ok = is_ok(&confirm_html);
 
     let confirm_summary = Some(format!(
         "status={} ok={} type={} body={}",
@@ -571,57 +575,45 @@ async fn probe_post_flow_trace(
         confirm.body_preview.chars().take(120).collect::<String>()
     ));
 
-    // If confirm step returned a confirmation page (not direct success), finalize the post
-    if contains_ok {
-        let submit_summary = confirm_summary.clone();
-        Ok(PostFlowTrace {
-            thread_url,
-            allow_real_submit,
-            token_summary,
-            confirm_summary,
-            finalize_summary: None,
-            submit_summary,
-            blocked: false,
-        })
-    } else {
-        // Need to submit the confirmation form to actually post
-        let finalize = submit_post_finalize_from_confirm(
+    // If not successful, retry once — the first attempt may have been a cookie/consent
+    // page that curl_post_5ch handled internally, setting cookies for the next attempt.
+    let mut retry_summary: Option<String> = None;
+    if !contains_ok {
+        let (retry_confirm, retry_html) = submit_post_confirm_with_html(
             &client,
-            &confirm_html,
-            &tokens.post_url,
+            &tokens,
+            from.as_deref().unwrap_or(""),
+            mail.as_deref().unwrap_or(""),
+            message.as_deref().unwrap_or(""),
             cookie_header.as_deref(),
         )
         .await
         .map_err(|e| format!("{:?}", e))?;
 
-        let finalize_body = finalize.body_preview.clone();
-        let finalize_ok = finalize_body.contains("書きこみが終わりました")
-            || finalize_body.contains("書き込みが終わりました")
-            || finalize_body.contains("投稿が完了");
-        let finalize_summary = Some(format!(
-            "status={} ok={} type={} body={}",
-            finalize.status,
-            finalize_ok,
-            finalize.content_type.unwrap_or_else(|| "-".to_string()),
-            finalize_body.chars().take(120).collect::<String>()
+        contains_ok = is_ok(&retry_html);
+        retry_summary = Some(format!(
+            "retry: status={} ok={} body={}",
+            retry_confirm.status,
+            contains_ok,
+            retry_confirm.body_preview.chars().take(120).collect::<String>()
         ));
-
-        let error_flag = !finalize_ok;
-        let submit_summary = Some(format!(
-            "status={} error={} finalized=true",
-            finalize.status, error_flag
-        ));
-
-        Ok(PostFlowTrace {
-            thread_url,
-            allow_real_submit,
-            token_summary,
-            confirm_summary,
-            finalize_summary,
-            submit_summary,
-            blocked: false,
-        })
     }
+
+    let error_flag = !contains_ok;
+    let submit_summary = Some(format!(
+        "status={} error={} retried={}",
+        confirm.status, error_flag, retry_summary.is_some()
+    ));
+
+    Ok(PostFlowTrace {
+        thread_url,
+        allow_real_submit,
+        token_summary,
+        confirm_summary,
+        finalize_summary: retry_summary,
+        submit_summary,
+        blocked: false,
+    })
 }
 
 fn parse_version_numbers(version: &str) -> Vec<u64> {
