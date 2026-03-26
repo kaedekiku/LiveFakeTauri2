@@ -5,7 +5,7 @@
   --ink: #1b1b1b;
   --sub: #555555;
   --accent: #0066cc;
-  font-family: "Meiryo", "Yu Gothic UI", "Segoe UI", "Noto Sans JP", sans-serif;
+  font-family: "Meiryo", "Yu Gothic UI", "Segoe UI", "Noto Sans JP", "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
 }
 
 * {
