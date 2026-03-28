@@ -205,9 +205,12 @@ const renderHighlightedPlainText = (text: string, query: string): { __html: stri
 const normalizeExternalUrl = (raw: string): string | null => {
   const v = raw.replace(/&amp;/g, "&");
   if (/^https?:\/\//i.test(v)) return v;
-  if (/^ttps:\/\//i.test(v)) return `https://${v.slice("ttps://".length)}`;
-  if (/^ttp:\/\//i.test(v)) return `http://${v.slice("ttp://".length)}`;
-  if (/^s:\/\//i.test(v)) return `https://${v.slice("s://".length)}`;
+  if (/^ttps:\/\//i.test(v)) return `h${v}`;
+  if (/^ttp:\/\//i.test(v)) return `h${v}`;
+  if (/^ps:\/\//i.test(v)) return `htt${v}`;
+  if (/^s:\/\//i.test(v)) return `http${v}`;
+  // Bare domain with path (https:// 抜き)
+  if (/^[a-zA-Z0-9][-a-zA-Z0-9]*(?:\.[a-zA-Z0-9][-a-zA-Z0-9]*)*\.[a-zA-Z]{2,}[/]/.test(v)) return `https://${v}`;
   return null;
 };
 
@@ -241,13 +244,13 @@ const renderResponseBody = (html: string, opts?: { hideImages?: boolean }): { __
     .replace(/"/g, "&quot;");
   if (opts?.hideImages) {
     // Remove image URL lines entirely
-    safe = safe.split("\n").filter((line) => !/(?:https?:\/\/|ttps?:\/\/|s:\/\/)[^\s]+\.(?:jpg|jpeg|png|gif|webp)/i.test(line)).join("\n");
+    safe = safe.split("\n").filter((line) => !/(?:https?:\/\/|ttps?:\/\/|ps:\/\/|s:\/\/|(?<!\S)(?:[a-zA-Z0-9][-a-zA-Z0-9]*\.)+[a-zA-Z]{2,}\/)[^\s]+\.(?:jpg|jpeg|png|gif|webp)/i.test(line)).join("\n");
   }
   safe = safe.replace(/\n/g, "<br>");
   const collectedThumbs: string[] = [];
   if (!opts?.hideImages) {
     safe = safe.replace(
-      /((?:https?:\/\/|ttps?:\/\/|s:\/\/)[^\s<>&"]+\.(?:jpg|jpeg|png|gif|webp)(?:\?[^\s<>&"]*(?:&amp;[^\s<>&"]*)*)?)/gi,
+      /((?:https?:\/\/|ttps?:\/\/|ps:\/\/|s:\/\/)[^\s<>&"]+\.(?:jpg|jpeg|png|gif|webp)(?:\?[^\s<>&"]*(?:&amp;[^\s<>&"]*)*)?|(?<!\S)(?:[a-zA-Z0-9][-a-zA-Z0-9]*\.)+[a-zA-Z]{2,}\/[^\s<>&"]*\.(?:jpg|jpeg|png|gif|webp)(?:\?[^\s<>&"]*(?:&amp;[^\s<>&"]*)*)?)/gi,
       (match) => {
         const href = normalizeExternalUrl(match);
         if (!href) return match;
@@ -258,7 +261,7 @@ const renderResponseBody = (html: string, opts?: { hideImages?: boolean }): { __
   }
   // Linkify non-image URLs (must run after image thumb replacement)
   safe = safe.replace(
-    /((?:https?:\/\/|ttps?:\/\/|s:\/\/)[^\s<>&"]+(?:&amp;[^\s<>&"]*)*)/gi,
+    /((?:https?:\/\/|ttps?:\/\/|ps:\/\/|s:\/\/)[^\s<>&"]+(?:&amp;[^\s<>&"]*)*|(?<!\S)(?:[a-zA-Z0-9][-a-zA-Z0-9]*\.)+[a-zA-Z]{2,}\/[^\s<>&"]+(?:&amp;[^\s<>&"]*)*)/gi,
     (match) => {
       // Skip if already inside a thumb-link or img tag
       if (match.match(/\.(jpg|jpeg|png|gif|webp)(\?|$)/i)) return match;
