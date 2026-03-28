@@ -25,7 +25,7 @@ globs: "**/*.tsx,**/*.ts"
 - ダークモードはルート要素の `.dark` クラスで切替
 
 ### 依存関係
-- ランタイム依存は3つのみ: react, react-dom, @tauri-apps/api
+- ランタイム依存は4つのみ: react, react-dom, @tauri-apps/api, lucide-react
 - 新規npm依存は明示的な承認なしに追加しない
 - TypeScript strictモード有効
 

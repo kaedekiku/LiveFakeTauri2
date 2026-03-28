@@ -87,7 +87,7 @@ cd apps/desktop && npx tsc --noEmit      # TypeScript型チェック
 
 - **フロントエンド**: `App.tsx` 単一ファイルモノリス。状態は `useState`/`useEffect` で完結。外部UIライブラリ不使用
 - **スタイル**: `styles.css` 単一ファイル。`.dark` クラスでダークモード切替
-- **ランタイム依存**: react, react-dom, @tauri-apps/api のみ
+- **ランタイム依存**: react, react-dom, @tauri-apps/api, lucide-react のみ
 - **Tauri IPC**: `invoke()` は `isTauriRuntime()` チェックで囲む。コマンド名は snake_case、パラメータはcamelCase
 - **Rust crate**: 各crateは単一 `lib.rs` を維持 (2000行超まで分割しない)
 - **エラー処理**: Tauriコマンドは `Result<T, String>`、ライブラリcrateは `thiserror` カスタム型
