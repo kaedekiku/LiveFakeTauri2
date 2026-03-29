@@ -170,6 +170,10 @@ body {
   background: #cde;
   font-weight: bold;
 }
+.board-btn.board-btn-drag-over {
+  border-color: #0066cc;
+  background: #bde;
+}
 
 .layout {
   display: grid;
@@ -1930,6 +1934,10 @@ pre {
 .dark .board-btn.selected {
   border-color: #666;
   background: #3a4a5a;
+}
+.dark .board-btn.board-btn-drag-over {
+  border-color: #4a9eff;
+  background: #2a3a4a;
 }
 .dark .tool-bar {
   background: #2d2d30;

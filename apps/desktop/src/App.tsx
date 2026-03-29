@@ -370,6 +370,7 @@ export default function App() {
   const [threadNgInput, setThreadNgInput] = useState("");
   const [ngPanelOpen, setNgPanelOpen] = useState(false);
   const [showBoardButtons, setShowBoardButtons] = useState(false);
+  const [keepSortOnRefresh, setKeepSortOnRefresh] = useState(false);
   const [boardPaneTab, setBoardPaneTab] = useState<"boards" | "fav-threads">("boards");
   const [showCachedOnly, setShowCachedOnly] = useState(false);
   const [cachedThreadList, setCachedThreadList] = useState<{ threadUrl: string; title: string; resCount: number }[]>([]);
@@ -400,6 +401,10 @@ export default function App() {
   const hoverPreviewSrcRef = useRef<string | null>(null);
   const hoverPreviewZoomRef = useRef(100);
   const hoverPreviewHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [boardBtnDragIndex, setBoardBtnDragIndex] = useState<number | null>(null);
+  const boardBtnDragRef = useRef<{ srcIndex: number; startX: number } | null>(null);
+  const boardBtnDragOverRef = useRef<number | null>(null);
+  const boardBtnBarRef = useRef<HTMLDivElement>(null);
   const [tabDragIndex, setTabDragIndex] = useState<number | null>(null);
   const tabDragRef = useRef<{ srcIndex: number; startX: number } | null>(null);
   const tabDragOverRef = useRef<number | null>(null);
@@ -1017,8 +1022,10 @@ export default function App() {
         limit: null,
       });
       setFetchedThreads(rows);
-      setThreadSortKey("id");
-      setThreadSortAsc(true);
+      if (!keepSortOnRefresh) {
+        setThreadSortKey("id");
+        setThreadSortAsc(true);
+      }
       setThreadSearchQuery("");
       // Keep selection on the currently open tab's thread, or clear
       suppressThreadScrollRef.current = true;
@@ -1957,6 +1964,7 @@ export default function App() {
           fontFamily?: string;
           threadColWidths?: Record<string, number>;
           showBoardButtons?: boolean;
+          keepSortOnRefresh?: boolean;
         };
         if (typeof parsed.boardPanePx === "number") setBoardPanePx(parsed.boardPanePx);
         if (typeof parsed.threadPanePx === "number") {
@@ -1977,6 +1985,7 @@ export default function App() {
           setThreadColWidths((prev) => ({ ...prev, ...parsed.threadColWidths }));
         }
         if (typeof parsed.showBoardButtons === "boolean") setShowBoardButtons(parsed.showBoardButtons);
+        if (typeof parsed.keepSortOnRefresh === "boolean") setKeepSortOnRefresh(parsed.keepSortOnRefresh);
       } catch { /* ignore */ }
     };
     // Try localStorage first, then file-based persistence
@@ -2265,12 +2274,13 @@ export default function App() {
       fontFamily,
       threadColWidths,
       showBoardButtons,
+      keepSortOnRefresh,
     });
     localStorage.setItem(LAYOUT_PREFS_KEY, payload);
     if (isTauriRuntime()) {
       void invoke("save_layout_prefs", { prefs: payload }).catch(() => {});
     }
-  }, [boardPanePx, threadPanePx, responseTopRatio, boardsFontSize, threadsFontSize, responsesFontSize, darkMode, fontFamily, threadColWidths, showBoardButtons]);
+  }, [boardPanePx, threadPanePx, responseTopRatio, boardsFontSize, threadsFontSize, responsesFontSize, darkMode, fontFamily, threadColWidths, showBoardButtons, keepSortOnRefresh]);
 
   useEffect(() => {
     if (isTauriRuntime()) {
@@ -2423,12 +2433,58 @@ export default function App() {
         <button onClick={() => setNgPanelOpen((v) => !v)}>NG</button>
       </div>
       {showBoardButtons && favorites.boards.length > 0 && (
-        <div className="board-button-bar">
-          {favorites.boards.map((b) => (
+        <div className="board-button-bar" ref={boardBtnBarRef}>
+          {favorites.boards.map((b, i) => (
             <button
               key={b.url}
-              className={`board-btn${selectedBoard === b.boardName ? " selected" : ""}`}
-              onClick={() => selectBoard(b)}
+              className={`board-btn${selectedBoard === b.boardName ? " selected" : ""}${boardBtnDragIndex !== null && boardBtnDragIndex !== i ? " board-btn-drop-target" : ""}`}
+              onClick={() => { if (boardBtnDragRef.current) return; selectBoard(b); }}
+              onMouseDown={(e) => {
+                if (e.button !== 0) return;
+                boardBtnDragRef.current = { srcIndex: i, startX: e.clientX };
+                boardBtnDragOverRef.current = null;
+                const onMove = (ev: MouseEvent) => {
+                  if (!boardBtnDragRef.current) return;
+                  if (Math.abs(ev.clientX - boardBtnDragRef.current.startX) < 5) return;
+                  ev.preventDefault();
+                  window.getSelection()?.removeAllRanges();
+                  setBoardBtnDragIndex(boardBtnDragRef.current.srcIndex);
+                  const els = boardBtnBarRef.current?.querySelectorAll<HTMLElement>(".board-btn");
+                  if (!els) return;
+                  els.forEach((el) => el.classList.remove("board-btn-drag-over"));
+                  for (let j = 0; j < els.length; j++) {
+                    const rect = els[j].getBoundingClientRect();
+                    if (ev.clientX >= rect.left && ev.clientX < rect.right) {
+                      if (j !== boardBtnDragRef.current.srcIndex) {
+                        els[j].classList.add("board-btn-drag-over");
+                        boardBtnDragOverRef.current = j;
+                      }
+                      break;
+                    }
+                  }
+                };
+                const onUp = () => {
+                  window.removeEventListener("mousemove", onMove);
+                  window.removeEventListener("mouseup", onUp);
+                  const src = boardBtnDragRef.current?.srcIndex ?? null;
+                  const dst = boardBtnDragOverRef.current;
+                  boardBtnDragRef.current = null;
+                  boardBtnDragOverRef.current = null;
+                  setBoardBtnDragIndex(null);
+                  boardBtnBarRef.current?.querySelectorAll<HTMLElement>(".board-btn-drag-over").forEach((el) => el.classList.remove("board-btn-drag-over"));
+                  if (src === null || dst === null || src === dst) return;
+                  setFavorites((prev) => {
+                    const next = [...prev.boards];
+                    const [moved] = next.splice(src, 1);
+                    next.splice(dst, 0, moved);
+                    const updated = { ...prev, boards: next };
+                    void persistFavorites(updated);
+                    return updated;
+                  });
+                };
+                window.addEventListener("mousemove", onMove);
+                window.addEventListener("mouseup", onUp);
+              }}
               title={b.boardName}
             >
               {b.boardName.length > 8 ? b.boardName.slice(0, 8) + "…" : b.boardName}
@@ -3684,6 +3740,10 @@ export default function App() {
                 <label className="settings-row">
                   <input type="checkbox" checked={showBoardButtons} onChange={(e) => setShowBoardButtons(e.target.checked)} />
                   <span>板ボタンバー</span>
+                </label>
+                <label className="settings-row">
+                  <input type="checkbox" checked={keepSortOnRefresh} onChange={(e) => setKeepSortOnRefresh(e.target.checked)} />
+                  <span>スレ一覧の更新時にソートを維持</span>
                 </label>
               </fieldset>
               <fieldset>
