@@ -11,7 +11,7 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import {
   ClipboardList, RefreshCw, ArrowDownToLine, Pencil, FilePenLine, Save,
-  Star, X, ChevronLeft, ChevronRight, Ban,
+  Star, X, ChevronLeft, ChevronRight, ChevronDown, Ban,
 } from "lucide-react";
 
 type MenuInfo = { topLevelKeys: number; normalizedSample: string };
@@ -143,6 +143,8 @@ const SCROLL_POS_KEY = "desktop.scrollPositions.v1";
 const NEW_THREAD_SIZE_KEY = "desktop.newThreadDialogSize.v1";
 const THREAD_FETCH_TIMES_KEY = "desktop.threadFetchTimes.v1";
 const WINDOW_STATE_KEY = "desktop.windowState.v1";
+const SEARCH_HISTORY_KEY = "desktop.searchHistory.v1";
+const MAX_SEARCH_HISTORY = 20;
 const MENU_EDGE_PADDING = 8;
 
 type ResizeDragState =
@@ -449,6 +451,10 @@ export default function App() {
   const [responseSearchQuery, setResponseSearchQuery] = useState("");
   const threadSearchRef = useRef<HTMLInputElement | null>(null);
   const responseSearchRef = useRef<HTMLInputElement | null>(null);
+  const [threadSearchHistory, setThreadSearchHistory] = useState<string[]>([]);
+  const [responseSearchHistory, setResponseSearchHistory] = useState<string[]>([]);
+  const [searchHistoryDropdown, setSearchHistoryDropdown] = useState<{ type: "thread" | "response" } | null>(null);
+  const [searchHistoryMenu, setSearchHistoryMenu] = useState<{ x: number; y: number; type: "thread" | "response"; word: string } | null>(null);
   const [authConfig, setAuthConfig] = useState<AuthConfig>({
     upliftEmail: "", upliftPassword: "", beEmail: "", bePassword: "", autoLoginBe: false, autoLoginUplift: false,
   });
@@ -1598,6 +1604,44 @@ export default function App() {
     goFromLocationInput();
   };
 
+  const searchHistoryRef = useRef({ thread: threadSearchHistory, response: responseSearchHistory });
+  searchHistoryRef.current = { thread: threadSearchHistory, response: responseSearchHistory };
+  const persistSearchHistory = (thread: string[], response: string[]) => {
+    try { localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify({ thread, response })); } catch { /* ignore */ }
+  };
+  const addSearchHistory = (type: "thread" | "response", word: string) => {
+    const trimmed = word.trim();
+    if (!trimmed) return;
+    if (type === "thread") {
+      setThreadSearchHistory((prev) => {
+        const next = [trimmed, ...prev.filter((w) => w !== trimmed)].slice(0, MAX_SEARCH_HISTORY);
+        persistSearchHistory(next, searchHistoryRef.current.response);
+        return next;
+      });
+    } else {
+      setResponseSearchHistory((prev) => {
+        const next = [trimmed, ...prev.filter((w) => w !== trimmed)].slice(0, MAX_SEARCH_HISTORY);
+        persistSearchHistory(searchHistoryRef.current.thread, next);
+        return next;
+      });
+    }
+  };
+  const removeSearchHistory = (type: "thread" | "response", word: string) => {
+    if (type === "thread") {
+      setThreadSearchHistory((prev) => {
+        const next = prev.filter((w) => w !== word);
+        persistSearchHistory(next, searchHistoryRef.current.response);
+        return next;
+      });
+    } else {
+      setResponseSearchHistory((prev) => {
+        const next = prev.filter((w) => w !== word);
+        persistSearchHistory(searchHistoryRef.current.thread, next);
+        return next;
+      });
+    }
+  };
+
   const onThreadContextMenu = (e: ReactMouseEvent, threadId: number) => {
     e.preventDefault();
     const p = clampMenuPosition(e.clientX, e.clientY, 180, 176);
@@ -2013,6 +2057,15 @@ export default function App() {
     } catch {
       // ignore
     }
+    // Restore search history
+    try {
+      const sh = localStorage.getItem(SEARCH_HISTORY_KEY);
+      if (sh) {
+        const parsed = JSON.parse(sh) as { thread?: string[]; response?: string[] };
+        if (Array.isArray(parsed.thread)) setThreadSearchHistory(parsed.thread);
+        if (Array.isArray(parsed.response)) setResponseSearchHistory(parsed.response);
+      }
+    } catch { /* ignore */ }
     // Restore board categories cache
     try {
       const boardRaw = localStorage.getItem(BOARD_CACHE_KEY);
@@ -2336,6 +2389,8 @@ export default function App() {
         setBackRefPopup(null);
         setNestedPopups([]);
         setWatchoiMenu(null);
+        setSearchHistoryDropdown(null);
+        setSearchHistoryMenu(null);
       }}
     >
       <header className="menu-bar">
@@ -2649,14 +2704,44 @@ export default function App() {
         >
         <section className="pane threads" onMouseDown={() => setFocusedPane("threads")} style={{ '--fs-delta': `${threadsFontSize - 12}px` } as React.CSSProperties}>
           <div className="threads-toolbar">
-            <input
-              ref={threadSearchRef}
-              className="thread-search"
-              value={threadSearchQuery}
-              onChange={(e) => setThreadSearchQuery(e.target.value)}
-              placeholder="検索..."
-              style={{ flex: 1 }}
-            />
+            <div className="search-with-history" style={{ flex: 1 }}>
+              <input
+                ref={threadSearchRef}
+                className="thread-search"
+                value={threadSearchQuery}
+                onChange={(e) => setThreadSearchQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.nativeEvent.isComposing) return;
+                  if (e.key === "Enter") { addSearchHistory("thread", threadSearchQuery); setSearchHistoryDropdown(null); }
+                  if (e.key === "Escape") setSearchHistoryDropdown(null);
+                }}
+                placeholder="検索 (Enter:保存 / 右クリック:削除)"
+              />
+              <button
+                className="search-history-btn"
+                onClick={(e) => { e.stopPropagation(); setSearchHistoryDropdown((prev) => prev?.type === "thread" ? null : { type: "thread" }); }}
+                title="検索履歴"
+              ><ChevronDown size={10} /></button>
+              {searchHistoryDropdown?.type === "thread" && threadSearchHistory.length > 0 && (
+                <div className="search-history-dropdown" onMouseDown={(e) => e.preventDefault()}>
+                  {threadSearchHistory
+                    .filter((w) => !threadSearchQuery.trim() || w.toLowerCase().includes(threadSearchQuery.trim().toLowerCase()))
+                    .map((w) => (
+                      <div
+                        key={w}
+                        className="search-history-item"
+                        onClick={() => { setThreadSearchQuery(w); setSearchHistoryDropdown(null); }}
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          const p = clampMenuPosition(e.clientX, e.clientY, 120, 30);
+                          setSearchHistoryMenu({ x: p.x, y: p.y, type: "thread", word: w });
+                        }}
+                      >{w}</div>
+                    ))}
+                </div>
+              )}
+            </div>
             {threadSearchQuery && <button className="title-action-btn" onClick={() => setThreadSearchQuery("")} title="検索クリア"><X size={14} /></button>}
             <button className="title-action-btn" onClick={() => fetchThreadListFromCurrent()} title="スレ一覧を更新"><RefreshCw size={14} /></button>
             <button className="title-action-btn" onClick={() => setShowNewThreadDialog(true)} title="スレ立て"><FilePenLine size={14} /></button>
@@ -3144,13 +3229,44 @@ export default function App() {
                 {" "}サイズ:{Math.round(visibleResponseItems.reduce((s, r) => s + r.text.length, 0) / 1024)}KB
                 {" "}受信日時:{lastFetchTime ?? "-"}
               </span>
-              <input
-                ref={responseSearchRef}
-                className="response-search-input"
-                value={responseSearchQuery}
-                onChange={(e) => setResponseSearchQuery(e.target.value)}
-                placeholder="レス検索..."
-              />
+              <div className="search-with-history" style={{ flex: 1 }}>
+                <input
+                  ref={responseSearchRef}
+                  className="thread-search"
+                  value={responseSearchQuery}
+                  onChange={(e) => setResponseSearchQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.nativeEvent.isComposing) return;
+                    if (e.key === "Enter") { addSearchHistory("response", responseSearchQuery); setSearchHistoryDropdown(null); }
+                    if (e.key === "Escape") setSearchHistoryDropdown(null);
+                  }}
+                  placeholder="レス検索 (Enter:保存 / 右クリック:削除)"
+                />
+                <button
+                  className="search-history-btn"
+                  onClick={(e) => { e.stopPropagation(); setSearchHistoryDropdown((prev) => prev?.type === "response" ? null : { type: "response" }); }}
+                  title="検索履歴"
+                ><ChevronDown size={10} /></button>
+                {searchHistoryDropdown?.type === "response" && responseSearchHistory.length > 0 && (
+                  <div className="search-history-dropdown dropdown-up" onMouseDown={(e) => e.preventDefault()}>
+                    {responseSearchHistory
+                      .filter((w) => !responseSearchQuery.trim() || w.toLowerCase().includes(responseSearchQuery.trim().toLowerCase()))
+                      .map((w) => (
+                        <div
+                          key={w}
+                          className="search-history-item"
+                          onClick={() => { setResponseSearchQuery(w); setSearchHistoryDropdown(null); }}
+                          onContextMenu={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            const p = clampMenuPosition(e.clientX, e.clientY, 120, 30);
+                            setSearchHistoryMenu({ x: p.x, y: p.y, type: "response", word: w });
+                          }}
+                        >{w}</div>
+                      ))}
+                  </div>
+                )}
+              </div>
               {responseSearchQuery && <button className="title-action-btn" onClick={() => setResponseSearchQuery("")} title="検索クリア"><X size={14} /></button>}
               <span className="nav-buttons">
                 <button onClick={() => { if (visibleResponseItems.length > 0) setSelectedResponse(visibleResponseItems[0].id); }}>Top</button>
@@ -3448,6 +3564,11 @@ export default function App() {
         <div className="thread-menu" style={{ left: watchoiMenu.x, top: watchoiMenu.y }} onClick={(e) => e.stopPropagation()}>
           <button onClick={() => { addNgEntry("names", watchoiMenu.watchoi); setWatchoiMenu(null); }}>ワッチョイをNG</button>
           <button onClick={() => { void navigator.clipboard.writeText(watchoiMenu.watchoi); setStatus("ワッチョイをコピーしました"); setWatchoiMenu(null); }}>ワッチョイをコピー</button>
+        </div>
+      )}
+      {searchHistoryMenu && (
+        <div className="thread-menu" style={{ left: searchHistoryMenu.x, top: searchHistoryMenu.y }} onClick={(e) => e.stopPropagation()}>
+          <button onClick={() => { removeSearchHistory(searchHistoryMenu.type, searchHistoryMenu.word); setSearchHistoryMenu(null); }}>削除</button>
         </div>
       )}
       {anchorPopup && (() => {
