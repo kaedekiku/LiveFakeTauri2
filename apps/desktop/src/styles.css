@@ -174,6 +174,10 @@ body {
   border-color: #0066cc;
   background: #bde;
 }
+li.fav-drag-over {
+  background: #bde;
+  outline: 1px solid #0066cc;
+}
 
 .layout {
   display: grid;
@@ -1237,21 +1241,25 @@ pre {
   position: relative;
   display: flex;
   align-items: stretch;
-  border: 1px solid #a0a0a0;
   background: #ffffff;
 }
 .search-with-history input {
   flex: 1;
   min-width: 0;
-  border: none;
+  border: 1px solid #a0a0a0;
+  border-right: none;
   margin: 0;
   background: transparent;
+  outline: none;
+  box-shadow: none;
+  -webkit-appearance: none;
+  appearance: none;
 }
 button.search-history-btn {
   width: 16px;
-  border: none;
+  border: 1px solid #a0a0a0;
   border-left: 1px solid #ccc;
-  background: transparent;
+  background: #ffffff;
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -1266,8 +1274,8 @@ button.search-history-btn:hover {
 .search-history-dropdown {
   position: absolute;
   top: 100%;
-  left: -1px;
-  right: -1px;
+  left: 0;
+  right: 0;
   z-index: 40;
   background: #fff;
   border: 1px solid #a0a0a0;
@@ -2025,6 +2033,10 @@ button.search-history-btn:hover {
   border-color: #4a9eff;
   background: #2a3a4a;
 }
+.dark li.fav-drag-over {
+  background: #2a3a4a;
+  outline-color: #4a9eff;
+}
 .dark .tool-bar {
   background: #2d2d30;
   border-color: var(--line);
@@ -2239,10 +2251,14 @@ button.search-history-btn:hover {
 }
 .dark .search-with-history {
   background: #1e1e1e;
-  border-color: #555;
 }
-.dark .thread-search {
+.dark .search-with-history input {
+  border-color: #555;
   color: var(--ink);
+}
+.dark button.search-history-btn {
+  border-color: #555;
+  background: #1e1e1e;
 }
 .title-action-btn {
   display: inline-flex;

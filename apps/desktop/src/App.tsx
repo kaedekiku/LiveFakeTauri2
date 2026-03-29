@@ -204,16 +204,19 @@ const highlightHtmlPreservingTags = (html: string, query: string) => {
 };
 const renderHighlightedPlainText = (text: string, query: string): { __html: string } =>
   ({ __html: highlightHtmlPreservingTags(escapeHtml(decodeHtmlEntities(text)), query) });
+const rewrite5chNet = (url: string): string => url.replace(/\.5ch\.net\b/gi, ".5ch.io");
+
 const normalizeExternalUrl = (raw: string): string | null => {
   const v = raw.replace(/&amp;/g, "&");
-  if (/^https?:\/\//i.test(v)) return v;
-  if (/^ttps:\/\//i.test(v)) return `h${v}`;
-  if (/^ttp:\/\//i.test(v)) return `h${v}`;
-  if (/^ps:\/\//i.test(v)) return `htt${v}`;
-  if (/^s:\/\//i.test(v)) return `http${v}`;
+  let result: string | null = null;
+  if (/^https?:\/\//i.test(v)) result = v;
+  else if (/^ttps:\/\//i.test(v)) result = `h${v}`;
+  else if (/^ttp:\/\//i.test(v)) result = `h${v}`;
+  else if (/^ps:\/\//i.test(v)) result = `htt${v}`;
+  else if (/^s:\/\//i.test(v)) result = `http${v}`;
   // Bare domain with path (https:// 抜き)
-  if (/^[a-zA-Z0-9][-a-zA-Z0-9]*(?:\.[a-zA-Z0-9][-a-zA-Z0-9]*)*\.[a-zA-Z]{2,}[/]/.test(v)) return `https://${v}`;
-  return null;
+  else if (/^[a-zA-Z0-9][-a-zA-Z0-9]*(?:\.[a-zA-Z0-9][-a-zA-Z0-9]*)*\.[a-zA-Z]{2,}[/]/.test(v)) result = `https://${v}`;
+  return result ? rewrite5chNet(result) : null;
 };
 
 const ID_COLORS = [
@@ -341,7 +344,6 @@ export default function App() {
   const [composeSage, setComposeSage] = useState(false);
   const [composeBody, setComposeBody] = useState("");
   const [composePreview, setComposePreview] = useState(false);
-  const [composeEnterSubmit, setComposeEnterSubmit] = useState(false);
   const [composeResult, setComposeResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [composeSubmitting, setComposeSubmitting] = useState(false);
   const [showNewThreadDialog, setShowNewThreadDialog] = useState(false);
@@ -373,6 +375,9 @@ export default function App() {
   const [ngPanelOpen, setNgPanelOpen] = useState(false);
   const [showBoardButtons, setShowBoardButtons] = useState(false);
   const [keepSortOnRefresh, setKeepSortOnRefresh] = useState(false);
+  const keepSortOnRefreshRef = useRef(keepSortOnRefresh);
+  keepSortOnRefreshRef.current = keepSortOnRefresh;
+  const [composeSubmitKey, setComposeSubmitKey] = useState<"shift" | "ctrl">("shift");
   const [boardPaneTab, setBoardPaneTab] = useState<"boards" | "fav-threads">("boards");
   const [showCachedOnly, setShowCachedOnly] = useState(false);
   const [cachedThreadList, setCachedThreadList] = useState<{ threadUrl: string; title: string; resCount: number }[]>([]);
@@ -407,6 +412,8 @@ export default function App() {
   const boardBtnDragRef = useRef<{ srcIndex: number; startX: number } | null>(null);
   const boardBtnDragOverRef = useRef<number | null>(null);
   const boardBtnBarRef = useRef<HTMLDivElement>(null);
+  const favDragRef = useRef<{ type: "board" | "thread"; srcIndex: number; startY: number } | null>(null);
+  const [favDragState, setFavDragState] = useState<{ type: "board" | "thread"; srcIndex: number; overIndex: number | null } | null>(null);
   const [tabDragIndex, setTabDragIndex] = useState<number | null>(null);
   const tabDragRef = useRef<{ srcIndex: number; startX: number } | null>(null);
   const tabDragOverRef = useRef<number | null>(null);
@@ -555,6 +562,60 @@ export default function App() {
       : [...favorites.threads, { threadUrl: thread.threadUrl, title: thread.title, boardUrl: threadUrl }];
     void persistFavorites({ ...favorites, threads: nextThreads });
     setStatus(exists ? `unfavorited thread` : `favorited thread`);
+  };
+
+  const favDragOverIndexRef = useRef<number | null>(null);
+  const onFavItemMouseDown = (e: React.MouseEvent, type: "board" | "thread", index: number, containerSelector: string) => {
+    if (e.button !== 0) return;
+    favDragRef.current = { type, srcIndex: index, startY: e.clientY };
+    favDragOverIndexRef.current = null;
+    const onMove = (ev: MouseEvent) => {
+      if (!favDragRef.current) return;
+      if (Math.abs(ev.clientY - favDragRef.current.startY) < 5) return;
+      ev.preventDefault();
+      window.getSelection()?.removeAllRanges();
+      setFavDragState((prev) => prev ?? { type: favDragRef.current!.type, srcIndex: favDragRef.current!.srcIndex, overIndex: null });
+      const container = document.querySelector(containerSelector);
+      if (!container) return;
+      const items = container.querySelectorAll<HTMLElement>(":scope > li");
+      let found = false;
+      for (let j = 0; j < items.length; j++) {
+        const rect = items[j].getBoundingClientRect();
+        if (ev.clientY >= rect.top && ev.clientY < rect.bottom && j !== favDragRef.current.srcIndex) {
+          favDragOverIndexRef.current = j;
+          setFavDragState((prev) => prev ? { ...prev, overIndex: j } : null);
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        favDragOverIndexRef.current = null;
+        setFavDragState((prev) => prev ? { ...prev, overIndex: null } : null);
+      }
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      const drag = favDragRef.current;
+      const dst = favDragOverIndexRef.current;
+      favDragRef.current = null;
+      favDragOverIndexRef.current = null;
+      setFavDragState(null);
+      if (!drag || dst === null || dst === drag.srcIndex) return;
+      if (drag.type === "board") {
+        const arr = [...favorites.boards];
+        const [moved] = arr.splice(drag.srcIndex, 1);
+        arr.splice(dst, 0, moved);
+        void persistFavorites({ ...favorites, boards: arr });
+      } else {
+        const arr = [...favorites.threads];
+        const [moved] = arr.splice(drag.srcIndex, 1);
+        arr.splice(dst, 0, moved);
+        void persistFavorites({ ...favorites, threads: arr });
+      }
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
   };
 
   const isFavoriteBoard = (url: string) => favorites.boards.some((b) => b.url === url);
@@ -1027,8 +1088,9 @@ export default function App() {
         threadUrl: url,
         limit: null,
       });
+      await loadReadStatusForBoard(url, rows);
       setFetchedThreads(rows);
-      if (!keepSortOnRefresh) {
+      if (!keepSortOnRefreshRef.current) {
         setThreadSortKey("id");
         setThreadSortAsc(true);
       }
@@ -1045,7 +1107,6 @@ export default function App() {
       if (threadListScrollRef.current) threadListScrollRef.current.scrollTop = 0;
       setThreadListProbe(`ok rows=${rows.length}`);
       setStatus(`threads loaded: ${rows.length}`);
-      void loadReadStatusForBoard(url, rows);
     } catch (error) {
       const msg = String(error);
       setThreadListProbe(`error: ${msg}`);
@@ -1424,7 +1485,7 @@ export default function App() {
     : "UPDATE N/A";
 
   const onComposeBodyKeyDown: KeyboardEventHandler<HTMLTextAreaElement> = (e) => {
-    if (e.key === "Enter" && e.shiftKey) {
+    if (e.key === "Enter" && ((composeSubmitKey === "shift" && e.shiftKey) || (composeSubmitKey === "ctrl" && (e.ctrlKey || e.metaKey)))) {
       e.preventDefault();
       void probePostFlowTraceFromCompose();
     }
@@ -1583,8 +1644,9 @@ export default function App() {
   })();
 
   const goFromLocationInput = () => {
-    const next = locationInput.trim();
+    const next = rewrite5chNet(locationInput.trim());
     if (!next) return;
+    if (next !== locationInput.trim()) setLocationInput(next);
     // Detect 5ch thread URL and open in tab
     if (/^https?:\/\/[^/]*\.5ch\.(net|io)\/test\/read\.cgi\//.test(next)) {
       const parts = next.replace(/\/+$/, "").split("/");
@@ -2009,6 +2071,7 @@ export default function App() {
           threadColWidths?: Record<string, number>;
           showBoardButtons?: boolean;
           keepSortOnRefresh?: boolean;
+          composeSubmitKey?: "shift" | "ctrl";
         };
         if (typeof parsed.boardPanePx === "number") setBoardPanePx(parsed.boardPanePx);
         if (typeof parsed.threadPanePx === "number") {
@@ -2030,6 +2093,7 @@ export default function App() {
         }
         if (typeof parsed.showBoardButtons === "boolean") setShowBoardButtons(parsed.showBoardButtons);
         if (typeof parsed.keepSortOnRefresh === "boolean") setKeepSortOnRefresh(parsed.keepSortOnRefresh);
+        if (parsed.composeSubmitKey === "shift" || parsed.composeSubmitKey === "ctrl") setComposeSubmitKey(parsed.composeSubmitKey);
       } catch { /* ignore */ }
     };
     // Try localStorage first, then file-based persistence
@@ -2328,12 +2392,13 @@ export default function App() {
       threadColWidths,
       showBoardButtons,
       keepSortOnRefresh,
+      composeSubmitKey,
     });
     localStorage.setItem(LAYOUT_PREFS_KEY, payload);
     if (isTauriRuntime()) {
       void invoke("save_layout_prefs", { prefs: payload }).catch(() => {});
     }
-  }, [boardPanePx, threadPanePx, responseTopRatio, boardsFontSize, threadsFontSize, responsesFontSize, darkMode, fontFamily, threadColWidths, showBoardButtons, keepSortOnRefresh]);
+  }, [boardPanePx, threadPanePx, responseTopRatio, boardsFontSize, threadsFontSize, responsesFontSize, darkMode, fontFamily, threadColWidths, showBoardButtons, keepSortOnRefresh, composeSubmitKey]);
 
   useEffect(() => {
     if (isTauriRuntime()) {
@@ -2594,12 +2659,13 @@ export default function App() {
                       お気に入り ({favorites.boards.length})
                     </button>
                     {expandedCategories.has("__favorites__") && (
-                      <ul className="category-boards">
-                        {favorites.boards.map((b) => (
-                          <li key={b.url}>
+                      <ul className="category-boards fav-board-list">
+                        {favorites.boards.map((b, i) => (
+                          <li key={b.url} className={favDragState?.type === "board" && favDragState.overIndex === i ? "fav-drag-over" : ""}>
                             <button
                               className={`board-item ${selectedBoard === b.boardName ? "selected" : ""}`}
-                              onClick={() => selectBoard(b)}
+                              onClick={() => { if (favDragRef.current) return; selectBoard(b); }}
+                              onMouseDown={(e) => onFavItemMouseDown(e, "board", i, ".fav-board-list")}
                               title={b.url}
                             >
                               <span className="fav-star active" onClick={(e) => { e.stopPropagation(); toggleFavoriteBoard(b); }}><Star size={12} /></span>
@@ -2668,15 +2734,17 @@ export default function App() {
               {favorites.threads.length === 0 ? (
                 <span className="ng-empty">(お気に入りスレッドなし)</span>
               ) : (
-                <ul className="category-boards">
-                  {favorites.threads.map((ft) => (
-                    <li key={ft.threadUrl}>
+                <ul className="category-boards fav-thread-list">
+                  {favorites.threads.map((ft, i) => (
+                    <li key={ft.threadUrl} className={favDragState?.type === "thread" && favDragState.overIndex === i ? "fav-drag-over" : ""}>
                       <button
                         className="board-item"
                         onClick={() => {
+                          if (favDragRef.current) return;
                           openThreadInTab(ft.threadUrl, ft.title);
                           setStatus(`loading fav thread: ${ft.title}`);
                         }}
+                        onMouseDown={(e) => onFavItemMouseDown(e, "thread", i, ".fav-thread-list")}
                         title={ft.threadUrl}
                       >
                         <span className="fav-star active" onClick={(e) => { e.stopPropagation(); toggleFavoriteThread(ft); }}><Star size={12} /></span>
@@ -3391,7 +3459,7 @@ export default function App() {
             <div className="compose-preview" dangerouslySetInnerHTML={renderResponseBody(composeBody || "(空)")} />
           )}
           <div className="compose-actions">
-            <button onClick={probePostFlowTraceFromCompose} disabled={composeSubmitting}>{composeSubmitting ? "送信中..." : "送信 (Shift+Enter)"}</button>
+            <button onClick={probePostFlowTraceFromCompose} disabled={composeSubmitting}>{composeSubmitting ? "送信中..." : `送信 (${composeSubmitKey === "shift" ? "Shift" : "Ctrl"}+Enter)`}</button>
             <button onClick={async () => {
               setComposeResult({ ok: false, message: "診断中..." });
               try {
@@ -3870,8 +3938,11 @@ export default function App() {
               <fieldset>
                 <legend>書き込み</legend>
                 <label className="settings-row">
-                  <input type="checkbox" checked={composeEnterSubmit} onChange={(e) => setComposeEnterSubmit(e.target.checked)} />
-                  <span>Enterで投稿</span>
+                  <span>送信ショートカット</span>
+                  <select value={composeSubmitKey} onChange={(e) => setComposeSubmitKey(e.target.value as "shift" | "ctrl")}>
+                    <option value="shift">Shift+Enter</option>
+                    <option value="ctrl">Ctrl+Enter</option>
+                  </select>
                 </label>
                 <label className="settings-row">
                   <input type="checkbox" checked={composeSage} onChange={(e) => setComposeSage(e.target.checked)} />
