@@ -729,6 +729,61 @@ li.fav-drag-over {
   background: #ddd;
 }
 
+.title-split-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+}
+
+.title-split-main {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.title-split-toggle {
+  min-width: 20px;
+  width: 20px;
+  padding: 2px 2px;
+  border-left: none;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+.title-split-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 2px);
+  min-width: 230px;
+  background: #f6f6f6;
+  border: 1px solid #a5a5a5;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+}
+
+.title-split-menu button {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  width: 100%;
+  border: none;
+  border-bottom: 1px solid #d8d8d8;
+  background: transparent;
+  color: #222;
+  padding: 6px 8px;
+  text-align: left;
+  font-size: 12px;
+}
+
+.title-split-menu button:last-child {
+  border-bottom: none;
+}
+
+.title-split-menu button:hover {
+  background: #e5e5e5;
+}
+
 .new-response-separator {
   display: flex;
   align-items: center;
@@ -2389,6 +2444,17 @@ button.search-history-btn:hover {
   background: #333;
   border-color: #555;
   color: #bbb;
+}
+.dark .title-split-menu {
+  background: #2d2d30;
+  border-color: #555;
+}
+.dark .title-split-menu button {
+  color: #ddd;
+  border-bottom-color: #444;
+}
+.dark .title-split-menu button:hover {
+  background: #3b3b40;
 }
 .dark .response-nav-bar {
   background: #2d2d30;

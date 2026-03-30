@@ -10,7 +10,7 @@ import {
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
-  ClipboardList, RefreshCw, ArrowDownToLine, Pencil, FilePenLine, Save,
+  ClipboardList, RefreshCw, Pencil, FilePenLine, Save,
   Star, X, ChevronLeft, ChevronRight, ChevronDown, Ban,
 } from "lucide-react";
 
@@ -493,6 +493,7 @@ export default function App() {
   const tabDragRef = useRef<{ srcIndex: number; startX: number } | null>(null);
   const tabDragOverRef = useRef<number | null>(null);
   const [tabMenu, setTabMenu] = useState<{ x: number; y: number; tabIndex: number } | null>(null);
+  const [responseReloadMenuOpen, setResponseReloadMenuOpen] = useState(false);
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
@@ -1850,6 +1851,40 @@ export default function App() {
     setStatus("キャッシュから削除しました");
   };
 
+  const clearThreadCacheOnly = (url: string) => {
+    invoke("delete_thread_cache", { threadUrl: url }).catch(() => {});
+    tabCacheRef.current.delete(url);
+    delete threadFetchTimesRef.current[url];
+    try { localStorage.setItem(THREAD_FETCH_TIMES_KEY, JSON.stringify(threadFetchTimesRef.current)); } catch { /* ignore */ }
+  };
+
+  const runOnActiveThread = (action: (url: string) => void) => {
+    const url = threadTabs[activeTabIndex]?.threadUrl;
+    if (!url) return;
+    setThreadUrl(url);
+    setLocationInput(url);
+    action(url);
+  };
+
+  const fetchNewResponses = () => {
+    runOnActiveThread((url) => {
+      void fetchResponsesFromCurrent(url, { keepSelection: true });
+    });
+  };
+
+  const reloadResponses = () => {
+    runOnActiveThread((url) => {
+      void fetchResponsesFromCurrent(url, { resetScroll: true });
+    });
+  };
+
+  const reloadResponsesAfterCachePurge = () => {
+    runOnActiveThread((url) => {
+      clearThreadCacheOnly(url);
+      void fetchResponsesFromCurrent(url, { resetScroll: true });
+    });
+  };
+
   const buildResponseUrl = (responseId: number) => `${threadUrl.endsWith("/") ? threadUrl : `${threadUrl}/`}${responseId}`;
 
   const appendComposeQuote = (line: string) => {
@@ -2033,6 +2068,7 @@ export default function App() {
         if (lightboxUrl) { setLightboxUrl(null); return; }
         if (aboutOpen) { setAboutOpen(false); return; }
         if (shortcutsOpen) { setShortcutsOpen(false); return; }
+        if (responseReloadMenuOpen) { setResponseReloadMenuOpen(false); return; }
         if (openMenu) { setOpenMenu(null); return; }
       }
       if (isTypingTarget(e.target)) return;
@@ -2128,7 +2164,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [selectedThread, selectedResponse, visibleThreadItems, responseItems, activeTabIndex, threadTabs]);
+  }, [selectedThread, selectedResponse, visibleThreadItems, responseItems, activeTabIndex, threadTabs, responseReloadMenuOpen]);
 
   useEffect(() => {
     const applyPrefs = (raw: string | null) => {
@@ -2555,6 +2591,7 @@ export default function App() {
         setWatchoiMenu(null);
         setSearchHistoryDropdown(null);
         setSearchHistoryMenu(null);
+        setResponseReloadMenuOpen(false);
       }}
     >
       <header className="menu-bar">
@@ -3096,8 +3133,30 @@ export default function App() {
                 {" "}[{fetchedResponses.length}]
               </span>
               <span className="thread-title-actions">
-                <button className="title-action-btn" onClick={() => { const u = threadTabs[activeTabIndex]?.threadUrl; if (u) { setThreadUrl(u); setLocationInput(u); } fetchResponsesFromCurrent(u, { resetScroll: true }); }} title="再読み込み"><RefreshCw size={14} /></button>
-                <button className="title-action-btn" onClick={() => { const u = threadTabs[activeTabIndex]?.threadUrl; if (u) { setThreadUrl(u); setLocationInput(u); } fetchResponsesFromCurrent(u, { keepSelection: true }); }} title="新着取得"><ArrowDownToLine size={14} /></button>
+                <div className="title-split-wrap" onClick={(e) => e.stopPropagation()}>
+                  <button className="title-action-btn title-split-main" onClick={fetchNewResponses} title="新着取得">
+                    <RefreshCw size={14} />
+                  </button>
+                  <button
+                    className="title-action-btn title-split-toggle"
+                    onClick={() => setResponseReloadMenuOpen((v) => !v)}
+                    title="更新メニュー"
+                    aria-label="更新メニュー"
+                    aria-expanded={responseReloadMenuOpen}
+                  >
+                    <ChevronDown size={12} />
+                  </button>
+                  {responseReloadMenuOpen && (
+                    <div className="title-split-menu">
+                      <button onClick={() => { setResponseReloadMenuOpen(false); reloadResponses(); }}>
+                        再読み込み
+                      </button>
+                      <button onClick={() => { setResponseReloadMenuOpen(false); reloadResponsesAfterCachePurge(); }}>
+                        キャッシュから削除して再読み込み
+                      </button>
+                    </div>
+                  )}
+                </div>
                 <button className="title-action-btn" onClick={() => { setComposeOpen(true); setComposePos(null); setComposeBody(""); setComposeResult(null); }} title="書き込み"><Pencil size={14} /></button>
                 <button className="title-action-btn" onClick={() => {
                   const tab = threadTabs[activeTabIndex];
