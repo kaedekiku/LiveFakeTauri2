@@ -508,6 +508,7 @@ export default function App() {
   const [composeFontSize, setComposeFontSize] = useState(13);
   const [idPopup, setIdPopup] = useState<{ right: number; y: number; anchorTop: number; id: string } | null>(null);
   const idPopupCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [idMenu, setIdMenu] = useState<{ x: number; y: number; id: string } | null>(null);
   const anchorPopupCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [backRefPopup, setBackRefPopup] = useState<{ x: number; y: number; anchorTop: number; responseIds: number[] } | null>(null);
   const [watchoiMenu, setWatchoiMenu] = useState<{ x: number; y: number; watchoi: string } | null>(null);
@@ -2623,6 +2624,7 @@ export default function App() {
         setBackRefPopup(null);
         setNestedPopups([]);
         setWatchoiMenu(null);
+        setIdMenu(null);
         setSearchHistoryDropdown(null);
         setSearchHistoryMenu(null);
         setResponseReloadMenuOpen(false);
@@ -3446,6 +3448,12 @@ export default function App() {
                           <span
                             className="response-id-cell"
                             style={{ color: getIdColor(id) }}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (idPopupCloseTimer.current) { clearTimeout(idPopupCloseTimer.current); idPopupCloseTimer.current = null; }
+                              const p = clampMenuPosition(e.clientX, e.clientY, 160, 56);
+                              setIdMenu({ x: p.x, y: p.y, id });
+                            }}
                             onMouseEnter={(e) => {
                               if (idPopupCloseTimer.current) { clearTimeout(idPopupCloseTimer.current); idPopupCloseTimer.current = null; }
                               const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -3825,6 +3833,11 @@ export default function App() {
         <div className="thread-menu" style={{ left: watchoiMenu.x, top: watchoiMenu.y }} onClick={(e) => e.stopPropagation()}>
           <button onClick={() => { addNgEntry("names", watchoiMenu.watchoi); setWatchoiMenu(null); }}>ワッチョイをNG</button>
           <button onClick={() => { void navigator.clipboard.writeText(watchoiMenu.watchoi); setStatus("ワッチョイをコピーしました"); setWatchoiMenu(null); }}>ワッチョイをコピー</button>
+        </div>
+      )}
+      {idMenu && (
+        <div className="thread-menu" style={{ left: idMenu.x, top: idMenu.y }} onClick={(e) => e.stopPropagation()}>
+          <button onClick={() => { addNgEntry("ids", idMenu.id); setIdMenu(null); }}>NGIDに追加</button>
         </div>
       )}
       {searchHistoryMenu && (
