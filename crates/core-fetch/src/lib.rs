@@ -605,7 +605,7 @@ fn curl_post_5ch_inner(
             let confirm_body = build_sjis_form_body(
                 &form.fields.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect::<Vec<_>>(),
             );
-            let (s2, c2, r2, mut b2) =
+            let (s2, c2, r2, b2) =
                 curl_exec("POST", &form.action_url, Some(post_url), Some(&confirm_body), cookie_file, extra_cookies)?;
             status = s2;
             ct = c2;
