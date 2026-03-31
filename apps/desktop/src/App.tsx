@@ -544,6 +544,7 @@ export default function App() {
   const [idPopup, setIdPopup] = useState<{ right: number; y: number; anchorTop: number; id: string } | null>(null);
   const idPopupCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [idMenu, setIdMenu] = useState<{ x: number; y: number; id: string } | null>(null);
+  const [beMenu, setBeMenu] = useState<{ x: number; y: number; beNumber: string } | null>(null);
   const anchorPopupCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [backRefPopup, setBackRefPopup] = useState<{ x: number; y: number; anchorTop: number; responseIds: number[] } | null>(null);
   const [watchoiMenu, setWatchoiMenu] = useState<{ x: number; y: number; watchoi: string } | null>(null);
@@ -2749,6 +2750,7 @@ export default function App() {
         setNestedPopups([]);
         setWatchoiMenu(null);
         setIdMenu(null);
+        setBeMenu(null);
         setSearchHistoryDropdown(null);
         setSearchHistoryMenu(null);
         setResponseReloadMenuOpen(false);
@@ -3611,12 +3613,8 @@ export default function App() {
                             className="response-be-link"
                             onClick={(e) => {
                               e.stopPropagation();
-                              const url = `https://be.5ch.io/user/${r.beNumber}`;
-                              if (isTauriRuntime()) {
-                                void invoke("open_external_url", { url }).catch(() => window.open(url, "_blank"));
-                              } else {
-                                window.open(url, "_blank");
-                              }
+                              const p = clampMenuPosition(e.clientX, e.clientY, 220, 112);
+                              setBeMenu({ x: p.x, y: p.y, beNumber: r.beNumber! });
                             }}
                           >
                             BE:{r.beNumber}
@@ -3971,11 +3969,36 @@ export default function App() {
         <div className="thread-menu" style={{ left: watchoiMenu.x, top: watchoiMenu.y }} onClick={(e) => e.stopPropagation()}>
           <button onClick={() => { addNgEntry("names", watchoiMenu.watchoi); setWatchoiMenu(null); }}>ワッチョイをNG</button>
           <button onClick={() => { void navigator.clipboard.writeText(watchoiMenu.watchoi); setStatus("ワッチョイをコピーしました"); setWatchoiMenu(null); }}>ワッチョイをコピー</button>
+          <button onClick={() => { setResponseSearchQuery(watchoiMenu.watchoi); addSearchHistory("response", watchoiMenu.watchoi); setStatus(`ワッチョイでレス抽出: ${watchoiMenu.watchoi}`); setWatchoiMenu(null); }}>このワッチョイでレス抽出</button>
         </div>
       )}
       {idMenu && (
         <div className="thread-menu" style={{ left: idMenu.x, top: idMenu.y }} onClick={(e) => e.stopPropagation()}>
           <button onClick={() => { addNgEntry("ids", idMenu.id); setIdMenu(null); }}>NGIDに追加</button>
+        </div>
+      )}
+      {beMenu && (
+        <div className="thread-menu" style={{ left: beMenu.x, top: beMenu.y }} onClick={(e) => e.stopPropagation()}>
+          <button onClick={() => {
+            const url = `https://be.5ch.io/user/${beMenu.beNumber}`;
+            if (isTauriRuntime()) {
+              void invoke("open_external_url", { url }).catch(() => window.open(url, "_blank"));
+            } else {
+              window.open(url, "_blank");
+            }
+            setBeMenu(null);
+          }}>ブラウザで開く</button>
+          <button onClick={() => {
+            const query = beMenu.beNumber;
+            setThreadSearchQuery(query);
+            addSearchHistory("thread", query);
+            setStatus(`BEでスレ一覧抽出: ${query}`);
+            setBeMenu(null);
+          }}>このBEでスレ抽出</button>
+          <button onClick={() => {
+            addNgEntry("thread_words", beMenu.beNumber);
+            setBeMenu(null);
+          }}>このBEをスレタイNGに追加</button>
         </div>
       )}
       {searchHistoryMenu && (
