@@ -601,6 +601,16 @@ li.fav-drag-over {
   font-size: 11px;
   margin-left: 4px;
 }
+.response-block.reply-to-me {
+  border-left: 4px solid #2090d0;
+  padding-left: 2px;
+}
+.reply-to-me-label {
+  color: #2090d0;
+  font-weight: 700;
+  font-size: 11px;
+  margin-left: 4px;
+}
 
 .response-header {
   display: flex;
@@ -2231,6 +2241,9 @@ button.search-history-btn:hover {
 }
 .dark .response-block.my-post {
   border-left: 4px solid #e08010;
+}
+.dark .response-block.reply-to-me {
+  border-left: 4px solid #2090d0;
 }
 .dark .response-name {
   color: #4ec94e;

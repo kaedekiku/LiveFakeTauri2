@@ -1793,6 +1793,17 @@ export default function App() {
   })();
 
   const myPostNos = useMemo(() => new Set(myPosts[threadUrl.trim()] ?? []), [myPosts, threadUrl]);
+  const replyToMeNos = useMemo(() => {
+    if (myPostNos.size === 0) return new Set<number>();
+    const set = new Set<number>();
+    for (const r of responseItems) {
+      const refs = r.text.matchAll(/>>(\d+)/g);
+      for (const m of refs) {
+        if (myPostNos.has(Number(m[1]))) { set.add(r.id); break; }
+      }
+    }
+    return set;
+  }, [responseItems, myPostNos]);
 
   const watchoiCountMap = (() => {
     const map = new Map<string, number>();
@@ -3542,7 +3553,7 @@ export default function App() {
                   )}
                   <div
                     data-response-no={r.id}
-                    className={`response-block ${selectedResponse === r.id ? "selected" : ""}${myPostNos.has(r.id) ? " my-post" : ""}`}
+                    className={`response-block ${selectedResponse === r.id ? "selected" : ""}${myPostNos.has(r.id) ? " my-post" : ""}${replyToMeNos.has(r.id) ? " reply-to-me" : ""}`}
                     onClick={() => setSelectedResponse(r.id)}
                     onDoubleClick={() => appendComposeQuote(`>>${r.id}`)}
                   >
@@ -3551,6 +3562,7 @@ export default function App() {
                         {r.id}
                       </span>
                       {myPostNos.has(r.id) && <span className="my-post-label">[自分]</span>}
+                      {replyToMeNos.has(r.id) && <span className="reply-to-me-label">[自分宛]</span>}
                       <span
                         className="response-name"
                         dangerouslySetInnerHTML={renderHighlightedPlainText(r.nameWithoutWatchoi, responseSearchQuery)}
