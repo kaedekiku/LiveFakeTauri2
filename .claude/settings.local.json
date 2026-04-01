@@ -101,7 +101,8 @@
       "Bash(powershell.exe -Command \"\\(Get-Item 'C:\\\\Users\\\\all\\\\develop\\\\python\\\\5ch-browser-template\\\\target\\\\release\\\\ember.exe'\\).VersionInfo.ProductVersion\")",
       "Bash(powershell.exe -Command \"\\(Get-Item ''C:\\\\Users\\\\all\\\\develop\\\\python\\\\5ch-browser-template\\\\target\\\\release\\\\ember.exe''\\).VersionInfo.ProductVersion\")",
       "Bash(cp:*)",
-      "Bash(git stash:*)"
+      "Bash(git stash:*)",
+      "Bash(chmod +x:*)"
     ]
   }
 }
