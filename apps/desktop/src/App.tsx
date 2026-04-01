@@ -150,6 +150,7 @@ const THREAD_FETCH_TIMES_KEY = "desktop.threadFetchTimes.v1";
 const WINDOW_STATE_KEY = "desktop.windowState.v1";
 const SEARCH_HISTORY_KEY = "desktop.searchHistory.v1";
 const MY_POSTS_KEY = "desktop.myPosts.v1";
+const THREAD_TABS_KEY = "desktop.threadTabs.v1";
 const MAX_SEARCH_HISTORY = 20;
 const MENU_EDGE_PADDING = 8;
 
@@ -509,6 +510,9 @@ export default function App() {
   const [threadTabs, setThreadTabs] = useState<ThreadTab[]>([]);
   const [activeTabIndex, setActiveTabIndex] = useState(-1);
   const tabCacheRef = useRef<Map<string, { responses: ThreadResponseItem[]; selectedResponse: number; scrollResponseNo?: number; newResponseStart?: number | null }>>(new Map());
+  const tabsRestoredRef = useRef(false);
+  const lastBoardUrlRef = useRef("");
+  const pendingLastBoardRef = useRef<{ boardName: string; url: string } | null>(null);
   const [selectedBoard, setSelectedBoard] = useState("Favorite");
   const [selectedThread, setSelectedThread] = useState<number | null>(1);
   const [selectedResponse, setSelectedResponse] = useState<number>(1);
@@ -1143,6 +1147,7 @@ export default function App() {
 
   const selectBoard = (board: BoardEntry) => {
     setSelectedBoard(board.boardName);
+    lastBoardUrlRef.current = board.url;
     setLocationInput(board.url);
     setThreadUrl(board.url);
     void fetchThreadListFromCurrent(board.url);
@@ -2389,6 +2394,7 @@ export default function App() {
           typingConfettiEnabled?: boolean;
           imageSizeLimit?: number;
           hoverPreviewEnabled?: boolean;
+          lastBoard?: { boardName: string; url: string };
         };
         if (typeof parsed.boardPanePx === "number") setBoardPanePx(parsed.boardPanePx);
         if (typeof parsed.threadPanePx === "number") {
@@ -2414,6 +2420,9 @@ export default function App() {
         if (typeof parsed.typingConfettiEnabled === "boolean") setTypingConfettiEnabled(parsed.typingConfettiEnabled);
         if (typeof parsed.imageSizeLimit === "number") setImageSizeLimit(parsed.imageSizeLimit);
         if (typeof parsed.hoverPreviewEnabled === "boolean") setHoverPreviewEnabled(parsed.hoverPreviewEnabled);
+        if (parsed.lastBoard && typeof parsed.lastBoard.boardName === "string" && typeof parsed.lastBoard.url === "string") {
+          pendingLastBoardRef.current = parsed.lastBoard;
+        }
       } catch { /* ignore */ }
     };
     // Try localStorage first, then file-based persistence
@@ -2479,6 +2488,51 @@ export default function App() {
       const ftRaw = localStorage.getItem(THREAD_FETCH_TIMES_KEY);
       if (ftRaw) threadFetchTimesRef.current = JSON.parse(ftRaw);
     } catch { /* ignore */ }
+    // Restore last selected board
+    if (pendingLastBoardRef.current) {
+      const lb = pendingLastBoardRef.current;
+      setSelectedBoard(lb.boardName);
+      setLocationInput(lb.url);
+      setThreadUrl(lb.url);
+      lastBoardUrlRef.current = lb.url;
+      void fetchThreadListFromCurrent(lb.url);
+      pendingLastBoardRef.current = null;
+    }
+    // Restore thread tabs
+    try {
+      const tabsRaw = localStorage.getItem(THREAD_TABS_KEY);
+      if (tabsRaw) {
+        const parsed = JSON.parse(tabsRaw) as { tabs: ThreadTab[]; activeIndex: number };
+        if (Array.isArray(parsed.tabs) && parsed.tabs.length > 0) {
+          setThreadTabs(parsed.tabs);
+          const idx = typeof parsed.activeIndex === "number" ? parsed.activeIndex : 0;
+          const safeIdx = Math.min(idx, parsed.tabs.length - 1);
+          setActiveTabIndex(safeIdx);
+          const activeTab = parsed.tabs[safeIdx];
+          if (activeTab) {
+            setThreadUrl(activeTab.threadUrl);
+            setLocationInput(activeTab.threadUrl);
+            if (isTauriRuntime()) {
+              invoke<string | null>("load_thread_cache", { threadUrl: activeTab.threadUrl })
+                .then((json) => {
+                  if (json) {
+                    const responses = JSON.parse(json) as ThreadResponseItem[];
+                    const bm = loadBookmark(activeTab.threadUrl);
+                    tabCacheRef.current.set(activeTab.threadUrl, {
+                      responses,
+                      selectedResponse: bm ?? 1,
+                    });
+                    setFetchedResponses(responses);
+                    if (bm) setSelectedResponse(bm);
+                  }
+                })
+                .catch(() => {});
+            }
+          }
+        }
+      }
+    } catch { /* ignore */ }
+    tabsRestoredRef.current = true;
     // Silently refresh board list from server
     void fetchBoardCategories();
     void loadFavorites();
@@ -2506,6 +2560,13 @@ export default function App() {
       }).catch(() => {});
     }
   }, []);
+
+  useEffect(() => {
+    if (!tabsRestoredRef.current) return;
+    try {
+      localStorage.setItem(THREAD_TABS_KEY, JSON.stringify({ tabs: threadTabs, activeIndex: activeTabIndex }));
+    } catch { /* ignore */ }
+  }, [threadTabs, activeTabIndex]);
 
 
   useEffect(() => {
@@ -2717,12 +2778,13 @@ export default function App() {
       typingConfettiEnabled,
       imageSizeLimit,
       hoverPreviewEnabled,
+      lastBoard: lastBoardUrlRef.current ? { boardName: selectedBoard, url: lastBoardUrlRef.current } : undefined,
     });
     localStorage.setItem(LAYOUT_PREFS_KEY, payload);
     if (isTauriRuntime()) {
       void invoke("save_layout_prefs", { prefs: payload }).catch(() => {});
     }
-  }, [boardPanePx, threadPanePx, responseTopRatio, boardsFontSize, threadsFontSize, responsesFontSize, darkMode, fontFamily, threadColWidths, showBoardButtons, keepSortOnRefresh, composeSubmitKey, typingConfettiEnabled, imageSizeLimit, hoverPreviewEnabled]);
+  }, [boardPanePx, threadPanePx, responseTopRatio, boardsFontSize, threadsFontSize, responsesFontSize, darkMode, fontFamily, threadColWidths, showBoardButtons, keepSortOnRefresh, composeSubmitKey, typingConfettiEnabled, imageSizeLimit, hoverPreviewEnabled, selectedBoard]);
 
   useEffect(() => {
     if (!typingConfettiEnabled) return;
