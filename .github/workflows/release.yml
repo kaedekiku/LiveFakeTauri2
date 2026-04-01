@@ -80,6 +80,17 @@ jobs:
               && mv "${CACHE_FILE}.new" "$CACHE_FILE" || rm -f "${CACHE_FILE}.new"
           fi
 
+          # Bundle GIO TLS module into the path linuxdeploy-plugin-gtk sets as GIO_EXTRA_MODULES
+          # Only the GIO module itself is bundled — its TLS dependencies (libgnutls,
+          # libnettle, etc.) are intentionally left to the host system, because bundling
+          # Ubuntu's versions causes CA trust store path mismatches on other distros
+          # ("Unacceptable TLS certificate" errors).
+          GIO_MODULES_DIR=squashfs-root/usr/lib/x86_64-linux-gnu/gio/modules
+          mkdir -p "$GIO_MODULES_DIR"
+          cp /usr/lib/x86_64-linux-gnu/gio/modules/libgiognutls.so "$GIO_MODULES_DIR/" 2>/dev/null \
+            || echo "WARNING: libgiognutls.so not found, HTTPS image loading may fail"
+          gio-querymodules "$GIO_MODULES_DIR" 2>/dev/null || true
+
           # Download appimagetool and repackage
           wget -q "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage" -O appimagetool
           chmod +x appimagetool
@@ -171,6 +182,17 @@ jobs:
             gtk-query-immodules-3.0 "$IMMODULES_DIR"/*.so > "${CACHE_FILE}.new" 2>/dev/null \
               && mv "${CACHE_FILE}.new" "$CACHE_FILE" || rm -f "${CACHE_FILE}.new"
           fi
+
+          # Bundle GIO TLS module into the path linuxdeploy-plugin-gtk sets as GIO_EXTRA_MODULES
+          # Only the GIO module itself is bundled — its TLS dependencies (libgnutls,
+          # libnettle, etc.) are intentionally left to the host system, because bundling
+          # Ubuntu's versions causes CA trust store path mismatches on other distros
+          # ("Unacceptable TLS certificate" errors).
+          GIO_MODULES_DIR=squashfs-root/usr/lib/aarch64-linux-gnu/gio/modules
+          mkdir -p "$GIO_MODULES_DIR"
+          cp /usr/lib/aarch64-linux-gnu/gio/modules/libgiognutls.so "$GIO_MODULES_DIR/" 2>/dev/null \
+            || echo "WARNING: libgiognutls.so not found, HTTPS image loading may fail"
+          gio-querymodules "$GIO_MODULES_DIR" 2>/dev/null || true
 
           # Download appimagetool and repackage
           wget -q "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-aarch64.AppImage" -O appimagetool
