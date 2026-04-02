@@ -29,6 +29,37 @@
       "icons/icon.png",
       "icons/icon.ico"
     ],
+    "linux": {
+      "deb": {
+        "depends": [
+          "libwebkit2gtk-4.1-0",
+          "libjavascriptcoregtk-4.1-0",
+          "libgtk-3-0",
+          "libsoup-3.0-0",
+          "libglib2.0-0",
+          "libpango-1.0-0",
+          "libgdk-pixbuf-2.0-0",
+          "libcairo2",
+          "libcairo-gobject2"
+        ],
+        "section": "web"
+      },
+      "rpm": {
+        "depends": [
+          "libwebkit2gtk-4.1.so.0()(64bit)",
+          "libjavascriptcoregtk-4.1.so.0()(64bit)",
+          "libgtk-3.so.0()(64bit)",
+          "libsoup-3.0.so.0()(64bit)",
+          "libglib-2.0.so.0()(64bit)",
+          "libgio-2.0.so.0()(64bit)",
+          "libgobject-2.0.so.0()(64bit)",
+          "libpango-1.0.so.0()(64bit)",
+          "libgdk_pixbuf-2.0.so.0()(64bit)",
+          "libcairo.so.2()(64bit)",
+          "libcairo-gobject.so.2()(64bit)"
+        ]
+      }
+    },
     "macOS": {
       "minimumSystemVersion": "13.0"
     }
