@@ -579,6 +579,7 @@ li.fav-drag-over {
 
 /* === Response scroll (continuous view) === */
 .response-scroll {
+  overflow-x: hidden;
   overflow-y: auto;
   background: #ffffff;
   padding: 0;
@@ -909,6 +910,15 @@ li.fav-drag-over {
   font-size: calc(12px + var(--fs-delta, 0px));
   line-height: 1.5;
   word-break: break-word;
+}
+
+.response-body.aa {
+  font-family: "Saitamaar", "IPAMonaPGothic", "Mona", "MS PGothic", "ＭＳ Ｐゴシック", monospace;
+  line-height: 1.2;
+  letter-spacing: 0;
+  white-space: pre;
+  word-break: normal;
+  overflow-x: auto;
 }
 
 
@@ -1409,6 +1419,8 @@ button.search-history-btn:hover {
 
 .response-menu {
   min-width: 220px;
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
 }
 
 .response-menu button {

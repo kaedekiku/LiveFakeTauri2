@@ -337,6 +337,30 @@ const getIdColor = (id: string): string => {
   return color;
 };
 
+/** Detect whether a post body is likely ASCII Art */
+const isAsciiArt = (html: string): boolean => {
+  const plain = html
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&").replace(/&quot;/g, '"');
+  const lines = plain.split("\n").filter((l) => l.trim().length > 0);
+  if (lines.length < 3) return false;
+  // Count lines with AA-characteristic patterns:
+  // - 2+ consecutive fullwidth spaces (used for AA alignment)
+  // - box-drawing / structural chars common in AA
+  const aaChars = /[─━│┃┌┐└┘├┤┬┴┼╋▓░▒█▀▄■□◆◇○●△▽☆★♪♂♀┏┓┗┛┠┨┯┷┿╂┣┫┳┻╀╂]/;
+  const fullwidthSpaces = /\u3000{2,}/;
+  // Consecutive halfwidth katakana / special symbols often in AA
+  const structuralPattern = /[|/\\＿＼／｜()（）{}＜＞]{3,}/;
+  let aaLineCount = 0;
+  for (const line of lines) {
+    if (fullwidthSpaces.test(line) || aaChars.test(line) || structuralPattern.test(line)) {
+      aaLineCount++;
+    }
+  }
+  return aaLineCount / lines.length >= 0.4;
+};
+
 const renderResponseBody = (html: string, opts?: { hideImages?: boolean; imageSizeLimitKb?: number }): { __html: string } => {
   let safe = html
     .replace(/<br\s*\/?>/gi, "\n")
@@ -528,6 +552,7 @@ export default function App() {
   const [threadLastReadCount, setThreadLastReadCount] = useState<Record<number, number>>({});
   const [threadMenu, setThreadMenu] = useState<{ x: number; y: number; threadId: number } | null>(null);
   const [responseMenu, setResponseMenu] = useState<{ x: number; y: number; responseId: number } | null>(null);
+  const [aaOverrides, setAaOverrides] = useState<Map<number, boolean>>(new Map());
   const [anchorPopup, setAnchorPopup] = useState<{ x: number; y: number; anchorTop: number; responseId: number } | null>(null);
   const [nestedPopups, setNestedPopups] = useState<{ x: number; y: number; anchorTop: number; responseId: number }[]>([]);
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
@@ -1999,7 +2024,7 @@ export default function App() {
   const onResponseNoClick = (e: ReactMouseEvent, responseId: number) => {
     e.stopPropagation();
     setSelectedResponse(responseId);
-    const p = clampMenuPosition(e.clientX, e.clientY, 240, 224);
+    const p = clampMenuPosition(e.clientX, e.clientY, 240, 280);
     setResponseMenu({ x: p.x, y: p.y, responseId });
     setThreadMenu(null);
   };
@@ -2101,7 +2126,7 @@ export default function App() {
   };
 
   const runResponseAction = async (
-    action: "quote" | "quote-with-name" | "copy-url" | "add-ng-id" | "copy-id" | "copy-body" | "add-ng-name" | "settings"
+    action: "quote" | "quote-with-name" | "copy-url" | "add-ng-id" | "copy-id" | "copy-body" | "add-ng-name" | "toggle-aa" | "settings"
   ) => {
     if (!responseMenu) return;
     const id = responseMenu.responseId;
@@ -2176,6 +2201,23 @@ export default function App() {
       if (resp.name.trim()) {
         addNgEntry("names", resp.name.trim());
       }
+      setResponseMenu(null);
+      return;
+    }
+    if (action === "toggle-aa") {
+      setAaOverrides((prev) => {
+        const next = new Map(prev);
+        const current = next.get(id);
+        const autoDetected = isAsciiArt(resp.text);
+        if (current === undefined) {
+          // First toggle: flip from auto-detected state
+          next.set(id, !autoDetected);
+        } else {
+          // Already overridden: flip the override
+          next.set(id, !current);
+        }
+        return next;
+      });
       setResponseMenu(null);
       return;
     }
@@ -3787,7 +3829,7 @@ export default function App() {
                         )}
                       </span>
                     </div>
-                    <div className="response-body" dangerouslySetInnerHTML={renderResponseBodyHighlighted(r.text, responseSearchQuery, { hideImages: ngResultMap.get(r.id) === "hide-images", imageSizeLimitKb: imageSizeLimit })} />
+                    <div className={`response-body${(aaOverrides.has(r.id) ? aaOverrides.get(r.id) : isAsciiArt(r.text)) ? " aa" : ""}`} dangerouslySetInnerHTML={renderResponseBodyHighlighted(r.text, responseSearchQuery, { hideImages: ngResultMap.get(r.id) === "hide-images", imageSizeLimitKb: imageSizeLimit })} />
                   </div>
                   </Fragment>
                 );
@@ -4104,6 +4146,16 @@ export default function App() {
           <button onClick={() => void runResponseAction("copy-id")}>IDをコピー</button>
           <button onClick={() => void runResponseAction("add-ng-id")}>NGIDに追加</button>
           <button onClick={() => void runResponseAction("add-ng-name")}>NG名前に追加</button>
+          <button onClick={() => void runResponseAction("toggle-aa")}>
+            {(() => {
+              const rid = responseMenu.responseId;
+              const override = aaOverrides.get(rid);
+              const resp = responseItems.find((r) => r.id === rid);
+              const auto = resp ? isAsciiArt(resp.text) : false;
+              const active = override !== undefined ? override : auto;
+              return active ? "AA表示: ON → OFF" : "AA表示: OFF → ON";
+            })()}
+          </button>
         </div>
       )}
       {tabMenu && (
