@@ -2233,11 +2233,17 @@ export default function App() {
       return;
     }
     if (action === "copy-id") {
+      const posterId = extractId(resp.time);
+      if (!posterId) {
+        setStatus(`no ID found in response #${id}`);
+        setResponseMenu(null);
+        return;
+      }
       try {
-        await navigator.clipboard.writeText(String(id));
-        setStatus(`response id copied: #${id}`);
+        await navigator.clipboard.writeText(posterId);
+        setStatus(`ID copied: ${posterId}`);
       } catch {
-        setStatus(`response id: #${id}`);
+        setStatus(`ID: ${posterId}`);
       }
       setResponseMenu(null);
       return;
@@ -2261,9 +2267,9 @@ export default function App() {
       return;
     }
     if (action === "add-ng-id") {
-      const idMatch = resp.time.match(/ID:([^\s]+)/);
-      if (idMatch) {
-        addNgEntry("ids", idMatch[1]);
+      const posterId = extractId(resp.time);
+      if (posterId) {
+        addNgEntry("ids", posterId);
       } else {
         setStatus(`no ID found in response #${id}`);
       }
