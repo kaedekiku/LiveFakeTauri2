@@ -106,7 +106,8 @@
       "Bash(mkdir -p Ember_win_x64)",
       "Bash(cp ember.exe Ember_win_x64/)",
       "Bash(powershell -Command \"Compress-Archive -Force -Path 'Ember_win_x64' -DestinationPath 'Ember_0.0.50_win_x64.zip'\")",
-      "Bash(bash scripts/release.sh 0.0.51 '- Wayland環境でのWebKit2GTKホワイトスクリーンを防止 \\(PR #12\\):*)"
+      "Bash(bash scripts/release.sh 0.0.51 '- Wayland環境でのWebKit2GTKホワイトスクリーンを防止 \\(PR #12\\):*)",
+      "Bash(bash:*)"
     ]
   }
 }
