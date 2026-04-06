@@ -3084,7 +3084,7 @@ export default function App() {
             { text: "sep" },
             { text: "設定", action: () => setSettingsOpen(true) },
             { text: "sep" },
-            { text: "終了", action: () => window.close() },
+            { text: "終了", action: () => { if (isTauriRuntime()) { void invoke("quit_app"); } else { window.close(); } } },
           ]},
           { label: "編集", items: [
             { text: "スレURLをコピー", action: () => { void navigator.clipboard.writeText(threadUrl); setStatus("copied thread url"); } },
