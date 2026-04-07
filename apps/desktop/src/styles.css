@@ -2078,7 +2078,7 @@ button.search-history-btn:hover {
 }
 
 .thread-tab {
-  cursor: grab;
+  cursor: pointer;
 }
 
 .thread-tab.drag-over {
