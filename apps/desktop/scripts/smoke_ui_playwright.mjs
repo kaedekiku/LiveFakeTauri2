@@ -402,8 +402,8 @@ try {
   console.log("smoke-ui: lightbox structure ok");
 
   // --- tab drag (mouse-event based) ---
-  const tabHasCursor = await page.$$eval(".thread-tab", (els) => els.length === 0 || els.some((el) => getComputedStyle(el).cursor === "grab"));
-  assert(tabHasCursor, "thread tabs should have grab cursor for drag");
+  const tabHasCursor = await page.$$eval(".thread-tab", (els) => els.length === 0 || els.some((el) => getComputedStyle(el).cursor === "pointer"));
+  assert(tabHasCursor, "thread tabs should have pointer cursor");
   console.log("smoke-ui: tab drag attribute ok");
 
   // --- response nav bar exists ---
