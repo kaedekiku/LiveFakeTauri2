@@ -192,7 +192,12 @@ export default function App() {
             </p>
             <div className="cmd-block">
               <code>xattr -dr com.apple.quarantine /Applications/Ember.app</code>
-              <button className="cmd-copy" onClick={() => { void navigator.clipboard.writeText("xattr -dr com.apple.quarantine /Applications/Ember.app"); }}>コピー</button>
+              <button className="cmd-copy" onClick={(e) => {
+                void navigator.clipboard.writeText("xattr -dr com.apple.quarantine /Applications/Ember.app");
+                const btn = e.currentTarget;
+                btn.textContent = "コピーしました";
+                setTimeout(() => { btn.textContent = "コピー"; }, 2000);
+              }}>コピー</button>
             </div>
           </div>
           <div className="install-platform">
