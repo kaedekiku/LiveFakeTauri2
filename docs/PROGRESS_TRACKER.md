@@ -101,19 +101,23 @@ sync2ch（https://sync2ch.com/）を利用して、他の専ブラ（chMate, Twi
 
 **XMLリクエスト形式**
 ```xml
-<sync2ch_request sync_number="0" client_id="ember-xxxxx"
+<?xml version="1.0" encoding="utf-8" ?>
+<sync2ch_request sync_number="0" client_id="0"
     client_version="0.0.69" client_name="Ember" os="Windows">
-  <thread_group category="favorite">
-    <board url="https://nova.5ch.io/livegalileo/" title="なんG" />
-    <thread url="https://nova.5ch.io/test/read.cgi/livegalileo/123456/"
+  <thread_group category="favorite" struct="Ember">
+    <bd url="https://nova.5ch.io/livegalileo/" title="なんG" />
+    <th url="https://nova.5ch.io/test/read.cgi/livegalileo/123456/"
         title="スレタイ" read="100" now="100" count="500" />
   </thread_group>
 </sync2ch_request>
 ```
+- リクエストの要素名は省略形: 板=`bd`, スレ=`th`（レスポンスは `board`, `thread`）
+- `thread_group` には `struct` 属性が必要
+- `client_id` は整数。初回は `0` を送信し、サーバーが割り当てた値をレスポンスから取得して以降使用
 
 **XMLレスポンス形式**
 ```xml
-<sync2ch_response result="ok" sync_number="1">
+<sync2ch_response result="ok" sync_number="1" client_id="12345">
   <thread_group category="favorite">
     <board s="a" url="..." title="..." />    <!-- a=追加, u=更新, n=変更なし -->
     <thread s="a" url="..." title="..." read="50" now="50" count="200" />
@@ -169,6 +173,27 @@ Phase 4（任意）: 自動同期
 **参考実装**
 - FoxSync2ch（Firefox addon）: https://github.com/nodaguti/FoxSync2ch
 - syn2chro（非公式Goサーバー）: https://github.com/tanaton/syn2chro
+
+**実装試行の記録（2026-04-08）**
+
+一度実装を試みたが、API が 400 Bad Request を返す問題が未解決。判明した事項:
+
+- `quick-xml` crate で XML 構築・パース、`reqwest` で HTTP Basic Auth + gzip 送信まで実装済み（動作確認済み）
+- reqwest の gzip feature が必要（`features = ["cookies", "json", "rustls-tls", "gzip"]`）
+- Tauri app 側に `chrono` 依存が必要（最終同期日時の生成）
+- `FavoritesData` に `Clone` derive が必要（同期コマンドでの所有権移動対策）
+- FoxSync2ch のソースコードから判明した仕様:
+  - リクエスト要素名は `bd`/`th`（レスポンスは `board`/`thread`）
+  - `client_id` は整数（文字列ではない）、初回 `0`、サーバーが応答で割り当て
+  - `thread_group` に `struct` 属性が必要
+  - お気に入りスレは `dir` 要素（板ごとのディレクトリ）でグループ化される構造がある
+  - Content-Type は `application/x-www-form-urlencoded` で XML を生ボディ送信
+- 400 の原因候補（未検証）:
+  - `dir` 要素によるスレのグループ化が必須の可能性
+  - XML 宣言のフォーマット差異（`<?xml ... ?>` の空白等）
+  - FoxSync2ch は Firefox の XMLSerializer を使用しており、quick-xml の出力との微妙な差異
+  - サーバー側が特定のクライアント名やバージョンを検証している可能性
+- 次回実装時は、まず curl で手動リクエストを送信して正しい XML 形式を特定することを推奨
 
 ## 決定事項
 
