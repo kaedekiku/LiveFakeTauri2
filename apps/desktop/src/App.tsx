@@ -2377,6 +2377,36 @@ export default function App() {
     setResponseMenu(null);
   };
 
+  const copyWholeThread = async () => {
+    if (responseItems.length === 0) {
+      setStatus("コピーするレスがありません");
+      setResponseMenu(null);
+      setTabMenu(null);
+      return;
+    }
+    const tab = activeTabIndex >= 0 && activeTabIndex < threadTabs.length ? threadTabs[activeTabIndex] : null;
+    const header = tab ? `${tab.title}\n${tab.threadUrl}\n\n` : "";
+    const body = responseItems.map((r) => {
+      const plain = r.text
+        .replace(/<br\s*\/?>/gi, "\n")
+        .replace(/<[^>]+>/g, "")
+        .replace(/&amp;/g, "&")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'");
+      return `${r.id} ${r.name} ${r.time}\n${plain}`;
+    }).join("\n\n");
+    try {
+      await navigator.clipboard.writeText(header + body);
+      setStatus(`スレ全体をコピーしました (${responseItems.length}レス)`);
+    } catch {
+      setStatus("コピーに失敗しました");
+    }
+    setResponseMenu(null);
+    setTabMenu(null);
+  };
+
   const resetLayout = () => {
     setBoardPanePx(DEFAULT_BOARD_PANE_PX);
     setThreadPanePx(DEFAULT_THREAD_PANE_PX);
@@ -4345,6 +4375,7 @@ export default function App() {
           <button onClick={() => void runResponseAction("copy-body")}>本文をコピー</button>
           <button onClick={() => void runResponseAction("copy-url")}>レスURLをコピー</button>
           <button onClick={() => void runResponseAction("copy-id")}>IDをコピー</button>
+          <button onClick={() => void copyWholeThread()}>スレ全体をコピー</button>
           <button onClick={() => void runResponseAction("add-ng-id")}>NGIDに追加</button>
           <button onClick={() => void runResponseAction("add-ng-name")}>NG名前に追加</button>
           <button onClick={() => void runResponseAction("toggle-aa")}>
@@ -4381,6 +4412,11 @@ export default function App() {
             if (tab) { void navigator.clipboard.writeText(`${tab.title}\n${tab.threadUrl}`); setStatus("スレタイとURLをコピーしました"); }
             setTabMenu(null);
           }}>スレタイとURLをコピー</button>
+          <button
+            onClick={() => void copyWholeThread()}
+            disabled={tabMenu.tabIndex !== activeTabIndex}
+            title={tabMenu.tabIndex !== activeTabIndex ? "アクティブなタブのみコピー可能" : ""}
+          >スレ全体をコピー</button>
           <button onClick={() => {
             const tab = threadTabs[tabMenu.tabIndex];
             if (tab) purgeThreadCache(tab.threadUrl);
