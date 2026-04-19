@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DESKTOP_DIR="$ROOT_DIR/apps/desktop"
 OUT_DIR="$ROOT_DIR/out"
-ZIP_PATH="$OUT_DIR/ember-mac-arm64.zip"
+ZIP_PATH="$OUT_DIR/livefake-mac-arm64.zip"
 BUILD_INFO_PATH="$OUT_DIR/build-info.txt"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then

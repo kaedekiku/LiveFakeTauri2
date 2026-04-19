@@ -1,6 +1,6 @@
 {
   "identifier": "default",
   "description": "Default desktop capability",
-  "windows": ["main"],
+  "windows": ["main", "subtitle", "image_popup"],
   "permissions": ["core:default"]
 }

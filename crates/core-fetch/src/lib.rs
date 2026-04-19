@@ -7,7 +7,7 @@ use std::sync::Arc;
 use thiserror::Error;
 use url::Url;
 use core_parse::{parse_dat_line, parse_subject_line};
-use encoding_rs::SHIFT_JIS;
+use encoding_rs::{EUC_JP, SHIFT_JIS};
 
 pub const BBSMENU_URL: &str = "https://menu.5ch.io/bbsmenu.json";
 
@@ -194,6 +194,7 @@ pub fn build_cookie_client(user_agent: &str) -> Result<(Client, Arc<Jar>), Fetch
         .user_agent(user_agent)
         .cookie_provider(jar.clone())
         .redirect(Policy::none())
+        .timeout(std::time::Duration::from_secs(30))
         .build()?;
     Ok((client, jar))
 }
@@ -414,6 +415,389 @@ pub async fn fetch_thread_responses(
     }).collect(), title))
 }
 
+// ---------------------------------------------------------------------------
+// Site type detection
+// ---------------------------------------------------------------------------
+
+/// Identifies which BBS site a URL belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SiteType {
+    FiveCh,
+    Shitaraba,
+    Jpnkn,
+}
+
+/// Return true if the URL is in the allowed backend access list.
+/// Allowed: *.5ch.io, *.5ch.net, *.2ch.net, jbbs.shitaraba.net, bbs.jpnkn.com,
+///          menu.5ch.io (BBS menu), *.uplift.5ch.io (auth).
+pub fn is_allowed_url(url: &str) -> bool {
+    let Ok(parsed) = Url::parse(url) else { return false; };
+    let host = match parsed.host_str() {
+        Some(h) => h,
+        None => return false,
+    };
+    host.ends_with(".5ch.io")
+        || host.ends_with(".5ch.net")
+        || host.ends_with(".2ch.net")
+        || host == "jbbs.shitaraba.net"
+        || host == "bbs.jpnkn.com"
+}
+
+/// Detect the BBS site type from a URL string.
+pub fn detect_site_type(url: &str) -> Option<SiteType> {
+    if url.contains(".5ch.io") || url.contains(".5ch.net") || url.contains(".2ch.net") {
+        Some(SiteType::FiveCh)
+    } else if url.contains("jbbs.shitaraba.net") {
+        Some(SiteType::Shitaraba)
+    } else if url.contains("bbs.jpnkn.com") {
+        Some(SiteType::Jpnkn)
+    } else {
+        None
+    }
+}
+
+// ---------------------------------------------------------------------------
+// したらば (jbbs.shitaraba.net) fetch
+// ---------------------------------------------------------------------------
+
+/// Parse shitaraba board URL into (category, board_id).
+/// e.g. `https://jbbs.shitaraba.net/game/12345/` → ("game", "12345")
+fn parse_shitaraba_board(url: &str) -> Result<(String, String), FetchError> {
+    let parsed = Url::parse(url).map_err(|_| FetchError::Parse("invalid shitaraba url".into()))?;
+    let segs: Vec<&str> = parsed.path_segments()
+        .ok_or_else(|| FetchError::Parse("no path".into()))?
+        .filter(|s| !s.is_empty())
+        .collect();
+    // Possible patterns:
+    //   /{category}/{board_id}/  (board URL)
+    //   /bbs/read.cgi/{category}/{board_id}/{thread_key}/  (thread URL)
+    //   /{category}/{board_id}/subject.txt
+    if segs.len() >= 4 && segs[0] == "bbs" && (segs[1] == "read.cgi" || segs[1] == "rawmode.cgi") {
+        return Ok((segs[2].to_string(), segs[3].to_string()));
+    }
+    if segs.len() >= 2 && segs[0] != "bbs" {
+        return Ok((segs[0].to_string(), segs[1].to_string()));
+    }
+    Err(FetchError::Parse("cannot parse shitaraba board from url".into()))
+}
+
+/// Parse shitaraba thread URL into (category, board_id, thread_key).
+fn parse_shitaraba_thread(url: &str) -> Result<(String, String, String), FetchError> {
+    let parsed = Url::parse(url).map_err(|_| FetchError::Parse("invalid shitaraba url".into()))?;
+    let segs: Vec<&str> = parsed.path_segments()
+        .ok_or_else(|| FetchError::Parse("no path".into()))?
+        .filter(|s| !s.is_empty())
+        .collect();
+    // /bbs/read.cgi/{category}/{board_id}/{thread_key}/
+    if segs.len() >= 5 && segs[0] == "bbs" && (segs[1] == "read.cgi" || segs[1] == "rawmode.cgi") {
+        return Ok((segs[2].to_string(), segs[3].to_string(), segs[4].to_string()));
+    }
+    Err(FetchError::Parse("cannot parse shitaraba thread url".into()))
+}
+
+/// Fetch shitaraba thread list (subject.txt).
+pub async fn fetch_shitaraba_thread_list(
+    client: &Client,
+    url: &str,
+    limit: usize,
+) -> Result<Vec<SubjectThread>, FetchError> {
+    let (category, board_id) = parse_shitaraba_board(url)?;
+    let subject_url = format!("https://jbbs.shitaraba.net/{}/{}/subject.txt", category, board_id);
+    let response = client.get(&subject_url).send().await?;
+    if !response.status().is_success() {
+        return Err(FetchError::HttpStatus(response.status()));
+    }
+    let bytes = response.bytes().await?;
+    let entries = core_parse::parse_shitaraba_thread_list(&bytes);
+    Ok(entries.into_iter().take(limit).map(|e| SubjectThread {
+        thread_url: format!("https://jbbs.shitaraba.net/bbs/read.cgi/{}/{}/{}/", category, board_id, e.thread_key),
+        thread_key: e.thread_key,
+        title: e.title,
+        response_count: e.response_count,
+    }).collect())
+}
+
+/// Fetch shitaraba thread responses via read.cgi HTML (DT/DD format).
+pub async fn fetch_shitaraba_responses(
+    client: &Client,
+    url: &str,
+    limit: usize,
+) -> Result<(Vec<ThreadResponse>, Option<String>), FetchError> {
+    let (category, board_id, thread_key) = parse_shitaraba_thread(url)?;
+    let raw_url = format!(
+        "https://jbbs.shitaraba.net/bbs/rawmode.cgi/{}/{}/{}/",
+        category, board_id, thread_key
+    );
+    let referer = format!(
+        "https://jbbs.shitaraba.net/bbs/read.cgi/{}/{}/{}/",
+        category, board_id, thread_key
+    );
+    let resp = client
+        .get(&raw_url)
+        .header("Referer", &referer)
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        return Err(FetchError::HttpStatus(resp.status()));
+    }
+    let bytes = resp.bytes().await?;
+    let (entries, title) = core_parse::parse_shitaraba_responses(&bytes);
+    Ok((entries.into_iter().take(limit).map(|(no, e)| ThreadResponse {
+        response_no: no,
+        name: e.name,
+        mail: e.mail,
+        date_and_id: e.date_and_id,
+        body: e.body,
+    }).collect(), title))
+}
+
+/// URL-encode a string as EUC-JP bytes.
+fn url_encode_euc_jp(text: &str) -> String {
+    let (bytes, _, _) = EUC_JP.encode(text);
+    url_encode_sjis_bytes(&bytes) // same percent-encoding logic
+}
+
+/// URL-encode a string as Shift_JIS bytes.
+fn url_encode_sjis(text: &str) -> String {
+    let (bytes, _, _) = SHIFT_JIS.encode(text);
+    url_encode_sjis_bytes(&bytes)
+}
+
+/// Post a reply to したらば.
+pub async fn post_shitaraba_reply(
+    client: &Client,
+    thread_url: &str,
+    from: &str,
+    mail: &str,
+    message: &str,
+) -> Result<PostSubmitResult, FetchError> {
+    let (category, board_id, thread_key) = parse_shitaraba_thread(thread_url)?;
+    let post_url = "https://jbbs.shitaraba.net/bbs/write.cgi";
+    let referer = format!("https://jbbs.shitaraba.net/bbs/read.cgi/{}/{}/{}/", category, board_id, thread_key);
+
+    // Build EUC-JP form body
+    let body = format!(
+        "DIR={}&BBS={}&KEY={}&NAME={}&MAIL={}&MESSAGE={}&TIME={}&submit={}",
+        url_encode_euc_jp(&category),
+        url_encode_euc_jp(&board_id),
+        url_encode_euc_jp(&thread_key),
+        url_encode_euc_jp(from),
+        url_encode_euc_jp(mail),
+        url_encode_euc_jp(message),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+        url_encode_euc_jp("書き込む"),
+    );
+
+    let resp = client.post(post_url)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header("Referer", &referer)
+        .body(body)
+        .send()
+        .await?;
+
+    let status = resp.status().as_u16();
+    let ct = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).map(|s| s.to_string());
+    let resp_bytes = resp.bytes().await?;
+    let resp_text = core_parse::decode_euc_jp(&resp_bytes);
+
+    let contains_error = resp_text.contains("ERROR") || resp_text.contains("エラー");
+    let is_success = resp_text.contains("書き込みが完了しました")
+        || resp_text.contains("write_done.cgi")
+        || (status >= 300 && status < 400); // redirect to write_done
+
+    Ok(PostSubmitResult {
+        action_url: post_url.to_string(),
+        status,
+        content_type: ct,
+        contains_error: contains_error && !is_success,
+        body_preview: resp_text.chars().take(500).collect(),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// JPNKN (bbs.jpnkn.com) fetch
+// ---------------------------------------------------------------------------
+
+/// Parse JPNKN board from URL.
+/// e.g. `https://bbs.jpnkn.com/test/read.cgi/boardname/12345/` → ("boardname", Some("12345"))
+fn parse_jpnkn_board(url: &str) -> Result<String, FetchError> {
+    let parsed = Url::parse(url).map_err(|_| FetchError::Parse("invalid jpnkn url".into()))?;
+    let segs: Vec<&str> = parsed.path_segments()
+        .ok_or_else(|| FetchError::Parse("no path".into()))?
+        .filter(|s| !s.is_empty())
+        .collect();
+    // /test/read.cgi/{board}/{thread_key}/
+    if segs.len() >= 3 && segs[0] == "test" && segs[1] == "read.cgi" {
+        return Ok(segs[2].to_string());
+    }
+    // /{board}/subject.txt or /{board}/
+    if !segs.is_empty() && segs[0] != "test" {
+        return Ok(segs[0].to_string());
+    }
+    Err(FetchError::Parse("cannot parse jpnkn board from url".into()))
+}
+
+/// Parse JPNKN thread URL into (board, thread_key).
+fn parse_jpnkn_thread(url: &str) -> Result<(String, String), FetchError> {
+    let parsed = Url::parse(url).map_err(|_| FetchError::Parse("invalid jpnkn url".into()))?;
+    let segs: Vec<&str> = parsed.path_segments()
+        .ok_or_else(|| FetchError::Parse("no path".into()))?
+        .filter(|s| !s.is_empty())
+        .collect();
+    if segs.len() >= 4 && segs[0] == "test" && segs[1] == "read.cgi" {
+        return Ok((segs[2].to_string(), segs[3].to_string()));
+    }
+    Err(FetchError::Parse("cannot parse jpnkn thread url".into()))
+}
+
+/// Fetch JPNKN thread list (subject.txt).
+pub async fn fetch_jpnkn_thread_list(
+    client: &Client,
+    url: &str,
+    limit: usize,
+) -> Result<Vec<SubjectThread>, FetchError> {
+    let board = parse_jpnkn_board(url)?;
+    let subject_url = format!("https://bbs.jpnkn.com/{}/subject.txt", board);
+    let response = client.get(&subject_url).send().await?;
+    if !response.status().is_success() {
+        return Err(FetchError::HttpStatus(response.status()));
+    }
+    let bytes = response.bytes().await?;
+    let entries = core_parse::parse_jpnkn_thread_list(&bytes);
+    Ok(entries.into_iter().take(limit).map(|e| SubjectThread {
+        thread_url: format!("https://bbs.jpnkn.com/test/read.cgi/{}/{}/", board, e.thread_key),
+        thread_key: e.thread_key,
+        title: e.title,
+        response_count: e.response_count,
+    }).collect())
+}
+
+/// Fetch JPNKN thread responses (dat file).
+pub async fn fetch_jpnkn_responses(
+    client: &Client,
+    url: &str,
+    limit: usize,
+) -> Result<(Vec<ThreadResponse>, Option<String>), FetchError> {
+    let (board, thread_key) = parse_jpnkn_thread(url)?;
+    let dat_url = format!("https://bbs.jpnkn.com/{}/dat/{}.dat", board, thread_key);
+    let response = client.get(&dat_url).send().await?;
+    if !response.status().is_success() {
+        return Err(FetchError::HttpStatus(response.status()));
+    }
+    let bytes = response.bytes().await?;
+    let (entries, title) = core_parse::parse_jpnkn_responses(&bytes);
+    Ok((entries.into_iter().take(limit).map(|(no, e)| ThreadResponse {
+        response_no: no,
+        name: e.name,
+        mail: e.mail,
+        date_and_id: e.date_and_id,
+        body: e.body,
+    }).collect(), title))
+}
+
+/// Post a reply to 5ch.io directly (bypasses reqwest token fetch to avoid session mismatch).
+pub fn post_5ch_reply(
+    thread_url: &str,
+    from: &str,
+    mail: &str,
+    message: &str,
+    extra_cookies: Option<&str>,
+) -> Result<PostSubmitResult, FetchError> {
+    let normalized = normalize_5ch_url(thread_url);
+    let parsed = Url::parse(&normalized).map_err(|_| FetchError::Parse("invalid 5ch url".into()))?;
+    let host = parsed.host_str().unwrap_or("").to_string();
+    let segments: Vec<String> = parsed.path_segments()
+        .into_iter().flatten().map(|s| s.to_string()).collect();
+    // segments: ["test", "read.cgi", "board", "thread_key"]
+    if segments.len() < 4 || segments[0] != "test" || segments[1] != "read.cgi" {
+        return Err(FetchError::Parse("invalid 5ch thread url format".into()));
+    }
+    let board = &segments[2];
+    let key = &segments[3];
+    let post_url = format!("https://{}/test/bbs.cgi", host);
+    let time = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .to_string();
+
+    let fields: Vec<(&str, &str)> = vec![
+        ("bbs", board),
+        ("key", key),
+        ("time", &time),
+        ("FROM", from),
+        ("mail", mail),
+        ("MESSAGE", message),
+        ("submit", "書き込む"),
+    ];
+
+    let (status, ct, body) = curl_post_5ch(&normalized, &post_url, &fields, extra_cookies)?;
+    let is_ok = body.contains("書きこみが終わりました") || body.contains("書き込みが終わりました") || body.contains("投稿が完了");
+    let contains_error = !is_ok && (body.contains("ERROR") || body.contains("エラー") || status >= 400);
+
+    Ok(PostSubmitResult {
+        action_url: post_url,
+        status,
+        content_type: ct,
+        contains_error,
+        body_preview: body.chars().take(500).collect(),
+    })
+}
+
+/// Post a reply to JPNKN.
+pub async fn post_jpnkn_reply(
+    client: &Client,
+    thread_url: &str,
+    from: &str,
+    mail: &str,
+    message: &str,
+) -> Result<PostSubmitResult, FetchError> {
+    let (board, thread_key) = parse_jpnkn_thread(thread_url)?;
+    let post_url = "https://bbs.jpnkn.com/test/bbs.cgi";
+    let referer = format!("https://bbs.jpnkn.com/test/read.cgi/{}/{}/", board, thread_key);
+
+    let body = format!(
+        "bbs={}&key={}&FROM={}&mail={}&MESSAGE={}&time={}&submit={}",
+        url_encode_sjis(&board),
+        url_encode_sjis(&thread_key),
+        url_encode_sjis(from),
+        url_encode_sjis(mail),
+        url_encode_sjis(message),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+        url_encode_sjis("書き込む"),
+    );
+
+    let resp = client.post(post_url)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header("Referer", &referer)
+        .body(body)
+        .send()
+        .await?;
+
+    let status = resp.status().as_u16();
+    let ct = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).map(|s| s.to_string());
+    let resp_bytes = resp.bytes().await?;
+    let (resp_text, _, _) = SHIFT_JIS.decode(&resp_bytes);
+
+    let contains_error = resp_text.contains("ERROR") || resp_text.contains("エラー");
+
+    Ok(PostSubmitResult {
+        action_url: post_url.to_string(),
+        status,
+        content_type: ct,
+        contains_error,
+        body_preview: resp_text.chars().take(500).collect(),
+    })
+}
+
 pub fn parse_post_form_tokens(thread_url: &str, html: &str) -> Result<PostFormTokens, FetchError> {
     let action = detect_post_form_action(html).ok_or_else(|| FetchError::Parse("form action".into()))?;
     let post_url = resolve_post_url(thread_url, &action)?;
@@ -486,7 +870,7 @@ fn curl_exec(
         "-b".into(), jar_str.into(),
         "-c".into(), jar_str.into(),
         "-X".into(), method.into(),
-        "-H".into(), "User-Agent: Monazilla/1.00 Ember/0.1".into(),
+        "-H".into(), "User-Agent: Monazilla/1.00 LiveFake/0.1".into(),
     ];
     if let Some(cookies) = extra_cookies {
         if !cookies.is_empty() {
@@ -571,7 +955,7 @@ pub fn curl_post_5ch(
     extra_cookies: Option<&str>,
 ) -> Result<(u16, Option<String>, String), FetchError> {
     let cookie_file = std::env::temp_dir().join(format!(
-        "ember_post_{}_{}.txt",
+        "livefake_post_{}_{}.txt",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -763,6 +1147,145 @@ pub struct CreateThreadResult {
     pub contains_error: bool,
     pub body_preview: String,
     pub thread_url: Option<String>,
+}
+
+/// Create a new thread on a shitaraba board.
+/// `board_url` should be like "https://jbbs.shitaraba.net/{category}/{board_id}/"
+pub async fn create_shitaraba_thread(
+    client: &Client,
+    board_url: &str,
+    subject: &str,
+    from: &str,
+    mail: &str,
+    message: &str,
+) -> Result<CreateThreadResult, FetchError> {
+    let (category, board_id) = parse_shitaraba_board(board_url)?;
+    let post_url = "https://jbbs.shitaraba.net/bbs/write.cgi";
+    let referer = format!("https://jbbs.shitaraba.net/{}/{}/", category, board_id);
+    let time = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let body = format!(
+        "DIR={}&BBS={}&SUBJECT={}&NAME={}&MAIL={}&MESSAGE={}&TIME={}&submit={}",
+        url_encode_euc_jp(&category),
+        url_encode_euc_jp(&board_id),
+        url_encode_euc_jp(subject),
+        url_encode_euc_jp(from),
+        url_encode_euc_jp(mail),
+        url_encode_euc_jp(message),
+        time,
+        url_encode_euc_jp("新規スレッド作成"),
+    );
+
+    let resp = client.post(post_url)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header("Referer", &referer)
+        .body(body)
+        .send()
+        .await?;
+
+    let status = resp.status().as_u16();
+    let ct = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).map(|s| s.to_string());
+    let resp_bytes = resp.bytes().await?;
+    let resp_text = core_parse::decode_euc_jp(&resp_bytes);
+
+    let contains_error = resp_text.contains("ERROR") || resp_text.contains("エラー");
+    let is_success = resp_text.contains("書き込みが完了しました")
+        || resp_text.contains("write_done.cgi")
+        || (status >= 300 && status < 400);
+
+    // Try to extract the new thread key from a redirect or response body
+    // shitaraba response may contain a link like /bbs/read.cgi/{category}/{board_id}/{thread_key}/
+    let thread_url = {
+        let pattern = format!("/bbs/read.cgi/{}/{}/", category, board_id);
+        resp_text.find(&pattern).and_then(|idx| {
+            let rest = &resp_text[idx + pattern.len()..];
+            let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+            let key = &rest[..end];
+            if !key.is_empty() && key.chars().all(|c| c.is_ascii_digit()) {
+                Some(format!("https://jbbs.shitaraba.net/bbs/read.cgi/{}/{}/{}/", category, board_id, key))
+            } else {
+                None
+            }
+        })
+    };
+
+    Ok(CreateThreadResult {
+        status,
+        content_type: ct,
+        contains_error: contains_error && !is_success,
+        body_preview: resp_text.chars().take(1000).collect(),
+        thread_url,
+    })
+}
+
+/// Create a new thread on a JPNKN board.
+/// `board_url` should be like "https://bbs.jpnkn.com/{board}/"
+pub async fn create_jpnkn_thread(
+    client: &Client,
+    board_url: &str,
+    subject: &str,
+    from: &str,
+    mail: &str,
+    message: &str,
+) -> Result<CreateThreadResult, FetchError> {
+    let board = parse_jpnkn_board(board_url)?;
+    let post_url = "https://bbs.jpnkn.com/test/bbs.cgi";
+    let referer = format!("https://bbs.jpnkn.com/{}/", board);
+    let time = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let body = format!(
+        "bbs={}&FROM={}&mail={}&MESSAGE={}&time={}&subject={}&submit={}",
+        url_encode_sjis(&board),
+        url_encode_sjis(from),
+        url_encode_sjis(mail),
+        url_encode_sjis(message),
+        time,
+        url_encode_sjis(subject),
+        url_encode_sjis("新規スレッド作成"),
+    );
+
+    let resp = client.post(post_url)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header("Referer", &referer)
+        .body(body)
+        .send()
+        .await?;
+
+    let status = resp.status().as_u16();
+    let ct = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).map(|s| s.to_string());
+    let resp_bytes = resp.bytes().await?;
+    let (resp_text, _, _) = SHIFT_JIS.decode(&resp_bytes);
+
+    let contains_error = resp_text.contains("ERROR") || resp_text.contains("エラー");
+
+    // Try to extract new thread key from response body
+    let thread_url = {
+        let pattern = format!("/test/read.cgi/{}/", board);
+        resp_text.find(&pattern).and_then(|idx| {
+            let rest = &resp_text[idx + pattern.len()..];
+            let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+            let key = &rest[..end];
+            if !key.is_empty() && key.chars().all(|c| c.is_ascii_digit()) {
+                Some(format!("https://bbs.jpnkn.com/test/read.cgi/{}/{}/", board, key))
+            } else {
+                None
+            }
+        })
+    };
+
+    Ok(CreateThreadResult {
+        status,
+        content_type: ct,
+        contains_error,
+        body_preview: resp_text.chars().take(1000).collect(),
+        thread_url,
+    })
 }
 
 /// Create a new thread on a 5ch board.
@@ -1144,7 +1667,7 @@ mod integration_tests {
         let thread_url = "https://greta.5ch.io/test/read.cgi/poverty/1742473225/";
         let post_url = "https://greta.5ch.io/test/bbs.cgi";
 
-        let cookie_file = std::env::temp_dir().join("ember_e2e_post_debug.txt");
+        let cookie_file = std::env::temp_dir().join("livefake_e2e_post_debug.txt");
         let _ = std::fs::remove_file(&cookie_file);
 
         // Step 1: GET thread page to collect cookies
@@ -1171,7 +1694,7 @@ mod integration_tests {
         let fields: Vec<(&str, &str)> = vec![
             ("FROM", ""),
             ("mail", "sage"),
-            ("MESSAGE", "テスト書き込み from Ember E2E"),
+            ("MESSAGE", "テスト書き込み from LiveFake E2E"),
             ("bbs", "poverty"),
             ("time", "1742480000"),
             ("key", "1742473225"),

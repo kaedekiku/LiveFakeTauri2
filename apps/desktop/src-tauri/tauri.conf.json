@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Ember",
+  "productName": "LiveFake",
   "version": "0.0.71",
-  "identifier": "io.ember.browser",
+  "identifier": "io.livefake.browser",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -15,7 +15,7 @@
     },
     "windows": [
       {
-        "title": "Ember",
+        "title": "LiveFake",
         "width": 1400,
         "height": 900,
         "resizable": true
@@ -29,7 +29,7 @@
       "icons/icon.png",
       "icons/icon.ico"
     ],
-    "homepage": "https://ember-5ch.pages.dev",
+    "homepage": "",
     "shortDescription": "5ちゃんねる専用ブラウザ",
     "longDescription": "Live5chライクな専ブラを現代技術で作り直す。Tauri v2 + Reactで構築されたPC向け5ch.io専用ブラウザです。",
     "linux": {

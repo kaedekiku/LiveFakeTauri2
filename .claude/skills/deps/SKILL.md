@@ -4,7 +4,7 @@ description: 依存関係の更新チェック・セキュリティ監査 (Rust 
 argument-hint: "[rust|node|audit|all]"  
 ---
 
-Ember プロジェクトの依存関係を確認する。引数で対象を選択:  
+LiveFake プロジェクトの依存関係を確認する。引数で対象を選択:  
 
 - `rust` — `cargo update --dry-run` で更新可能なRust依存を表示。`cargo outdated` がインストール済みならそちらを優先。
 - `node` — `cd apps/desktop && npm outdated` でNode依存を表示

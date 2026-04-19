@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>LiveFake - 画像</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; background: #1a1a1a; color: #eee; font-family: "Segoe UI", "Meiryo", sans-serif; font-size: 12px; display: flex; flex-direction: column; overflow: hidden; }
+  #tab-bar { display: flex; background: #2d2d30; border-bottom: 1px solid #444; overflow-x: auto; flex-shrink: 0; height: 28px; }
+  #tab-bar::-webkit-scrollbar { height: 3px; }
+  #tab-bar::-webkit-scrollbar-thumb { background: #555; }
+  .tab { display: flex; align-items: center; padding: 0 8px; cursor: pointer; white-space: nowrap; border-right: 1px solid #444; max-width: 180px; user-select: none; flex-shrink: 0; }
+  .tab:hover { background: #3a3a3a; }
+  .tab.active { background: #1a1a1a; border-bottom: 2px solid #0078d4; }
+  .tab-label { overflow: hidden; text-overflow: ellipsis; }
+  .tab-close { margin-left: 6px; cursor: pointer; opacity: 0.6; font-size: 14px; }
+  .tab-close:hover { opacity: 1; color: #ff4444; }
+  #image-container { flex: 1; display: flex; align-items: center; justify-content: center; overflow: hidden; position: relative; }
+  #image-container img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
+  #ctx-menu { display: none; position: fixed; background: #2d2d30; border: 1px solid #555; padding: 4px 0; z-index: 999; min-width: 160px; }
+  #ctx-menu .ctx-item { padding: 4px 16px; cursor: pointer; }
+  #ctx-menu .ctx-item:hover { background: #0078d4; }
+  #status { position: fixed; bottom: 0; left: 0; right: 0; background: #2d2d30; border-top: 1px solid #444; padding: 2px 8px; font-size: 11px; color: #aaa; }
+</style>
+</head>
+<body>
+<div id="tab-bar"></div>
+<div id="image-container">
+  <img id="img" alt="" />
+</div>
+<div id="ctx-menu"></div>
+<div id="status"></div>
+
+<script>
+  let images = [];
+  let activeId = null;
+  let invoke, listen;
+
+  function waitForTauri() {
+    if (window.__TAURI_INTERNALS__) { setup(); return; }
+    const id = setInterval(() => {
+      if (window.__TAURI_INTERNALS__) { clearInterval(id); setup(); }
+    }, 50);
+  }
+
+  function setup() {
+    invoke = window.__TAURI_INTERNALS__.invoke;
+    // Tauri v2 event listener
+    const tauriCore = window.__TAURI_INTERNALS__;
+    listen = (event, cb) => {
+      tauriCore.invoke("plugin:event|listen", {
+        event: event,
+        target: { kind: "WebviewWindow", label: "image_popup" },
+        handler: tauriCore.transformCallback(cb),
+      });
+    };
+
+    // Load initial images
+    invoke("get_image_popup_data").then((data) => {
+      if (Array.isArray(data) && data.length > 0) {
+        images = data;
+        activeId = images[images.length - 1].id;
+        renderTabs();
+        showImage(activeId);
+      }
+    }).catch(() => {});
+
+    // Listen for new images
+    listen("image-popup-add-tab", (event) => {
+      const entry = event.payload;
+      if (!entry) return;
+      images.push(entry);
+      activeId = entry.id;
+      renderTabs();
+      showImage(entry.id);
+    });
+
+    // Clear state on window close
+    window.addEventListener("beforeunload", () => {
+      invoke("clear_popup_images").catch(() => {});
+    });
+
+    // Close context menu on click
+    document.addEventListener("click", () => {
+      document.getElementById("ctx-menu").style.display = "none";
+    });
+
+    // Right-click on image
+    document.getElementById("image-container").addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      if (!activeId) return;
+      showCtxMenu(e.clientX, e.clientY, [
+        { text: "画像を保存", action: () => saveCurrentImage() },
+      ]);
+    });
+  }
+
+  function renderTabs() {
+    const bar = document.getElementById("tab-bar");
+    bar.innerHTML = "";
+    images.forEach((img) => {
+      const tab = document.createElement("div");
+      tab.className = "tab" + (img.id === activeId ? " active" : "");
+      tab.innerHTML = '<span class="tab-label">' + escHtml(img.label) + '</span><span class="tab-close">&times;</span>';
+      tab.addEventListener("click", (e) => {
+        if (e.target.classList.contains("tab-close")) {
+          closeTab(img.id);
+          return;
+        }
+        activeId = img.id;
+        renderTabs();
+        showImage(img.id);
+      });
+      tab.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const items = [{ text: "この画像を保存", action: () => saveSingleImage(img.sourceUrl) }];
+        if (images.length > 1) {
+          items.push({ text: "すべての画像を保存 (" + images.length + "件)", action: () => saveAllImages() });
+        }
+        items.push({ text: "このタブを閉じる", action: () => closeTab(img.id) });
+        if (images.length > 1) {
+          items.push({ text: "他のタブをすべて閉じる", action: () => closeOtherTabs(img.id) });
+          items.push({ text: "すべてのタブを閉じる", action: () => closeAllTabs() });
+        }
+        showCtxMenu(e.clientX, e.clientY, items);
+      });
+      bar.appendChild(tab);
+    });
+  }
+
+  function showImage(id) {
+    const entry = images.find((i) => i.id === id);
+    const img = document.getElementById("img");
+    if (entry) {
+      img.src = entry.dataUrl;
+      document.title = "LiveFake - " + entry.label;
+    }
+  }
+
+  function closeTab(id) {
+    invoke("remove_popup_image", { id: id }).catch(() => {});
+    images = images.filter((i) => i.id !== id);
+    if (images.length === 0) {
+      closeWindow();
+      return;
+    }
+    if (activeId === id) {
+      activeId = images[images.length - 1].id;
+    }
+    renderTabs();
+    showImage(activeId);
+  }
+
+  function closeAllTabs() {
+    images.forEach((i) => invoke("remove_popup_image", { id: i.id }).catch(() => {}));
+    images = [];
+    closeWindow();
+  }
+
+  function closeWindow() {
+    invoke("clear_popup_images").catch(() => {});
+    var tauriCore = window.__TAURI_INTERNALS__;
+    if (tauriCore) {
+      tauriCore.invoke("plugin:window|close", { label: "image_popup" }).catch(function() { window.close(); });
+    } else {
+      window.close();
+    }
+  }
+
+  function closeOtherTabs(keepId) {
+    const toRemove = images.filter((i) => i.id !== keepId);
+    toRemove.forEach((i) => invoke("remove_popup_image", { id: i.id }).catch(() => {}));
+    images = images.filter((i) => i.id === keepId);
+    activeId = keepId;
+    renderTabs();
+    showImage(activeId);
+  }
+
+  async function saveCurrentImage() {
+    const entry = images.find((i) => i.id === activeId);
+    if (!entry) return;
+    await saveSingleImage(entry.sourceUrl);
+  }
+
+  async function saveSingleImage(sourceUrl) {
+    try {
+      // Check if default folder is set
+      const settings = await invoke("load_app_settings");
+      let folder = settings["App.imageSaveFolder"] || "";
+      if (!folder) {
+        folder = await invoke("open_folder_dialog");
+        if (!folder) return;
+      }
+      const path = await invoke("save_image_to_folder", { url: sourceUrl, folder: folder });
+      setStatus("保存: " + path);
+    } catch (e) {
+      setStatus("保存失敗: " + e);
+    }
+  }
+
+  async function saveAllImages() {
+    // Always show folder dialog for "save all"
+    try {
+      const folder = await invoke("open_folder_dialog");
+      if (!folder) return;
+      let count = 0;
+      for (const img of images) {
+        try {
+          await invoke("save_image_to_folder", { url: img.sourceUrl, folder: folder });
+          count++;
+        } catch (e) {
+          console.warn("Save failed:", img.sourceUrl, e);
+        }
+      }
+      setStatus(count + "/" + images.length + " 件を保存しました");
+    } catch (e) {
+      setStatus("保存失敗: " + e);
+    }
+  }
+
+  function showCtxMenu(x, y, items) {
+    const menu = document.getElementById("ctx-menu");
+    menu.innerHTML = "";
+    items.forEach((item) => {
+      const div = document.createElement("div");
+      div.className = "ctx-item";
+      div.textContent = item.text;
+      div.addEventListener("click", (e) => {
+        e.stopPropagation();
+        menu.style.display = "none";
+        item.action();
+      });
+      menu.appendChild(div);
+    });
+    // Clamp position
+    const mw = 180, mh = items.length * 28;
+    const cx = (x + mw > window.innerWidth) ? window.innerWidth - mw : x;
+    const cy = (y + mh > window.innerHeight) ? window.innerHeight - mh : y;
+    menu.style.left = cx + "px";
+    menu.style.top = cy + "px";
+    menu.style.display = "block";
+  }
+
+  function setStatus(msg) {
+    document.getElementById("status").textContent = msg;
+    setTimeout(() => { document.getElementById("status").textContent = ""; }, 5000);
+  }
+
+  function escHtml(s) {
+    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+
+  waitForTauri();
+</script>
+</body>
+</html>

@@ -4,7 +4,7 @@ description: Lint一括実行 (cargo clippy + TypeScript型チェック)
 argument-hint: "[rust|ts|all]"  
 ---
 
-EmberプロジェクトのLintを実行する。引数で対象を選択:  
+LiveFakeプロジェクトのLintを実行する。引数で対象を選択:  
 
 - `rust` — `cargo clippy --workspace -- -D warnings` を実行
 - `ts` — `cd apps/desktop && npx tsc --noEmit` を実行

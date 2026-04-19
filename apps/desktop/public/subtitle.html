@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>LiveFake - 字幕</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: transparent;
+    font-family: "MS UI Gothic", "Meiryo", "Segoe UI Emoji", "Apple Color Emoji", sans-serif;
+    color: #ffffff;
+    user-select: none;
+  }
+  body {
+    background: rgba(26, 26, 46, 0.85);
+  }
+  #dragRegion {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    padding: 8px 12px;
+    overflow: hidden;
+    cursor: move;
+  }
+  #subtitleMeta {
+    font-size: 12px;
+    line-height: 1.4;
+    color: #cccccc;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-bottom: 4px;
+    flex-shrink: 0;
+  }
+  #subtitleBody {
+    font-size: 28px;
+    line-height: 1.4;
+    color: #ffffff;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    overflow-y: auto;
+    flex: 1;
+  }
+  .hl-text { border-radius: 2px; padding: 0 1px; }
+  .hl-id { font-weight: bold; }
+  #subtitleMeta .meta-thread-title { color: #88aaff; }
+  #subtitleMeta .meta-name { color: #88ff88; }
+  #subtitleMeta .meta-id { font-weight: bold; }
+  #subtitleMeta .meta-date { color: #999999; }
+</style>
+</head>
+<body>
+<div id="dragRegion" data-tauri-drag-region>
+  <div id="subtitleMeta"></div>
+  <div id="subtitleBody"></div>
+</div>
+<script>
+  function tauriListen(eventName, callback) {
+    const ti = window.__TAURI_INTERNALS__;
+    if (!ti) return;
+    const cbId = ti.transformCallback((ev) => { callback(ev.payload); });
+    ti.invoke("plugin:event|listen", {
+      event: eventName,
+      target: { kind: "Any" },
+      handler: cbId,
+    }).catch(() => {});
+  }
+
+  function waitForTauri() {
+    if (window.__TAURI_INTERNALS__) { setup(); return; }
+    const id = setInterval(() => {
+      if (window.__TAURI_INTERNALS__) { clearInterval(id); setup(); }
+    }, 50);
+  }
+
+  function setup() {
+    tauriListen("subtitle-update", (p) => { if (p) updateContent(p); });
+    tauriListen("subtitle-opacity", (p) => {
+      if (p != null) document.body.style.background = "rgba(26, 26, 46, " + (p.opacity || 0.85) + ")";
+    });
+    tauriListen("subtitle-font-size", (p) => {
+      if (p != null) document.getElementById("subtitleBody").style.fontSize = p.size + "px";
+    });
+    tauriListen("subtitle-meta-font-size", (p) => {
+      if (p != null) document.getElementById("subtitleMeta").style.fontSize = p.size + "px";
+    });
+  }
+
+  waitForTauri();
+
+  function escapeHtml(str) {
+    const d = document.createElement("div");
+    d.textContent = str;
+    return d.innerHTML;
+  }
+
+  function updateContent(data) {
+    const meta = document.getElementById("subtitleMeta");
+    const body = document.getElementById("subtitleBody");
+    if (!data) return;
+
+    // Build meta line
+    const parts = [];
+    if (data.threadTitle) parts.push(`<span class="meta-thread-title">${escapeHtml(data.threadTitle)}</span>`);
+    if (data.name) parts.push(`<span class="meta-name">${escapeHtml(data.name)}</span>`);
+    if (data.id) {
+      const color = data.idColor || "#cc8800";
+      parts.push(`<span class="meta-id hl-id" style="color:${color}">${escapeHtml("ID:" + data.id)}</span>`);
+    }
+    if (data.date) parts.push(`<span class="meta-date">${escapeHtml(data.date)}</span>`);
+    meta.innerHTML = parts.join(" ");
+
+    // Build body - sanitize HTML but allow highlight spans
+    if (data.bodyHtml) {
+      body.innerHTML = data.bodyHtml;
+    } else {
+      body.textContent = data.body || "";
+    }
+  }
+</script>
+</body>
+</html>

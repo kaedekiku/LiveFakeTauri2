@@ -1,13 +1,14 @@
 [package]
-name = "ember"
+name = "livefake"
 version = "0.0.71"
-description = "5ちゃんねる専用ブラウザ"
-homepage = "https://ember-5ch.pages.dev"
-repository = "https://github.com/kiyohken2000/5ch-browser-template"
+license = "MIT"
+description = "実況向け掲示板ブラウザ"
+homepage = ""
+repository = ""
 edition = "2021"
 
 [lib]
-name = "ember_lib"
+name = "livefake_lib"
 crate-type = ["cdylib", "rlib"]
 
 [build-dependencies]
@@ -15,9 +16,12 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 base64 = { workspace = true }
+chrono = { workspace = true }
 core-auth = { path = "../../../crates/core-auth" }
 core-fetch = { path = "../../../crates/core-fetch" }
+core-proxy = { path = "../../../crates/core-proxy" }
 core-store = { path = "../../../crates/core-store" }
+core-tts = { path = "../../../crates/core-tts" }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "multipart"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

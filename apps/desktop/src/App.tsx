@@ -1,6 +1,7 @@
 import {
   Fragment,
   useEffect,
+
   useMemo,
   useRef,
   useState,
@@ -14,15 +15,10 @@ import {
   ClipboardList, RefreshCw, Pencil, FilePenLine, Save,
   Star, X, ChevronLeft, ChevronRight, ChevronDown, Ban,
   Image, Film, ExternalLink, Upload, History, Copy, Trash2,
+  Subtitles, Volume2, ChevronUp, Search,
 } from "lucide-react";
 
 type MenuInfo = { topLevelKeys: number; normalizedSample: string };
-type AuthEnvStatus = {
-  beEmailSet: boolean;
-  bePasswordSet: boolean;
-  upliftEmailSet: boolean;
-  upliftPasswordSet: boolean;
-};
 type LoginOutcome = {
   provider: "Be" | "Uplift" | "Donguri";
   success: boolean;
@@ -96,10 +92,21 @@ type BoardCategory = { categoryName: string; boards: BoardEntry[] };
 type FavoriteBoard = { boardName: string; url: string };
 type FavoriteThread = { threadUrl: string; title: string; boardUrl: string };
 type FavoritesData = { boards: FavoriteBoard[]; threads: FavoriteThread[] };
-type NgEntry = { value: string; mode: "hide" | "hide-images" };
+type NgEntry = { value: string; mode: "hide" | "hide-images"; scope?: "global" | "board" | "thread"; scopeUrl?: string };
 type NgFilters = { words: (string | NgEntry)[]; ids: (string | NgEntry)[]; names: (string | NgEntry)[]; thread_words: string[] };
 const ngVal = (e: string | NgEntry): string => typeof e === "string" ? e : e.value;
 const ngEntryMode = (e: string | NgEntry): "hide" | "hide-images" => typeof e === "string" ? "hide" : e.mode;
+const ngEntryScope = (e: string | NgEntry): "global" | "board" | "thread" => typeof e === "string" ? "global" : (e.scope ?? "global");
+const ngEntryScopeUrl = (e: string | NgEntry): string | undefined => typeof e === "string" ? undefined : e.scopeUrl;
+const ngScopeMatches = (entry: string | NgEntry, boardUrl: string, threadUrl: string): boolean => {
+  const scope = ngEntryScope(entry);
+  if (scope === "global") return true;
+  const url = ngEntryScopeUrl(entry);
+  if (!url) return true;
+  if (scope === "board") return boardUrl === url;
+  if (scope === "thread") return threadUrl === url;
+  return true;
+};
 type AuthConfig = {
   upliftEmail: string;
   upliftPassword: string;
@@ -125,6 +132,9 @@ const DEFAULT_BOARD_PANE_PX = 220;
 const DEFAULT_THREAD_PANE_PX = 420;
 const DEFAULT_RESPONSE_TOP_RATIO = 42;
 const LAYOUT_PREFS_KEY = "desktop.layoutPrefs.v1";
+const MIN_NEW_ARRIVAL_PX = 80;
+const MAX_NEW_ARRIVAL_PX = 420;
+const DEFAULT_NEW_ARRIVAL_PX = 150;
 const MIN_COL_WIDTH = 16;
 const DEFAULT_COL_WIDTHS: Record<string, number> = {
   fetched: 18,
@@ -141,8 +151,8 @@ const NAME_HISTORY_KEY = "desktop.nameHistory.v1";
 const BOOKMARK_KEY = "desktop.bookmarks.v1";
 const BOARD_CACHE_KEY = "desktop.boardCategories.v1";
 const EXPANDED_CATS_KEY = "desktop.expandedCategories.v1";
-const LANDING_PAGE_URL = "https://ember-5ch.pages.dev";
-const BUY_ME_A_COFFEE_URL = "https://buymeacoffee.com/votepurchase";
+const LANDING_PAGE_URL = "";
+const GITHUB_RELEASE_URL = "https://github.com/kaedekiku/LiveFakeTauri2";
 const BOARD_TREE_SCROLL_KEY = "desktop.boardTreeScrollTop.v1";
 const SCROLL_POS_KEY = "desktop.scrollPositions.v1";
 const NEW_THREAD_SIZE_KEY = "desktop.newThreadDialogSize.v1";
@@ -151,22 +161,46 @@ const WINDOW_STATE_KEY = "desktop.windowState.v1";
 const SEARCH_HISTORY_KEY = "desktop.searchHistory.v1";
 const MY_POSTS_KEY = "desktop.myPosts.v1";
 const THREAD_TABS_KEY = "desktop.threadTabs.v1";
+const BOARD_TABS_KEY = "desktop.boardTabs.v1";
 const MAX_SEARCH_HISTORY = 20;
 const MENU_EDGE_PADDING = 8;
+
+// --- File-based persistence helpers (localStorage fallback) ---
+const saveToFile = (filename: string, data: unknown) => {
+  if (isTauriRuntime()) {
+    invoke("save_generic_json", { filename, data }).catch(() => {});
+  }
+};
+const loadFromFile = async <T,>(filename: string): Promise<T | null> => {
+  if (!isTauriRuntime()) return null;
+  try {
+    const v = await invoke<T | null>("load_generic_json", { filename });
+    return v;
+  } catch { return null; }
+};
 
 type ResizeDragState =
   | { mode: "board-thread"; startX: number; startBoardPx: number; startThreadPx: number }
   | { mode: "thread-response"; startX: number; startBoardPx: number; startThreadPx: number }
   | { mode: "response-rows"; startY: number; startThreadPx: number; responseLayoutHeight: number }
-  | { mode: "col-resize"; colKey: string; startX: number; startWidth: number; reverse: boolean };
+  | { mode: "col-resize"; colKey: string; startX: number; startWidth: number; reverse: boolean }
+  | { mode: "new-arrival-resize"; startY: number; startHeight: number };
 
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
-const clampMenuPosition = (x: number, y: number, width: number, height: number) => ({
-  x: clamp(x, MENU_EDGE_PADDING, Math.max(MENU_EDGE_PADDING, window.innerWidth - width - MENU_EDGE_PADDING)),
-  y: clamp(y, MENU_EDGE_PADDING, Math.max(MENU_EDGE_PADDING, window.innerHeight - height - MENU_EDGE_PADDING)),
-});
+const clampMenuPosition = (x: number, y: number, width: number, height: number) => {
+  const cx = clamp(x, MENU_EDGE_PADDING, Math.max(MENU_EDGE_PADDING, window.innerWidth - width - MENU_EDGE_PADDING));
+  const spaceBelow = window.innerHeight - y - MENU_EDGE_PADDING;
+  const cy = spaceBelow >= height ? y : Math.max(MENU_EDGE_PADDING, y - height);
+  return { x: cx, y: cy };
+};
 const isTauriRuntime = () =>
   typeof window !== "undefined" && Boolean((globalThis as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
+type SiteType = "fiveCh" | "shitaraba" | "jpnkn";
+const detectSiteType = (url: string): SiteType => {
+  if (/jbbs\.shitaraba\.net/i.test(url) || /jbbs\.livedoor\.jp/i.test(url)) return "shitaraba";
+  if (/bbs\.jpnkn\.com/i.test(url)) return "jpnkn";
+  return "fiveCh";
+};
 const isTypingTarget = (target: EventTarget | null) => {
   if (!(target instanceof HTMLElement)) return false;
   const tag = target.tagName.toLowerCase();
@@ -332,22 +366,34 @@ const emitDeleteExplosion = (x: number, y: number, count = 4) => {
   }
 };
 
-const ID_COLORS = [
-  "#c41a1a", "#1a8fc4", "#1aaa3e", "#b06d15", "#8c1ac4",
-  "#c41a8a", "#0d8a7a", "#6b6b00", "#2d5faa", "#aa2d5f",
-  "#4a7a0d", "#8a4a00", "#0d5f8a", "#7a0d5f", "#5f8a0d",
-  "#aa0d2d", "#2d8aaa", "#5f0d8a", "#8a7a0d", "#0d8a3a",
-];
-const idColorMap = new Map<string, string>();
-const getIdColor = (id: string): string => {
-  if (!id) return "inherit";
-  let color = idColorMap.get(id);
-  if (!color) {
-    color = ID_COLORS[idColorMap.size % ID_COLORS.length];
-    idColorMap.set(id, color);
-  }
-  return color;
+// ===== Highlight System =====
+const HIGHLIGHT_COLORS = [
+  { name: "赤",     color: "#FF0000" },
+  { name: "橙",     color: "#FF8000" },
+  { name: "金",     color: "#FFD700" },
+  { name: "黄緑",   color: "#00FF00" },
+  { name: "緑",     color: "#00CC00" },
+  { name: "水色",   color: "#00FFFF" },
+  { name: "空色",   color: "#0080FF" },
+  { name: "青",     color: "#0000FF" },
+  { name: "紫",     color: "#8000FF" },
+  { name: "ピンク", color: "#FF00FF" },
+  { name: "桃",     color: "#FF69B4" },
+  { name: "茶",     color: "#A0522D" },
+  { name: "灰",     color: "#808080" },
+  { name: "黒",     color: "#000000" },
+  { name: "白",     color: "#FFFFFF" },
+] as const;
+
+type TextHighlight = { pattern: string; color: string; type: "word" | "name" };
+type IdHighlightMap = Record<string, string>; // id -> color
+type IdHighlightFile = { date: string; highlights: IdHighlightMap };
+
+const todayStr = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 };
+
 
 /** Detect whether a post body is likely ASCII Art */
 const isAsciiArt = (html: string): boolean => {
@@ -373,7 +419,19 @@ const isAsciiArt = (html: string): boolean => {
   return aaLineCount / lines.length >= 0.4;
 };
 
-const renderResponseBody = (html: string, opts?: { hideImages?: boolean; imageSizeLimitKb?: number }): { __html: string } => {
+type UrlReplaceRuleOpts = { pattern: string; replacement: string; referer?: string };
+
+const applyUrlRules = (url: string, rules: UrlReplaceRuleOpts[]): string => {
+  for (const rule of rules) {
+    try {
+      const re = new RegExp(rule.pattern);
+      if (re.test(url)) return url.replace(re, rule.replacement);
+    } catch { /* ignore bad regex */ }
+  }
+  return url;
+};
+
+const renderResponseBody = (html: string, opts?: { hideImages?: boolean; imageSizeLimitKb?: number; urlRules?: UrlReplaceRuleOpts[] }): { __html: string } => {
   let safe = html
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<a\s[^>]*>(.*?)<\/a>/gi, "$1")
@@ -395,8 +453,9 @@ const renderResponseBody = (html: string, opts?: { hideImages?: boolean; imageSi
     safe = safe.replace(
       /((?:https?:\/\/|ttps?:\/\/|ps:\/\/|s:\/\/|(?<![a-zA-Z]):\/\/)[^\s<>&"]+\.(?:jpg|jpeg|png|gif|webp)(?:\?[^\s<>&"]*(?:&amp;[^\s<>&"]*)*)?|(?<!\S)(?:[a-zA-Z0-9][-a-zA-Z0-9]*\.)+[a-zA-Z]{2,}\/[^\s<>&"]*\.(?:jpg|jpeg|png|gif|webp)(?:\?[^\s<>&"]*(?:&amp;[^\s<>&"]*)*)?)/gi,
       (match) => {
-        const href = normalizeExternalUrl(match);
-        if (!href) return match;
+        const rawHref = normalizeExternalUrl(match);
+        if (!rawHref) return match;
+        const href = opts?.urlRules?.length ? applyUrlRules(rawHref, opts.urlRules) : rawHref;
         if (sizeGated) {
           collectedThumbs.push(`<span class="thumb-link thumb-size-gate" data-lightbox-src="${href}" data-gate-src="${href}" data-size-limit="${opts.imageSizeLimitKb}"><span class="thumb-gate-loading">画像を確認中…</span></span>`);
         } else {
@@ -463,9 +522,23 @@ const renderResponseBody = (html: string, opts?: { hideImages?: boolean; imageSi
   }
   return { __html: safe };
 };
-const renderResponseBodyHighlighted = (html: string, query: string, opts?: { hideImages?: boolean; imageSizeLimitKb?: number }): { __html: string } => {
+const applyWordHighlight = (html: string, pattern: string, color: string): string => {
+  if (!pattern) return html;
+  const re = new RegExp(escapeRegExp(pattern), "gi");
+  return html
+    .split(/(<[^>]+>)/g)
+    .map((part) => (part.startsWith("<") ? part : part.replace(re, (m) => `<span style="background:${color}">${m}</span>`)))
+    .join("");
+};
+const renderResponseBodyHighlighted = (html: string, query: string, opts?: { hideImages?: boolean; imageSizeLimitKb?: number; urlRules?: UrlReplaceRuleOpts[] }, wordHighlights?: Array<{ pattern: string; color: string }>): { __html: string } => {
   const rendered = renderResponseBody(html, opts).__html;
-  return { __html: highlightHtmlPreservingTags(rendered, query) };
+  let result = highlightHtmlPreservingTags(rendered, query);
+  if (wordHighlights) {
+    for (const wh of wordHighlights) {
+      result = applyWordHighlight(result, wh.pattern, wh.color);
+    }
+  }
+  return { __html: result };
 };
 
 const extractWatchoi = (name: string): string | null => {
@@ -497,8 +570,6 @@ const extractBeNumber = (...sources: string[]): string | null => {
 
 export default function App() {
   const [status, setStatus] = useState("not fetched");
-  const [authStatus, setAuthStatus] = useState("not checked");
-  const [loginProbe, setLoginProbe] = useState("not run");
   const [postCookieProbe, setPostCookieProbe] = useState("not run");
   const [threadUrl, setThreadUrl] = useState("https://mao.5ch.io/test/read.cgi/ngt/9240230711/");
   const [locationInput, setLocationInput] = useState("https://mao.5ch.io/test/read.cgi/ngt/9240230711/");
@@ -507,11 +578,13 @@ export default function App() {
   const [postFinalizePreviewProbe, setPostFinalizePreviewProbe] = useState("not run");
   const [postFinalizeSubmitProbe, setPostFinalizeSubmitProbe] = useState("not run");
   const [allowRealSubmit, setAllowRealSubmit] = useState(false);
-  const [metadataUrl, setMetadataUrl] = useState("https://ember-5ch.pages.dev/latest.json");
+  const [metadataUrl, setMetadataUrl] = useState("");
   const [currentVersion, setCurrentVersion] = useState(typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "0.0.0");
   const [updateResult, setUpdateResult] = useState<UpdateCheckResult | null>(null);
   const [updateProbe, setUpdateProbe] = useState("not run");
   const [composeOpen, setComposeOpen] = useState(false);
+  const [composeNewThread, setComposeNewThread] = useState(false);
+  const [composeSubject, setComposeSubject] = useState("");
   const [composeName, setComposeName] = useState("");
   const [nameHistory, setNameHistory] = useState<string[]>([]);
   const [composeMail, setComposeMail] = useState("");
@@ -545,10 +618,17 @@ export default function App() {
   const [fetchedThreads, setFetchedThreads] = useState<ThreadListItem[]>([]);
   const [fetchedResponses, setFetchedResponses] = useState<ThreadResponseItem[]>([]);
   const [boardCategories, setBoardCategories] = useState<BoardCategory[]>([]);
+  const [externalBoards, setExternalBoards] = useState<BoardEntry[]>([]);
+  const [showExternalBoardDialog, setShowExternalBoardDialog] = useState(false);
+  const [externalBoardUrl, setExternalBoardUrl] = useState("");
+  const [externalBoardName, setExternalBoardName] = useState("");
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
   const [favorites, setFavorites] = useState<FavoritesData>({ boards: [], threads: [] });
   const [ngFilters, setNgFilters] = useState<NgFilters>({ words: [], ids: [], names: [], thread_words: [] });
+  // customTitles: boardUrl -> threadKey -> customTitle
+  const [customTitles, setCustomTitles] = useState<Record<string, Record<string, string>>>({});
   const [ngAddMode, setNgAddMode] = useState<"hide" | "hide-images">("hide");
+  const [ngAddScope, setNgAddScope] = useState<"global" | "board" | "thread">("global");
   const [threadNgOpen, setThreadNgOpen] = useState(false);
   const [threadNgInput, setThreadNgInput] = useState("");
   const [ngPanelOpen, setNgPanelOpen] = useState(false);
@@ -565,8 +645,8 @@ export default function App() {
   hoverPreviewDelayRef.current = hoverPreviewDelay;
   const hoverPreviewShowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [thumbSize, setThumbSize] = useState(200);
-  const [restoreSession, setRestoreSession] = useState(false);
-  const restoreSessionRef = useRef(false);
+  const [restoreSession, setRestoreSession] = useState(true);
+  const restoreSessionRef = useRef(true);
   const hoverPreviewEnabledRef = useRef(hoverPreviewEnabled);
   hoverPreviewEnabledRef.current = hoverPreviewEnabled;
   const [boardPaneTab, setBoardPaneTab] = useState<"boards" | "fav-threads">("boards");
@@ -579,32 +659,71 @@ export default function App() {
   const [boardSearchQuery, setBoardSearchQuery] = useState("");
   const [responsesLoading, setResponsesLoading] = useState(false);
   const [ngInput, setNgInput] = useState("");
-  const [ngInputType, setNgInputType] = useState<"words" | "ids" | "names">("words");
+  const [ngInputType, setNgInputType] = useState<"words" | "ids" | "names" | "regex">("words");
   const [threadSearchQuery, setThreadSearchQuery] = useState("");
   const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(false);
-  const [autoRefreshInterval, setAutoRefreshInterval] = useState(60);
-  const [threadSortKey, setThreadSortKey] = useState<"fetched" | "id" | "title" | "res" | "got" | "new" | "lastFetch" | "speed">("id");
+  const [autoRefreshInterval, setAutoRefreshInterval] = useState(15);
+  const [autoScrollEnabled, setAutoScrollEnabled] = useState(true);
+  const [responseGap, setResponseGap] = useState(10);
+  const [smoothScroll, setSmoothScroll] = useState(true);
+  const [maxOpenTabs, setMaxOpenTabs] = useState(20);
+  const [logRetentionDays, setLogRetentionDays] = useState(7);
+  const smoothScrollRef = useRef(true);
+  smoothScrollRef.current = smoothScroll;
+  const maxOpenTabsRef = useRef(20);
+  maxOpenTabsRef.current = maxOpenTabs;
+  // Proxy settings state
+  const [proxyEnabled, setProxyEnabled] = useState(false);
+  const [proxyType, setProxyType] = useState<"http" | "socks5" | "socks4">("http");
+  const [proxyHost, setProxyHost] = useState("");
+  const [proxyPort, setProxyPort] = useState("");
+  const [proxyUsername, setProxyUsername] = useState("");
+  const [proxyPassword, setProxyPassword] = useState("");
+  // ImageViewURLReplace rules
+  type UrlReplaceRule = UrlReplaceRuleOpts;
+  const [imageUrlRules, setImageUrlRules] = useState<UrlReplaceRule[]>([]);
+  // Highlight state
+  const [idHighlights, setIdHighlights] = useState<IdHighlightMap>({});
+  const [textHighlights, setTextHighlights] = useState<TextHighlight[]>([]);
+  const [threadSortKey, setThreadSortKey] = useState<"fetched" | "id" | "title" | "res" | "got" | "new" | "lastFetch" | "speed" | "since">("id");
   const [threadSortAsc, setThreadSortAsc] = useState(true);
   const cachedSortOrderRef = useRef<string[]>([]);
   const prevSortSnapshotRef = useRef({ key: "", asc: true, urls: "", favFetched: false });
   const [threadTabs, setThreadTabs] = useState<ThreadTab[]>([]);
   const [activeTabIndex, setActiveTabIndex] = useState(-1);
+  const [boardTabs, setBoardTabs] = useState<{boardUrl: string, title: string}[]>([]);
+  const [activeBoardTabIndex, setActiveBoardTabIndex] = useState(-1);
+  const [activePaneView, setActivePaneView] = useState<"threads" | "responses">("threads");
   const tabCacheRef = useRef<Map<string, { responses: ThreadResponseItem[]; selectedResponse: number; scrollResponseNo?: number; newResponseStart?: number | null }>>(new Map());
   const closedTabsRef = useRef<{ threadUrl: string; title: string }[]>([]);
-  const tabsRestoredRef = useRef(false);
+  const [tabRestoreReady, setTabRestoreReady] = useState(false);
+  const threadTabsRef = useRef<ThreadTab[]>([]);
+  threadTabsRef.current = threadTabs;
+  const activeTabIndexRef = useRef(-1);
+  activeTabIndexRef.current = activeTabIndex;
+  const boardTabsRef = useRef<{boardUrl: string, title: string}[]>([]);
+  boardTabsRef.current = boardTabs;
+  const activeBoardTabIndexRef = useRef(-1);
+  activeBoardTabIndexRef.current = activeBoardTabIndex;
   const lastBoardUrlRef = useRef("");
   const pendingLastBoardRef = useRef<{ boardName: string; url: string } | null>(null);
+  const currentThreadUrlRef = useRef("");
   const [selectedBoard, setSelectedBoard] = useState("Favorite");
   const [selectedThread, setSelectedThread] = useState<number | null>(1);
   const [selectedResponse, setSelectedResponse] = useState<number>(1);
   const [threadReadMap, setThreadReadMap] = useState<Record<number, boolean>>({ 1: false, 2: true });
   const [threadLastReadCount, setThreadLastReadCount] = useState<Record<number, number>>({});
   const [threadMenu, setThreadMenu] = useState<{ x: number; y: number; threadId: number } | null>(null);
-  const [responseMenu, setResponseMenu] = useState<{ x: number; y: number; responseId: number } | null>(null);
+  const [responseMenu, setResponseMenu] = useState<{
+    x: number; y: number; responseId: number;
+    selection?: string; resId?: string; resName?: string; isOnResNo?: boolean; imageUrl?: string;
+  } | null>(null);
+  const [hlSubMenu, setHlSubMenu] = useState<{ type: "text" | "id" | "name"; value: string; nearRight?: boolean } | null>(null);
+  const [boardContextMenu, setBoardContextMenu] = useState<{ x: number; y: number; board: BoardEntry } | null>(null);
   const [aaOverrides, setAaOverrides] = useState<Map<number, boolean>>(new Map());
   const [anchorPopup, setAnchorPopup] = useState<{ x: number; y: number; anchorTop: number; responseIds: number[] } | null>(null);
   const [nestedPopups, setNestedPopups] = useState<{ x: number; y: number; anchorTop: number; responseIds: number[] }[]>([]);
-  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+  const [imageSaveFolder, setImageSaveFolder] = useState<string>("");
   const hoverPreviewRef = useRef<HTMLDivElement | null>(null);
   const hoverPreviewImgRef = useRef<HTMLImageElement | null>(null);
   const hoverPreviewSrcRef = useRef<string | null>(null);
@@ -625,6 +744,76 @@ export default function App() {
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsCategory, setSettingsCategory] = useState<"display" | "posting" | "tts" | "proxy" | "ng" | "auth" | "subtitle" | "highlights" | "info">("display");
+  const [hlWordInput, setHlWordInput] = useState("");
+  const [hlWordColor, setHlWordColor] = useState<string>(HIGHLIGHT_COLORS[0].color);
+  const [hlNameInput, setHlNameInput] = useState("");
+  const [hlNameColor, setHlNameColor] = useState<string>(HIGHLIGHT_COLORS[0].color);
+  const [hlIdInput, setHlIdInput] = useState("");
+  const [hlIdColor, setHlIdColor] = useState<string>(HIGHLIGHT_COLORS[0].color);
+  // Subtitle state
+  const [subtitleVisible, setSubtitleVisible] = useState(false);
+  const [subtitleBodyFontSize, setSubtitleBodyFontSize] = useState(28);
+  const [subtitleMetaFontSize, setSubtitleMetaFontSize] = useState(12);
+  const [subtitleOpacity, setSubtitleOpacity] = useState(0.85);
+  const [subtitleAlwaysOnTop, setSubtitleAlwaysOnTop] = useState(true);
+  // TTS state
+  type TtsMode = "off" | "sapi" | "bouyomi" | "voicevox";
+  const [ttsMode, setTtsMode] = useState<TtsMode>("off");
+  const [ttsEnabled, setTtsEnabled] = useState(false);
+  const [ttsMaxReadLength, setTtsMaxReadLength] = useState(0);
+  const [sapiVoices, setSapiVoices] = useState<{ index: number; name: string }[]>([]);
+  const [sapiVoiceIndex, setSapiVoiceIndex] = useState(0);
+  const [sapiRate, setSapiRate] = useState(0);
+  const [sapiVolume, setSapiVolume] = useState(100);
+  const [bouyomiPath, setBouyomiPath] = useState("");
+  const [bouyomiSpeed, setBouyomiSpeed] = useState(-1);
+  const [bouyomiTone, setBouyomiTone] = useState(-1);
+  const [bouyomiVolume, setBouyomiVolume] = useState(-1);
+  const [bouyomiVoice, setBouyomiVoice] = useState(0);
+  const [voicevoxEndpoint, setVoicevoxEndpoint] = useState("http://127.0.0.1:50021");
+  const [voicevoxSpeakerId, setVoicevoxSpeakerId] = useState(0);
+  const [voicevoxSpeedScale, setVoicevoxSpeedScale] = useState(1.0);
+  const [voicevoxPitchScale, setVoicevoxPitchScale] = useState(0.0);
+  const [voicevoxIntonationScale, setVoicevoxIntonationScale] = useState(1.0);
+  const [voicevoxVolumeScale, setVoicevoxVolumeScale] = useState(1.0);
+  const [voicevoxSpeakers, setVoicevoxSpeakers] = useState<{ name: string; styles: { name: string; id: number }[] }[]>([]);
+  const ttsIsSpeaking = useRef(false);
+  const ttsQueueRef = useRef<string[]>([]);
+  const ttsProcessingRef = useRef(false);
+  // Refs for TTS settings (avoid stale closures in async queue processor)
+  const ttsModeRef = useRef<TtsMode>("off");
+  ttsModeRef.current = ttsMode;
+  const ttsMaxReadLengthRef = useRef(0);
+  ttsMaxReadLengthRef.current = ttsMaxReadLength;
+  const sapiVoiceIndexRef = useRef(0);
+  sapiVoiceIndexRef.current = sapiVoiceIndex;
+  const sapiRateRef = useRef(0);
+  sapiRateRef.current = sapiRate;
+  const sapiVolumeRef = useRef(100);
+  sapiVolumeRef.current = sapiVolume;
+  const bouyomiPathRef = useRef("");
+  bouyomiPathRef.current = bouyomiPath;
+  const bouyomiSpeedRef = useRef(-1);
+  bouyomiSpeedRef.current = bouyomiSpeed;
+  const bouyomiToneRef = useRef(-1);
+  bouyomiToneRef.current = bouyomiTone;
+  const bouyomiVolumeRef = useRef(-1);
+  bouyomiVolumeRef.current = bouyomiVolume;
+  const bouyomiVoiceRef = useRef(0);
+  bouyomiVoiceRef.current = bouyomiVoice;
+  const voicevoxEndpointRef = useRef("http://127.0.0.1:50021");
+  voicevoxEndpointRef.current = voicevoxEndpoint;
+  const voicevoxSpeakerIdRef = useRef(0);
+  voicevoxSpeakerIdRef.current = voicevoxSpeakerId;
+  const voicevoxSpeedScaleRef = useRef(1.0);
+  voicevoxSpeedScaleRef.current = voicevoxSpeedScale;
+  const voicevoxPitchScaleRef = useRef(0.0);
+  voicevoxPitchScaleRef.current = voicevoxPitchScale;
+  const voicevoxIntonationScaleRef = useRef(1.0);
+  voicevoxIntonationScaleRef.current = voicevoxIntonationScale;
+  const voicevoxVolumeScaleRef = useRef(1.0);
+  voicevoxVolumeScaleRef.current = voicevoxVolumeScale;
   const [boardsFontSize, setBoardsFontSize] = useState(12);
   const [threadsFontSize, setThreadsFontSize] = useState(12);
   const [responsesFontSize, setResponsesFontSize] = useState(12);
@@ -654,13 +843,20 @@ export default function App() {
   const responseLayoutRef = useRef<HTMLDivElement | null>(null);
   const threadTbodyRef = useRef<HTMLTableSectionElement | null>(null);
   const responseScrollRef = useRef<HTMLDivElement | null>(null);
+
   const tabBarRef = useRef<HTMLDivElement | null>(null);
+  const boardTabBarRef = useRef<HTMLDivElement | null>(null);
   const threadListScrollRef = useRef<HTMLDivElement | null>(null);
   const suppressThreadScrollRef = useRef(false);
   const [lastFetchTime, setLastFetchTime] = useState<string | null>(null);
   const [newResponseStart, setNewResponseStart] = useState<number | null>(null);
+  const [newArrivalPaneOpen, setNewArrivalPaneOpen] = useState(true);
+  const [newArrivalPaneHeight, setNewArrivalPaneHeight] = useState(DEFAULT_NEW_ARRIVAL_PX);
+  const newArrivalScrollRef = useRef<HTMLDivElement | null>(null);
+  const [newArrivalItems, setNewArrivalItems] = useState<{ threadTitle: string; responseNo: number; name: string; id: string; time: string; text: string; threadUrl: string }[]>([]);
   const threadFetchTimesRef = useRef<Record<string, string>>({});
   const [responseSearchQuery, setResponseSearchQuery] = useState("");
+  const [responseSearchBarVisible, setResponseSearchBarVisible] = useState(false);
   const [responseLinkFilter, setResponseLinkFilter] = useState<"" | "image" | "video" | "link">("");
   const threadSearchRef = useRef<HTMLInputElement | null>(null);
   const responseSearchRef = useRef<HTMLInputElement | null>(null);
@@ -702,6 +898,7 @@ export default function App() {
         if (list.includes(matched.responseNo)) return prev;
         const next = { ...prev, [pending.threadUrl]: [...list, matched.responseNo] };
         try { localStorage.setItem(MY_POSTS_KEY, JSON.stringify(next)); } catch { /* ignore */ }
+        saveToFile("my-posts.json", next);
         return next;
       });
     }
@@ -785,6 +982,20 @@ export default function App() {
     } catch {
       // ignore persistence errors
     }
+    // Also persist to thread-history.json with visitedAt
+    try {
+      const history = await invoke<Record<string, Record<string, { lastReadNo: number; visitedAt: number; customTitle?: string }>>>("load_thread_history");
+      if (!history[boardUrl]) history[boardUrl] = {};
+      const prev = history[boardUrl][threadKey] ?? {};
+      history[boardUrl][threadKey] = {
+        ...prev,
+        lastReadNo,
+        visitedAt: Math.floor(Date.now() / 1000),
+      };
+      await invoke("save_thread_history", { history });
+    } catch {
+      // ignore persistence errors
+    }
   };
 
   const loadReadStatusForBoard = async (boardUrl: string, threads: ThreadListItem[]) => {
@@ -814,6 +1025,51 @@ export default function App() {
       setFavorites(data);
     } catch {
       // no saved favorites yet
+    }
+  };
+
+  const loadExternalBoards = async () => {
+    if (!isTauriRuntime()) return;
+    try {
+      const data = await invoke<BoardEntry[]>("load_external_boards");
+      setExternalBoards(data);
+    } catch { /* no saved external boards */ }
+  };
+
+  const addExternalBoard = (url: string, name: string) => {
+    const trimmedUrl = url.trim().replace(/\/$/, "") + "/";
+    const trimmedName = name.trim();
+    if (!trimmedUrl || !trimmedName) return;
+    if (externalBoards.some((b) => b.url === trimmedUrl)) {
+      setStatus("この板は既に登録されています");
+      return;
+    }
+    const next = [...externalBoards, { boardName: trimmedName, url: trimmedUrl }];
+    setExternalBoards(next);
+    if (isTauriRuntime()) invoke("save_external_boards", { boards: next }).catch(() => {});
+    setShowExternalBoardDialog(false);
+    setExternalBoardUrl("");
+    setExternalBoardName("");
+    setStatus(`外部板「${trimmedName}」を追加しました`);
+  };
+
+  const removeExternalBoard = (url: string) => {
+    const next = externalBoards.filter((b) => b.url !== url);
+    setExternalBoards(next);
+    if (isTauriRuntime()) invoke("save_external_boards", { boards: next }).catch(() => {});
+  };
+
+  const persistIdHighlights = (next: IdHighlightMap) => {
+    setIdHighlights(next);
+    if (isTauriRuntime()) {
+      invoke("save_id_highlights", { data: { date: todayStr(), highlights: next } }).catch(() => {});
+    }
+  };
+
+  const persistTextHighlights = (next: TextHighlight[]) => {
+    setTextHighlights(next);
+    if (isTauriRuntime()) {
+      invoke("save_text_highlights", { data: next }).catch(() => {});
     }
   };
 
@@ -921,16 +1177,37 @@ export default function App() {
     }
   };
 
-  const addNgEntry = (type: "words" | "ids" | "names" | "thread_words", value: string, mode?: "hide" | "hide-images") => {
+  const addNgEntry = (type: "words" | "ids" | "names" | "thread_words", value: string, mode?: "hide" | "hide-images", scope?: "global" | "board" | "thread") => {
     const trimmed = value.trim();
     if (!trimmed) return;
     if (ngFilters[type].some((e) => ngVal(e) === trimmed)) {
       setStatus(`already in NG ${type}: ${trimmed}`);
       return;
     }
-    const entry: string | NgEntry = type === "thread_words" ? trimmed : { value: trimmed, mode: mode ?? ngAddMode };
-    void persistNgFilters({ ...ngFilters, [type]: [...ngFilters[type], entry] });
+    if (type === "thread_words") {
+      void persistNgFilters({ ...ngFilters, [type]: [...ngFilters[type], trimmed] });
+    } else {
+      const s = scope ?? ngAddScope;
+      const entry: NgEntry = {
+        value: trimmed,
+        mode: mode ?? ngAddMode,
+        ...(s !== "global" ? { scope: s, scopeUrl: s === "board" ? getBoardUrlFromThreadUrl(threadUrl.trim()) : threadUrl.trim() } : {}),
+      };
+      void persistNgFilters({ ...ngFilters, [type]: [...ngFilters[type], entry] });
+    }
     setStatus(`added NG ${type}: ${trimmed}`);
+  };
+
+  const addNgFromInput = () => {
+    if (!ngInput.trim()) return;
+    if (ngInputType === "regex") {
+      const pattern = ngInput.trim();
+      const wrapped = pattern.startsWith("/") && pattern.endsWith("/") ? pattern : `/${pattern}/`;
+      addNgEntry("words", wrapped);
+    } else {
+      addNgEntry(ngInputType, ngInput);
+    }
+    setNgInput("");
   };
 
   const removeNgEntry = (type: "words" | "ids" | "names" | "thread_words", value: string) => {
@@ -951,8 +1228,11 @@ export default function App() {
 
   const getNgResult = (resp: { name: string; time: string; text: string }): null | "hide" | "hide-images" => {
     if (ngFilters.words.length === 0 && ngFilters.ids.length === 0 && ngFilters.names.length === 0) return null;
+    const curThread = threadUrl.trim();
+    const curBoard = getBoardUrlFromThreadUrl(curThread);
     let result: null | "hide" | "hide-images" = null;
     for (const w of ngFilters.words) {
+      if (!ngScopeMatches(w, curBoard, curThread)) continue;
       if (ngMatch(ngVal(w), resp.text)) {
         const m = ngEntryMode(w);
         if (m === "hide") return "hide";
@@ -960,6 +1240,7 @@ export default function App() {
       }
     }
     for (const n of ngFilters.names) {
+      if (!ngScopeMatches(n, curBoard, curThread)) continue;
       if (ngMatch(ngVal(n), resp.name)) {
         const m = ngEntryMode(n);
         if (m === "hide") return "hide";
@@ -970,6 +1251,7 @@ export default function App() {
       const idMatch = resp.time.match(/ID:([^\s]+)/);
       if (idMatch) {
         for (const entry of ngFilters.ids) {
+          if (!ngScopeMatches(entry, curBoard, curThread)) continue;
           if (idMatch[1] === ngVal(entry)) {
             const m = ngEntryMode(entry);
             if (m === "hide") return "hide";
@@ -982,22 +1264,16 @@ export default function App() {
   };
   const isNgFiltered = (resp: { name: string; time: string; text: string }): boolean => getNgResult(resp) !== null;
 
+  const bookmarkCacheRef = useRef<Record<string, number>>({});
   const saveBookmark = (url: string, responseNo: number) => {
-    try {
-      const raw = localStorage.getItem(BOOKMARK_KEY);
-      const data: Record<string, number> = raw ? JSON.parse(raw) : {};
-      data[url] = responseNo;
-      localStorage.setItem(BOOKMARK_KEY, JSON.stringify(data));
-    } catch { /* ignore */ }
+    bookmarkCacheRef.current[url] = responseNo;
+    const data = bookmarkCacheRef.current;
+    try { localStorage.setItem(BOOKMARK_KEY, JSON.stringify(data)); } catch { /* ignore */ }
+    saveToFile("bookmarks.json", data);
   };
 
   const loadBookmark = (url: string): number | null => {
-    try {
-      const raw = localStorage.getItem(BOOKMARK_KEY);
-      if (!raw) return null;
-      const data: Record<string, number> = JSON.parse(raw);
-      return data[url] ?? null;
-    } catch { return null; }
+    return bookmarkCacheRef.current[url] ?? null;
   };
 
   const getVisibleResponseNo = (): number => {
@@ -1017,9 +1293,8 @@ export default function App() {
     const no = responseNo ?? getVisibleResponseNo();
     if (no <= 1) return;
     threadScrollPositions.current[url] = no;
-    try {
-      localStorage.setItem(SCROLL_POS_KEY, JSON.stringify(threadScrollPositions.current));
-    } catch { /* ignore */ }
+    try { localStorage.setItem(SCROLL_POS_KEY, JSON.stringify(threadScrollPositions.current)); } catch { /* ignore */ }
+    saveToFile("scroll-positions.json", threadScrollPositions.current);
   };
   const loadScrollPos = (url: string): number => {
     if (threadScrollPositions.current[url] != null) return threadScrollPositions.current[url];
@@ -1035,10 +1310,17 @@ export default function App() {
   };
   const scrollToResponseNo = (no: number) => {
     if (no <= 1) return;
-    setTimeout(() => {
+    let attempts = 0;
+    const tryScroll = () => {
       const el = responseScrollRef.current?.querySelector(`[data-response-no="${no}"]`);
-      if (el) el.scrollIntoView({ block: "start" });
-    }, 50);
+      if (el) {
+        el.scrollIntoView({ block: "start", behavior: smoothScrollRef.current ? "smooth" : "instant" });
+      } else if (attempts < 10) {
+        attempts++;
+        requestAnimationFrame(tryScroll);
+      }
+    };
+    requestAnimationFrame(tryScroll);
   };
 
   const toggleCategory = (name: string) => {
@@ -1046,11 +1328,13 @@ export default function App() {
       const next = new Set(prev);
       if (next.has(name)) next.delete(name); else next.add(name);
       try { localStorage.setItem(EXPANDED_CATS_KEY, JSON.stringify([...next])); } catch { /* ignore */ }
+      saveToFile("expanded-categories.json", [...next]);
       return next;
     });
   };
 
   const openThreadInTab = (url: string, title: string) => {
+    setActivePaneView("responses");
     setResponseSearchQuery("");
     const existingIndex = threadTabs.findIndex((t) => t.threadUrl === url);
     if (existingIndex >= 0) {
@@ -1085,8 +1369,13 @@ export default function App() {
             try {
               const rows = JSON.parse(json) as ThreadResponseItem[];
               if (rows.length > 0) {
+                const bm = loadBookmark(url);
+                const savedNo = loadScrollPos(url);
+                const restoreNo = bm ?? (savedNo > 1 ? savedNo : 1);
                 setFetchedResponses(rows);
-                tabCacheRef.current.set(url, { responses: rows, selectedResponse: 1 });
+                setSelectedResponse(restoreNo);
+                tabCacheRef.current.set(url, { responses: rows, selectedResponse: restoreNo });
+                if (restoreNo > 1) scrollToResponseNo(restoreNo);
               }
             } catch { /* ignore */ }
           }
@@ -1106,6 +1395,10 @@ export default function App() {
         saveScrollPos(curUrl);
       }
       saveBookmark(curUrl, selectedResponse);
+    }
+    if (threadTabs.length >= maxOpenTabsRef.current) {
+      setStatus(`タブ上限 (${maxOpenTabsRef.current}) に達しました`);
+      return;
     }
     setNewResponseStart(null);
     const newTabs = [...threadTabs, { threadUrl: url, title }];
@@ -1179,6 +1472,7 @@ export default function App() {
   };
 
   const onTabClick = (index: number) => {
+    setActivePaneView("responses");
     if (index === activeTabIndex) return;
     if (activeTabIndex >= 0 && activeTabIndex < threadTabs.length) {
       const curUrl = threadTabs[activeTabIndex].threadUrl;
@@ -1230,7 +1524,7 @@ export default function App() {
     setSelectedResponse(1);
   };
 
-  const toggleThreadSort = (key: "fetched" | "id" | "title" | "res" | "got" | "new" | "lastFetch" | "speed") => {
+  const toggleThreadSort = (key: "fetched" | "id" | "title" | "res" | "got" | "new" | "lastFetch" | "speed" | "since") => {
     if (threadSortKey === key) {
       setThreadSortAsc((prev) => !prev);
     } else {
@@ -1244,35 +1538,20 @@ export default function App() {
     lastBoardUrlRef.current = board.url;
     setLocationInput(board.url);
     setThreadUrl(board.url);
+    // Open or activate board tab
+    setBoardTabs((prev) => {
+      const existing = prev.findIndex((t) => t.boardUrl === board.url);
+      if (existing >= 0) {
+        setActiveBoardTabIndex(existing);
+        return prev;
+      }
+      setActiveBoardTabIndex(prev.length);
+      return [...prev, { boardUrl: board.url, title: board.boardName }];
+    });
+    setActivePaneView("threads");
     void fetchThreadListFromCurrent(board.url);
   };
 
-  const checkAuthEnv = async () => {
-    try {
-      const s = await invoke<AuthEnvStatus>("check_auth_env_status");
-      setAuthStatus(
-        `BE(email:${s.beEmailSet}, pass:${s.bePasswordSet}) UPLIFT(email:${s.upliftEmailSet}, pass:${s.upliftPasswordSet})`
-      );
-    } catch (error) {
-      setAuthStatus(`error: ${String(error)}`);
-    }
-  };
-
-  const probeAuth = async () => {
-    setLoginProbe("running...");
-    try {
-      const result = await invoke<LoginOutcome[]>("probe_auth_logins");
-      const lines = result.map(
-        (r) =>
-          `${r.provider}: success=${r.success} status=${r.status} location=${r.location ?? "-"} cookies=${
-            r.cookieNames.join(",") || "(none)"
-          }`
-      );
-      setLoginProbe(lines.join("\n"));
-    } catch (error) {
-      setLoginProbe(`error: ${String(error)}`);
-    }
-  };
 
   const probePostCookieScope = async () => {
     setPostCookieProbe("running...");
@@ -1360,6 +1639,8 @@ export default function App() {
     setShowFavoritesOnly(false);
     const url = (targetThreadUrl ?? threadUrl).trim();
     if (!url) return;
+    // Switch to thread list view whenever a board is being fetched
+    setActivePaneView("threads");
     if (!isTauriRuntime()) {
       setThreadListProbe("web preview mode: thread fetch requires tauri runtime");
       setStatus("thread fetch unavailable in web preview");
@@ -1397,6 +1678,61 @@ export default function App() {
       const msg = String(error);
       setThreadListProbe(`error: ${msg}`);
       setStatus(`thread load error: ${msg}`);
+    }
+  };
+
+  // Fetch responses for a background tab (updates cache + new arrivals, no UI update)
+  const fetchBackgroundTabResponses = async (tabUrl: string, tabTitle: string) => {
+    if (!isTauriRuntime()) return;
+    try {
+      const cached = tabCacheRef.current.get(tabUrl);
+      const prevResponses = cached?.responses ?? [];
+      const prevCount = prevResponses.length;
+      // Differential fetch: pass last known response_no so backend returns only new responses
+      const lastResNo = prevCount > 0 ? prevResponses[prevCount - 1].responseNo : undefined;
+      const result = await invoke<{ responses: ThreadResponseItem[]; title: string | null }>(
+        "fetch_thread_responses_command",
+        { threadUrl: tabUrl, limit: null, sinceResNo: lastResNo ?? null }
+      );
+      const newRows = result.responses;
+      if (newRows.length === 0 && prevCount > 0) return; // no new responses
+      // Merge: full list = previous cached + new rows
+      const rows = lastResNo != null ? [...prevResponses, ...newRows] : newRows;
+      if (rows.length === 0) return;
+      tabCacheRef.current.set(tabUrl, { responses: rows, selectedResponse: cached?.selectedResponse ?? 1, scrollResponseNo: cached?.scrollResponseNo, newResponseStart: cached?.newResponseStart });
+      if (prevCount > 0 && newRows.length > 0) {
+        const now = new Date();
+        const timeStr = `${now.getFullYear()}/${String(now.getMonth() + 1).padStart(2, "0")}/${String(now.getDate()).padStart(2, "0")} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
+        threadFetchTimesRef.current[tabUrl] = timeStr;
+        const arrivals = newRows.map((r) => {
+          const idMatch = r.dateAndId.match(/ID:([^\s]+)/);
+          const timeMatch = r.dateAndId.match(/^[\d/]+\s+[\d:]+/);
+          return {
+            threadTitle: tabTitle,
+            responseNo: r.responseNo,
+            name: r.name,
+            id: idMatch ? idMatch[1] : "",
+            time: timeMatch ? timeMatch[0] : r.dateAndId.slice(0, 20),
+            text: r.body.replace(/<[^>]*>/g, "").slice(0, 200),
+            threadUrl: tabUrl,
+          };
+        });
+        if (autoRefreshEnabled && autoScrollEnabled) {
+          setNewArrivalItems((prev) => [...arrivals, ...prev].slice(0, 200));
+        }
+        if (ttsEnabled && ttsMode !== "off") {
+          const site = detectSiteType(tabUrl);
+          for (const a of arrivals) {
+            if (a.responseNo >= 1001) continue;
+            const prefix = site === "shitaraba" ? `したらば${a.responseNo}番さん`
+              : site === "jpnkn" ? `ジャパンくん${a.responseNo}番さん`
+              : `レス${a.responseNo}番さん`;
+            ttsSpeak(a.text, prefix);
+          }
+        }
+      }
+    } catch {
+      // silent — background fetch failures are non-critical
     }
   };
 
@@ -1477,7 +1813,7 @@ export default function App() {
   const fetchResponsesFromCurrent = async (targetThreadUrl?: string, opts?: { keepSelection?: boolean; resetScroll?: boolean }) => {
     const url = (targetThreadUrl ?? threadUrl).trim();
     if (!url) return;
-    if (!/\/test\/read\.cgi\/[^/]+\/[^/]+/.test(new URL(url, "https://dummy").pathname)) {
+    if (!/\/(test|bbs)\/read\.cgi\/[^/]+\/[^/]+/.test(new URL(url, "https://dummy").pathname)) {
       setResponseListProbe("スレッドを選択してください");
       return;
     }
@@ -1486,7 +1822,7 @@ export default function App() {
       return;
     }
     setResponseListProbe("running...");
-    setResponsesLoading(true);
+    if (!opts?.keepSelection) setResponsesLoading(true);
     try {
       const result = await invoke<{ responses: ThreadResponseItem[]; title: string | null }>("fetch_thread_responses_command", {
         threadUrl: url,
@@ -1506,23 +1842,32 @@ export default function App() {
         setStatus(`レス取得: 0件 (キャッシュ ${prevCount}件を維持)`);
         return;
       }
-      if (!opts?.keepSelection) idColorMap.clear();
-      setFetchedResponses(rows);
+
       if (opts?.keepSelection) {
-        // auto-refresh: keep current selection, don't reset
-        // scroll to first new response if there are new ones
-        if (prevCount > 0 && rows.length > prevCount) {
-          setTimeout(() => {
-            const newEl = responseScrollRef.current?.querySelector(`[data-response-no="${prevCount + 1}"]`);
-            if (newEl) newEl.scrollIntoView({ block: "start" });
-          }, 50);
+        // Auto-refresh: skip re-render if no new responses
+        if (rows.length <= prevCount) {
+          setResponseListProbe(`ok rows=${rows.length} (no change)`);
+          return;
+        }
+        // New responses arrived — update DOM and scroll
+        setFetchedResponses(rows);
+        if (autoScrollEnabled) {
+          requestAnimationFrame(() => {
+            if (responseScrollRef.current) {
+              responseScrollRef.current.scrollTop = responseScrollRef.current.scrollHeight;
+            }
+          });
         }
       } else if (opts?.resetScroll) {
+        setResponsesLoading(false);
+        setFetchedResponses(rows);
         setSelectedResponse(rows.length > 0 ? rows[0].responseNo : 1);
         setTimeout(() => {
           if (responseScrollRef.current) responseScrollRef.current.scrollTop = 0;
         }, 50);
       } else {
+        setResponsesLoading(false);
+        setFetchedResponses(rows);
         const savedNo = loadScrollPos(url);
         const bm = loadBookmark(url);
         setSelectedResponse(bm ?? (rows.length > 0 ? rows[0].responseNo : 1));
@@ -1538,10 +1883,11 @@ export default function App() {
         ?? "";
       invoke("save_thread_cache", { threadUrl: url, title: tabTitle, responsesJson: JSON.stringify(rows) }).catch(() => {});
       const now = new Date();
-      const timeStr = `${now.getFullYear()}/${String(now.getMonth() + 1).padStart(2, "0")}/${String(now.getDate()).padStart(2, "0")} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+      const timeStr = `${now.getFullYear()}/${String(now.getMonth() + 1).padStart(2, "0")}/${String(now.getDate()).padStart(2, "0")} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
       setLastFetchTime(timeStr);
       threadFetchTimesRef.current[url] = timeStr;
       try { localStorage.setItem(THREAD_FETCH_TIMES_KEY, JSON.stringify(threadFetchTimesRef.current)); } catch { /* ignore */ }
+      saveToFile("thread-fetch-times.json", threadFetchTimesRef.current);
       // Update thread list read counts and response count
       const threadListIndex = fetchedThreads.findIndex((ft) => ft.threadUrl === url);
       if (threadListIndex >= 0) {
@@ -1558,6 +1904,45 @@ export default function App() {
       if (prevCount > 0 && rows.length > prevCount) {
         setNewResponseStart(prevCount + 1);
         setStatus(`新着 ${rows.length - prevCount} レス (${rows.length})`);
+        // Update new arrival pane
+        const arrivalTitle = fetchedTitle
+          ?? threadTabs.find((t) => t.threadUrl === url)?.title
+          ?? fetchedThreads.find((t) => t.threadUrl === url)?.title
+          ?? url;
+        const newRows = rows.slice(prevCount);
+        const arrivals = newRows.map((r) => {
+          const idMatch = r.dateAndId.match(/ID:([^\s]+)/);
+          const timeMatch = r.dateAndId.match(/^[\d/]+\s+[\d:]+/);
+          return {
+            threadTitle: arrivalTitle,
+            responseNo: r.responseNo,
+            name: r.name,
+            id: idMatch ? idMatch[1] : "",
+            time: timeMatch ? timeMatch[0] : r.dateAndId.slice(0, 20),
+            text: r.body.replace(/<[^>]*>/g, "").slice(0, 200),
+            threadUrl: url,
+          };
+        });
+        // Only add to new arrivals pane when both autoReload and autoScroll are ON
+        if (autoRefreshEnabled && autoScrollEnabled) {
+          setNewArrivalItems((prev) => [...arrivals, ...prev].slice(0, 200));
+        }
+        // Update subtitle with latest new response
+        if (arrivals.length > 0) {
+          const latest = arrivals[arrivals.length - 1];
+          subtitleUpdate({ threadTitle: latest.threadTitle, name: latest.name, id: latest.id, date: latest.time, body: latest.text });
+        }
+        // TTS: read new responses (skip 1001/1002)
+        if (ttsEnabled && ttsMode !== "off") {
+          const site = detectSiteType(url);
+          for (const a of arrivals) {
+            if (a.responseNo >= 1001) continue;
+            const prefix = site === "shitaraba" ? `したらば${a.responseNo}番さん`
+              : site === "jpnkn" ? `ジャパンくん${a.responseNo}番さん`
+              : `レス${a.responseNo}番さん`;
+            ttsSpeak(a.text, prefix);
+          }
+        }
       } else {
         setNewResponseStart(null);
         setStatus(`responses loaded: ${rows.length}`);
@@ -1570,7 +1955,7 @@ export default function App() {
       const isDatOchi = msg.includes("404") || msg.includes("Not Found") || msg.includes("HttpStatus");
       setStatus(isDatOchi ? `dat落ちまたは存在しないスレです` : `response load error: ${msg}`);
     } finally {
-      setResponsesLoading(false);
+      if (!opts?.keepSelection) setResponsesLoading(false);
     }
   };
 
@@ -1643,6 +2028,35 @@ export default function App() {
     }
   };
 
+  const handleCreateThread = async () => {
+    if (!composeSubject.trim()) { setComposeResult({ ok: false, message: "スレッドタイトルを入力してください" }); return; }
+    if (!composeBody.trim()) { setComposeResult({ ok: false, message: "本文を入力してください" }); return; }
+    const boardUrl = getBoardUrlFromThreadUrl(threadUrl.trim()) || threadUrl.trim();
+    if (!boardUrl) { setComposeResult({ ok: false, message: "板URLが特定できません" }); return; }
+    setComposeResult(null);
+    try {
+      const r = await invoke<{ status: number; containsError: boolean; bodyPreview: string; threadUrl: string | null }>("create_thread_command", {
+        boardUrl,
+        subject: composeSubject,
+        from: composeName || null,
+        mail: composeMailValue || null,
+        message: composeBody,
+      });
+      const ok = !r.containsError;
+      setComposeResult({ ok, message: ok ? `スレッド作成成功 (${r.threadUrl ?? ""})` : `スレッド作成失敗: ${r.bodyPreview}` });
+      if (ok && r.threadUrl) {
+        openThreadInTab(r.threadUrl, composeSubject);
+        void fetchResponsesFromCurrent(r.threadUrl);
+        void refreshThreadListSilently();
+        setComposeNewThread(false);
+        setComposeSubject("");
+        setComposeBody("");
+      }
+    } catch (error) {
+      setComposeResult({ ok: false, message: `Error: ${String(error)}` });
+    }
+  };
+
   const probePostFinalizeSubmitFromCompose = async () => {
     setPostFinalizeSubmitProbe("running...");
     setComposeResult(null);
@@ -1665,6 +2079,7 @@ export default function App() {
         const prevCount = tabCacheRef.current.get(threadUrl.trim())?.responses.length ?? 0;
         pendingMyPostRef.current = { threadUrl: threadUrl.trim(), body: composeBody, prevCount };
         void fetchResponsesFromCurrent();
+        void refreshThreadListSilently();
       }
     } catch (error) {
       setPostFinalizeSubmitProbe(`error: ${String(error)}`);
@@ -1722,72 +2137,128 @@ export default function App() {
     }
   };
 
+  const postSuccessCleanup = async (postedBody: string) => {
+    setComposeBody("");
+    if (composeName.trim()) {
+      setNameHistory((prev) => {
+        const next = [composeName.trim(), ...prev.filter((n) => n !== composeName.trim())].slice(0, 20);
+        try { localStorage.setItem(NAME_HISTORY_KEY, JSON.stringify(next)); } catch { /* ignore */ }
+        saveToFile("name-history.json", next);
+        return next;
+      });
+    }
+    setComposeOpen(false);
+    setUploadPanelOpen(false);
+    setUploadResults([]);
+    const prevCount = tabCacheRef.current.get(threadUrl.trim())?.responses.length ?? 0;
+    pendingMyPostRef.current = { threadUrl: threadUrl.trim(), body: postedBody, prevCount };
+    await fetchResponsesFromCurrent(threadUrl.trim());
+    void refreshThreadListSilently();
+    setTimeout(() => {
+      const items = tabCacheRef.current.get(threadUrl.trim())?.responses;
+      if (items && items.length > 0) {
+        setSelectedResponse(items[items.length - 1].responseNo);
+      }
+      if (responseScrollRef.current) {
+        responseScrollRef.current.scrollTop = responseScrollRef.current.scrollHeight;
+      }
+    }, 100);
+  };
+
   const probePostFlowTraceFromCompose = async () => {
     if (composeSubmitting) return;
     setComposeSubmitting(true);
     setPostFlowTraceProbe("running...");
     setComposeResult(null);
+    // Always post to the currently active tab, not the URL bar state
+    const postTargetUrl = threadTabs[activeTabIndex]?.threadUrl ?? threadUrl;
     try {
-      const r = await invoke<PostFlowTrace>("probe_post_flow_trace", {
-        threadUrl,
+      const result = await invoke<string>("post_reply_multisite", {
+        threadUrl: postTargetUrl,
         from: composeName || null,
         mail: composeMailValue || null,
-        message: composeBody || null,
-        allowRealSubmit: true,
-        includeBe: beLoggedIn,
-        includeUplift: roninLoggedIn,
+        message: composeBody || "",
       });
-      setPostFlowTraceProbe(
-        [
-          `blocked=${r.blocked}`,
-          `token=${r.tokenSummary ?? "-"}`,
-          `confirm=${r.confirmSummary ?? "-"}`,
-          `finalize=${r.finalizeSummary ?? "-"}`,
-          `submit=${r.submitSummary ?? "-"}`,
-        ].join("\n")
-      );
-      if (r.blocked) {
-        setComposeResult({ ok: false, message: "Flow blocked" });
-      } else if (r.submitSummary?.includes("error=true")) {
-        setComposeResult({ ok: false, message: `Post failed: ${r.submitSummary}\nconfirm: ${r.confirmSummary ?? "-"}\nretry: ${r.finalizeSummary ?? "-"}` });
-        setPostHistory((prev) => [{ time: new Date().toLocaleTimeString(), threadUrl, body: composeBody.slice(0, 100), ok: false }, ...prev].slice(0, 50));
-      } else if (r.submitSummary) {
-        setComposeResult({ ok: true, message: `Post submitted: ${r.submitSummary}` });
-        setPostHistory((prev) => [{ time: new Date().toLocaleTimeString(), threadUrl, body: composeBody.slice(0, 100), ok: true }, ...prev].slice(0, 50));
-        const postedBody = composeBody;
-        setComposeBody("");
-        if (composeName.trim()) {
-          setNameHistory((prev) => {
-            const next = [composeName.trim(), ...prev.filter((n) => n !== composeName.trim())].slice(0, 20);
-            try { localStorage.setItem(NAME_HISTORY_KEY, JSON.stringify(next)); } catch { /* ignore */ }
-            return next;
-          });
-        }
-        setComposeOpen(false);
-        setUploadPanelOpen(false);
-        setUploadResults([]);
-        const prevCount = tabCacheRef.current.get(threadUrl.trim())?.responses.length ?? 0;
-        pendingMyPostRef.current = { threadUrl: threadUrl.trim(), body: postedBody, prevCount };
-        // Re-fetch responses via standard path to update thread list counts, cache, and timestamps
-        await fetchResponsesFromCurrent(threadUrl.trim());
-        // Scroll to bottom to show the new post
-        setTimeout(() => {
-          const items = tabCacheRef.current.get(threadUrl.trim())?.responses;
-          if (items && items.length > 0) {
-            setSelectedResponse(items[items.length - 1].responseNo);
-          }
-          if (responseScrollRef.current) {
-            responseScrollRef.current.scrollTop = responseScrollRef.current.scrollHeight;
-          }
-        }, 100);
-      }
+      setPostFlowTraceProbe(result);
+      setComposeResult({ ok: true, message: `Post submitted: ${result}` });
+      setPostHistory((prev) => [{ time: new Date().toLocaleTimeString(), threadUrl: postTargetUrl, body: composeBody.slice(0, 100), ok: true }, ...prev].slice(0, 50));
+      await postSuccessCleanup(composeBody);
     } catch (error) {
-      setPostFlowTraceProbe(`error: ${String(error)}`);
-      setComposeResult({ ok: false, message: `Error: ${String(error)}` });
-      setPostHistory((prev) => [{ time: new Date().toLocaleTimeString(), threadUrl, body: composeBody.slice(0, 100), ok: false }, ...prev].slice(0, 50));
+      const msg = String(error);
+      setPostFlowTraceProbe(`error: ${msg}`);
+      setComposeResult({ ok: false, message: `NG: ${msg}` });
+      setPostHistory((prev) => [{ time: new Date().toLocaleTimeString(), threadUrl: postTargetUrl, body: composeBody.slice(0, 100), ok: false }, ...prev].slice(0, 50));
     } finally {
       setComposeSubmitting(false);
     }
+  };
+
+  // TTS: process queue sequentially (one item at a time)
+  const processTtsQueue = async () => {
+    if (ttsProcessingRef.current) return;
+    ttsProcessingRef.current = true;
+    while (ttsQueueRef.current.length > 0) {
+      const mode = ttsModeRef.current;
+      if (!isTauriRuntime() || mode === "off") {
+        ttsQueueRef.current = [];
+        break;
+      }
+      const truncated = ttsQueueRef.current.shift()!;
+      try {
+        if (mode === "sapi") {
+          await invoke("sapi_speak_text", { text: truncated, voiceIndex: sapiVoiceIndexRef.current, rate: sapiRateRef.current, volume: sapiVolumeRef.current });
+        } else if (mode === "bouyomi") {
+          await invoke("bouyomi_speak_text", { remoteTalkPath: bouyomiPathRef.current, text: truncated, speed: bouyomiSpeedRef.current, tone: bouyomiToneRef.current, volume: bouyomiVolumeRef.current, voice: bouyomiVoiceRef.current });
+        } else if (mode === "voicevox") {
+          await invoke("voicevox_speak_text", { endpoint: voicevoxEndpointRef.current, text: truncated, speakerId: voicevoxSpeakerIdRef.current, speedScale: voicevoxSpeedScaleRef.current, pitchScale: voicevoxPitchScaleRef.current, intonationScale: voicevoxIntonationScaleRef.current, volumeScale: voicevoxVolumeScaleRef.current });
+        }
+      } catch (e) {
+        console.warn("TTS speak error:", e);
+      }
+    }
+    ttsProcessingRef.current = false;
+  };
+
+  // TTS: enqueue text for sequential playback
+  // maxReadLength applies to plain text body only (HTML tags + entities decoded); prefix is always read in full
+  // URLs (http/https/ttp) are removed, except YouTube URLs which are replaced with "ユーチューブ"
+  const ttsSpeak = (bodyText: string, prefix?: string, responseNo?: number) => {
+    if (!isTauriRuntime() || ttsMode === "off") return;
+    // Skip system messages (res 1001/1002)
+    if (responseNo != null && responseNo >= 1001) return;
+    // Strip HTML tags, then decode HTML entities to get true character count
+    let plain = bodyText.replace(/<[^>]*>/g, "");
+    plain = plain.replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16))).replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)));
+    // Replace YouTube URLs with "ユーチューブ", then remove remaining URLs
+    plain = plain.replace(/(?:https?|ttp):\/\/[^\s]*youtube[^\s]*/gi, "ユーチューブ");
+    plain = plain.replace(/(?:https?|ttp):\/\/[^\s]+/g, "");
+    plain = plain.trim();
+    if (!plain) return;
+    const maxLen = ttsMaxReadLengthRef.current;
+    const truncatedBody = maxLen > 0 && plain.length > maxLen
+      ? plain.slice(0, maxLen) + "、長文のため以下省略"
+      : plain;
+    const full = prefix ? `${prefix} ${truncatedBody}` : truncatedBody;
+    ttsQueueRef.current.push(full);
+    void processTtsQueue();
+  };
+
+  // TTS: stop playback and clear queue; returns a promise so callers can await full stop
+  const ttsStop = (): Promise<void> => {
+    ttsQueueRef.current = [];
+    ttsProcessingRef.current = false;
+    if (isTauriRuntime()) return invoke("tts_stop").catch(() => {}) as Promise<void>;
+    return Promise.resolve();
+  };
+
+  // Subtitle: send update to subtitle window
+  const subtitleUpdate = (data: { threadTitle?: string; name?: string; id?: string; date?: string; body?: string }) => {
+    if (!isTauriRuntime() || !subtitleVisible) return;
+    const bodyHtml = data.body
+      ? renderResponseBodyHighlighted(data.body, "", { hideImages: true }, textHighlights.filter((h) => h.type === "word")).__html
+      : undefined;
+    const idColor = data.id ? (idHighlights[data.id] ?? undefined) : undefined;
+    invoke("subtitle_update", { data: { ...data, bodyHtml, idColor } }).catch((e) => console.warn("subtitle_update:", e));
   };
 
   const getBoardUrlFromThreadUrl = (url: string): string => {
@@ -1827,6 +2298,7 @@ export default function App() {
           setNameHistory((prev) => {
             const next = [newThreadName.trim(), ...prev.filter((n) => n !== newThreadName.trim())].slice(0, 20);
             try { localStorage.setItem(NAME_HISTORY_KEY, JSON.stringify(next)); } catch { /* ignore */ }
+        saveToFile("name-history.json", next);
             return next;
           });
         }
@@ -1896,12 +2368,13 @@ export default function App() {
   };
 
   const composeMailValue = composeSage ? "sage" : composeMail;
-  const boardItems = ["お気に入り", "ニュース", "ソフトウェア", "ネットワーク", "NGT (テスト)"];
-  const fallbackThreadItems = [
-    { id: 1, title: "プローブスレッド", res: 999, got: 24, speed: 2.5, lastLoad: "14:42", lastPost: "14:44", threadUrl: "https://mao.5ch.io/test/read.cgi/ngt/1/"},
-    { id: 2, title: "認証テスト", res: 120, got: 8, speed: 0.8, lastLoad: "13:08", lastPost: "13:09", threadUrl: "https://mao.5ch.io/test/read.cgi/ngt/2/" },
-  ];
+  const boardItems: string[] = [];
+  const fallbackThreadItems: { id: number; title: string; res: number; got: number; speed: number; lastLoad: string; lastPost: string; threadUrl: string; threadKey: string }[] = [];
   const favThreadUrls = useMemo(() => new Set(favorites.threads.map((t) => t.threadUrl)), [favorites.threads]);
+  const extractThreadKey = (url: string): string => {
+    const segs = url.replace(/\/$/, "").split("/").filter(Boolean);
+    return segs[segs.length - 1] ?? "";
+  };
   const threadItems = showCachedOnly
     ? cachedThreadList.map((ct, i) => ({
         id: i + 1,
@@ -1912,6 +2385,7 @@ export default function App() {
         lastLoad: "-",
         lastPost: "-",
         threadUrl: ct.threadUrl,
+        threadKey: extractThreadKey(ct.threadUrl),
       }))
     : showFavoritesOnly
     ? favorites.threads.map((ft, i) => {
@@ -1933,6 +2407,7 @@ export default function App() {
           lastLoad: "-",
           lastPost: "-",
           threadUrl: ft.threadUrl,
+          threadKey: extractThreadKey(ft.threadUrl),
           datOchi,
         };
       })
@@ -1943,15 +2418,19 @@ export default function App() {
           const elapsedDays = Math.max((Date.now() - created) / 86400000, 0.01);
           const speed = Number((t.responseCount / elapsedDays).toFixed(1));
           const readCount = threadLastReadCount[i + 1] ?? 0;
+          const sinceDate = created > 0 ? new Date(created) : null;
+          const sinceStr = sinceDate ? `${sinceDate.getFullYear()}/${String(sinceDate.getMonth() + 1).padStart(2, "0")}/${String(sinceDate.getDate()).padStart(2, "0")}` : "-";
           return {
             id: i + 1,
             title: decodeHtmlEntities(t.title),
             res: t.responseCount,
             got: readCount > 0 ? readCount : 0,
             speed,
+            since: sinceStr,
             lastLoad: lastFetchTime ?? "-",
             lastPost: "-",
             threadUrl: t.threadUrl,
+            threadKey: t.threadKey,
           };
         })
       : fallbackThreadItems
@@ -1988,6 +2467,7 @@ export default function App() {
         cmp = la.localeCompare(lb);
       }
       else if (threadSortKey === "speed") cmp = a.speed - b.speed;
+      else if (threadSortKey === "since") { const sa = ("since" in a ? a.since : "-") as string; const sb = ("since" in b ? b.since : "-") as string; cmp = sa.localeCompare(sb); }
       return threadSortAsc ? cmp : -cmp;
     });
     cachedSortOrderRef.current = visibleThreadItems.map((t) => t.threadUrl);
@@ -2013,6 +2493,7 @@ export default function App() {
           return {
             id: r.responseNo,
             name: plainName,
+            mail: r.mail || "",
             nameWithoutWatchoi: watchoi ? plainName.replace(/\s*[(（][^)）]+[)）]\s*$/, "") : plainName,
             time: r.dateAndId || "-",
             text: r.body || "",
@@ -2020,12 +2501,7 @@ export default function App() {
             watchoi,
           };
         })
-      : [
-          { id: 1, name: "名無しさん", nameWithoutWatchoi: "名無しさん", time: "2026/03/07 10:00", text: "投稿フロートレース準備完了", beNumber: null, watchoi: null },
-          { id: 2, name: "名無しさん", nameWithoutWatchoi: "名無しさん", time: "2026/03/07 10:02", text: "BE/UPLIFT/どんぐりログイン確認済み", beNumber: null, watchoi: null },
-          { id: 3, name: "名無しさん", nameWithoutWatchoi: "名無しさん", time: "2026/03/07 10:04", text: "次: subject/dat取得連携", beNumber: null, watchoi: null },
-          { id: 4, name: "名無しさん", nameWithoutWatchoi: "名無しさん", time: "2026/03/07 10:06", text: "参考 https://example.com/page を参照", beNumber: null, watchoi: null },
-        ]),
+      : []),
   ];
   const extractId = (time: string) => {
     const m = time.match(/ID:(\S+)/);
@@ -2186,6 +2662,7 @@ export default function App() {
   searchHistoryRef.current = { thread: threadSearchHistory, response: responseSearchHistory };
   const persistSearchHistory = (thread: string[], response: string[]) => {
     try { localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify({ thread, response })); } catch { /* ignore */ }
+    saveToFile("search-history.json", { thread, response });
   };
   const addSearchHistory = (type: "thread" | "response", word: string) => {
     const trimmed = word.trim();
@@ -2230,9 +2707,50 @@ export default function App() {
   const onResponseNoClick = (e: ReactMouseEvent, responseId: number) => {
     e.stopPropagation();
     setSelectedResponse(responseId);
-    const p = clampMenuPosition(e.clientX, e.clientY, 240, 280);
-    setResponseMenu({ x: p.x, y: p.y, responseId });
+    const p = clampMenuPosition(e.clientX, e.clientY, 260, 360);
+    setResponseMenu({ x: p.x, y: p.y, responseId, isOnResNo: true });
+    setHlSubMenu(null);
     setThreadMenu(null);
+  };
+
+  const onResponseAreaContextMenu = (e: React.MouseEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const target = e.target as HTMLElement;
+    // Detect image URL from thumbnail or image link
+    let imageUrl: string | undefined;
+    const thumbEl = target.closest<HTMLElement>("[data-lightbox-src]");
+    if (thumbEl?.dataset.lightboxSrc) {
+      imageUrl = thumbEl.dataset.lightboxSrc;
+    } else {
+      const imgLink = target.closest<HTMLAnchorElement>("a.body-link");
+      if (imgLink) {
+        const href = imgLink.getAttribute("href") ?? "";
+        if (/\.(jpe?g|png|gif|webp|bmp)(\?|$)/i.test(href)) imageUrl = href;
+      }
+    }
+    // Gather context
+    const selection = window.getSelection()?.toString().trim() ?? "";
+    const resBlock = target.closest<HTMLElement>("[data-response-no]");
+    const responseNo = resBlock ? Number(resBlock.getAttribute("data-response-no") ?? 0) : 0;
+    const idCell = target.closest<HTMLElement>(".response-id-cell");
+    const resId = idCell ? (idCell.textContent ?? "").replace(/^ID:/, "").split("(")[0].trim() : "";
+    const nameEl = target.closest<HTMLElement>(".response-name");
+    const resName = nameEl ? (nameEl.textContent ?? "").trim() : "";
+    const isOnResNo = !!target.closest(".response-no");
+
+    // Close existing menu
+    setThreadMenu(null);
+    setHlSubMenu(null);
+    const p = clampMenuPosition(e.clientX, e.clientY, 260, 400);
+    setResponseMenu({
+      x: p.x, y: p.y,
+      responseId: responseNo,
+      selection: selection || undefined,
+      resId: resId || undefined,
+      resName: resName || undefined,
+      isOnResNo: isOnResNo || undefined,
+      imageUrl,
+    });
   };
 
   const markThreadRead = (threadId: number, value: boolean) => {
@@ -2492,6 +3010,7 @@ export default function App() {
   };
   const scrollSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onResponseScroll: UIEventHandler<HTMLDivElement> = () => {
+    if (!responseScrollRef.current) return;
     if (scrollSaveTimerRef.current) clearTimeout(scrollSaveTimerRef.current);
     scrollSaveTimerRef.current = setTimeout(() => {
       const url = threadUrl.trim();
@@ -2511,6 +3030,17 @@ export default function App() {
       startY: event.clientY,
       startThreadPx: threadPanePx,
       responseLayoutHeight: layoutHeight,
+    };
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "row-resize";
+  };
+
+  const beginNewArrivalResize = (event: ReactMouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    resizeDragRef.current = {
+      mode: "new-arrival-resize",
+      startY: event.clientY,
+      startHeight: newArrivalPaneHeight,
     };
     document.body.style.userSelect = "none";
     document.body.style.cursor = "row-resize";
@@ -2566,7 +3096,7 @@ export default function App() {
           if (hoverPreviewRef.current) hoverPreviewRef.current.style.display = "none";
           return;
         }
-        if (lightboxUrl) { setLightboxUrl(null); return; }
+        if (responseMenu) { setResponseMenu(null); setHlSubMenu(null); return; }
         if (aboutOpen) { setAboutOpen(false); return; }
         if (shortcutsOpen) { setShortcutsOpen(false); return; }
         if (responseReloadMenuOpen) { setResponseReloadMenuOpen(false); return; }
@@ -2662,7 +3192,8 @@ export default function App() {
       if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "f") {
         e.preventDefault();
         if (activeTabIndex >= 0 && threadTabs.length > 0) {
-          responseSearchRef.current?.focus();
+          setResponseSearchBarVisible(true);
+          setTimeout(() => responseSearchRef.current?.focus(), 0);
         } else {
           threadSearchRef.current?.focus();
         }
@@ -2675,6 +3206,38 @@ export default function App() {
           appendComposeQuote(`>>${selectedResponse}\n${sel}`);
         } else {
           appendComposeQuote(`>>${selectedResponse}`);
+        }
+        return;
+      }
+      // Arrow keys / PageUp / PageDown / Home / End scroll the response area (no modifier)
+      if (!e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && responseScrollRef.current) {
+        const el = responseScrollRef.current;
+        const pageH = el.clientHeight;
+        switch (e.key) {
+          case "ArrowUp":
+            e.preventDefault();
+            el.scrollBy({ top: -60, behavior: smoothScrollRef.current ? "smooth" : "instant" });
+            return;
+          case "ArrowDown":
+            e.preventDefault();
+            el.scrollBy({ top: 60, behavior: smoothScrollRef.current ? "smooth" : "instant" });
+            return;
+          case "PageUp":
+            e.preventDefault();
+            el.scrollBy({ top: -pageH, behavior: smoothScrollRef.current ? "smooth" : "instant" });
+            return;
+          case "PageDown":
+            e.preventDefault();
+            el.scrollBy({ top: pageH, behavior: smoothScrollRef.current ? "smooth" : "instant" });
+            return;
+          case "Home":
+            e.preventDefault();
+            el.scrollTop = 0;
+            return;
+          case "End":
+            e.preventDefault();
+            el.scrollTop = el.scrollHeight;
+            return;
         }
       }
     };
@@ -2708,6 +3271,9 @@ export default function App() {
           thumbSize?: number;
           restoreSession?: boolean;
           autoRefreshInterval?: number;
+          autoScrollEnabled?: boolean;
+          newArrivalPaneOpen?: boolean;
+          newArrivalPaneHeight?: number;
         };
         if (typeof parsed.boardPanePx === "number") setBoardPanePx(parsed.boardPanePx);
         if (typeof parsed.threadPanePx === "number") {
@@ -2740,6 +3306,9 @@ export default function App() {
         if (typeof parsed.thumbSize === "number") setThumbSize(parsed.thumbSize);
         if (typeof parsed.restoreSession === "boolean") { setRestoreSession(parsed.restoreSession); restoreSessionRef.current = parsed.restoreSession; }
         if (typeof parsed.autoRefreshInterval === "number") setAutoRefreshInterval(parsed.autoRefreshInterval);
+        if (typeof parsed.autoScrollEnabled === "boolean") setAutoScrollEnabled(parsed.autoScrollEnabled);
+        if (typeof parsed.newArrivalPaneOpen === "boolean") setNewArrivalPaneOpen(parsed.newArrivalPaneOpen);
+        if (typeof parsed.newArrivalPaneHeight === "number") setNewArrivalPaneHeight(parsed.newArrivalPaneHeight);
       } catch { /* ignore */ }
     };
     // Try localStorage first, then file-based persistence
@@ -2816,9 +3385,9 @@ export default function App() {
       pendingLastBoardRef.current = null;
     }
     // Restore thread tabs
-    if (restoreSessionRef.current) try {
-      const tabsRaw = localStorage.getItem(THREAD_TABS_KEY);
-      if (tabsRaw) {
+    const applyRestoredTabs = (tabsRaw: string | null): boolean => {
+      if (!tabsRaw) return false;
+      try {
         const parsed = JSON.parse(tabsRaw) as { tabs: ThreadTab[]; activeIndex: number };
         if (Array.isArray(parsed.tabs) && parsed.tabs.length > 0) {
           setThreadTabs(parsed.tabs);
@@ -2835,25 +3404,148 @@ export default function App() {
                   if (json) {
                     const responses = JSON.parse(json) as ThreadResponseItem[];
                     const bm = loadBookmark(activeTab.threadUrl);
+                    const savedNo = loadScrollPos(activeTab.threadUrl);
+                    // Restore to: bookmark > saved scroll pos > last response (bottom)
+                    const lastNo = responses.length > 0 ? responses[responses.length - 1].responseNo : 1;
+                    const restoreNo = bm ?? (savedNo > 1 ? savedNo : lastNo);
                     tabCacheRef.current.set(activeTab.threadUrl, {
                       responses,
-                      selectedResponse: bm ?? 1,
+                      selectedResponse: restoreNo,
                     });
                     setFetchedResponses(responses);
-                    if (bm) setSelectedResponse(bm);
+                    setSelectedResponse(restoreNo);
+                    if (restoreNo > 1) scrollToResponseNo(restoreNo);
                   }
                 })
-                .catch(() => {});
+                .catch((e) => console.warn("load_thread_cache:", e));
             }
           }
+          return true;
         }
+      } catch { /* ignore */ }
+      return false;
+    };
+    const finishRestore = () => setTabRestoreReady(true);
+    if (restoreSessionRef.current) {
+      const applyBoardTabs = (raw: string | null) => {
+        if (!raw) return;
+        try {
+          const parsed = JSON.parse(raw) as { tabs: {boardUrl: string, title: string}[]; activeIndex: number };
+          if (Array.isArray(parsed.tabs) && parsed.tabs.length > 0) {
+            setBoardTabs(parsed.tabs);
+            const idx = typeof parsed.activeIndex === "number" ? Math.min(parsed.activeIndex, parsed.tabs.length - 1) : 0;
+            setActiveBoardTabIndex(idx);
+          }
+        } catch { /* ignore */ }
+      };
+
+      // Collect all async restore promises so we finishRestore after ALL complete
+      const restorePromises: Promise<void>[] = [];
+
+      // Board tabs
+      const localBoardRaw = localStorage.getItem(BOARD_TABS_KEY);
+      if (localBoardRaw) {
+        applyBoardTabs(localBoardRaw);
+      } else if (isTauriRuntime()) {
+        restorePromises.push(
+          invoke<string>("load_session_board_tabs")
+            .then((raw) => { if (raw) applyBoardTabs(raw); })
+            .catch(() => {})
+        );
       }
-    } catch { /* ignore */ }
-    tabsRestoredRef.current = true;
+
+      // Thread tabs
+      const localRaw = localStorage.getItem(THREAD_TABS_KEY);
+      if (localRaw) {
+        applyRestoredTabs(localRaw);
+      } else if (isTauriRuntime()) {
+        restorePromises.push(
+          invoke<string>("load_session_tabs")
+            .then((raw) => { if (raw) applyRestoredTabs(raw); })
+            .catch(() => {})
+        );
+      }
+
+      if (restorePromises.length > 0) {
+        Promise.all(restorePromises).then(finishRestore);
+      } else {
+        finishRestore();
+      }
+    } else {
+      finishRestore();
+    }
+    // Save tabs on window close using current ref values
+    const handleBeforeUnload = () => {
+      try {
+        localStorage.setItem(THREAD_TABS_KEY, JSON.stringify({ tabs: threadTabsRef.current, activeIndex: activeTabIndexRef.current }));
+        localStorage.setItem(BOARD_TABS_KEY, JSON.stringify({ tabs: boardTabsRef.current, activeIndex: activeBoardTabIndexRef.current }));
+      } catch { /* ignore */ }
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
     // Silently refresh board list from server
     void fetchBoardCategories();
     void loadFavorites();
+    void loadExternalBoards();
     void loadNgFilters();
+    // Migrate localStorage data from file-based storage (Portable mode)
+    if (isTauriRuntime()) {
+      loadFromFile<Record<string, number>>("bookmarks.json").then((d) => {
+        if (d && typeof d === "object") Object.assign(bookmarkCacheRef.current, d);
+      });
+      loadFromFile<Record<string, number>>("scroll-positions.json").then((d) => {
+        if (d && typeof d === "object") Object.assign(threadScrollPositions.current, d);
+      });
+      loadFromFile<string[]>("name-history.json").then((d) => {
+        if (Array.isArray(d) && d.length > 0) setNameHistory(d);
+      });
+      loadFromFile<Record<string, number[]>>("my-posts.json").then((d) => {
+        if (d && typeof d === "object" && Object.keys(d).length > 0) setMyPosts(d as Record<string, number[]>);
+      });
+      loadFromFile<{ thread?: string[]; response?: string[] }>("search-history.json").then((d) => {
+        if (d && typeof d === "object") {
+          if (Array.isArray(d.thread) && d.thread.length > 0) setThreadSearchHistory(d.thread);
+          if (Array.isArray(d.response) && d.response.length > 0) setResponseSearchHistory(d.response);
+        }
+      });
+      loadFromFile<Record<string, number>>("thread-fetch-times.json").then((d) => {
+        if (d && typeof d === "object") Object.assign(threadFetchTimesRef.current, d);
+      });
+      loadFromFile<string[]>("expanded-categories.json").then((d) => {
+        if (Array.isArray(d) && d.length > 0) setExpandedCategories(new Set(d));
+      });
+    }
+    // Load highlights
+    if (isTauriRuntime()) {
+      invoke<{ date: string; highlights: IdHighlightMap }>("load_id_highlights")
+        .then((data) => {
+          if (data.date === todayStr()) {
+            setIdHighlights(data.highlights ?? {});
+          } else {
+            // Date mismatch: daily reset — start fresh and save empty
+            setIdHighlights({});
+            invoke("save_id_highlights", { data: { date: todayStr(), highlights: {} } }).catch(() => {});
+          }
+        })
+        .catch(() => {});
+      invoke<TextHighlight[]>("load_text_highlights")
+        .then((data) => setTextHighlights(Array.isArray(data) ? data : []))
+        .catch(() => {});
+      // Load custom thread titles from thread-history.json
+      invoke<Record<string, Record<string, { lastReadNo: number; visitedAt: number; customTitle?: string }>>>("load_thread_history")
+        .then((history) => {
+          const titles: Record<string, Record<string, string>> = {};
+          for (const [boardUrl, threads] of Object.entries(history)) {
+            for (const [key, entry] of Object.entries(threads)) {
+              if (entry.customTitle) {
+                if (!titles[boardUrl]) titles[boardUrl] = {};
+                titles[boardUrl][key] = entry.customTitle;
+              }
+            }
+          }
+          setCustomTitles(titles);
+        })
+        .catch(() => {});
+    }
     // Load auth config and auto-login
     if (isTauriRuntime()) {
       invoke<AuthConfig>("load_auth_config").then((cfg) => {
@@ -2879,16 +3571,41 @@ export default function App() {
       invoke<{ entries: { sourceUrl: string; thumbnail: string; pageUrl: string; fileName: string; uploadedAt: string }[] }>("load_upload_history").then((data) => {
         setUploadHistory(data.entries);
       }).catch((e) => console.warn("upload history load failed:", e));
+      // Load proxy settings
+      invoke<{ enabled: boolean; proxyType: string; host: string; port: string; username: string; password: string }>("load_proxy_settings").then((s) => {
+        setProxyEnabled(s.enabled);
+        setProxyType((s.proxyType as "http" | "socks5" | "socks4") || "http");
+        setProxyHost(s.host || "");
+        setProxyPort(s.port || "");
+        setProxyUsername(s.username || "");
+        setProxyPassword(s.password || "");
+      }).catch(() => {});
+      // Load ImageViewURLReplace rules
+      invoke<UrlReplaceRule[]>("load_image_url_replace").then((rules) => {
+        setImageUrlRules(rules);
+      }).catch(() => {});
     }
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, []);
 
   useEffect(() => {
-    if (!tabsRestoredRef.current) return;
+    if (!tabRestoreReady) return;
+    const data = JSON.stringify({ tabs: threadTabs, activeIndex: activeTabIndex });
     try {
-      localStorage.setItem(THREAD_TABS_KEY, JSON.stringify({ tabs: threadTabs, activeIndex: activeTabIndex }));
+      localStorage.setItem(THREAD_TABS_KEY, data);
     } catch { /* ignore */ }
-  }, [threadTabs, activeTabIndex]);
+    if (isTauriRuntime()) {
+      invoke("save_session_tabs", { data }).catch(() => {});
+    }
+  }, [tabRestoreReady, threadTabs, activeTabIndex]);
 
+  // Save board tabs when they change
+  useEffect(() => {
+    if (!tabRestoreReady) return;
+    const data = JSON.stringify({ tabs: boardTabs, activeIndex: activeBoardTabIndex });
+    try { localStorage.setItem(BOARD_TABS_KEY, data); } catch { /* ignore */ }
+    if (isTauriRuntime()) { invoke("save_session_board_tabs", { data }).catch(() => {}); }
+  }, [tabRestoreReady, boardTabs, activeBoardTabIndex]);
 
   useEffect(() => {
     if (boardPaneTab !== "boards") return;
@@ -2904,22 +3621,42 @@ export default function App() {
     if (bodyLink) {
       e.preventDefault();
       const url = bodyLink.getAttribute("href");
-      if (url && isTauriRuntime()) {
+      if (url && /\.(jpe?g|png|gif|webp|bmp)(\?|$)/i.test(url) && isTauriRuntime()) {
+        void invoke("open_image_popup", { url }).catch(() => window.open(url, "_blank"));
+      } else if (url && isTauriRuntime()) {
         void invoke("open_external_url", { url }).catch(() => window.open(url, "_blank"));
       } else if (url) {
         window.open(url, "_blank");
       }
       return;
     }
-    if (target.classList.contains("response-thumb")) {
+    if (target.classList.contains("response-thumb") || target.closest<HTMLElement>("[data-lightbox-src]")) {
       e.preventDefault();
       const thumbLink = target.closest<HTMLElement>("[data-lightbox-src]");
       const url = thumbLink?.dataset.lightboxSrc ?? "";
       if (url && isTauriRuntime()) {
-        void invoke("open_external_url", { url }).catch(() => window.open(url, "_blank"));
+        void invoke("open_image_popup", { url }).catch(() => window.open(url, "_blank"));
       } else if (url) {
         window.open(url, "_blank");
       }
+      return;
+    }
+  };
+
+  const saveImage = async (url: string) => {
+    if (!isTauriRuntime()) return;
+    let folder = imageSaveFolder;
+    if (!folder) {
+      const picked = await invoke<string | null>("open_folder_dialog").catch(() => null);
+      if (!picked) return;
+      folder = picked;
+      setImageSaveFolder(folder);
+    }
+    try {
+      const savedPath = await invoke<string>("save_image_to_folder", { url, folder });
+      setStatus(`保存: ${savedPath}`);
+    } catch (e) {
+      setStatus(`保存失敗: ${String(e)}`);
     }
   };
 
@@ -2997,6 +3734,20 @@ export default function App() {
     return () => window.removeEventListener("resize", ensurePaneBounds);
   }, [boardPanePx, threadPanePx]);
 
+  // Keep ref in sync with threadUrl state
+  useEffect(() => { currentThreadUrlRef.current = threadUrl; }, [threadUrl]);
+
+  // Save scroll position on app close (beforeunload)
+  useEffect(() => {
+    const onUnload = () => {
+      const url = currentThreadUrlRef.current;
+      if (url) saveScrollPos(url);
+    };
+    window.addEventListener("beforeunload", onUnload);
+    return () => window.removeEventListener("beforeunload", onUnload);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     const closeHoverPreview = () => {
       hoverPreviewSrcRef.current = null;
@@ -3040,6 +3791,12 @@ export default function App() {
         setResponseTopRatio((nextThread / Math.max(drag.responseLayoutHeight, 1)) * 100);
         return;
       }
+      if (drag.mode === "new-arrival-resize") {
+        const deltaY = drag.startY - event.clientY;
+        const next = clamp(drag.startHeight + deltaY, MIN_NEW_ARRIVAL_PX, MAX_NEW_ARRIVAL_PX);
+        setNewArrivalPaneHeight(next);
+        return;
+      }
       const deltaX = event.clientX - drag.startX;
       if (drag.mode === "board-thread") {
         const maxBoard = Math.max(
@@ -3076,20 +3833,24 @@ export default function App() {
     window.addEventListener("mouseup", onMouseUp);
     window.addEventListener("wheel", onWheel, { passive: false });
 
-    // Save window size on resize (debounced)
+    // Save window size/position on resize (debounced)
     let resizeTimer: ReturnType<typeof setTimeout>;
+    const saveWindowState = () => {
+      const width = window.innerWidth;
+      const height = window.innerHeight;
+      localStorage.setItem(WINDOW_STATE_KEY, JSON.stringify({ width, height }));
+      if (isTauriRuntime()) {
+        void invoke("save_window_size", { width, height }).catch((e: unknown) => console.warn("save_window_size failed", e));
+      }
+    };
     const onResize = () => {
       clearTimeout(resizeTimer);
-      resizeTimer = setTimeout(() => {
-        const width = window.innerWidth;
-        const height = window.innerHeight;
-        localStorage.setItem(WINDOW_STATE_KEY, JSON.stringify({ width, height }));
-        if (isTauriRuntime()) {
-          void invoke("save_window_size", { width, height }).catch((e: unknown) => console.warn("save_window_size failed", e));
-        }
-      }, 300);
+      resizeTimer = setTimeout(saveWindowState, 300);
     };
     window.addEventListener("resize", onResize);
+    // Also save on unload so position is captured at close time
+    const onBeforeUnload = () => saveWindowState();
+    window.addEventListener("beforeunload", onBeforeUnload);
 
     return () => {
       closeHoverPreview();
@@ -3097,9 +3858,79 @@ export default function App() {
       window.removeEventListener("mouseup", onMouseUp);
       window.removeEventListener("wheel", onWheel as EventListener);
       window.removeEventListener("resize", onResize);
+      window.removeEventListener("beforeunload", onBeforeUnload);
       clearTimeout(resizeTimer);
     };
   }, []);
+
+  // Load app settings from settings.ini on startup
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    invoke<Record<string, string>>("load_app_settings").then((map) => {
+      if (map["App.fontSize"]) { const n = parseInt(map["App.fontSize"], 10); if (!isNaN(n)) { setResponsesFontSize(n); setBoardsFontSize(n); setThreadsFontSize(n); } }
+      if (map["App.responseGap"]) { const n = parseInt(map["App.responseGap"], 10); if (!isNaN(n)) setResponseGap(n); }
+      if (map["App.autoReloadIntervalSec"]) { const n = parseInt(map["App.autoReloadIntervalSec"], 10); if (!isNaN(n)) setAutoRefreshInterval(n); }
+      if (map["App.autoScroll"]) setAutoScrollEnabled(map["App.autoScroll"] === "true");
+      if (map["App.smoothScroll"]) setSmoothScroll(map["App.smoothScroll"] === "true");
+      if (map["App.maxOpenTabs"]) { const n = parseInt(map["App.maxOpenTabs"], 10); if (!isNaN(n) && n >= 1) setMaxOpenTabs(n); }
+      if (map["App.logRetentionDays"]) { const n = parseInt(map["App.logRetentionDays"], 10); if (!isNaN(n) && n >= 0) setLogRetentionDays(n); }
+      if (map["App.imageSaveFolder"]) setImageSaveFolder(map["App.imageSaveFolder"]);
+      // Speech settings
+      if (map["Speech.mode"]) setTtsMode(map["Speech.mode"] as TtsMode);
+      if (map["Speech.enabled"]) setTtsEnabled(map["Speech.enabled"] === "true");
+      if (map["Speech.maxReadLength"]) { const n = parseInt(map["Speech.maxReadLength"], 10); if (!isNaN(n) && n >= 0) setTtsMaxReadLength(n); }
+      if (map["Speech.sapiVoiceIndex"]) { const n = parseInt(map["Speech.sapiVoiceIndex"], 10); if (!isNaN(n)) setSapiVoiceIndex(n); }
+      if (map["Speech.sapiRate"]) { const n = parseInt(map["Speech.sapiRate"], 10); if (!isNaN(n)) setSapiRate(n); }
+      if (map["Speech.sapiVolume"]) { const n = parseInt(map["Speech.sapiVolume"], 10); if (!isNaN(n)) setSapiVolume(n); }
+      if (map["Speech.bouyomiPath"]) setBouyomiPath(map["Speech.bouyomiPath"]);
+      if (map["Speech.voicevoxEndpoint"]) setVoicevoxEndpoint(map["Speech.voicevoxEndpoint"]);
+      if (map["Speech.voicevoxSpeakerId"]) { const n = parseInt(map["Speech.voicevoxSpeakerId"], 10); if (!isNaN(n)) setVoicevoxSpeakerId(n); }
+      if (map["Speech.voicevoxSpeedScale"]) { const n = parseFloat(map["Speech.voicevoxSpeedScale"]); if (!isNaN(n)) setVoicevoxSpeedScale(n); }
+      if (map["Speech.voicevoxPitchScale"]) { const n = parseFloat(map["Speech.voicevoxPitchScale"]); if (!isNaN(n)) setVoicevoxPitchScale(n); }
+      if (map["Speech.voicevoxIntonationScale"]) { const n = parseFloat(map["Speech.voicevoxIntonationScale"]); if (!isNaN(n)) setVoicevoxIntonationScale(n); }
+      if (map["Speech.voicevoxVolumeScale"]) { const n = parseFloat(map["Speech.voicevoxVolumeScale"]); if (!isNaN(n)) setVoicevoxVolumeScale(n); }
+      // Posting settings
+      if (map["Posting.name"] !== undefined) setComposeName(map["Posting.name"]);
+      if (map["Posting.mail"] !== undefined) setComposeMail(map["Posting.mail"]);
+      if (map["Posting.sage"]) setComposeSage(map["Posting.sage"] === "true");
+      if (map["Posting.fontSize"]) { const n = parseInt(map["Posting.fontSize"], 10); if (!isNaN(n) && n >= 10 && n <= 24) setComposeFontSize(n); }
+    }).catch(() => {});
+  }, []);
+
+  // Save app settings to settings.ini when relevant values change
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    void invoke("save_app_settings", { settings: {
+      "App.fontSize": String(responsesFontSize),
+      "App.responseGap": String(responseGap),
+      "App.autoReloadIntervalSec": String(autoRefreshInterval),
+      "App.autoScroll": String(autoScrollEnabled),
+      "App.smoothScroll": String(smoothScroll),
+      "App.maxOpenTabs": String(maxOpenTabs),
+      "App.logRetentionDays": String(logRetentionDays),
+      "App.imageSaveFolder": imageSaveFolder,
+      "Speech.mode": ttsMode,
+      "Speech.enabled": String(ttsEnabled),
+      "Speech.maxReadLength": String(ttsMaxReadLength),
+      "Speech.sapiVoiceIndex": String(sapiVoiceIndex),
+      "Speech.sapiRate": String(sapiRate),
+      "Speech.sapiVolume": String(sapiVolume),
+      "Speech.bouyomiPath": bouyomiPath,
+      "Speech.voicevoxEndpoint": voicevoxEndpoint,
+      "Speech.voicevoxSpeakerId": String(voicevoxSpeakerId),
+      "Speech.voicevoxSpeedScale": String(voicevoxSpeedScale),
+      "Speech.voicevoxPitchScale": String(voicevoxPitchScale),
+      "Speech.voicevoxIntonationScale": String(voicevoxIntonationScale),
+      "Speech.voicevoxVolumeScale": String(voicevoxVolumeScale),
+      "Posting.name": composeName,
+      "Posting.mail": composeMail,
+      "Posting.sage": String(composeSage),
+      "Posting.fontSize": String(composeFontSize),
+    } }).catch(() => {});
+  }, [responsesFontSize, responseGap, autoRefreshInterval, autoScrollEnabled, smoothScroll, maxOpenTabs, logRetentionDays, imageSaveFolder,
+      ttsMode, ttsEnabled, ttsMaxReadLength, sapiVoiceIndex, sapiRate, sapiVolume, bouyomiPath,
+      voicevoxEndpoint, voicevoxSpeakerId, voicevoxSpeedScale, voicevoxPitchScale, voicevoxIntonationScale, voicevoxVolumeScale,
+      composeName, composeMail, composeSage, composeFontSize]);
 
   useEffect(() => {
     if (!layoutPrefsLoadedRef.current) return;
@@ -3124,12 +3955,22 @@ export default function App() {
       thumbSize,
       restoreSession,
       autoRefreshInterval,
+      autoScrollEnabled,
+      newArrivalPaneOpen,
+      newArrivalPaneHeight,
     });
     localStorage.setItem(LAYOUT_PREFS_KEY, payload);
     if (isTauriRuntime()) {
       void invoke("save_layout_prefs", { prefs: payload }).catch(() => {});
     }
-  }, [boardPanePx, threadPanePx, responseTopRatio, boardsFontSize, threadsFontSize, responsesFontSize, darkMode, fontFamily, threadColWidths, showBoardButtons, keepSortOnRefresh, composeSubmitKey, typingConfettiEnabled, imageSizeLimit, hoverPreviewEnabled, selectedBoard, hoverPreviewDelay, thumbSize, restoreSession, autoRefreshInterval]);
+  }, [boardPanePx, threadPanePx, responseTopRatio, boardsFontSize, threadsFontSize, responsesFontSize, darkMode, fontFamily, threadColWidths, showBoardButtons, keepSortOnRefresh, composeSubmitKey, typingConfettiEnabled, imageSizeLimit, hoverPreviewEnabled, selectedBoard, hoverPreviewDelay, thumbSize, restoreSession, autoRefreshInterval, autoScrollEnabled, newArrivalPaneOpen, newArrivalPaneHeight]);
+
+  useEffect(() => {
+    if (newArrivalScrollRef.current) {
+      newArrivalScrollRef.current.scrollTop = 0;
+    }
+  }, [newArrivalItems]);
+
 
   useEffect(() => {
     if (!typingConfettiEnabled) return;
@@ -3164,7 +4005,10 @@ export default function App() {
   }, [darkMode]);
 
   useEffect(() => {
-    localStorage.setItem(COMPOSE_PREFS_KEY, JSON.stringify({ name: composeName, mail: composeMail, sage: composeSage, fontSize: composeFontSize }));
+    if (!isTauriRuntime()) {
+      // Web preview: keep localStorage fallback
+      localStorage.setItem(COMPOSE_PREFS_KEY, JSON.stringify({ name: composeName, mail: composeMail, sage: composeSage, fontSize: composeFontSize }));
+    }
   }, [composeName, composeMail, composeSage, composeFontSize]);
 
   useEffect(() => {
@@ -3174,29 +4018,37 @@ export default function App() {
     }
     if (selectedThread == null || !threadTbodyRef.current) return;
     const row = threadTbodyRef.current.querySelector<HTMLTableRowElement>(".selected-row");
-    row?.scrollIntoView({ block: "nearest" });
+    row?.scrollIntoView({ block: "nearest", behavior: "instant" });
   }, [selectedThread]);
 
   useEffect(() => {
     if (!responseScrollRef.current) return;
     const block = responseScrollRef.current.querySelector<HTMLDivElement>(".response-block.selected");
-    block?.scrollIntoView({ block: "nearest" });
+    block?.scrollIntoView({ block: "nearest", behavior: smoothScrollRef.current ? "smooth" : "instant" });
   }, [selectedResponse]);
 
   useEffect(() => {
     if (activeTabIndex < 0 || !tabBarRef.current) return;
     const tab = tabBarRef.current.children[activeTabIndex] as HTMLElement | undefined;
-    tab?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    tab?.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "instant" });
   }, [activeTabIndex]);
 
   useEffect(() => {
     if (!autoRefreshEnabled || !isTauriRuntime()) return;
     const id = setInterval(() => {
+      // Fetch active tab responses (with UI update)
       void fetchResponsesFromCurrent(undefined, { keepSelection: true });
+      // Fetch all background tabs silently
+      const activeUrl = threadTabs[activeTabIndex]?.threadUrl;
+      for (const tab of threadTabs) {
+        if (tab.threadUrl !== activeUrl) {
+          void fetchBackgroundTabResponses(tab.threadUrl, tab.title);
+        }
+      }
       void refreshThreadListSilently();
     }, autoRefreshInterval * 1000);
     return () => clearInterval(id);
-  }, [autoRefreshEnabled, autoRefreshInterval, threadUrl]);
+  }, [autoRefreshEnabled, autoRefreshInterval, threadUrl, threadTabs, activeTabIndex]);
 
   return (
     <div
@@ -3205,6 +4057,7 @@ export default function App() {
       onClick={() => {
         setThreadMenu(null);
         setResponseMenu(null);
+        setHlSubMenu(null);
         setTabMenu(null);
         setOpenMenu(null);
         setIdPopup(null);
@@ -3213,6 +4066,7 @@ export default function App() {
         setWatchoiMenu(null);
         setIdMenu(null);
         setBeMenu(null);
+        setBoardContextMenu(null);
         setSearchHistoryDropdown(null);
         setSearchHistoryMenu(null);
         setResponseReloadMenuOpen(false);
@@ -3226,8 +4080,6 @@ export default function App() {
             { text: "sep" },
             { text: "書き込み", action: () => { setComposeOpen(true); setComposePos(null); setComposeBody(""); setComposeResult(null); } },
             { text: "書き込み履歴", action: () => setPostHistoryOpen(true) },
-            { text: "sep" },
-            { text: "設定", action: () => setSettingsOpen(true) },
             ...(navigator.userAgent.includes("Windows") ? [
               { text: "sep" },
               { text: "終了", action: () => { if (isTauriRuntime()) { void invoke("quit_app"); } } },
@@ -3235,8 +4087,6 @@ export default function App() {
           ]},
           { label: "編集", items: [
             { text: "スレURLをコピー", action: () => { void navigator.clipboard.writeText(threadUrl); setStatus("copied thread url"); } },
-            { text: "sep" },
-            { text: "NGフィルタ", action: () => setNgPanelOpen((v) => !v) },
           ]},
           { label: "表示", items: [
             { text: `文字サイズ (${paneLabel(focusedPane)}): ${paneFontSize(focusedPane)[0]}px`, action: () => {} },
@@ -3260,13 +4110,11 @@ export default function App() {
           { label: "スレッド", items: [
             { text: "すべてのタブを閉じる", action: closeAllTabs },
           ]},
-          { label: "ツール", items: [
-            { text: "認証状態", action: checkAuthEnv },
-            { text: "認証テスト", action: probeAuth },
+          { label: "設定", items: [
+            { text: "設定を開く", action: () => setSettingsOpen(true) },
           ]},
           { label: "ヘルプ", items: [
             { text: "ショートカット一覧", action: () => setShortcutsOpen(true) },
-            { text: "更新確認", action: checkForUpdates },
             { text: "sep" },
             { text: "バージョン情報", action: () => requestAnimationFrame(() => { setAboutOpen(true); void checkForUpdates(); }) },
           ]},
@@ -3374,13 +4222,8 @@ export default function App() {
           ))}
         </div>
       )}
-      <main
-        className="layout"
-        style={{
-          gridTemplateColumns: `${boardPanePx}px ${SPLITTER_PX}px 1fr`,
-        }}
-      >
-        <section className="pane boards" onMouseDown={() => setFocusedPane("boards")} style={{ '--fs-delta': `${boardsFontSize - 12}px` } as React.CSSProperties}>
+      <main className="layout">
+        <section className="pane boards" onMouseDown={() => setFocusedPane("boards")} style={{ '--fs-delta': `${boardsFontSize - 12}px`, width: boardPanePx, flexShrink: 0 } as React.CSSProperties}>
           <div className="boards-header">
             <div className="board-tabs">
               <button
@@ -3401,16 +4244,57 @@ export default function App() {
             )}
           </div>
           {boardPaneTab === "boards" && (
+            <>
             <input
               className="board-search"
               value={boardSearchQuery}
               onChange={(e) => setBoardSearchQuery(e.target.value)}
               placeholder="板を検索..."
             />
+            <button className="external-board-add-btn" onClick={() => setShowExternalBoardDialog(true)} title="外部板を追加">+ 外部板</button>
+            </>
           )}
           {boardPaneTab === "boards" ? (
             boardCategories.length > 0 ? (
               <div className="board-tree" ref={boardTreeRef} onScroll={onBoardTreeScroll}>
+                {externalBoards.length > 0 && !boardSearchQuery.trim() && (
+                  <div className="board-category">
+                    <button
+                      className="category-toggle external-category"
+                      onClick={() => toggleCategory("__external__")}
+                    >
+                      <span className="category-arrow">{expandedCategories.has("__external__") ? "\u25BC" : "\u25B6"}</span>
+                      外部板 ({externalBoards.length})
+                    </button>
+                    {expandedCategories.has("__external__") && (
+                      <ul className="category-boards">
+                        {externalBoards.map((b) => (
+                          <li key={b.url}>
+                            <button
+                              className={`board-item ${selectedBoard === b.boardName ? "selected" : ""}`}
+                              onClick={() => selectBoard(b)}
+                              onContextMenu={(e) => {
+                                e.preventDefault();
+                                const p = clampMenuPosition(e.clientX, e.clientY, 180, 80);
+                                setBoardContextMenu({ x: p.x, y: p.y, board: b });
+                              }}
+                              title={b.url}
+                            >
+                              <span
+                                className={`fav-star ${isFavoriteBoard(b.url) ? "active" : ""}`}
+                                onClick={(ev) => { ev.stopPropagation(); toggleFavoriteBoard(b); }}
+                              >
+                                <Star size={12} fill={isFavoriteBoard(b.url) ? "currentColor" : "none"} />
+                              </span>
+                              {b.boardName}
+                              <span className="external-board-remove" title="削除" onClick={(ev) => { ev.stopPropagation(); removeExternalBoard(b.url); }}>&times;</span>
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                )}
                 {favorites.boards.length > 0 && !boardSearchQuery.trim() && (
                   <div className="board-category">
                     <button
@@ -3428,6 +4312,7 @@ export default function App() {
                               className={`board-item ${selectedBoard === b.boardName ? "selected" : ""}`}
                               onClick={() => { if (favDragRef.current) return; selectBoard(b); }}
                               onMouseDown={(e) => onFavItemMouseDown(e, "board", i, ".fav-board-list")}
+                              onContextMenu={(e) => { e.preventDefault(); const p = clampMenuPosition(e.clientX, e.clientY, 180, 60); setBoardContextMenu({ x: p.x, y: p.y, board: b }); }}
                               title={b.url}
                             >
                               <span className="fav-star active" onClick={(e) => { e.stopPropagation(); toggleFavoriteBoard(b); }}><Star size={12} /></span>
@@ -3461,6 +4346,7 @@ export default function App() {
                                 <button
                                   className={`board-item ${selectedBoard === b.boardName ? "selected" : ""}`}
                                   onClick={() => selectBoard(b)}
+                                  onContextMenu={(e) => { e.preventDefault(); const p = clampMenuPosition(e.clientX, e.clientY, 180, 60); setBoardContextMenu({ x: p.x, y: p.y, board: b }); }}
                                   title={b.url}
                                 >
                                   <span
@@ -3533,11 +4419,190 @@ export default function App() {
           onMouseDown={(e) => beginHorizontalResize("board-thread", e)}
           onClick={(e) => e.stopPropagation()}
         />
+        <div className="right-body">
+          {/* New arrivals pane — inside right-body, above tab bar */}
+          {newArrivalPaneOpen && (
+            <>
+              <div className="new-arrival-pane" style={{ height: newArrivalPaneHeight }}>
+                <div className="new-arrival-header">
+                  <span className="new-arrival-title">新着レス ({newArrivalItems.length})</span>
+                  <button
+                    className={`title-action-btn${subtitleVisible ? " active" : ""}`}
+                    title="字幕"
+                    onClick={() => {
+                      if (!subtitleVisible) {
+                        setSubtitleVisible(true);
+                        if (isTauriRuntime()) invoke("subtitle_show").catch((e) => console.warn("subtitle_show:", e));
+                      } else {
+                        setSubtitleVisible(false);
+                        if (isTauriRuntime()) invoke("subtitle_hide").catch((e) => console.warn("subtitle_hide:", e));
+                      }
+                    }}
+                  ><Subtitles size={12} /></button>
+                  <button className="title-action-btn" onClick={() => setNewArrivalItems([])} title="クリア"><X size={12} /></button>
+                  <button className="title-action-btn" onClick={() => setNewArrivalPaneOpen(false)} title="閉じる"><ChevronDown size={12} /></button>
+                </div>
+                <div className="new-arrival-scroll" ref={newArrivalScrollRef}>
+                  {newArrivalItems.length === 0 && <div className="new-arrival-empty">新着レスはありません</div>}
+                  {newArrivalItems.map((item, idx) => (
+                    <div
+                      key={`${item.threadUrl}-${item.responseNo}-${idx}`}
+                      className="new-arrival-item"
+                      onClick={() => {
+                        const tab = threadTabs.find((t) => t.threadUrl === item.threadUrl);
+                        if (tab) {
+                          onTabClick(threadTabs.indexOf(tab));
+                          setSelectedResponse(item.responseNo);
+                        }
+                      }}
+                    >
+                      <div className="new-arrival-meta">
+                        <span className="new-arrival-thread-title">{item.threadTitle}</span>
+                        <span className="new-arrival-res-no">{item.responseNo}</span>
+                        <span className="new-arrival-name">{item.name}</span>
+                        {item.id && <span className="new-arrival-id">ID:{item.id}</span>}
+                        <span className="new-arrival-time">{item.time}</span>
+                      </div>
+                      <div className="new-arrival-body">{item.text}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div className="splitter-h new-arrival-splitter" onMouseDown={beginNewArrivalResize} />
+            </>
+          )}
         <div
           ref={responseLayoutRef}
           className="right-pane"
-          style={{ gridTemplateRows: `${threadPanePx}px ${SPLITTER_PX}px 1fr` }}
         >
+        {/* Board tab bar (upper) */}
+        <div className="board-tab-bar-wrap">
+          <div className="board-tab-bar" ref={boardTabBarRef}>
+            {boardTabs.length === 0 && (
+              <div className="board-tab placeholder">
+                <span className="board-tab-title">板未選択</span>
+              </div>
+            )}
+            {boardTabs.map((tab, i) => (
+              <div
+                key={tab.boardUrl}
+                className={`board-tab ${i === activeBoardTabIndex ? "active" : ""}`}
+                onClick={() => {
+                  setActiveBoardTabIndex(i);
+                  setActivePaneView("threads");
+                  setSelectedBoard(tab.title);
+                  setThreadUrl(tab.boardUrl);
+                  setLocationInput(tab.boardUrl);
+                  void fetchThreadListFromCurrent(tab.boardUrl);
+                }}
+                onContextMenu={(e) => { e.preventDefault(); const p = clampMenuPosition(e.clientX, e.clientY, 180, 60); setBoardContextMenu({ x: p.x, y: p.y, board: { boardName: tab.title, url: tab.boardUrl } }); }}
+                title={tab.boardUrl}
+              >
+                <span className="board-tab-title">{tab.title}</span>
+                <button
+                  className="tab-close-btn"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setBoardTabs((prev) => {
+                      const next = prev.filter((_, j) => j !== i);
+                      setActiveBoardTabIndex((prev2) => {
+                        if (prev2 === i) return next.length > 0 ? Math.min(i, next.length - 1) : -1;
+                        if (prev2 > i) return prev2 - 1;
+                        return prev2;
+                      });
+                      return next;
+                    });
+                  }}
+                  title="閉じる"
+                >×</button>
+              </div>
+            ))}
+          </div>
+        </div>
+        {/* Thread tab bar (lower) */}
+        <div className="thread-tab-bar-wrap">
+          <div className="thread-tab-bar" ref={tabBarRef}>
+            {threadTabs.length === 0 && (
+              <div className="thread-tab placeholder active">
+                <span className="thread-tab-title">未取得</span>
+              </div>
+            )}
+            {threadTabs.map((tab, i) => (
+              <div
+                key={tab.threadUrl}
+                className={`thread-tab ${i === activeTabIndex ? "active" : ""} ${tabDragIndex !== null && tabDragIndex !== i ? "drag-target" : ""}`}
+                onClick={() => { if (tabDragRef.current) return; onTabClick(i); }}
+                onDoubleClick={() => { void fetchResponsesFromCurrent(tab.threadUrl, { keepSelection: true }); }}
+                onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); closeTab(i); } }}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const p = clampMenuPosition(e.clientX, e.clientY, 160, 120);
+                  setTabMenu({ x: p.x, y: p.y, tabIndex: i });
+                }}
+                onMouseDown={(e) => {
+                  if (e.button !== 0) return;
+                  tabDragRef.current = { srcIndex: i, startX: e.clientX };
+                  tabDragOverRef.current = null;
+                  const onMove = (mv: MouseEvent) => {
+                    if (!tabDragRef.current) return;
+                    const dx = mv.clientX - tabDragRef.current.startX;
+                    if (Math.abs(dx) > 6) {
+                      const els = tabBarRef.current?.querySelectorAll<HTMLElement>(".thread-tab:not(.placeholder)");
+                      if (!els) return;
+                      els.forEach((el) => el.classList.remove("drag-over"));
+                      for (let j = 0; j < els.length; j++) {
+                        const r = els[j].getBoundingClientRect();
+                        if (mv.clientX >= r.left && mv.clientX <= r.right) {
+                          tabDragOverRef.current = j;
+                          if (j !== tabDragRef.current.srcIndex) els[j].classList.add("drag-over");
+                          break;
+                        }
+                      }
+                    }
+                  };
+                  const onUp = () => {
+                    document.removeEventListener("mousemove", onMove);
+                    document.removeEventListener("mouseup", onUp);
+                    tabDragRef.current = null;
+                    tabDragOverRef.current = null;
+                    setTabDragIndex(null);
+                    tabBarRef.current?.querySelectorAll<HTMLElement>(".drag-over").forEach((el) => el.classList.remove("drag-over"));
+                    if (src === null || dst === null || src === dst) return;
+                    setThreadTabs((prev) => {
+                      const next = [...prev];
+                      const [moved] = next.splice(src, 1);
+                      next.splice(dst, 0, moved);
+                      return next;
+                    });
+                    setActiveTabIndex((prev) => {
+                      if (prev === src) return dst;
+                      if (src < prev && dst >= prev) return prev - 1;
+                      if (src > prev && dst <= prev) return prev + 1;
+                      return prev;
+                    });
+                  };
+                  let src = i; let dst = i;
+                  Object.defineProperty(tabDragOverRef, "current", { get: () => dst, set: (v) => { dst = v ?? i; } });
+                  document.addEventListener("mousemove", onMove);
+                  document.addEventListener("mouseup", onUp);
+                }}
+              >
+                <span className="thread-tab-title">{tab.title}</span>
+                {tabCacheRef.current.has(tab.threadUrl) && (
+                  <span className="tab-res-count">({tabCacheRef.current.get(tab.threadUrl)!.responses.length})</span>
+                )}
+                <button
+                  className="thread-tab-close"
+                  onClick={(e) => { e.stopPropagation(); closeTab(i); }}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+        {activePaneView === "threads" ? (
         <section className="pane threads" onMouseDown={() => setFocusedPane("threads")} style={{ '--fs-delta': `${threadsFontSize - 12}px` } as React.CSSProperties}>
           <div className="threads-toolbar">
             <div className="search-with-history" style={{ flex: 1 }}>
@@ -3700,6 +4765,9 @@ export default function App() {
                 <th className="sortable-th col-resizable-left" style={{ width: threadColWidths.lastFetch + "px" }} onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); if (e.clientX <= r.left + COL_RESIZE_HANDLE_PX) return; toggleThreadSort("lastFetch"); }} onMouseDown={(e) => beginColResize("lastFetch", "left", e)} onDoubleClick={(e) => resetColWidth("lastFetch", "left", e)} onMouseMove={(e) => colResizeCursor("left", e)}>
                   最終取得{threadSortKey === "lastFetch" ? (threadSortAsc ? " ▲" : " ▼") : ""}
                 </th>
+                <th className="sortable-th col-resizable-left" style={{ width: 90 + "px" }} onClick={() => toggleThreadSort("since")} title="スレ作成日">
+                  Since{threadSortKey === "since" ? (threadSortAsc ? " \u25B2" : " \u25BC") : ""}
+                </th>
                 <th className="sortable-th col-resizable-left" style={{ width: threadColWidths.speed + "px" }} onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); if (e.clientX <= r.left + COL_RESIZE_HANDLE_PX) return; toggleThreadSort("speed"); }} onMouseDown={(e) => beginColResize("speed", "left", e)} onDoubleClick={(e) => resetColWidth("speed", "left", e)} onMouseMove={(e) => colResizeCursor("left", e)}>
                   勢い{threadSortKey === "speed" ? (threadSortAsc ? " \u25B2" : " \u25BC") : ""}
                 </th>
@@ -3755,8 +4823,8 @@ export default function App() {
                     <td className="thread-fetched-cell">{showFavoritesOnly ? (hasUnread ? "\u25CF" : "") : (hasUnread || threadReadMap[t.id] ? "\u25CF" : "")}</td>
                     <td>{t.id}</td>
                     <td
-                      className="thread-title-cell"
-                      dangerouslySetInnerHTML={renderHighlightedPlainText(t.title, threadSearchQuery)}
+                      className={`thread-title-cell${customTitles[selectedBoard]?.[t.threadKey] ? " has-custom-title" : ""}`}
+                      dangerouslySetInnerHTML={renderHighlightedPlainText(customTitles[selectedBoard]?.[t.threadKey] ?? t.title, threadSearchQuery)}
                     />
                     <td>{t.res >= 0 ? t.res : "-"}</td>
                     <td>{t.got > 0 ? t.got : "-"}</td>
@@ -3764,6 +4832,7 @@ export default function App() {
                       {t.got > 0 && t.res > 0 ? Math.max(0, t.res - t.got) : "-"}
                     </td>
                     <td className="last-fetch-cell">{threadFetchTimesRef.current[t.threadUrl] ?? "-"}</td>
+                    <td className="since-cell">{"since" in t ? (t.since as string) : "-"}</td>
                     <td className="speed-cell">
                       <span className="speed-bar" style={{
                         width: `${Math.min(100, t.speed * 2)}%`,
@@ -3778,14 +4847,7 @@ export default function App() {
           </table>
           </div>
         </section>
-        <div
-          className="row-splitter"
-          role="separator"
-          aria-orientation="horizontal"
-          aria-label="Resize threads and responses"
-          onMouseDown={beginResponseRowResize}
-          onClick={(e) => e.stopPropagation()}
-        />
+        ) : (
         <section className="pane responses" onMouseDown={() => setFocusedPane("responses")} style={{ '--fs-delta': `${responsesFontSize - 12}px` } as React.CSSProperties}>
           {activeTabIndex >= 0 && activeTabIndex < threadTabs.length && (
             <div className="thread-title-bar">
@@ -3793,6 +4855,7 @@ export default function App() {
                 {threadTabs[activeTabIndex].title}
                 {" "}[{fetchedResponses.length}]
               </span>
+              <span className="thread-title-fetch-time">{threadFetchTimesRef.current[threadTabs[activeTabIndex].threadUrl] ?? ""}</span>
               <span className="thread-title-actions">
                 <div className="title-split-wrap" onClick={(e) => e.stopPropagation()}>
                   <button className="title-action-btn title-split-main" onClick={fetchNewResponses} title="新着取得">
@@ -3819,6 +4882,27 @@ export default function App() {
                   )}
                 </div>
                 <button className="title-action-btn" onClick={() => { setComposeOpen(true); setComposePos(null); setComposeBody(""); setComposeResult(null); }} title="書き込み"><Pencil size={14} /></button>
+                <button
+                  className={`title-action-btn ${subtitleVisible ? "active" : ""}`}
+                  onClick={() => {
+                    if (!subtitleVisible) {
+                      setSubtitleVisible(true);
+                      if (isTauriRuntime()) invoke("subtitle_show").catch((e) => console.warn("subtitle_show:", e));
+                    } else {
+                      setSubtitleVisible(false);
+                      if (isTauriRuntime()) invoke("subtitle_hide").catch((e) => console.warn("subtitle_hide:", e));
+                    }
+                  }}
+                  title="字幕"
+                ><Subtitles size={14} /></button>
+                <button
+                  className={`title-action-btn ${ttsEnabled ? "active" : ""}`}
+                  onClick={() => setTtsEnabled(!ttsEnabled)}
+                  title={`読み上げ ${ttsEnabled ? "ON" : "OFF"}`}
+                ><Volume2 size={14} /></button>
+                {!newArrivalPaneOpen && (
+                  <button className="title-action-btn" onClick={() => setNewArrivalPaneOpen(true)} title="新着ペイン表示"><ChevronUp size={14} /></button>
+                )}
                 <button className="title-action-btn" onClick={() => {
                   const tab = threadTabs[activeTabIndex];
                   if (tab) toggleFavoriteThread({ threadUrl: tab.threadUrl, title: tab.title });
@@ -3828,96 +4912,15 @@ export default function App() {
               </span>
             </div>
           )}
-          <div className="thread-tab-bar-wrap">
-          <div className="thread-tab-bar" ref={tabBarRef}>
-            {threadTabs.length === 0 && (
-              <div className="thread-tab placeholder active">
-                <span className="thread-tab-title">未取得</span>
-              </div>
-            )}
-            {threadTabs.map((tab, i) => (
-              <div
-                key={tab.threadUrl}
-                className={`thread-tab ${i === activeTabIndex ? "active" : ""} ${tabDragIndex !== null && tabDragIndex !== i ? "drag-target" : ""}`}
-                onClick={() => { if (tabDragRef.current) return; onTabClick(i); }}
-                onDoubleClick={() => { void fetchResponsesFromCurrent(tab.threadUrl, { keepSelection: true }); }}
-                onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); closeTab(i); } }}
-                onContextMenu={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  const p = clampMenuPosition(e.clientX, e.clientY, 160, 120);
-                  setTabMenu({ x: p.x, y: p.y, tabIndex: i });
-                }}
-                onMouseDown={(e) => {
-                  if (e.button !== 0) return;
-                  tabDragRef.current = { srcIndex: i, startX: e.clientX };
-                  tabDragOverRef.current = null;
-                  const onMove = (ev: MouseEvent) => {
-                    if (!tabDragRef.current) return;
-                    if (Math.abs(ev.clientX - tabDragRef.current.startX) < 5) return;
-                    ev.preventDefault();
-                    window.getSelection()?.removeAllRanges();
-                    setTabDragIndex(tabDragRef.current.srcIndex);
-                    const els = tabBarRef.current?.querySelectorAll<HTMLElement>(".thread-tab:not(.placeholder)");
-                    if (!els) return;
-                    els.forEach((el) => el.classList.remove("drag-over"));
-                    for (let j = 0; j < els.length; j++) {
-                      const rect = els[j].getBoundingClientRect();
-                      if (ev.clientX >= rect.left && ev.clientX < rect.right) {
-                        if (j !== tabDragRef.current.srcIndex) {
-                          els[j].classList.add("drag-over");
-                          tabDragOverRef.current = j;
-                        }
-                        break;
-                      }
-                    }
-                  };
-                  const onUp = () => {
-                    window.removeEventListener("mousemove", onMove);
-                    window.removeEventListener("mouseup", onUp);
-                    const src = tabDragRef.current?.srcIndex ?? null;
-                    const dst = tabDragOverRef.current;
-                    tabDragRef.current = null;
-                    tabDragOverRef.current = null;
-                    setTabDragIndex(null);
-                    tabBarRef.current?.querySelectorAll<HTMLElement>(".drag-over").forEach((el) => el.classList.remove("drag-over"));
-                    if (src === null || dst === null || src === dst) return;
-                    setThreadTabs((prev) => {
-                      const next = [...prev];
-                      const [moved] = next.splice(src, 1);
-                      next.splice(dst, 0, moved);
-                      return next;
-                    });
-                    setActiveTabIndex((prev) => src === prev ? dst : src < prev && dst >= prev ? prev - 1 : src > prev && dst <= prev ? prev + 1 : prev);
-                  };
-                  window.addEventListener("mousemove", onMove);
-                  window.addEventListener("mouseup", onUp);
-                }}
-                title={tab.title || tab.threadUrl}
-              >
-                <span className="thread-tab-title">{tab.title}</span>
-                {tabCacheRef.current.has(tab.threadUrl) && (
-                  <span className="tab-res-count">({tabCacheRef.current.get(tab.threadUrl)!.responses.length})</span>
-                )}
-                <button
-                  className="thread-tab-close"
-                  onClick={(e) => { e.stopPropagation(); closeTab(i); }}
-                >
-                  ×
-                </button>
-              </div>
-            ))}
-          </div>
-          <button className="tab-scroll-btn" onClick={() => { if (tabBarRef.current) tabBarRef.current.scrollLeft -= 150; }} title="左スクロール"><ChevronLeft size={14} /></button>
-          <button className="tab-scroll-btn" onClick={() => { if (tabBarRef.current) tabBarRef.current.scrollLeft += 150; }} title="右スクロール"><ChevronRight size={14} /></button>
-          </div>
           <div
             className="response-layout"
           >
             <div
               className="response-scroll"
               ref={responseScrollRef}
+              style={{ '--response-gap': `${responseGap}px` } as React.CSSProperties}
               onScroll={onResponseScroll}
+              onContextMenu={onResponseAreaContextMenu}
               onClick={(e) => {
                 const target = e.target as HTMLElement;
                 // body-link: open 5ch thread URLs in tab, others in external browser
@@ -3930,6 +4933,10 @@ export default function App() {
                     openThreadInTab(url, title);
                     return;
                   }
+                  if (url && /\.(jpe?g|png|gif|webp|bmp)(\?|$)/i.test(url) && isTauriRuntime()) {
+                    void invoke("open_image_popup", { url }).catch(() => window.open(url, "_blank"));
+                    return;
+                  }
                   if (url && isTauriRuntime()) {
                     void invoke("open_external_url", { url }).catch(() => window.open(url, "_blank"));
                   } else if (url) {
@@ -3937,13 +4944,13 @@ export default function App() {
                   }
                   return;
                 }
-                // thumb image click: open in external browser
-                if (target.classList.contains("response-thumb")) {
+                // thumb image click: open in popup window
+                if (target.classList.contains("response-thumb") || target.closest<HTMLElement>("[data-lightbox-src]")) {
                   e.preventDefault();
                   const thumbLink = target.closest<HTMLElement>("[data-lightbox-src]");
                   const url = thumbLink?.dataset.lightboxSrc ?? "";
                   if (url && isTauriRuntime()) {
-                    void invoke("open_external_url", { url }).catch(() => window.open(url, "_blank"));
+                    void invoke("open_image_popup", { url }).catch(() => window.open(url, "_blank"));
                   } else if (url) {
                     window.open(url, "_blank");
                   }
@@ -4051,8 +5058,15 @@ export default function App() {
                       {replyToMeNos.has(r.id) && <span className="reply-to-me-label">[自分宛]</span>}
                       <span
                         className="response-name"
+                        style={(() => {
+                          const hl = textHighlights.find((h) => h.type === "name" && h.pattern === r.nameWithoutWatchoi);
+                          return hl ? { background: hl.color } : undefined;
+                        })()}
                         dangerouslySetInnerHTML={renderHighlightedPlainText(r.nameWithoutWatchoi, responseSearchQuery)}
                       />
+                      {r.mail && (
+                        <span className={`response-mail${r.mail === "sage" ? " response-mail-sage" : ""}`}>[{r.mail}]</span>
+                      )}
                       {r.watchoi && (
                         <span
                           className="response-watchoi"
@@ -4083,27 +5097,35 @@ export default function App() {
                           dangerouslySetInnerHTML={renderHighlightedPlainText(formatResponseDate(r.time), responseSearchQuery)}
                         />
                         {id && (
-                          <span
-                            className="response-id-cell"
-                            style={{ color: getIdColor(id) }}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (idPopupCloseTimer.current) { clearTimeout(idPopupCloseTimer.current); idPopupCloseTimer.current = null; }
-                              const p = clampMenuPosition(e.clientX, e.clientY, 160, 56);
-                              setIdMenu({ x: p.x, y: p.y, id });
-                            }}
-                            onMouseEnter={(e) => {
-                              if (idPopupCloseTimer.current) { clearTimeout(idPopupCloseTimer.current); idPopupCloseTimer.current = null; }
-                              const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                              const right = Math.max(8, window.innerWidth - rect.right);
-                              setIdPopup({ right, y: rect.bottom + 2, anchorTop: rect.top, id });
-                            }}
-                            onMouseLeave={() => {
-                              idPopupCloseTimer.current = setTimeout(() => setIdPopup(null), 150);
-                            }}
-                          >
-                            ID:{id}({idSeqMap.get(r.id) ?? 1}/{count})
-                          </span>
+                          <>
+                            <span
+                              className="response-id-cell"
+                              style={{ color: idHighlights[id] ?? undefined }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (idPopupCloseTimer.current) { clearTimeout(idPopupCloseTimer.current); idPopupCloseTimer.current = null; }
+                                const p = clampMenuPosition(e.clientX, e.clientY, 160, 56);
+                                setIdMenu({ x: p.x, y: p.y, id });
+                              }}
+                              onMouseEnter={(e) => {
+                                if (idPopupCloseTimer.current) { clearTimeout(idPopupCloseTimer.current); idPopupCloseTimer.current = null; }
+                                const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                                const right = Math.max(8, window.innerWidth - rect.right);
+                                setIdPopup({ right, y: rect.bottom + 2, anchorTop: rect.top, id });
+                              }}
+                              onMouseLeave={() => {
+                                idPopupCloseTimer.current = setTimeout(() => setIdPopup(null), 150);
+                              }}
+                            >
+                              ID:{id}
+                            </span>
+                            <span
+                              className="response-id-count"
+                              style={{ color: count >= 5 ? '#cc3333' : count >= 2 ? '#3366ff' : undefined }}
+                            >
+                              ({idSeqMap.get(r.id) ?? 1}/{count})
+                            </span>
+                          </>
                         )}
                         {r.beNumber && (
                           <button
@@ -4120,7 +5142,7 @@ export default function App() {
                         )}
                       </span>
                     </div>
-                    <div className={`response-body${(aaOverrides.has(r.id) ? aaOverrides.get(r.id) : isAsciiArt(r.text)) ? " aa" : ""}`} dangerouslySetInnerHTML={renderResponseBodyHighlighted(r.text, responseSearchQuery, { hideImages: ngResultMap.get(r.id) === "hide-images", imageSizeLimitKb: imageSizeLimit })} />
+                    <div className={`response-body${(aaOverrides.has(r.id) ? aaOverrides.get(r.id) : isAsciiArt(r.text)) ? " aa" : ""}`} dangerouslySetInnerHTML={renderResponseBodyHighlighted(r.text, responseSearchQuery, { hideImages: ngResultMap.get(r.id) === "hide-images", imageSizeLimitKb: imageSizeLimit, urlRules: imageUrlRules }, textHighlights.filter((h) => h.type === "word"))} />
                   </div>
                   </Fragment>
                 );
@@ -4132,45 +5154,50 @@ export default function App() {
                 {" "}サイズ:{Math.round(visibleResponseItems.reduce((s, r) => s + r.text.length, 0) / 1024)}KB
                 {" "}受信日時:{lastFetchTime ?? "-"}
               </span>
-              <div className="search-with-history" style={{ flex: 1 }}>
-                <input
-                  ref={responseSearchRef}
-                  className="thread-search"
-                  value={responseSearchQuery}
-                  onChange={(e) => setResponseSearchQuery(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.nativeEvent.isComposing) return;
-                    if (e.key === "Enter") { addSearchHistory("response", responseSearchQuery); setSearchHistoryDropdown(null); }
-                    if (e.key === "Escape") setSearchHistoryDropdown(null);
-                  }}
-                  placeholder="レス検索 (Enter:保存 / 右クリック:削除)"
-                />
-                <button
-                  className="search-history-btn"
-                  onClick={(e) => { e.stopPropagation(); setSearchHistoryDropdown((prev) => prev?.type === "response" ? null : { type: "response" }); }}
-                  title="検索履歴"
-                ><ChevronDown size={10} /></button>
-                {searchHistoryDropdown?.type === "response" && responseSearchHistory.length > 0 && (
-                  <div className="search-history-dropdown dropdown-up" onMouseDown={(e) => e.preventDefault()}>
-                    {responseSearchHistory
-                      .filter((w) => !responseSearchQuery.trim() || w.toLowerCase().includes(responseSearchQuery.trim().toLowerCase()))
-                      .map((w) => (
-                        <div
-                          key={w}
-                          className="search-history-item"
-                          onClick={() => { setResponseSearchQuery(w); setSearchHistoryDropdown(null); }}
-                          onContextMenu={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            const p = clampMenuPosition(e.clientX, e.clientY, 120, 30);
-                            setSearchHistoryMenu({ x: p.x, y: p.y, type: "response", word: w });
-                          }}
-                        >{w}</div>
-                      ))}
+              <button className="title-action-btn" onClick={() => { setResponseSearchBarVisible((v) => !v); if (responseSearchBarVisible) setResponseSearchQuery(""); }} title="レス検索"><Search size={14} /></button>
+              {responseSearchBarVisible && (
+                <>
+                  <div className="search-with-history" style={{ flex: 1 }}>
+                    <input
+                      ref={responseSearchRef}
+                      className="thread-search"
+                      value={responseSearchQuery}
+                      onChange={(e) => setResponseSearchQuery(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.nativeEvent.isComposing) return;
+                        if (e.key === "Enter") { addSearchHistory("response", responseSearchQuery); setSearchHistoryDropdown(null); }
+                        if (e.key === "Escape") { setResponseSearchBarVisible(false); setResponseSearchQuery(""); setSearchHistoryDropdown(null); }
+                      }}
+                      placeholder="レス検索 (Enter:保存 / 右クリック:削除)"
+                    />
+                    <button
+                      className="search-history-btn"
+                      onClick={(e) => { e.stopPropagation(); setSearchHistoryDropdown((prev) => prev?.type === "response" ? null : { type: "response" }); }}
+                      title="検索履歴"
+                    ><ChevronDown size={10} /></button>
+                    {searchHistoryDropdown?.type === "response" && responseSearchHistory.length > 0 && (
+                      <div className="search-history-dropdown dropdown-up" onMouseDown={(e) => e.preventDefault()}>
+                        {responseSearchHistory
+                          .filter((w) => !responseSearchQuery.trim() || w.toLowerCase().includes(responseSearchQuery.trim().toLowerCase()))
+                          .map((w) => (
+                            <div
+                              key={w}
+                              className="search-history-item"
+                              onClick={() => { setResponseSearchQuery(w); setSearchHistoryDropdown(null); }}
+                              onContextMenu={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                const p = clampMenuPosition(e.clientX, e.clientY, 120, 30);
+                                setSearchHistoryMenu({ x: p.x, y: p.y, type: "response", word: w });
+                              }}
+                            >{w}</div>
+                          ))}
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
-              {responseSearchQuery && <button className="title-action-btn" onClick={() => setResponseSearchQuery("")} title="検索クリア"><X size={14} /></button>}
+                  {responseSearchQuery && <button className="title-action-btn" onClick={() => setResponseSearchQuery("")} title="検索クリア"><X size={14} /></button>}
+                </>
+              )}
               <span className="link-filter-buttons">
                 <button className={`link-filter-btn ${responseLinkFilter === "image" ? "active" : ""}`} onClick={() => setResponseLinkFilter((p) => p === "image" ? "" : "image")} title="画像リンク"><Image size={13} /></button>
                 <button className={`link-filter-btn ${responseLinkFilter === "video" ? "active" : ""}`} onClick={() => setResponseLinkFilter((p) => p === "video" ? "" : "video")} title="動画リンク"><Film size={13} /></button>
@@ -4208,7 +5235,9 @@ export default function App() {
             </div>
           </div>
         </section>
+        )}
         </div>
+        </div>{/* /right-body */}
       </main>
       <footer className="status-bar">
         <span className="status-main">{status}</span>
@@ -4259,13 +5288,21 @@ export default function App() {
               document.body.style.cursor = "move";
             }}
           >
-            <strong>書き込み</strong>
-            <span className="compose-target" title={threadUrl}>
-              {selectedThreadItem ? selectedThreadItem.title : threadUrl}
+            <strong>{composeNewThread ? "新スレ作成" : "書き込み"}</strong>
+            <button className={`compose-mode-btn ${!composeNewThread ? "active" : ""}`} onClick={() => setComposeNewThread(false)}>レス</button>
+            <button className={`compose-mode-btn ${composeNewThread ? "active" : ""}`} onClick={() => setComposeNewThread(true)}>新スレ</button>
+            <span className="compose-target" title={threadTabs[activeTabIndex]?.threadUrl ?? threadUrl}>
+              {threadTabs[activeTabIndex]?.title ?? threadUrl}
             </span>
             <button onClick={() => { setComposeOpen(false); setComposeResult(null); setUploadPanelOpen(false); setUploadResults([]); }}>閉じる</button>
           </header>
           <div className="compose-grid">
+            {composeNewThread && (
+              <label style={{ gridColumn: "1 / -1" }}>
+                スレッドタイトル
+                <input value={composeSubject} onChange={(e) => setComposeSubject(e.target.value)} placeholder="スレッドタイトルを入力" autoFocus />
+              </label>
+            )}
             <label>
               名前
               <input value={composeName} onChange={(e) => setComposeName(e.target.value)} list="name-history-list" />
@@ -4299,7 +5336,7 @@ export default function App() {
             <div className="compose-preview" dangerouslySetInnerHTML={renderResponseBody(composeBody || "(空)")} />
           )}
           <div className="compose-actions">
-            <button onClick={probePostFlowTraceFromCompose} disabled={composeSubmitting}>{composeSubmitting ? "送信中..." : `送信 (${composeSubmitKey === "shift" ? "Shift" : "Ctrl"}+Enter)`}</button>
+            <button onClick={composeNewThread ? handleCreateThread : probePostFlowTraceFromCompose} disabled={composeSubmitting}>{composeSubmitting ? "送信中..." : composeNewThread ? "スレッド作成" : `送信 (${composeSubmitKey === "shift" ? "Shift" : "Ctrl"}+Enter)`}</button>
             <button onClick={() => setUploadPanelOpen((v) => { if (v) setUploadResults([]); return !v; })} title="画像アップロード" style={{ marginLeft: 4 }}><Upload size={14} /></button>
             <button onClick={async () => {
               setComposeResult({ ok: false, message: "診断中..." });
@@ -4385,27 +5422,32 @@ export default function App() {
             <button onClick={() => setNgPanelOpen(false)}>閉じる</button>
           </header>
           <div className="ng-panel-add">
-            <select value={ngInputType} onChange={(e) => setNgInputType(e.target.value as "words" | "ids" | "names")}>
+            <select value={ngInputType} onChange={(e) => setNgInputType(e.target.value as "words" | "ids" | "names" | "regex")}>
               <option value="words">ワード</option>
               <option value="ids">ID</option>
               <option value="names">名前</option>
+              <option value="regex">正規表現</option>
             </select>
             <input
               value={ngInput}
               onChange={(e) => setNgInput(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
-                  addNgEntry(ngInputType, ngInput);
-                  setNgInput("");
+                  addNgFromInput();
                 }
               }}
-              placeholder={ngInputType === "words" ? "NGワードを入力" : ngInputType === "ids" ? "NG IDを入力" : "NG名前を入力"}
+              placeholder={ngInputType === "regex" ? "正規表現パターンを入力" : ngInputType === "words" ? "NGワードを入力" : ngInputType === "ids" ? "NG IDを入力" : "NG名前を入力"}
             />
             <select value={ngAddMode} onChange={(e) => setNgAddMode(e.target.value as "hide" | "hide-images")} className="ng-mode-select">
               <option value="hide">非表示</option>
               <option value="hide-images">画像NG</option>
             </select>
-            <button onClick={() => { addNgEntry(ngInputType, ngInput); setNgInput(""); }}>追加</button>
+            <select value={ngAddScope} onChange={(e) => setNgAddScope(e.target.value as "global" | "board" | "thread")} className="ng-mode-select">
+              <option value="global">全体</option>
+              <option value="board">この板</option>
+              <option value="thread">このスレ</option>
+            </select>
+            <button onClick={() => addNgFromInput()}>追加</button>
           </div>
           <div className="ng-panel-lists">
             {(["words", "ids", "names"] as const).map((type) => (
@@ -4418,11 +5460,15 @@ export default function App() {
                     {ngFilters[type].map((entry) => {
                       const v = ngVal(entry);
                       const mode = ngEntryMode(entry);
+                      const scope = ngEntryScope(entry);
+                      const isRegex = v.startsWith("/") && v.endsWith("/") && v.length > 2;
                       return (
                         <li key={v}>
                           <span className={`ng-mode-label ${mode === "hide-images" ? "ng-mode-img" : "ng-mode-hide"}`}>
                             {mode === "hide-images" ? "画像" : "非表示"}
                           </span>
+                          {scope !== "global" && <span className="ng-mode-label" style={{ background: scope === "board" ? "#2a7a2a" : "#2a5a9a", color: "#fff" }}>{scope === "board" ? "板" : "スレ"}</span>}
+                          {isRegex && <span className="ng-mode-label" style={{ background: "#6b4c9a", color: "#fff" }}>正規表現</span>}
                           <span>{v}</span>
                           <button className="ng-remove" onClick={() => removeNgEntry(type, v)}>×</button>
                         </li>
@@ -4445,6 +5491,31 @@ export default function App() {
             if (t) { void navigator.clipboard.writeText(t.title); setStatus("スレタイをコピーしました"); }
             setThreadMenu(null);
           }}>スレタイをコピー</button>
+          <button onClick={() => {
+            const t = threadItems.find((item) => item.id === threadMenu.threadId);
+            if (!t) { setThreadMenu(null); return; }
+            const current = customTitles[selectedBoard]?.[t.threadKey] ?? "";
+            const input = window.prompt("カスタムタイトルを入力（空欄でリセット）:", current);
+            if (input === null) { setThreadMenu(null); return; }
+            const newTitle = input.trim() || undefined;
+            setCustomTitles((prev) => {
+              const next = { ...prev };
+              if (!next[selectedBoard]) next[selectedBoard] = {};
+              if (newTitle) {
+                next[selectedBoard] = { ...next[selectedBoard], [t.threadKey]: newTitle };
+              } else {
+                const board = { ...next[selectedBoard] };
+                delete board[t.threadKey];
+                next[selectedBoard] = board;
+              }
+              return next;
+            });
+            if (isTauriRuntime()) {
+              invoke("set_thread_custom_title", { boardUrl: selectedBoard, threadKey: t.threadKey, title: newTitle ?? null })
+                .catch((e) => console.warn("set_thread_custom_title:", e));
+            }
+            setThreadMenu(null);
+          }}>タイトルを変更</button>
           <button onClick={() => {
             const t = threadItems.find((item) => item.id === threadMenu.threadId);
             if (t && "threadUrl" in t && typeof t.threadUrl === "string") {
@@ -4487,13 +5558,107 @@ export default function App() {
         </div>
       )}
       {responseMenu && (
-        <div className="thread-menu response-menu" style={{ left: responseMenu.x, top: responseMenu.y }} onClick={(e) => e.stopPropagation()}>
+        <div className="thread-menu response-menu" style={{ left: responseMenu.x, top: responseMenu.y }}
+          onClick={(e) => e.stopPropagation()}
+          onMouseLeave={() => setHlSubMenu(null)}
+        >
+          {/* ----- ハイライト項目 ----- */}
+          {responseMenu.selection && (
+            <div className="menu-item-with-sub"
+              onMouseEnter={() => setHlSubMenu({ type: "text", value: responseMenu.selection!, nearRight: responseMenu.x > window.innerWidth / 2 })}
+            >
+              <span>「{responseMenu.selection.slice(0, 15)}」をハイライト</span>
+              <span className="menu-arrow">▶</span>
+              {hlSubMenu?.type === "text" && hlSubMenu.value === responseMenu.selection && (
+                <div className="hl-color-grid" style={hlSubMenu.nearRight ? { left: "auto", right: "100%" } : undefined} onClick={(e) => e.stopPropagation()}>
+                  {HIGHLIGHT_COLORS.map((c) => (
+                    <div key={c.color} className="hl-color-cell" style={{ background: c.color }} title={c.name}
+                      onClick={() => {
+                        const next = [...textHighlights.filter((h) => h.pattern !== responseMenu.selection || h.type !== "word"),
+                          { pattern: responseMenu.selection!, color: c.color, type: "word" as const }];
+                        persistTextHighlights(next);
+                        setResponseMenu(null); setHlSubMenu(null);
+                      }} />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+          {responseMenu.resId && (
+            <div className="menu-item-with-sub"
+              onMouseEnter={() => setHlSubMenu({ type: "id", value: responseMenu.resId!, nearRight: responseMenu.x > window.innerWidth / 2 })}
+            >
+              <span>ID:{responseMenu.resId} をハイライト</span>
+              <span className="menu-arrow">▶</span>
+              {hlSubMenu?.type === "id" && hlSubMenu.value === responseMenu.resId && (
+                <div className="hl-color-grid" style={hlSubMenu.nearRight ? { left: "auto", right: "100%" } : undefined} onClick={(e) => e.stopPropagation()}>
+                  {HIGHLIGHT_COLORS.map((c) => (
+                    <div key={c.color} className="hl-color-cell" style={{ background: c.color }} title={c.name}
+                      onClick={() => {
+                        const next = { ...idHighlights, [responseMenu.resId!]: c.color };
+                        persistIdHighlights(next);
+                        setResponseMenu(null); setHlSubMenu(null);
+                      }} />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+          {responseMenu.resName && (
+            <div className="menu-item-with-sub"
+              onMouseEnter={() => setHlSubMenu({ type: "name", value: responseMenu.resName!, nearRight: responseMenu.x > window.innerWidth / 2 })}
+            >
+              <span>名前「{responseMenu.resName.slice(0, 12)}」をハイライト</span>
+              <span className="menu-arrow">▶</span>
+              {hlSubMenu?.type === "name" && hlSubMenu.value === responseMenu.resName && (
+                <div className="hl-color-grid" style={hlSubMenu.nearRight ? { left: "auto", right: "100%" } : undefined} onClick={(e) => e.stopPropagation()}>
+                  {HIGHLIGHT_COLORS.map((c) => (
+                    <div key={c.color} className="hl-color-cell" style={{ background: c.color }} title={c.name}
+                      onClick={() => {
+                        const next = [...textHighlights.filter((h) => h.pattern !== responseMenu.resName || h.type !== "name"),
+                          { pattern: responseMenu.resName!, color: c.color, type: "name" as const }];
+                        persistTextHighlights(next);
+                        setResponseMenu(null); setHlSubMenu(null);
+                      }} />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+          {/* ハイライト解除 */}
+          {(() => {
+            const canClearId = responseMenu.resId && idHighlights[responseMenu.resId];
+            const canClearText = responseMenu.selection && textHighlights.some((h) => h.pattern === responseMenu.selection && h.type === "word");
+            const canClearName = responseMenu.resName && textHighlights.some((h) => h.pattern === responseMenu.resName && h.type === "name");
+            if (!canClearId && !canClearText && !canClearName) return null;
+            return (
+              <button onClick={() => {
+                if (canClearId) persistIdHighlights(Object.fromEntries(Object.entries(idHighlights).filter(([k]) => k !== responseMenu.resId)));
+                if (canClearText) persistTextHighlights(textHighlights.filter((h) => !(h.pattern === responseMenu.selection && h.type === "word")));
+                if (canClearName) persistTextHighlights(textHighlights.filter((h) => !(h.pattern === responseMenu.resName && h.type === "name")));
+                setResponseMenu(null); setHlSubMenu(null);
+              }}>ハイライト解除</button>
+            );
+          })()}
+          {/* ----- 画像保存 ----- */}
+          {responseMenu.imageUrl && isTauriRuntime() && (
+            <button onClick={() => { void saveImage(responseMenu.imageUrl!); setResponseMenu(null); }}>画像を保存</button>
+          )}
+          {/* ----- セパレーター ----- */}
+          <hr className="menu-sep" />
+          {/* ----- 既存項目 ----- */}
+          {responseMenu.selection && (
+            <button onClick={() => { void navigator.clipboard.writeText(responseMenu.selection!); setResponseMenu(null); setStatus("コピーしました"); }}>選択テキストをコピー</button>
+          )}
           <button onClick={() => void runResponseAction("quote")}>ここにレス</button>
           <button onClick={() => void runResponseAction("quote-with-name")}>名前付き引用</button>
           <button onClick={() => void runResponseAction("copy-body")}>本文をコピー</button>
           <button onClick={() => void runResponseAction("copy-url")}>レスURLをコピー</button>
           <button onClick={() => void runResponseAction("copy-id")}>IDをコピー</button>
           <button onClick={() => void copyWholeThread()}>スレ全体をコピー</button>
+          {responseMenu.selection && (
+            <button onClick={() => { addNgEntry("words", responseMenu.selection!); setResponseMenu(null); }}>「{responseMenu.selection.slice(0, 15)}」をNGワードに追加</button>
+          )}
           <button onClick={() => void runResponseAction("add-ng-id")}>NGIDに追加</button>
           <button onClick={() => void runResponseAction("add-ng-name")}>NG名前に追加</button>
           <button onClick={() => void runResponseAction("toggle-aa")}>
@@ -4506,6 +5671,48 @@ export default function App() {
               return active ? "AA表示: ON → OFF" : "AA表示: OFF → ON";
             })()}
           </button>
+          {/* ----- セパレーター ----- */}
+          <hr className="menu-sep" />
+          {/* このレスから読み上げ（レス番号上のみ） */}
+          {responseMenu.isOnResNo && responseMenu.responseId > 0 && (
+            <button onClick={() => {
+              const startNo = responseMenu.responseId;
+              const items = visibleResponseItems.filter((r) => r.id >= startNo);
+              const site = detectSiteType(threadTabs[activeTabIndex]?.threadUrl ?? threadUrl);
+              setResponseMenu(null);
+              setStatus(`レス ${startNo} から読み上げ開始 (${items.length}件)`);
+              void (async () => {
+                await ttsStop();
+                for (const item of items) {
+                  if (item.id >= 1001) continue;
+                  const prefix = site === "shitaraba" ? `したらば${item.id}番さん`
+                    : site === "jpnkn" ? `ジャパンくん${item.id}番さん`
+                    : `レス${item.id}番さん`;
+                  ttsSpeak(item.text, prefix);
+                }
+              })();
+            }}>このレスから読み上げ</button>
+          )}
+          {/* ----- セパレーター ----- */}
+          <hr className="menu-sep" />
+          {/* トグル3種 */}
+          <button onClick={() => { setAutoRefreshEnabled(!autoRefreshEnabled); setResponseMenu(null); }}>
+            {autoRefreshEnabled ? "✓" : "　"} オートリロード
+          </button>
+          <button onClick={() => { setAutoScrollEnabled(!autoScrollEnabled); setResponseMenu(null); }}>
+            {autoScrollEnabled ? "✓" : "　"} オートスクロール
+          </button>
+          <button onClick={() => { setTtsEnabled(!ttsEnabled); setResponseMenu(null); }}>
+            {ttsEnabled ? "✓" : "　"} 読み上げ
+          </button>
+        </div>
+      )}
+      {boardContextMenu && (
+        <div className="thread-menu" style={{ left: boardContextMenu.x, top: boardContextMenu.y }} onClick={(e) => e.stopPropagation()}>
+          <button onClick={() => { toggleFavoriteBoard(boardContextMenu.board); setBoardContextMenu(null); }}>
+            {isFavoriteBoard(boardContextMenu.board.url) ? "お気に入りから削除" : "お気に入りに追加"}
+          </button>
+          <button onClick={() => { void navigator.clipboard.writeText(boardContextMenu.board.url); setStatus("板URLをコピーしました"); setBoardContextMenu(null); }}>板URLをコピー</button>
         </div>
       )}
       {tabMenu && (
@@ -4839,8 +6046,8 @@ export default function App() {
               <button onClick={() => setAboutOpen(false)}>閉じる</button>
             </header>
             <div style={{ padding: "24px 16px", display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
-              <img src="/icon.png" alt="Ember" style={{ width: 64, height: 64 }} />
-              <div style={{ fontSize: "1.3em", fontWeight: "bold" }}>Ember</div>
+              <img src="/icon.png" alt="LiveFake" style={{ width: 64, height: 64 }} />
+              <div style={{ fontSize: "1.3em", fontWeight: "bold" }}>LiveFake</div>
               <div style={{ color: "var(--sub)" }}>v{currentVersion}</div>
               <div style={{ fontSize: "0.85em", color: "var(--sub)", lineHeight: 1.6 }}>
                 5ch専用ブラウザ<br />
@@ -4858,7 +6065,7 @@ export default function App() {
               <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
                 <button
                   onClick={() => {
-                    const url = LANDING_PAGE_URL;
+                    const url = GITHUB_RELEASE_URL;
                     if (isTauriRuntime()) {
                       void invoke("open_external_url", { url }).catch(() => window.open(url, "_blank"));
                     } else {
@@ -4866,19 +6073,7 @@ export default function App() {
                     }
                   }}
                 >
-                  公式サイト
-                </button>
-                <button
-                  onClick={() => {
-                    const url = BUY_ME_A_COFFEE_URL;
-                    if (isTauriRuntime()) {
-                      void invoke("open_external_url", { url }).catch(() => window.open(url, "_blank"));
-                    } else {
-                      window.open(url, "_blank");
-                    }
-                  }}
-                >
-                  Buy me a coffee
+                  配布先 (GitHub)
                 </button>
               </div>
             </div>
@@ -4921,12 +6116,22 @@ export default function App() {
       )}
       {settingsOpen && (
         <div className="lightbox-overlay" onClick={() => setSettingsOpen(false)}>
-          <div className="settings-panel" onClick={(e) => e.stopPropagation()}>
+          <div className="settings-panel settings-panel-wide" onClick={(e) => e.stopPropagation()}>
             <header className="settings-header">
               <strong>設定</strong>
               <button onClick={() => setSettingsOpen(false)}>閉じる</button>
             </header>
-            <div className="settings-body">
+            <div className="settings-2col">
+              <nav className="settings-nav">
+                {(["display","posting","tts","subtitle","proxy","ng","auth","highlights","info"] as const).map((cat) => {
+                  const labels: Record<string, string> = { display:"表示", posting:"書き込み", tts:"読み上げ", subtitle:"字幕", proxy:"プロキシ", ng:"NG", auth:"認証", highlights:"ハイライト", info:"情報" };
+                  return (
+                    <button key={cat} className={`settings-nav-item${settingsCategory === cat ? " active" : ""}`} onClick={() => setSettingsCategory(cat)}>{labels[cat]}</button>
+                  );
+                })}
+              </nav>
+              <div className="settings-content">
+              {settingsCategory === "display" && (<>
               <fieldset>
                 <legend>表示</legend>
                 <label className="settings-row">
@@ -4963,7 +6168,31 @@ export default function App() {
                 </label>
                 <label className="settings-row">
                   <span>自動更新間隔 (秒)</span>
-                  <input type="number" value={autoRefreshInterval} min={10} max={600} onChange={(e) => setAutoRefreshInterval(Number(e.target.value))} />
+                  <input type="number" value={autoRefreshInterval} min={15} max={300} step={15} onChange={(e) => {
+                    const v = Math.max(15, Math.min(300, Number(e.target.value)));
+                    setAutoRefreshInterval(v);
+                  }} />
+                </label>
+                <label className="settings-row">
+                  <input type="checkbox" checked={autoScrollEnabled} onChange={(e) => setAutoScrollEnabled(e.target.checked)} />
+                  <span>新着レス取得時に自動スクロール</span>
+                </label>
+                <label className="settings-row">
+                  <input type="checkbox" checked={smoothScroll} onChange={(e) => setSmoothScroll(e.target.checked)} />
+                  <span>スムーススクロール (再起動後に反映)</span>
+                </label>
+                <label className="settings-row">
+                  <span>レス間隔 (px)</span>
+                  <input type="number" value={responseGap} min={0} max={40} step={1} onChange={(e) => setResponseGap(Math.max(0, Math.min(40, Number(e.target.value))))} />
+                </label>
+                <label className="settings-row">
+                  <span>最大タブ数</span>
+                  <input type="number" value={maxOpenTabs} min={1} max={50} step={1} onChange={(e) => setMaxOpenTabs(Math.max(1, Math.min(50, Number(e.target.value))))} />
+                </label>
+                <label className="settings-row">
+                  <span>ログ保持日数</span>
+                  <input type="number" value={logRetentionDays} min={0} max={365} step={1} onChange={(e) => setLogRetentionDays(Math.max(0, Math.min(365, Number(e.target.value))))} />
+                  <span className="settings-hint">0 = 無制限</span>
                 </label>
                 <label className="settings-row">
                   <input type="checkbox" checked={showBoardButtons} onChange={(e) => setShowBoardButtons(e.target.checked)} />
@@ -4995,7 +6224,42 @@ export default function App() {
                   <input type="number" value={hoverPreviewDelay} min={0} max={2000} step={50} onChange={(e) => setHoverPreviewDelay(Number(e.target.value))} />
                   <span className="settings-hint">0 = 即時</span>
                 </label>
+                <div className="settings-row">
+                  <span>画像保存先フォルダ</span>
+                  <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11, color: "#888" }}>{imageSaveFolder || "(未設定 — 毎回選択)"}</span>
+                  <button onClick={() => {
+                    if (!isTauriRuntime()) return;
+                    invoke<string | null>("open_folder_dialog").then((p) => { if (p) setImageSaveFolder(p); }).catch((e) => console.warn("open_folder_dialog:", e));
+                  }}>選択</button>
+                  {imageSaveFolder && <button onClick={() => setImageSaveFolder("")}>クリア</button>}
+                </div>
               </fieldset>
+              <fieldset>
+                <legend>画像 URL 変換ルール (ImageViewURLReplace)</legend>
+                <div className="settings-row">
+                  <span>有効なルール数</span>
+                  <span>{imageUrlRules.length} 件</span>
+                </div>
+                <div className="settings-row" style={{ gap: 8 }}>
+                  <button onClick={() => {
+                    if (!isTauriRuntime()) return;
+                    invoke<UrlReplaceRule[]>("reset_image_url_replace")
+                      .then((rules) => { setImageUrlRules(rules); setStatus("URLルールをデフォルトにリセットしました"); })
+                      .catch((e) => console.warn("reset_image_url_replace:", e));
+                  }}>デフォルトに戻す</button>
+                  <button onClick={() => {
+                    if (!isTauriRuntime()) return;
+                    invoke<string>("get_data_dir").then((dir) => {
+                      invoke("open_external_url", { url: dir }).catch(() => {});
+                    }).catch(() => {});
+                  }}>データフォルダを開く</button>
+                </div>
+                <div style={{ fontSize: "0.8em", color: "var(--sub)", marginTop: 4 }}>
+                  データフォルダ内の ImageViewURLReplace.txt を編集してアプリを再起動すると反映されます
+                </div>
+              </fieldset>
+              </>)}
+              {settingsCategory === "posting" && (<>
               <fieldset>
                 <legend>書き込み</legend>
                 <label className="settings-row">
@@ -5018,6 +6282,8 @@ export default function App() {
                   <span>入力時コンフェティ</span>
                 </label>
               </fieldset>
+              </>)}
+              {settingsCategory === "auth" && (<>
               <fieldset>
                 <legend>5chプレミアム Ronin/BE</legend>
                 <div className="settings-row"><span>Ronin ユーザーID</span></div>
@@ -5080,11 +6346,411 @@ export default function App() {
                 {authSaveMsg && <div className="settings-row"><span>{authSaveMsg}</span></div>}
                 <div className="settings-row"><span>Ronin: {roninState}</span><span>BE: {beState}</span></div>
               </fieldset>
+              </>)}
+              {settingsCategory === "subtitle" && (<>
+              <fieldset>
+                <legend>字幕</legend>
+                <div className="settings-row">
+                  <span>本文フォントサイズ</span>
+                  <input type="number" min={10} max={96} value={subtitleBodyFontSize} onChange={(e) => {
+                    const v = Number(e.target.value);
+                    setSubtitleBodyFontSize(v);
+                    if (isTauriRuntime()) invoke("subtitle_font_size", { size: v }).catch(() => {});
+                  }} style={{ width: 60 }} />
+                </div>
+                <div className="settings-row">
+                  <span>メタフォントサイズ</span>
+                  <input type="number" min={8} max={48} value={subtitleMetaFontSize} onChange={(e) => {
+                    const v = Number(e.target.value);
+                    setSubtitleMetaFontSize(v);
+                    if (isTauriRuntime()) invoke("subtitle_meta_font_size", { size: v }).catch(() => {});
+                  }} style={{ width: 60 }} />
+                </div>
+                <div className="settings-row">
+                  <span>背景透明度</span>
+                  <input type="range" min={0.1} max={1.0} step={0.05} value={subtitleOpacity} onChange={(e) => {
+                    const v = Number(e.target.value);
+                    setSubtitleOpacity(v);
+                    if (isTauriRuntime()) invoke("subtitle_opacity", { opacity: v }).catch(() => {});
+                  }} style={{ width: 120 }} />
+                  <span>{subtitleOpacity.toFixed(2)}</span>
+                </div>
+                <div className="settings-row">
+                  <span>常に最前面</span>
+                  <input type="checkbox" checked={subtitleAlwaysOnTop} onChange={(e) => {
+                    setSubtitleAlwaysOnTop(e.target.checked);
+                    if (isTauriRuntime()) invoke("subtitle_topmost", { enabled: e.target.checked }).catch(() => {});
+                  }} />
+                </div>
+              </fieldset>
+              </>)}
+              {settingsCategory === "tts" && (<>
+              <fieldset>
+                <legend>音声読み上げ</legend>
+                <div className="settings-row">
+                  <span>モード</span>
+                  <select value={ttsMode} onChange={(e) => setTtsMode(e.target.value as TtsMode)}>
+                    <option value="off">OFF</option>
+                    <option value="sapi">SAPI (Windows標準)</option>
+                    <option value="bouyomi">棒読みちゃん</option>
+                    <option value="voicevox">VOICEVOX</option>
+                  </select>
+                </div>
+                <div className="settings-row">
+                  <span>自動読み上げ</span>
+                  <input type="checkbox" checked={ttsEnabled} onChange={(e) => setTtsEnabled(e.target.checked)} />
+                </div>
+                <div className="settings-row">
+                  <span>最大文字数 (0=無制限)</span>
+                  <input type="number" min={0} max={300} step={1} value={ttsMaxReadLength} onChange={(e) => setTtsMaxReadLength(Number(e.target.value))} style={{ width: 70 }} />
+                </div>
+                {ttsMode === "sapi" && (
+                  <>
+                    <div className="settings-row">
+                      <span>ボイス</span>
+                      <select value={sapiVoiceIndex} onChange={(e) => setSapiVoiceIndex(Number(e.target.value))}>
+                        {sapiVoices.map((v) => <option key={v.index} value={v.index}>{v.name}</option>)}
+                      </select>
+                      <button onClick={() => {
+                        if (isTauriRuntime()) invoke<{ index: number; name: string }[]>("sapi_list_voices").then(setSapiVoices).catch((e) => console.warn("sapi_list_voices:", e));
+                      }}>取得</button>
+                    </div>
+                    <div className="settings-row">
+                      <span>速度 (-10〜+10)</span>
+                      <input type="number" min={-10} max={10} value={sapiRate} onChange={(e) => setSapiRate(Number(e.target.value))} style={{ width: 60 }} />
+                    </div>
+                    <div className="settings-row">
+                      <span>音量 (0〜100)</span>
+                      <input type="number" min={0} max={100} value={sapiVolume} onChange={(e) => setSapiVolume(Number(e.target.value))} style={{ width: 60 }} />
+                    </div>
+                  </>
+                )}
+                {ttsMode === "bouyomi" && (
+                  <>
+                    <div className="settings-row">
+                      <span>RemoteTalk.exe パス</span>
+                      <input type="text" value={bouyomiPath} onChange={(e) => setBouyomiPath(e.target.value)} style={{ width: 160 }} placeholder="C:\...\RemoteTalk.exe" />
+                      <button onClick={() => {
+                        if (!isTauriRuntime()) return;
+                        invoke<string | null>("open_file_dialog", { filterName: "EXE ファイル", filterExt: "*.exe" })
+                          .then((p) => { if (p) setBouyomiPath(p); })
+                          .catch(() => {});
+                      }}>参照...</button>
+                    </div>
+                  </>
+                )}
+                {ttsMode === "voicevox" && (
+                  <>
+                    <div className="settings-row">
+                      <span>エンドポイント</span>
+                      <input type="text" value={voicevoxEndpoint} onChange={(e) => setVoicevoxEndpoint(e.target.value)} style={{ width: 200 }} />
+                    </div>
+                    <div className="settings-row">
+                      <span>スピーカー</span>
+                      <select value={voicevoxSpeakerId} onChange={(e) => setVoicevoxSpeakerId(Number(e.target.value))}>
+                        {voicevoxSpeakers.length === 0 && <option value={0}>未取得</option>}
+                        {voicevoxSpeakers.flatMap((s) => s.styles.map((st) => (
+                          <option key={st.id} value={st.id}>{s.name} - {st.name}</option>
+                        )))}
+                      </select>
+                      <button onClick={() => {
+                        if (isTauriRuntime()) invoke<{ name: string; styles: { name: string; id: number }[] }[]>("voicevox_get_speakers", { endpoint: voicevoxEndpoint }).then(setVoicevoxSpeakers).catch((e) => console.warn("voicevox_get_speakers:", e));
+                      }}>取得</button>
+                    </div>
+                    <div className="settings-row">
+                      <span>速度 (0.5〜2.0)</span>
+                      <input type="number" min={0.5} max={2.0} step={0.1} value={voicevoxSpeedScale} onChange={(e) => setVoicevoxSpeedScale(Number(e.target.value))} style={{ width: 60 }} />
+                    </div>
+                    <div className="settings-row">
+                      <span>ピッチ (-0.15〜+0.15)</span>
+                      <input type="number" min={-0.15} max={0.15} step={0.01} value={voicevoxPitchScale} onChange={(e) => setVoicevoxPitchScale(Number(e.target.value))} style={{ width: 60 }} />
+                    </div>
+                    <div className="settings-row">
+                      <span>抑揚 (0〜2.0)</span>
+                      <input type="number" min={0} max={2.0} step={0.1} value={voicevoxIntonationScale} onChange={(e) => setVoicevoxIntonationScale(Number(e.target.value))} style={{ width: 60 }} />
+                    </div>
+                    <div className="settings-row">
+                      <span>音量 (0〜2.0)</span>
+                      <input type="number" min={0} max={2.0} step={0.1} value={voicevoxVolumeScale} onChange={(e) => setVoicevoxVolumeScale(Number(e.target.value))} style={{ width: 60 }} />
+                    </div>
+                  </>
+                )}
+                <div className="settings-row">
+                  <button onClick={() => ttsSpeak("テスト読み上げです")}>テスト</button>
+                  <button onClick={() => ttsStop()}>停止</button>
+                </div>
+              </fieldset>
+              </>)}
+              {settingsCategory === "proxy" && (<>
+              <fieldset>
+                <legend>プロキシ</legend>
+                <label className="settings-row">
+                  <span>有効</span>
+                  <input type="checkbox" checked={proxyEnabled} onChange={(e) => setProxyEnabled(e.target.checked)} />
+                </label>
+                <label className="settings-row">
+                  <span>タイプ</span>
+                  <select value={proxyType} onChange={(e) => setProxyType(e.target.value as "http" | "socks5" | "socks4")}>
+                    <option value="http">HTTP</option>
+                    <option value="socks5">SOCKS5</option>
+                    <option value="socks4">SOCKS4</option>
+                  </select>
+                </label>
+                <label className="settings-row">
+                  <span>ホスト</span>
+                  <input type="text" value={proxyHost} onChange={(e) => setProxyHost(e.target.value)} placeholder="127.0.0.1" style={{ width: 160 }} />
+                </label>
+                <label className="settings-row">
+                  <span>ポート</span>
+                  <input type="text" value={proxyPort} onChange={(e) => setProxyPort(e.target.value)} placeholder="8080" style={{ width: 80 }} />
+                </label>
+                <label className="settings-row">
+                  <span>ユーザー名</span>
+                  <input type="text" value={proxyUsername} onChange={(e) => setProxyUsername(e.target.value)} style={{ width: 140 }} />
+                </label>
+                <label className="settings-row">
+                  <span>パスワード</span>
+                  <input type="password" value={proxyPassword} onChange={(e) => setProxyPassword(e.target.value)} style={{ width: 140 }} />
+                </label>
+                <div className="settings-row">
+                  <button onClick={() => {
+                    if (!isTauriRuntime()) return;
+                    invoke("save_proxy_settings", { settings: { enabled: proxyEnabled, proxyType, host: proxyHost, port: proxyPort, username: proxyUsername, password: proxyPassword } }).catch((e) => console.warn("save_proxy_settings:", e));
+                  }}>保存</button>
+                </div>
+              </fieldset>
+              </>)}
+              {settingsCategory === "highlights" && (<>
+              <fieldset>
+                <legend>ワードハイライト</legend>
+                <div className="settings-row" style={{ gap: 4, flexWrap: "wrap", marginBottom: 6 }}>
+                  <input
+                    type="text"
+                    placeholder="ワードを入力..."
+                    style={{ flex: 1, minWidth: 100 }}
+                    value={hlWordInput}
+                    onChange={(e) => setHlWordInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && hlWordInput.trim()) {
+                        const next = [...textHighlights.filter((h) => h.pattern !== hlWordInput.trim() || h.type !== "word"), { pattern: hlWordInput.trim(), color: hlWordColor, type: "word" as const }];
+                        persistTextHighlights(next);
+                        setHlWordInput("");
+                      }
+                    }}
+                  />
+                  <button onClick={() => {
+                    if (!hlWordInput.trim()) return;
+                    const next = [...textHighlights.filter((h) => h.pattern !== hlWordInput.trim() || h.type !== "word"), { pattern: hlWordInput.trim(), color: hlWordColor, type: "word" as const }];
+                    persistTextHighlights(next);
+                    setHlWordInput("");
+                  }}>追加</button>
+                </div>
+                <div className="settings-row" style={{ gap: 3, flexWrap: "wrap", marginBottom: 8 }}>
+                  {HIGHLIGHT_COLORS.map((c) => (
+                    <div key={c.color} title={c.name}
+                      style={{ width: 18, height: 18, background: c.color, border: hlWordColor === c.color ? "2px solid var(--fg)" : "1px solid #888", borderRadius: 2, cursor: "pointer", flexShrink: 0 }}
+                      onClick={() => setHlWordColor(c.color)}
+                    />
+                  ))}
+                </div>
+                {textHighlights.filter((h) => h.type === "word").length === 0 ? (
+                  <div style={{ color: "var(--sub)", fontSize: "0.85em" }}>登録なし</div>
+                ) : (
+                  <>
+                    {textHighlights.filter((h) => h.type === "word").map((h, i) => (
+                      <div key={i} className="settings-row" style={{ gap: 6 }}>
+                        <span style={{ width: 16, height: 16, display: "inline-block", background: h.color, border: "1px solid #888", borderRadius: 2, flexShrink: 0 }} />
+                        <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={h.pattern}>{h.pattern}</span>
+                        <button style={{ padding: "1px 6px" }} onClick={() => persistTextHighlights(textHighlights.filter((x) => x !== h))}>削除</button>
+                      </div>
+                    ))}
+                    <div className="settings-row" style={{ marginTop: 4 }}>
+                      <button onClick={() => persistTextHighlights(textHighlights.filter((h) => h.type !== "word"))}>全削除</button>
+                    </div>
+                  </>
+                )}
+              </fieldset>
+              <fieldset>
+                <legend>名前ハイライト</legend>
+                <div className="settings-row" style={{ gap: 4, flexWrap: "wrap", marginBottom: 6 }}>
+                  <input
+                    type="text"
+                    placeholder="名前を入力..."
+                    style={{ flex: 1, minWidth: 100 }}
+                    value={hlNameInput}
+                    onChange={(e) => setHlNameInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && hlNameInput.trim()) {
+                        const next = [...textHighlights.filter((h) => h.pattern !== hlNameInput.trim() || h.type !== "name"), { pattern: hlNameInput.trim(), color: hlNameColor, type: "name" as const }];
+                        persistTextHighlights(next);
+                        setHlNameInput("");
+                      }
+                    }}
+                  />
+                  <button onClick={() => {
+                    if (!hlNameInput.trim()) return;
+                    const next = [...textHighlights.filter((h) => h.pattern !== hlNameInput.trim() || h.type !== "name"), { pattern: hlNameInput.trim(), color: hlNameColor, type: "name" as const }];
+                    persistTextHighlights(next);
+                    setHlNameInput("");
+                  }}>追加</button>
+                </div>
+                <div className="settings-row" style={{ gap: 3, flexWrap: "wrap", marginBottom: 8 }}>
+                  {HIGHLIGHT_COLORS.map((c) => (
+                    <div key={c.color} title={c.name}
+                      style={{ width: 18, height: 18, background: c.color, border: hlNameColor === c.color ? "2px solid var(--fg)" : "1px solid #888", borderRadius: 2, cursor: "pointer", flexShrink: 0 }}
+                      onClick={() => setHlNameColor(c.color)}
+                    />
+                  ))}
+                </div>
+                {textHighlights.filter((h) => h.type === "name").length === 0 ? (
+                  <div style={{ color: "var(--sub)", fontSize: "0.85em" }}>登録なし</div>
+                ) : (
+                  <>
+                    {textHighlights.filter((h) => h.type === "name").map((h, i) => (
+                      <div key={i} className="settings-row" style={{ gap: 6 }}>
+                        <span style={{ width: 16, height: 16, display: "inline-block", background: h.color, border: "1px solid #888", borderRadius: 2, flexShrink: 0 }} />
+                        <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={h.pattern}>{h.pattern}</span>
+                        <button style={{ padding: "1px 6px" }} onClick={() => persistTextHighlights(textHighlights.filter((x) => x !== h))}>削除</button>
+                      </div>
+                    ))}
+                    <div className="settings-row" style={{ marginTop: 4 }}>
+                      <button onClick={() => persistTextHighlights(textHighlights.filter((h) => h.type !== "name"))}>全削除</button>
+                    </div>
+                  </>
+                )}
+              </fieldset>
+              <fieldset>
+                <legend>ID ハイライト（今日分）</legend>
+                <div className="settings-row" style={{ gap: 4, flexWrap: "wrap", marginBottom: 6 }}>
+                  <input
+                    type="text"
+                    placeholder="IDを入力..."
+                    style={{ flex: 1, minWidth: 100, fontFamily: "monospace" }}
+                    value={hlIdInput}
+                    onChange={(e) => setHlIdInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && hlIdInput.trim()) {
+                        persistIdHighlights({ ...idHighlights, [hlIdInput.trim()]: hlIdColor });
+                        setHlIdInput("");
+                      }
+                    }}
+                  />
+                  <button onClick={() => {
+                    if (!hlIdInput.trim()) return;
+                    persistIdHighlights({ ...idHighlights, [hlIdInput.trim()]: hlIdColor });
+                    setHlIdInput("");
+                  }}>追加</button>
+                </div>
+                <div className="settings-row" style={{ gap: 3, flexWrap: "wrap", marginBottom: 8 }}>
+                  {HIGHLIGHT_COLORS.map((c) => (
+                    <div key={c.color} title={c.name}
+                      style={{ width: 18, height: 18, background: c.color, border: hlIdColor === c.color ? "2px solid var(--fg)" : "1px solid #888", borderRadius: 2, cursor: "pointer", flexShrink: 0 }}
+                      onClick={() => setHlIdColor(c.color)}
+                    />
+                  ))}
+                </div>
+                {Object.keys(idHighlights).length === 0 ? (
+                  <div style={{ color: "var(--sub)", fontSize: "0.85em" }}>登録なし</div>
+                ) : (
+                  <>
+                    {Object.entries(idHighlights).map(([id, color]) => (
+                      <div key={id} className="settings-row" style={{ gap: 6 }}>
+                        <span style={{ width: 16, height: 16, display: "inline-block", background: color, border: "1px solid #888", borderRadius: 2, flexShrink: 0 }} />
+                        <span style={{ flex: 1, fontFamily: "monospace" }}>ID:{id}</span>
+                        <button style={{ padding: "1px 6px" }} onClick={() => { const next = { ...idHighlights }; delete next[id]; persistIdHighlights(next); }}>削除</button>
+                      </div>
+                    ))}
+                    <div className="settings-row" style={{ marginTop: 4 }}>
+                      <button onClick={() => persistIdHighlights({})}>全削除</button>
+                    </div>
+                  </>
+                )}
+              </fieldset>
+              </>)}
+              {settingsCategory === "ng" && (
+                <div className="settings-ng-inline">
+                  <div className="ng-panel-add">
+                    <select value={ngInputType} onChange={(e) => setNgInputType(e.target.value as "words" | "ids" | "names" | "regex")}>
+                      <option value="words">ワード</option>
+                      <option value="ids">ID</option>
+                      <option value="names">名前</option>
+                      <option value="regex">正規表現</option>
+                    </select>
+                    <input
+                      value={ngInput}
+                      onChange={(e) => setNgInput(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === "Enter") addNgFromInput(); }}
+                      placeholder={ngInputType === "regex" ? "正規表現パターンを入力" : ngInputType === "words" ? "NGワードを入力" : ngInputType === "ids" ? "NG IDを入力" : "NG名前を入力"}
+                    />
+                    <select value={ngAddMode} onChange={(e) => setNgAddMode(e.target.value as "hide" | "hide-images")} className="ng-mode-select">
+                      <option value="hide">非表示</option>
+                      <option value="hide-images">画像NG</option>
+                    </select>
+                    <select value={ngAddScope} onChange={(e) => setNgAddScope(e.target.value as "global" | "board" | "thread")} className="ng-mode-select">
+                      <option value="global">全体</option>
+                      <option value="board">この板</option>
+                      <option value="thread">このスレ</option>
+                    </select>
+                    <button onClick={() => addNgFromInput()}>追加</button>
+                  </div>
+                  <div className="ng-panel-lists">
+                    {(["words", "ids", "names"] as const).map((type) => (
+                      <div key={type} className="ng-list-section">
+                        <h4>{type === "words" ? "ワード" : type === "ids" ? "ID" : "名前"} ({ngFilters[type].length})</h4>
+                        {ngFilters[type].length === 0 ? (
+                          <span className="ng-empty">(なし)</span>
+                        ) : (
+                          <ul className="ng-list">
+                            {ngFilters[type].map((entry) => {
+                              const v = ngVal(entry); const mode = ngEntryMode(entry); const scope = ngEntryScope(entry);
+                              const isRegex = v.startsWith("/") && v.endsWith("/") && v.length > 2;
+                              return (
+                                <li key={v}>
+                                  <span className={`ng-mode-label ${mode === "hide-images" ? "ng-mode-img" : "ng-mode-hide"}`}>{mode === "hide-images" ? "画像" : "非表示"}</span>
+                                  {scope !== "global" && <span className="ng-mode-label" style={{ background: scope === "board" ? "#2a7a2a" : "#2a5a9a", color: "#fff" }}>{scope === "board" ? "板" : "スレ"}</span>}
+                                  {isRegex && <span className="ng-mode-label" style={{ background: "#6b4c9a", color: "#fff" }}>正規表現</span>}
+                                  <span>{v}</span>
+                                  <button className="ng-remove" onClick={() => removeNgEntry(type, v)}>×</button>
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {settingsCategory === "info" && (<>
               <fieldset>
                 <legend>情報</legend>
                 <div className="settings-row"><span>バージョン</span><span>{currentVersion}</span></div>
                 <div className="settings-row"><span>スモークテスト</span><span>67項目</span></div>
               </fieldset>
+              </>)}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {showExternalBoardDialog && (
+        <div className="lightbox-overlay" onClick={() => setShowExternalBoardDialog(false)}>
+          <div className="settings-panel" onClick={(e) => e.stopPropagation()} style={{ width: 360, padding: 16 }}>
+            <header className="settings-header">
+              <strong>外部板を追加</strong>
+              <button onClick={() => setShowExternalBoardDialog(false)}>閉じる</button>
+            </header>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8 }}>
+              <label>板URL
+                <input type="text" value={externalBoardUrl} onChange={(e) => setExternalBoardUrl(e.target.value)} placeholder="https://jbbs.shitaraba.net/internet/12345/" style={{ width: "100%", marginTop: 2 }} />
+              </label>
+              <label>板名
+                <input type="text" value={externalBoardName} onChange={(e) => setExternalBoardName(e.target.value)} placeholder="したらば実況板" style={{ width: "100%", marginTop: 2 }} />
+              </label>
+              <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
+                <button onClick={() => setShowExternalBoardDialog(false)}>キャンセル</button>
+                <button onClick={() => addExternalBoard(externalBoardUrl, externalBoardName)} disabled={!externalBoardUrl.trim() || !externalBoardName.trim()}>追加</button>
+              </div>
             </div>
           </div>
         </div>
@@ -5219,18 +6885,17 @@ export default function App() {
           }}
           style={{ width: "auto", transformOrigin: "left top", transform: "scale(1)" }}
         />
+        {isTauriRuntime() && (
+          <button
+            className="hover-preview-save"
+            onClick={(e) => {
+              e.stopPropagation();
+              const src = hoverPreviewSrcRef.current;
+              if (src) void saveImage(src);
+            }}
+          >保存</button>
+        )}
       </div>
-      {lightboxUrl && (
-        <div className="lightbox-overlay" onClick={() => setLightboxUrl(null)}>
-          <div className="lightbox-content" onClick={(e) => e.stopPropagation()}>
-            <img src={lightboxUrl} alt="" />
-            <div className="lightbox-actions">
-              <a href={lightboxUrl} target="_blank" rel="noopener" className="lightbox-open">新しいタブで開く</a>
-              <button onClick={() => setLightboxUrl(null)}>閉じる</button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

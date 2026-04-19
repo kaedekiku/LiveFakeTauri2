@@ -1,4 +1,4 @@
-name: Release (Linux)
+name: Release
 
 on:
   push:
@@ -6,6 +6,39 @@ on:
       - "v*"
 
 jobs:
+  build-windows-x64:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install desktop deps
+        run: npm ci
+        working-directory: apps/desktop
+
+      - name: Build Windows exe
+        working-directory: apps/desktop
+        run: npx tauri build --bundles none
+
+      - name: Package as ZIP
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path out
+          Compress-Archive -Path apps/desktop/src-tauri/target/release/livefake.exe -DestinationPath out/livefake-win-x64.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: out/livefake-win-x64.zip
+
   build-linux-x64:
     runs-on: ubuntu-22.04
     steps:
@@ -115,9 +148,9 @@ jobs:
       - name: Collect artifacts
         run: |
           mkdir -p out
-          cp target/release/bundle/appimage/*.AppImage out/ember-linux-amd64.AppImage
-          cp target/release/bundle/deb/*.deb out/ember-linux-amd64.deb
-          cp target/release/bundle/rpm/*.rpm out/ember-linux-amd64.rpm
+          cp target/release/bundle/appimage/*.AppImage out/livefake-linux-amd64.AppImage
+          cp target/release/bundle/deb/*.deb out/livefake-linux-amd64.deb
+          cp target/release/bundle/rpm/*.rpm out/livefake-linux-amd64.rpm
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -234,9 +267,9 @@ jobs:
       - name: Collect artifacts
         run: |
           mkdir -p out
-          cp target/release/bundle/appimage/*.AppImage out/ember-linux-aarch64.AppImage
-          cp target/release/bundle/deb/*.deb out/ember-linux-aarch64.deb
-          cp target/release/bundle/rpm/*.rpm out/ember-linux-aarch64.rpm
+          cp target/release/bundle/appimage/*.AppImage out/livefake-linux-aarch64.AppImage
+          cp target/release/bundle/deb/*.deb out/livefake-linux-aarch64.deb
+          cp target/release/bundle/rpm/*.rpm out/livefake-linux-aarch64.rpm
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -245,7 +278,7 @@ jobs:
           path: out/*
 
   attach-to-release:
-    needs: [build-linux-x64, build-linux-aarch64]
+    needs: [build-windows-x64, build-linux-x64, build-linux-aarch64]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -259,5 +292,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
+            artifacts/windows-x64/*
             artifacts/linux-x64/*
             artifacts/linux-aarch64/*

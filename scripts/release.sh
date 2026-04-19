@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ============================================================
-# Ember release script
+# LiveFake release script
 # Usage: scripts/release.sh <version> <release-notes>
 # Example:
 #   scripts/release.sh 0.0.50 "- サムネサイズ設定を追加
@@ -26,7 +26,7 @@ RELEASE_NOTES="$2"
 TAG="v${VERSION}"
 
 echo "============================================"
-echo " Ember Release ${TAG}"
+echo " LiveFake Release ${TAG}"
 echo "============================================"
 echo ""
 echo "Release notes:"
@@ -105,11 +105,11 @@ echo ""
 echo "[5/9] Create Windows ZIP"
 
 mkdir -p "$OUT_DIR"
-(cd "$ROOT_DIR/target/release" && powershell -Command "Compress-Archive -Path ember.exe -DestinationPath ember-win-x64.zip -Force")
-cp "$ROOT_DIR/target/release/ember-win-x64.zip" "$OUT_DIR/ember-win-x64.zip"
+(cd "$ROOT_DIR/target/release" && powershell -Command "Compress-Archive -Path LiveFake.exe -DestinationPath livefake-win-x64.zip -Force")
+cp "$ROOT_DIR/target/release/livefake-win-x64.zip" "$OUT_DIR/livefake-win-x64.zip"
 
-WIN_SHA256=$(sha256sum "$OUT_DIR/ember-win-x64.zip" | awk '{print $1}')
-WIN_SIZE=$(wc -c < "$OUT_DIR/ember-win-x64.zip" | tr -d ' ')
+WIN_SHA256=$(sha256sum "$OUT_DIR/livefake-win-x64.zip" | awk '{print $1}')
+WIN_SIZE=$(wc -c < "$OUT_DIR/livefake-win-x64.zip" | tr -d ' ')
 echo "  SHA256: ${WIN_SHA256}"
 echo "  Size:   ${WIN_SIZE}"
 
@@ -125,7 +125,7 @@ echo ""
 read -r -p "配置したらEnterを押してください..."
 
 # Verify Mac ZIP exists
-MAC_ZIP="$OUT_DIR/ember-mac-arm64.zip"
+MAC_ZIP="$OUT_DIR/livefake-mac-arm64.zip"
 if [[ ! -f "$MAC_ZIP" ]]; then
   echo "ERROR: $MAC_ZIP not found" >&2
   exit 1
@@ -149,7 +149,7 @@ python "$ROOT_DIR/scripts/prepare_release_metadata.py" \
   --version "$VERSION" \
   --released-at "$RELEASED_AT" \
   --download-page-url "$DOWNLOAD_URL" \
-  --windows-zip "$OUT_DIR/ember-win-x64.zip" \
+  --windows-zip "$OUT_DIR/livefake-win-x64.zip" \
   --mac-zip "$MAC_ZIP"
 
 git add "$LANDING_DIR/public/latest.json"
@@ -165,8 +165,8 @@ echo ""
 echo "[8/9] GitHub Release"
 
 gh release create "$TAG" \
-  "$OUT_DIR/ember-win-x64.zip" \
-  "$OUT_DIR/ember-mac-arm64.zip" \
+  "$OUT_DIR/livefake-win-x64.zip" \
+  "$OUT_DIR/livefake-mac-arm64.zip" \
   --title "$TAG" \
   --notes "## Changes
 ${RELEASE_NOTES}"
@@ -179,7 +179,7 @@ echo "  https://github.com/kiyohken2000/5ch-browser-template/releases/tag/${TAG}
 echo ""
 echo "[9/9] Cloudflare Pages deploy"
 
-(cd "$LANDING_DIR" && npx wrangler pages deploy public --project-name=ember-5ch 2>&1 | tail -2)
+(cd "$LANDING_DIR" && npx wrangler pages deploy public --project-name=livefake 2>&1 | tail -2)
 
 echo ""
 echo "============================================"

@@ -1,6 +1,6 @@
-# Ember — CLAUDE.md
+# LiveFake — CLAUDE.md
 
-5ch.io専用ブラウザ (Tauri v2 + Reactデスクトップアプリ)
+実況向け掲示板ブラウザ (Tauri v2 + Reactデスクトップアプリ)
 
 ## リポジトリ構成
 
@@ -22,7 +22,7 @@
 ### crate 依存関係
 
 ```
-Tauri App (ember)
+Tauri App (livefake)
 ├── core-auth   (認証: reqwest, thiserror)
 ├── core-fetch  (HTTP取得: reqwest, encoding_rs) → core-parse
 ├── core-store  (永続化: rusqlite, dirs)
@@ -107,7 +107,7 @@ cd apps/desktop && npx tsc --noEmit      # TypeScript型チェック
 - 新規npm依存の無断追加禁止
 - Cookie値 (`Be3M`, `Be3D`, `sid`) のDEBUG以上でのログ記録禁止
 - `App.tsx` の分割禁止 (明示的指示がない限り)
-- リリースビルドで `cargo build --release -p ember` を直接使用禁止 — 必ず `npx tauri build` を通すこと (フロントエンドが埋め込まれず白画面になる)
+- リリースビルドで `cargo build --release -p livefake` を直接使用禁止 — 必ず `npx tauri build` を通すこと (フロントエンドが埋め込まれず白画面になる)
 
 ## ドキュメント
 
@@ -123,3 +123,53 @@ cd apps/desktop && npx tsc --noEmit      # TypeScript型チェック
 
 - `scripts/release.sh <version> <release-notes>` — バージョン更新からデプロイまで一括実行（Mac版ビルド待ちで一時停止）
 - `/release` スキル — バージョン更新・検証・差分確認のみ（コミットやビルドは行わない）
+
+---
+
+## LiveFakeTauri2 固有ルール
+
+本プロジェクトは LiveFake (5ch-browser-template ベース) の、実況向け機能を追加したフォーク版である。
+
+### 必読ドキュメント
+
+- `REQUIREMENTS.md` — 全機能の要件定義書。実装前に必ず該当セクションを確認すること。
+
+### 追加対応サイト
+
+| サイト | エンコーディング | 備考 |
+|--------|----------------|------|
+| したらば (`jbbs.shitaraba.net`) | EUC-JP | HTML形式(DT/DDタグ) |
+| JPNKN (`bbs.jpnkn.com`) | Shift_JIS | dat形式 |
+
+### ライセンス制約
+
+- **GPL ライセンスのライブラリは使用禁止**（GPLv2 / GPLv3 / AGPL いずれも不可）
+- Rust crate 追加時は `cargo deny check licenses` で確認
+- npm パッケージ追加時は `npx license-checker --excludePrivatePackages --failOn "GPL-2.0;GPL-3.0;AGPL-3.0"` で確認
+  (`--excludePrivatePackages` は `"private": true` の livefake 自身を除外するために必要)
+
+### 設定ファイル方針
+
+- Portable 形式: 全設定ファイルは EXE 同梱フォルダに保存
+- 既存の localStorage 依存は段階的にファイルベース（INI/JSON）に移行
+- INI ファイル（`settings.ini`）: App / Speech / Proxy / Posting / Window セクション
+- JSON ファイル: ng-settings / id-highlights / text-highlights / cookies / board-catalog / thread-history
+
+### 新規 crate 追加時の規約
+
+- `crates/` 配下に作成し、Cargo.toml の workspace members に追加
+- 既存 crate の依存関係パターンに従う（core-parse は外部依存なし等）
+- エラー処理: ライブラリ crate は `thiserror` カスタム型
+
+### Windows 固有機能
+
+- SAPI（COM）: STA スレッドで実行すること
+- 棒読みちゃん: コマンドインジェクション対策必須（ヌルバイト除去・2000文字制限）
+
+### 実装優先順
+
+Phase 1: 基盤調整（自動更新間隔可変、自動スクロール、Portable設定）
+Phase 2: マルチサイト対応（したらば、JPNKN の閲覧・書き込み）
+Phase 3: 実況機能（新着ペイン、字幕ポップアップ、音声読み上げ）
+Phase 4: ハイライト・コンテキストメニュー（15色、トグル）
+Phase 5: インフラ（プロキシ、ImageViewURLReplace、Cookie管理）

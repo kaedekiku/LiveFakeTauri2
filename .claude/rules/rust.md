@@ -2,7 +2,7 @@
 globs: "**/*.rs"
 ---
 
-## Ember Rustコード規約
+## LiveFake Rustコード規約
 
 ### エラー処理
 - Tauri `#[tauri::command]` 関数は `Result<T, String>` を返すこと — Tauriのシリアライズ要件

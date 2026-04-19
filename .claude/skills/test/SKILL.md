@@ -4,7 +4,7 @@ description: プロジェクトのテストを実行する (Rust / スモーク 
 argument-hint: "[rust|smoke|e2e|landing|all]"  
 ---
 
-Emberプロジェクトのテストを実行する。  
+LiveFakeプロジェクトのテストを実行する。  
 引数でテスト種別を選択:  
 
 - `rust` — プロジェクトルートから `cargo test --workspace` を実行

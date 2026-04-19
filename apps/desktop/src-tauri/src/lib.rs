@@ -1,15 +1,37 @@
 ﻿use core_auth::{login_be_front, login_donguri, login_uplift, LoginOutcome};
+use core_proxy::{
+    protect_password, unprotect_password, update_proxy_settings,
+    CookiesFile, ProxySettings, ProxyType, UrlReplaceRule,
+    parse_url_replace_rules,
+};
 use core_fetch::{
-    build_cookie_client, create_thread, fetch_bbsmenu_json, fetch_post_form_tokens, fetch_subject_threads,
-    fetch_thread_responses, normalize_5ch_url, parse_confirm_submit_form, probe_post_cookie_scope, seed_cookie, submit_post_confirm,
-    submit_post_confirm_with_html, submit_post_finalize_from_confirm, CreateThreadResult, PostConfirmResult, PostCookieReport,
-    PostFinalizePreview, PostFormTokens, PostSubmitResult,
+    build_cookie_client, create_thread, create_shitaraba_thread, create_jpnkn_thread,
+    detect_site_type, is_allowed_url, fetch_bbsmenu_json, fetch_post_form_tokens,
+    fetch_subject_threads, fetch_thread_responses,
+    fetch_shitaraba_thread_list, fetch_shitaraba_responses, post_shitaraba_reply,
+    fetch_jpnkn_thread_list, fetch_jpnkn_responses, post_jpnkn_reply, post_5ch_reply,
+    normalize_5ch_url, parse_confirm_submit_form, probe_post_cookie_scope, seed_cookie,
+    submit_post_confirm, submit_post_confirm_with_html, submit_post_finalize_from_confirm,
+    CreateThreadResult, PostConfirmResult, PostCookieReport, PostFinalizePreview, PostFormTokens,
+    PostSubmitResult, SiteType,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::process::Command;
-use tauri::Manager;
+use tauri::{AppHandle, Emitter, Manager};
+use tauri::webview::WebviewWindowBuilder;
 use std::sync::Mutex;
+
+/// Multi-tab image data for the popup window.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PopupImageEntry {
+    id: String,
+    data_url: String,
+    source_url: String,
+    label: String,
+}
+struct ImagePopupState(Mutex<Vec<PopupImageEntry>>);
 
 /// (cookie_name, cookie_value, provider)
 static LOGIN_COOKIES: Mutex<Vec<(String, String, String)>> = Mutex::new(Vec::new());
@@ -143,16 +165,32 @@ struct FetchResponsesResult {
     title: Option<String>,
 }
 
+/// Fetch BBS menu JSON, save to `bbs-menu.json`, fall back to cache on error.
+async fn fetch_bbsmenu_cached() -> Result<serde_json::Value, String> {
+    let client = reqwest::Client::builder()
+        .user_agent("Monazilla/1.00 LiveFake/0.1")
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    match fetch_bbsmenu_json(&client).await {
+        Ok(menu) => {
+            let _ = core_store::save_json("bbs-menu.json", &menu);
+            Ok(menu)
+        }
+        Err(e) => {
+            // Fall back to cached version if available
+            core_store::load_json::<serde_json::Value>("bbs-menu.json")
+                .map_err(|_| format!("ネットワークエラー + キャッシュなし: {:?}", e))
+        }
+    }
+}
+
 #[tauri::command]
 async fn fetch_bbsmenu_summary() -> Result<MenuSummary, String> {
     core_store::init_portable_layout().map_err(|e| e.to_string())?;
 
-    let client = reqwest::Client::builder()
-        .user_agent("Monazilla/1.00 Ember/0.1")
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    let menu = fetch_bbsmenu_json(&client).await.map_err(|e| e.to_string())?;
+    let menu = fetch_bbsmenu_cached().await?;
 
     let top_level_keys = menu.as_object().map(|o| o.len()).unwrap_or(0);
     let normalized_sample = normalize_5ch_url("https://egg.5ch.net/test/read.cgi/software/1/");
@@ -202,7 +240,7 @@ async fn probe_auth_logins() -> Result<Vec<LoginOutcome>, String> {
 
 #[tauri::command]
 fn probe_post_cookie_scope_simulation() -> Result<PostCookieReport, String> {
-    let (_, jar) = build_cookie_client("Ember/0.1").map_err(|e| e.to_string())?;
+    let (_, jar) = build_cookie_client("LiveFake/0.1").map_err(|e| e.to_string())?;
 
     seed_cookie(&jar, "https://5ch.io/", "Be3M=dummy-be3m; Domain=.5ch.io; Path=/")
         .map_err(|e| e.to_string())?;
@@ -227,7 +265,8 @@ fn probe_post_cookie_scope_simulation() -> Result<PostCookieReport, String> {
 #[tauri::command]
 async fn probe_thread_post_form(thread_url: String) -> Result<PostFormTokens, String> {
     let client = reqwest::Client::builder()
-        .user_agent("Monazilla/1.00 Ember/0.1")
+        .user_agent("Monazilla/1.00 LiveFake/0.1")
+        .timeout(std::time::Duration::from_secs(10))
         .build()
         .map_err(|e| e.to_string())?;
     fetch_post_form_tokens(&client, &thread_url).await.map_err(|e| e.to_string())
@@ -235,18 +274,31 @@ async fn probe_thread_post_form(thread_url: String) -> Result<PostFormTokens, St
 
 #[tauri::command]
 async fn fetch_thread_list(thread_url: String, limit: Option<usize>) -> Result<Vec<ThreadListItem>, String> {
+    if !is_allowed_url(&thread_url) {
+        return Err(format!("URL not allowed: {}", thread_url));
+    }
     let _ = core_store::append_log(&format!("fetch_thread_list: {}", thread_url));
     let client = reqwest::Client::builder()
-        .user_agent("Monazilla/1.00 Ember/0.1")
+        .user_agent("Monazilla/1.00 LiveFake/0.1")
+        .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| e.to_string())?;
     let limit = limit.unwrap_or(usize::MAX);
-    let rows = fetch_subject_threads(&client, &thread_url, limit)
-        .await
-        .map_err(|e| {
-            let _ = core_store::append_log(&format!("fetch_thread_list error: {}", e));
-            e.to_string()
-        })?;
+    let site = detect_site_type(&thread_url);
+    let rows = match site {
+        Some(SiteType::Shitaraba) => {
+            fetch_shitaraba_thread_list(&client, &thread_url, limit).await
+        }
+        Some(SiteType::Jpnkn) => {
+            fetch_jpnkn_thread_list(&client, &thread_url, limit).await
+        }
+        _ => {
+            fetch_subject_threads(&client, &thread_url, limit).await
+        }
+    }.map_err(|e| {
+        let _ = core_store::append_log(&format!("fetch_thread_list error: {}", e));
+        e.to_string()
+    })?;
     let _ = core_store::append_log(&format!("fetch_thread_list ok: {} threads", rows.len()));
     Ok(rows
         .into_iter()
@@ -263,23 +315,39 @@ async fn fetch_thread_list(thread_url: String, limit: Option<usize>) -> Result<V
 async fn fetch_thread_responses_command(
     thread_url: String,
     limit: Option<usize>,
+    since_res_no: Option<u32>,
 ) -> Result<FetchResponsesResult, String> {
+    if !is_allowed_url(&thread_url) {
+        return Err(format!("URL not allowed: {}", thread_url));
+    }
     let _ = core_store::append_log(&format!("fetch_responses: {}", thread_url));
     let client = reqwest::Client::builder()
-        .user_agent("Monazilla/1.00 Ember/0.1")
+        .user_agent("Monazilla/1.00 LiveFake/0.1")
+        .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| e.to_string())?;
     let limit = limit.unwrap_or(usize::MAX);
-    let (rows, title) = fetch_thread_responses(&client, &thread_url, limit)
-        .await
-        .map_err(|e| {
-            let _ = core_store::append_log(&format!("fetch_responses error: {}", e));
-            e.to_string()
-        })?;
+    let site = detect_site_type(&thread_url);
+    let (rows, title) = match site {
+        Some(SiteType::Shitaraba) => {
+            fetch_shitaraba_responses(&client, &thread_url, limit).await
+        }
+        Some(SiteType::Jpnkn) => {
+            fetch_jpnkn_responses(&client, &thread_url, limit).await
+        }
+        _ => {
+            fetch_thread_responses(&client, &thread_url, limit).await
+        }
+    }.map_err(|e| {
+        let _ = core_store::append_log(&format!("fetch_responses error: {}", e));
+        e.to_string()
+    })?;
     let _ = core_store::append_log(&format!("fetch_responses ok: {} rows", rows.len()));
+    let since = since_res_no.unwrap_or(0);
     Ok(FetchResponsesResult {
         responses: rows
             .into_iter()
+            .filter(|r| r.response_no > since)
             .map(|r| ThreadResponseItem {
                 response_no: r.response_no,
                 name: r.name,
@@ -297,7 +365,8 @@ async fn debug_post_connectivity(thread_url: String) -> Result<String, String> {
     let mut report = String::new();
 
     let c = reqwest::Client::builder()
-        .user_agent("Monazilla/1.00 Ember/0.1")
+        .user_agent("Monazilla/1.00 LiveFake/0.1")
+        .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| format!("{:?}", e))?;
     let tokens = fetch_post_form_tokens(&c, &thread_url)
@@ -343,8 +412,9 @@ async fn debug_post_connectivity(thread_url: String) -> Result<String, String> {
     // Test 4: reqwest with danger_accept_invalid_certs
     {
         let c2 = reqwest::Client::builder()
-            .user_agent("Monazilla/1.00 Ember/0.1")
+            .user_agent("Monazilla/1.00 LiveFake/0.1")
             .danger_accept_invalid_certs(true)
+            .timeout(std::time::Duration::from_secs(30))
             .build()
             .map_err(|e| format!("{:?}", e))?;
         match c2.get(&tokens.post_url).send().await {
@@ -356,9 +426,10 @@ async fn debug_post_connectivity(thread_url: String) -> Result<String, String> {
     // Test 5: reqwest with TLS 1.2 only
     {
         let c3 = reqwest::Client::builder()
-            .user_agent("Monazilla/1.00 Ember/0.1")
+            .user_agent("Monazilla/1.00 LiveFake/0.1")
             .min_tls_version(reqwest::tls::Version::TLS_1_2)
             .max_tls_version(reqwest::tls::Version::TLS_1_2)
+            .timeout(std::time::Duration::from_secs(30))
             .build()
             .map_err(|e| format!("{:?}", e))?;
         match c3.get(&tokens.post_url).send().await {
@@ -373,7 +444,8 @@ async fn debug_post_connectivity(thread_url: String) -> Result<String, String> {
 #[tauri::command]
 async fn probe_post_confirm_empty(thread_url: String) -> Result<PostConfirmResult, String> {
     let client = reqwest::Client::builder()
-        .user_agent("Monazilla/1.00 Ember/0.1")
+        .user_agent("Monazilla/1.00 LiveFake/0.1")
+        .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| e.to_string())?;
     let tokens = fetch_post_form_tokens(&client, &thread_url)
@@ -393,7 +465,8 @@ async fn probe_post_confirm(
     message: Option<String>,
 ) -> Result<PostConfirmResult, String> {
     let client = reqwest::Client::builder()
-        .user_agent("Monazilla/1.00 Ember/0.1")
+        .user_agent("Monazilla/1.00 LiveFake/0.1")
+        .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| e.to_string())?;
     let tokens = fetch_post_form_tokens(&client, &thread_url)
@@ -415,7 +488,8 @@ async fn probe_post_confirm(
 #[tauri::command]
 async fn probe_post_finalize_preview(thread_url: String) -> Result<PostFinalizePreview, String> {
     let client = reqwest::Client::builder()
-        .user_agent("Monazilla/1.00 Ember/0.1")
+        .user_agent("Monazilla/1.00 LiveFake/0.1")
+        .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| e.to_string())?;
     let tokens = fetch_post_form_tokens(&client, &thread_url)
@@ -436,7 +510,8 @@ async fn probe_post_finalize_preview_from_input(
     message: Option<String>,
 ) -> Result<PostFinalizePreview, String> {
     let client = reqwest::Client::builder()
-        .user_agent("Monazilla/1.00 Ember/0.1")
+        .user_agent("Monazilla/1.00 LiveFake/0.1")
+        .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| e.to_string())?;
     let tokens = fetch_post_form_tokens(&client, &thread_url)
@@ -465,7 +540,8 @@ async fn probe_post_finalize_submit_empty(
         return Err("blocked: set allow_real_submit=true to execute final submit".to_string());
     }
     let client = reqwest::Client::builder()
-        .user_agent("Monazilla/1.00 Ember/0.1")
+        .user_agent("Monazilla/1.00 LiveFake/0.1")
+        .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| e.to_string())?;
     let tokens = fetch_post_form_tokens(&client, &thread_url)
@@ -492,7 +568,8 @@ async fn probe_post_finalize_submit_from_input(
         return Err("blocked: set allow_real_submit=true to execute final submit".to_string());
     }
     let client = reqwest::Client::builder()
-        .user_agent("Monazilla/1.00 Ember/0.1")
+        .user_agent("Monazilla/1.00 LiveFake/0.1")
+        .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| e.to_string())?;
     let tokens = fetch_post_form_tokens(&client, &thread_url)
@@ -515,6 +592,72 @@ async fn probe_post_finalize_submit_from_input(
 }
 
 #[tauri::command]
+async fn post_reply_multisite(
+    thread_url: String,
+    from: Option<String>,
+    mail: Option<String>,
+    message: String,
+) -> Result<String, String> {
+    if !is_allowed_url(&thread_url) {
+        return Err(format!("URL not allowed: {}", thread_url));
+    }
+    let site = detect_site_type(&thread_url);
+    match site {
+        Some(SiteType::Shitaraba) => {
+            let client = reqwest::Client::builder()
+                .user_agent("Monazilla/1.00 LiveFake/0.1")
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .map_err(|e| e.to_string())?;
+            let result = post_shitaraba_reply(
+                &client,
+                &thread_url,
+                from.as_deref().unwrap_or(""),
+                mail.as_deref().unwrap_or(""),
+                &message,
+            )
+            .await
+            .map_err(|e| format!("{:?}", e))?;
+            Ok(format!("status={}", result.status))
+        }
+        Some(SiteType::Jpnkn) => {
+            let client = reqwest::Client::builder()
+                .user_agent("Monazilla/1.00 LiveFake/0.1")
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .map_err(|e| e.to_string())?;
+            let result = post_jpnkn_reply(
+                &client,
+                &thread_url,
+                from.as_deref().unwrap_or(""),
+                mail.as_deref().unwrap_or(""),
+                &message,
+            )
+            .await
+            .map_err(|e| format!("{:?}", e))?;
+            Ok(format!("status={}", result.status))
+        }
+        _ => {
+            // 5ch: direct curl-based post (avoids reqwest/curl session mismatch)
+            let ch = get_login_cookie_header();
+            let result = post_5ch_reply(
+                &thread_url,
+                from.as_deref().unwrap_or(""),
+                mail.as_deref().unwrap_or(""),
+                &message,
+                ch.as_deref(),
+            )
+            .map_err(|e| format!("{:?}", e))?;
+            if result.contains_error {
+                Err(format!("Post failed: status={} body={}", result.status, &result.body_preview[..result.body_preview.len().min(300)]))
+            } else {
+                Ok(format!("status={}", result.status))
+            }
+        }
+    }
+}
+
+#[tauri::command]
 async fn create_thread_command(
     board_url: String,
     subject: String,
@@ -522,20 +665,48 @@ async fn create_thread_command(
     mail: Option<String>,
     message: String,
 ) -> Result<CreateThreadResult, String> {
-    let cookie_header = get_login_cookie_header();
-    tauri::async_runtime::spawn_blocking(move || {
-        create_thread(
-            &board_url,
-            &subject,
-            from.as_deref().unwrap_or(""),
-            mail.as_deref().unwrap_or(""),
-            &message,
-            cookie_header.as_deref(),
-        )
-        .map_err(|e| format!("{:?}", e))
-    })
-    .await
-    .map_err(|e| format!("task join: {}", e))?
+    if !is_allowed_url(&board_url) {
+        return Err(format!("URL not allowed: {}", board_url));
+    }
+    let from_str = from.unwrap_or_default();
+    let mail_str = mail.unwrap_or_default();
+
+    match detect_site_type(&board_url) {
+        Some(SiteType::Shitaraba) => {
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .map_err(|e| e.to_string())?;
+            create_shitaraba_thread(&client, &board_url, &subject, &from_str, &mail_str, &message)
+                .await
+                .map_err(|e| format!("{:?}", e))
+        }
+        Some(SiteType::Jpnkn) => {
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .map_err(|e| e.to_string())?;
+            create_jpnkn_thread(&client, &board_url, &subject, &from_str, &mail_str, &message)
+                .await
+                .map_err(|e| format!("{:?}", e))
+        }
+        _ => {
+            let cookie_header = get_login_cookie_header();
+            tauri::async_runtime::spawn_blocking(move || {
+                create_thread(
+                    &board_url,
+                    &subject,
+                    &from_str,
+                    &mail_str,
+                    &message,
+                    cookie_header.as_deref(),
+                )
+                .map_err(|e| format!("{:?}", e))
+            })
+            .await
+            .map_err(|e| format!("task join: {}", e))?
+        }
+    }
 }
 
 #[tauri::command]
@@ -549,7 +720,8 @@ async fn probe_post_flow_trace(
     include_uplift: Option<bool>,
 ) -> Result<PostFlowTrace, String> {
     let client = reqwest::Client::builder()
-        .user_agent("Monazilla/1.00 Ember/0.1")
+        .user_agent("Monazilla/1.00 LiveFake/0.1")
+        .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| e.to_string())?;
 
@@ -707,7 +879,8 @@ async fn check_for_updates(
     let current_version = current_version.unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
 
     let client = reqwest::Client::builder()
-        .user_agent("Monazilla/1.00 Ember/0.1")
+        .user_agent("Monazilla/1.00 LiveFake/0.1")
+        .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| e.to_string())?;
 
@@ -750,6 +923,178 @@ async fn check_for_updates(
     })
 }
 
+/// Open a native file-open dialog and return the selected path, or None if cancelled.
+/// `filter_name` e.g. "EXE files", `filter_ext` e.g. "*.exe"
+#[tauri::command]
+fn open_file_dialog(filter_name: String, filter_ext: String) -> Result<Option<String>, String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::ffi::OsStringExt;
+        #[repr(C)]
+        #[allow(non_snake_case)]
+        struct OPENFILENAMEW {
+            lStructSize: u32,
+            hwndOwner: usize,
+            hInstance: usize,
+            lpstrFilter: *const u16,
+            lpstrCustomFilter: *mut u16,
+            nMaxCustFilter: u32,
+            nFilterIndex: u32,
+            lpstrFile: *mut u16,
+            nMaxFile: u32,
+            lpstrFileTitle: *mut u16,
+            nMaxFileTitle: u32,
+            lpstrInitialDir: *const u16,
+            lpstrTitle: *const u16,
+            Flags: u32,
+            nFileOffset: u16,
+            nFileExtension: u16,
+            lpstrDefExt: *const u16,
+            lCustData: usize,
+            lpfnHook: usize,
+            lpTemplateName: *const u16,
+            pvReserved: usize,
+            dwReserved: u32,
+            FlagsEx: u32,
+        }
+        extern "system" {
+            fn GetOpenFileNameW(lpofn: *mut OPENFILENAMEW) -> i32;
+        }
+        let to_wide = |s: &str| -> Vec<u16> {
+            s.encode_utf16().chain(std::iter::once(0)).collect()
+        };
+        // Build filter: "FilterName\0*.ext\0\0"
+        let filter_str = format!("{}\0{}\0", filter_name, filter_ext);
+        let filter_wide: Vec<u16> = filter_str.encode_utf16().chain(std::iter::once(0)).collect();
+        let title_wide = to_wide("ファイルを選択");
+        let mut file_buf: Vec<u16> = vec![0u16; 512];
+        let mut ofn: OPENFILENAMEW = unsafe { std::mem::zeroed() };
+        ofn.lStructSize = std::mem::size_of::<OPENFILENAMEW>() as u32;
+        ofn.lpstrFilter = filter_wide.as_ptr();
+        ofn.lpstrFile = file_buf.as_mut_ptr();
+        ofn.nMaxFile = file_buf.len() as u32;
+        ofn.lpstrTitle = title_wide.as_ptr();
+        ofn.Flags = 0x00000800 | 0x00001000; // OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST
+        let result = unsafe { GetOpenFileNameW(&mut ofn) };
+        if result == 0 {
+            return Ok(None);
+        }
+        let len = file_buf.iter().position(|&c| c == 0).unwrap_or(file_buf.len());
+        let path = std::ffi::OsString::from_wide(&file_buf[..len])
+            .to_string_lossy()
+            .to_string();
+        if path.is_empty() { return Ok(None); }
+        return Ok(Some(path));
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (filter_name, filter_ext);
+        Ok(None)
+    }
+}
+
+/// Open a native folder-select dialog and return the selected path, or None if cancelled.
+#[tauri::command]
+fn open_folder_dialog() -> Result<Option<String>, String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::ffi::OsStringExt;
+        #[repr(C)]
+        #[allow(non_snake_case)]
+        struct BROWSEINFOW {
+            hwndOwner: usize,
+            pidlRoot: usize,
+            pszDisplayName: *mut u16,
+            lpszTitle: *const u16,
+            ulFlags: u32,
+            lpfn: usize,
+            lParam: usize,
+            iImage: i32,
+        }
+        extern "system" {
+            fn SHBrowseForFolderW(lpbi: *mut BROWSEINFOW) -> usize;
+            fn SHGetPathFromIDListW(pidl: usize, pszPath: *mut u16) -> i32;
+            fn CoTaskMemFree(pv: usize);
+        }
+        let title_wide: Vec<u16> = "保存先フォルダを選択".encode_utf16().chain(std::iter::once(0)).collect();
+        let mut display_name: Vec<u16> = vec![0u16; 260];
+        let mut bi: BROWSEINFOW = unsafe { std::mem::zeroed() };
+        bi.pszDisplayName = display_name.as_mut_ptr();
+        bi.lpszTitle = title_wide.as_ptr();
+        bi.ulFlags = 0x00000040 | 0x00000010; // BIF_NEWDIALOGSTYLE | BIF_EDITBOX
+        let pidl = unsafe { SHBrowseForFolderW(&mut bi) };
+        if pidl == 0 {
+            return Ok(None);
+        }
+        let mut path_buf: Vec<u16> = vec![0u16; 520];
+        let ok = unsafe { SHGetPathFromIDListW(pidl, path_buf.as_mut_ptr()) };
+        unsafe { CoTaskMemFree(pidl); }
+        if ok == 0 {
+            return Ok(None);
+        }
+        let len = path_buf.iter().position(|&c| c == 0).unwrap_or(path_buf.len());
+        let path = std::ffi::OsString::from_wide(&path_buf[..len])
+            .to_string_lossy()
+            .to_string();
+        if path.is_empty() { return Ok(None); }
+        return Ok(Some(path));
+    }
+    #[cfg(not(target_os = "windows"))]
+    Ok(None)
+}
+
+/// Download an image from `url` and save it into `folder`.
+/// Returns the full path of the saved file.
+#[tauri::command]
+async fn save_image_to_folder(url: String, folder: String) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    // Determine extension from URL or Content-Type
+    let ext = {
+        let from_url = url.split('?').next().unwrap_or(&url)
+            .rsplit('.').next().unwrap_or("").to_lowercase();
+        if matches!(from_url.as_str(), "jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp") {
+            from_url
+        } else {
+            let ct = resp.headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            if ct.contains("png") { "png".to_string() }
+            else if ct.contains("gif") { "gif".to_string() }
+            else if ct.contains("webp") { "webp".to_string() }
+            else { "jpg".to_string() }
+        }
+    };
+    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+    // Derive filename from URL path, fallback to timestamp
+    let filename_base = url.split('?').next().unwrap_or(&url)
+        .rsplit('/').next().unwrap_or("")
+        .split('.').next().unwrap_or("");
+    let filename = if filename_base.is_empty() {
+        let ts = chrono::Local::now().format("image_%Y%m%d_%H%M%S").to_string();
+        format!("{}.{}", ts, ext)
+    } else {
+        format!("{}.{}", filename_base, ext)
+    };
+    let dest = std::path::PathBuf::from(&folder).join(&filename);
+    std::fs::write(&dest, &bytes).map_err(|e| e.to_string())?;
+    Ok(dest.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+fn get_data_dir() -> Result<String, String> {
+    core_store::portable_data_dir()
+        .map(|p| p.to_string_lossy().into_owned())
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn open_external_url(url: String) -> Result<(), String> {
     #[cfg(target_os = "windows")]
@@ -785,12 +1130,7 @@ fn open_external_url(url: String) -> Result<(), String> {
 
 #[tauri::command]
 async fn fetch_board_categories() -> Result<Vec<BoardCategory>, String> {
-    let client = reqwest::Client::builder()
-        .user_agent("Monazilla/1.00 Ember/0.1")
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    let menu = fetch_bbsmenu_json(&client).await.map_err(|e| e.to_string())?;
+    let menu = fetch_bbsmenu_cached().await?;
 
     // bbsmenu.json structure: { "menu_list": [ { "category_name": "...", "category_content": [...] } ] }
     let menu_list = menu
@@ -865,15 +1205,86 @@ struct FavoritesData {
 
 #[tauri::command]
 fn load_favorites() -> Result<FavoritesData, String> {
-    match core_store::load_json::<FavoritesData>("favorites.json") {
-        Ok(data) => Ok(data),
-        Err(_) => Ok(FavoritesData::default()),
+    // Try new name first, fall back to old name and migrate
+    if let Ok(data) = core_store::load_json::<FavoritesData>("board-catalog.json") {
+        return Ok(data);
     }
+    if let Ok(data) = core_store::load_json::<FavoritesData>("favorites.json") {
+        // Migrate: save under new name, keep old file for safety
+        let _ = core_store::save_json("board-catalog.json", &data);
+        return Ok(data);
+    }
+    Ok(FavoritesData::default())
 }
 
 #[tauri::command]
 fn save_favorites(favorites: FavoritesData) -> Result<(), String> {
-    core_store::save_json("favorites.json", &favorites).map_err(|e| e.to_string())
+    core_store::save_json("board-catalog.json", &favorites).map_err(|e| e.to_string())
+}
+
+// --- External boards persistence ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExternalBoard {
+    board_name: String,
+    url: String,
+}
+
+#[tauri::command]
+fn load_external_boards() -> Result<Vec<ExternalBoard>, String> {
+    match core_store::load_json::<Vec<ExternalBoard>>("external-boards.json") {
+        Ok(data) => Ok(data),
+        Err(_) => Ok(vec![]),
+    }
+}
+
+#[tauri::command]
+fn save_external_boards(boards: Vec<ExternalBoard>) -> Result<(), String> {
+    core_store::save_json("external-boards.json", &boards).map_err(|e| e.to_string())
+}
+
+// --- Generic JSON persistence (for localStorage migration) ---
+
+/// Save arbitrary JSON data to a named file in the data directory.
+/// Allowed filenames are restricted to prevent path traversal.
+#[tauri::command]
+fn save_generic_json(filename: String, data: serde_json::Value) -> Result<(), String> {
+    const ALLOWED: &[&str] = &[
+        "bookmarks.json",
+        "scroll-positions.json",
+        "name-history.json",
+        "my-posts.json",
+        "search-history.json",
+        "thread-fetch-times.json",
+        "expanded-categories.json",
+        "ui-state.json",
+    ];
+    if !ALLOWED.contains(&filename.as_str()) {
+        return Err(format!("Filename not allowed: {}", filename));
+    }
+    core_store::save_json(&filename, &data).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn load_generic_json(filename: String) -> Result<serde_json::Value, String> {
+    const ALLOWED: &[&str] = &[
+        "bookmarks.json",
+        "scroll-positions.json",
+        "name-history.json",
+        "my-posts.json",
+        "search-history.json",
+        "thread-fetch-times.json",
+        "expanded-categories.json",
+        "ui-state.json",
+    ];
+    if !ALLOWED.contains(&filename.as_str()) {
+        return Err(format!("Filename not allowed: {}", filename));
+    }
+    match core_store::load_json::<serde_json::Value>(&filename) {
+        Ok(data) => Ok(data),
+        Err(_) => Ok(serde_json::Value::Null),
+    }
 }
 
 // --- NG filter persistence ---
@@ -899,15 +1310,21 @@ struct NgFilters {
 
 #[tauri::command]
 fn load_ng_filters() -> Result<NgFilters, String> {
-    match core_store::load_json::<NgFilters>("ng_filters.json") {
-        Ok(data) => Ok(data),
-        Err(_) => Ok(NgFilters::default()),
+    // Try new name first, fall back to old name and migrate
+    if let Ok(data) = core_store::load_json::<NgFilters>("ng-settings.json") {
+        return Ok(data);
     }
+    if let Ok(data) = core_store::load_json::<NgFilters>("ng_filters.json") {
+        // Migrate: save under new name, keep old file for safety
+        let _ = core_store::save_json("ng-settings.json", &data);
+        return Ok(data);
+    }
+    Ok(NgFilters::default())
 }
 
 #[tauri::command]
 fn save_ng_filters(filters: NgFilters) -> Result<(), String> {
-    core_store::save_json("ng_filters.json", &filters).map_err(|e| e.to_string())
+    core_store::save_json("ng-settings.json", &filters).map_err(|e| e.to_string())
 }
 
 // --- Read status persistence ---
@@ -926,6 +1343,66 @@ fn load_read_status() -> Result<ReadStatusMap, String> {
 #[tauri::command]
 fn save_read_status(status: ReadStatusMap) -> Result<(), String> {
     core_store::save_json("read_status.json", &status).map_err(|e| e.to_string())
+}
+
+// --- Thread history (thread-history.json) ---
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ThreadHistoryEntry {
+    last_read_no: u32,
+    visited_at: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    custom_title: Option<String>,
+}
+
+/// Map of board_url -> { thread_key -> ThreadHistoryEntry }
+type ThreadHistoryMap = HashMap<String, HashMap<String, ThreadHistoryEntry>>;
+
+#[tauri::command]
+fn load_thread_history() -> Result<ThreadHistoryMap, String> {
+    match core_store::load_json::<ThreadHistoryMap>("thread-history.json") {
+        Ok(data) => Ok(data),
+        Err(_) => {
+            // Migrate from read_status.json if thread-history.json doesn't exist
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let old = core_store::load_json::<ReadStatusMap>("read_status.json")
+                .unwrap_or_default();
+            let migrated: ThreadHistoryMap = old
+                .into_iter()
+                .map(|(board, threads)| {
+                    let entries = threads
+                        .into_iter()
+                        .map(|(key, no)| {
+                            (key, ThreadHistoryEntry { last_read_no: no, visited_at: now, custom_title: None })
+                        })
+                        .collect();
+                    (board, entries)
+                })
+                .collect();
+            Ok(migrated)
+        }
+    }
+}
+
+#[tauri::command]
+fn save_thread_history(history: ThreadHistoryMap) -> Result<(), String> {
+    core_store::save_json("thread-history.json", &history).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_thread_custom_title(board_url: String, thread_key: String, title: Option<String>) -> Result<(), String> {
+    let mut history = load_thread_history()?;
+    let entry = history
+        .entry(board_url)
+        .or_default()
+        .entry(thread_key)
+        .or_default();
+    entry.custom_title = title;
+    core_store::save_json("thread-history.json", &history).map_err(|e| e.to_string())
 }
 
 // --- Auth config persistence ---
@@ -955,8 +1432,54 @@ fn save_auth_config(config: AuthConfig) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn load_app_settings() -> Result<HashMap<String, String>, String> {
+    core_store::load_settings_ini().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn save_app_settings(settings: HashMap<String, String>) -> Result<(), String> {
+    core_store::save_settings_ini(&settings).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn write_event_log(level: String, message: String) -> Result<(), String> {
+    let lvl = match level.to_uppercase().as_str() {
+        "WARN" => "WARN",
+        "ERROR" => "ERROR",
+        _ => "INFO",
+    };
+    core_store::append_log_level(lvl, &message).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn save_layout_prefs(prefs: String) -> Result<(), String> {
     core_store::save_json("layout_prefs.json", &prefs).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn save_session_tabs(data: String) -> Result<(), String> {
+    core_store::save_json("session_tabs.json", &data).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn load_session_tabs() -> Result<String, String> {
+    match core_store::load_json::<String>("session_tabs.json") {
+        Ok(data) => Ok(data),
+        Err(_) => Ok(String::new()),
+    }
+}
+
+#[tauri::command]
+fn save_session_board_tabs(data: String) -> Result<(), String> {
+    core_store::save_json("session_board_tabs.json", &data).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn load_session_board_tabs() -> Result<String, String> {
+    match core_store::load_json::<String>("session_board_tabs.json") {
+        Ok(data) => Ok(data),
+        Err(_) => Ok(String::new()),
+    }
 }
 
 #[tauri::command]
@@ -1110,20 +1633,34 @@ fn clear_login_cookies(provider: String) -> Result<(), String> {
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct WindowSize {
+struct WindowState {
     width: f64,
     height: f64,
+    #[serde(default)]
+    x: Option<i32>,
+    #[serde(default)]
+    y: Option<i32>,
+    #[serde(default)]
+    maximized: Option<bool>,
 }
 
 #[tauri::command]
-fn save_window_size(width: f64, height: f64) -> Result<(), String> {
-    let size = WindowSize { width, height };
-    core_store::save_json("window_size.json", &size).map_err(|e| e.to_string())
+fn save_window_size(window: tauri::WebviewWindow, width: f64, height: f64) -> Result<(), String> {
+    let maximized = window.is_maximized().ok();
+    let pos = window.outer_position().ok();
+    let state = WindowState {
+        width,
+        height,
+        x: pos.as_ref().map(|p| p.x),
+        y: pos.as_ref().map(|p| p.y),
+        maximized,
+    };
+    core_store::save_json("window_size.json", &state).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn load_window_size() -> Result<Option<WindowSize>, String> {
-    match core_store::load_json::<WindowSize>("window_size.json") {
+fn load_window_size() -> Result<Option<WindowState>, String> {
+    match core_store::load_json::<WindowState>("window_size.json") {
         Ok(data) => Ok(Some(data)),
         Err(_) => Ok(None),
     }
@@ -1229,6 +1766,401 @@ fn save_upload_history(history: UploadHistory) -> Result<(), String> {
     core_store::save_json("upload_history.json", &history).map_err(|e| e.to_string())
 }
 
+// ===== Highlight Commands =====
+
+#[tauri::command]
+fn load_id_highlights() -> Result<serde_json::Value, String> {
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let data = core_store::load_json::<serde_json::Value>("id-highlights.json")
+        .unwrap_or_else(|_| serde_json::json!({ "date": "", "highlights": {} }));
+    // Purge highlights if date has changed
+    let stored_date = data.get("date").and_then(|v| v.as_str()).unwrap_or("");
+    if stored_date != today {
+        let fresh = serde_json::json!({ "date": today, "highlights": {} });
+        let _ = core_store::save_json("id-highlights.json", &fresh);
+        return Ok(fresh);
+    }
+    Ok(data)
+}
+
+#[tauri::command]
+fn save_id_highlights(data: serde_json::Value) -> Result<(), String> {
+    core_store::save_json("id-highlights.json", &data).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn load_text_highlights() -> Result<serde_json::Value, String> {
+    core_store::load_json::<serde_json::Value>("text-highlights.json")
+        .map_err(|e| e.to_string())
+        .or_else(|_| Ok(serde_json::json!([])))
+}
+
+#[tauri::command]
+fn save_text_highlights(data: serde_json::Value) -> Result<(), String> {
+    core_store::save_json("text-highlights.json", &data).map_err(|e| e.to_string())
+}
+
+// ===== Proxy Commands =====
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProxySettingsPayload {
+    enabled: bool,
+    proxy_type: String,
+    host: String,
+    port: String,
+    username: String,
+    password: String,
+}
+
+#[tauri::command]
+fn load_proxy_settings() -> Result<ProxySettingsPayload, String> {
+    let map = core_store::load_settings_ini().unwrap_or_default();
+    let enabled = map.get("Proxy.ProxyEnabled").map(|v| v == "true").unwrap_or(false);
+    let proxy_type = map.get("Proxy.ProxyType").cloned().unwrap_or_else(|| "http".into());
+    let host = map.get("Proxy.ProxyHost").cloned().unwrap_or_default();
+    let port = map.get("Proxy.ProxyPort").cloned().unwrap_or_default();
+    let username = map.get("Proxy.ProxyUsername").cloned().unwrap_or_default();
+    let stored_pw = map.get("Proxy.ProxyPassword").cloned().unwrap_or_default();
+    let password = unprotect_password(&stored_pw);
+    Ok(ProxySettingsPayload { enabled, proxy_type, host, port, username, password })
+}
+
+#[tauri::command]
+fn save_proxy_settings(settings: ProxySettingsPayload) -> Result<(), String> {
+    let encrypted_pw = protect_password(&settings.password);
+    let mut updates = HashMap::new();
+    updates.insert("Proxy.ProxyEnabled".to_string(), settings.enabled.to_string());
+    updates.insert("Proxy.ProxyType".to_string(), settings.proxy_type.clone());
+    updates.insert("Proxy.ProxyHost".to_string(), settings.host.clone());
+    updates.insert("Proxy.ProxyPort".to_string(), settings.port.clone());
+    updates.insert("Proxy.ProxyUsername".to_string(), settings.username.clone());
+    updates.insert("Proxy.ProxyPassword".to_string(), encrypted_pw);
+    core_store::save_settings_ini(&updates).map_err(|e| e.to_string())?;
+
+    // Push new settings into global proxy state so next build_client picks it up
+    update_proxy_settings(ProxySettings {
+        enabled: settings.enabled,
+        proxy_type: ProxyType::from_str(&settings.proxy_type),
+        host: settings.host,
+        port: settings.port,
+        username: settings.username,
+        password: settings.password,
+    });
+    Ok(())
+}
+
+// ===== ImageViewURLReplace Commands =====
+
+const DEFAULT_IMAGE_URL_RULES: &str = "\
+# Twitter/X 画像URL正規化
+^https?://pbs\\.twimg\\.com/media/([^?]+)\\?format=(\\w+)&name=.*\thttps://pbs.twimg.com/media/$1?format=$2&name=orig
+^https?://pbs\\.twimg\\.com/media/([^?:]+)(?::(\\w+))?$\thttps://pbs.twimg.com/media/$1?format=jpg&name=orig
+
+# ニコニコ動画サムネイル
+^https?://(?:www\\.)?nicovideo\\.jp/watch/sm(\\d+)\thttps://nicovideo.cdn.nimg.jp/thumbnails/$1/$1
+";
+
+#[tauri::command]
+fn load_image_url_replace() -> Result<Vec<UrlReplaceRule>, String> {
+    let path = core_store::portable_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("ImageViewURLReplace.txt");
+    let content = if path.exists() {
+        std::fs::read_to_string(&path).map_err(|e| e.to_string())?
+    } else {
+        std::fs::write(&path, DEFAULT_IMAGE_URL_RULES).map_err(|e| e.to_string())?;
+        DEFAULT_IMAGE_URL_RULES.to_string()
+    };
+    Ok(parse_url_replace_rules(&content))
+}
+
+#[tauri::command]
+fn reset_image_url_replace() -> Result<Vec<UrlReplaceRule>, String> {
+    let path = core_store::portable_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("ImageViewURLReplace.txt");
+    std::fs::write(&path, DEFAULT_IMAGE_URL_RULES).map_err(|e| e.to_string())?;
+    Ok(parse_url_replace_rules(DEFAULT_IMAGE_URL_RULES))
+}
+
+// ===== Cookie Persistence Commands =====
+
+#[tauri::command]
+fn load_cookies() -> Result<CookiesFile, String> {
+    match core_store::load_json::<CookiesFile>("cookies.json") {
+        Ok(data) => Ok(data),
+        Err(_) => Ok(CookiesFile { version: 1, cookies: Vec::new() }),
+    }
+}
+
+#[tauri::command]
+fn save_cookies(data: CookiesFile) -> Result<(), String> {
+    core_store::save_json("cookies.json", &data).map_err(|e| e.to_string())
+}
+
+// ===== TTS Commands =====
+
+#[tauri::command]
+fn sapi_list_voices() -> Result<Vec<core_tts::VoiceInfo>, String> {
+    std::thread::spawn(|| {
+        core_tts::sapi_list_voices().map_err(|e| e.to_string())
+    })
+    .join()
+    .map_err(|_| "SAPI thread panicked".to_string())?
+}
+
+#[tauri::command]
+fn sapi_speak_text(text: String, voice_index: u32, rate: i32, volume: u32) -> Result<(), String> {
+    std::thread::spawn(move || {
+        core_tts::sapi_speak(&text, voice_index, rate, volume).map_err(|e| e.to_string())
+    })
+    .join()
+    .map_err(|_| "SAPI thread panicked".to_string())?
+}
+
+#[tauri::command]
+fn sapi_stop_speech() -> Result<(), String> {
+    std::thread::spawn(|| {
+        core_tts::sapi_stop().map_err(|e| e.to_string())
+    })
+    .join()
+    .map_err(|_| "SAPI thread panicked".to_string())?
+}
+
+#[tauri::command]
+fn bouyomi_speak_text(
+    remote_talk_path: String,
+    text: String,
+    speed: i32,
+    tone: i32,
+    volume: i32,
+    voice: i32,
+) -> Result<(), String> {
+    core_tts::bouyomi_speak(&remote_talk_path, &text, speed, tone, volume, voice)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn voicevox_get_speakers(endpoint: String) -> Result<Vec<core_tts::VoicevoxSpeaker>, String> {
+    core_tts::voicevox_get_speakers(&endpoint)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn voicevox_speak_text(
+    endpoint: String,
+    text: String,
+    speaker_id: i32,
+    speed_scale: f64,
+    pitch_scale: f64,
+    intonation_scale: f64,
+    volume_scale: f64,
+) -> Result<(), String> {
+    let wav = core_tts::voicevox_speak(
+        &endpoint,
+        &text,
+        speaker_id,
+        speed_scale,
+        pitch_scale,
+        intonation_scale,
+        volume_scale,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    // Play via Win32 PlaySoundW (async, temp file)
+    core_tts::play_wav_from_bytes(&wav).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn tts_stop() -> Result<(), String> {
+    // Stop current speech and clear queue
+    let mut queue = core_tts::tts_queue().lock().await;
+    queue.clear();
+    // Also stop SAPI if it's running
+    let _ = std::thread::spawn(|| {
+        let _ = core_tts::sapi_stop();
+    })
+    .join();
+    Ok(())
+}
+
+// ===== Image Popup Commands =====
+
+/// Fetch an image URL and return a base64 data URL.
+#[tauri::command]
+async fn fetch_image(url: String) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("image/jpeg")
+        .split(';')
+        .next()
+        .unwrap_or("image/jpeg")
+        .to_string();
+    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+    let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+    Ok(format!("data:{};base64,{}", ct, b64))
+}
+
+/// Store the data URL and open a popup window.
+/// `width` / `height` are the image's natural pixel dimensions (used for window sizing).
+#[tauri::command]
+async fn open_image_popup(
+    app: AppHandle,
+    url: String,
+) -> Result<(), String> {
+    // Download image as data URL
+    let data_url = fetch_image(url.clone()).await?;
+
+    // Derive label from URL filename
+    let label = url.rsplit('/').next()
+        .and_then(|s| s.split('?').next())
+        .unwrap_or("image")
+        .to_string();
+    let label = if label.len() > 30 { format!("{}…", &label[..27]) } else { label };
+
+    let entry = PopupImageEntry {
+        id: format!("{}", std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()),
+        data_url,
+        source_url: url,
+        label,
+    };
+
+    // Add to state
+    {
+        let state = app.state::<ImagePopupState>();
+        let mut guard = state.0.lock().map_err(|e| e.to_string())?;
+        guard.push(entry.clone());
+    }
+
+    // If popup already exists and is visible, emit event to add tab and focus
+    if let Some(win) = app.get_webview_window("image_popup") {
+        if win.is_visible().unwrap_or(false) {
+            let _ = app.emit_to("image_popup", "image-popup-add-tab", &entry);
+            let _ = win.set_focus();
+            return Ok(());
+        }
+        // Window exists but not visible (closing) — destroy and recreate
+        let _ = win.destroy();
+    }
+
+    // Create new popup window
+    WebviewWindowBuilder::new(
+        &app,
+        "image_popup",
+        tauri::WebviewUrl::App("image_popup.html".into()),
+    )
+    .title("LiveFake - 画像")
+    .inner_size(900.0, 700.0)
+    .resizable(true)
+    .build()
+    .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+/// Get all image entries for the popup (used on initial load).
+#[tauri::command]
+fn get_image_popup_data(app: AppHandle) -> Result<Vec<PopupImageEntry>, String> {
+    let state = app.state::<ImagePopupState>();
+    let guard = state.0.lock().map_err(|e| e.to_string())?;
+    Ok(guard.clone())
+}
+
+/// Remove a single image tab from the popup state.
+#[tauri::command]
+fn remove_popup_image(app: AppHandle, id: String) -> Result<(), String> {
+    let state = app.state::<ImagePopupState>();
+    let mut guard = state.0.lock().map_err(|e| e.to_string())?;
+    guard.retain(|e| e.id != id);
+    Ok(())
+}
+
+/// Clear all popup image state (called when popup window closes).
+#[tauri::command]
+fn clear_popup_images(app: AppHandle) -> Result<(), String> {
+    let state = app.state::<ImagePopupState>();
+    let mut guard = state.0.lock().map_err(|e| e.to_string())?;
+    guard.clear();
+    Ok(())
+}
+
+// ===== Subtitle Window Commands =====
+
+#[tauri::command]
+fn subtitle_show(app: AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("subtitle") {
+        win.show().map_err(|e| e.to_string())?;
+        win.set_focus().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    // Create new subtitle window — use App path to subtitle.html
+    let win = WebviewWindowBuilder::new(&app, "subtitle", tauri::WebviewUrl::App("subtitle.html".into()))
+        .title("LiveFake - 字幕")
+        .inner_size(800.0, 200.0)
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .resizable(true)
+        .skip_taskbar(true)
+        .build()
+        .map_err(|e| e.to_string())?;
+    win.show().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn subtitle_hide(app: AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("subtitle") {
+        win.hide().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn subtitle_update(app: AppHandle, data: serde_json::Value) -> Result<(), String> {
+    app.emit_to("subtitle", "subtitle-update", data)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn subtitle_opacity(app: AppHandle, opacity: f64) -> Result<(), String> {
+    app.emit_to("subtitle", "subtitle-opacity", serde_json::json!({ "opacity": opacity }))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn subtitle_topmost(app: AppHandle, enabled: bool) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("subtitle") {
+        win.set_always_on_top(enabled).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn subtitle_font_size(app: AppHandle, size: u32) -> Result<(), String> {
+    app.emit_to("subtitle", "subtitle-font-size", serde_json::json!({ "size": size }))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn subtitle_meta_font_size(app: AppHandle, size: u32) -> Result<(), String> {
+    app.emit_to("subtitle", "subtitle-meta-font-size", serde_json::json!({ "size": size }))
+        .map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Disable WebKit2GTK's DMA-BUF renderer and GPU compositing on Wayland
@@ -1247,7 +2179,28 @@ pub fn run() {
 
     let _ = core_store::init_portable_layout();
     let _ = core_store::append_log("app started");
+
+    // Disable Chromium smooth scrolling if settings.ini App.smoothScroll=false
+    // Must be set BEFORE WebView2 controller creation (i.e. before Tauri Builder)
+    #[cfg(target_os = "windows")]
+    {
+        let smooth = core_store::load_settings_ini()
+            .ok()
+            .and_then(|m| m.get("App.smoothScroll").cloned())
+            .unwrap_or_else(|| "true".to_string());
+        if smooth == "false" {
+            let existing = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").unwrap_or_default();
+            let args = if existing.is_empty() {
+                "--disable-smooth-scrolling".to_string()
+            } else {
+                format!("{existing} --disable-smooth-scrolling")
+            };
+            std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", args);
+        }
+    }
+
     tauri::Builder::default()
+        .manage(ImagePopupState(Mutex::new(Vec::new())))
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             // Focus the existing window when a second instance is launched
             if let Some(win) = app.get_webview_window("main") {
@@ -1256,9 +2209,23 @@ pub fn run() {
             }
         }))
         .setup(|app| {
-            if let Ok(size) = core_store::load_json::<WindowSize>("window_size.json") {
+            // Purge old event logs based on retention setting (default 7 days)
+            let retention: u32 = core_store::load_settings_ini()
+                .ok()
+                .and_then(|m| m.get("App.logRetentionDays").and_then(|v| v.parse().ok()))
+                .unwrap_or(7);
+            let _ = core_store::purge_old_logs(retention);
+            let _ = core_store::append_log("App started");
+            if let Ok(state) = core_store::load_json::<WindowState>("window_size.json") {
                 if let Some(win) = app.get_webview_window("main") {
-                    let _ = win.set_size(tauri::LogicalSize::new(size.width, size.height));
+                    if state.maximized == Some(true) {
+                        let _ = win.maximize();
+                    } else {
+                        let _ = win.set_size(tauri::LogicalSize::new(state.width, state.height));
+                        if let (Some(x), Some(y)) = (state.x, state.y) {
+                            let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
+                        }
+                    }
                 }
             }
             Ok(())
@@ -1281,18 +2248,33 @@ pub fn run() {
             probe_post_finalize_submit_from_input,
             probe_post_flow_trace,
             check_for_updates,
+            get_data_dir,
+            open_file_dialog,
+            open_folder_dialog,
+            save_image_to_folder,
             open_external_url,
             load_favorites,
             save_favorites,
             load_ng_filters,
             save_ng_filters,
             load_read_status,
+            load_thread_history,
+            save_thread_history,
+            set_thread_custom_title,
             save_read_status,
             load_auth_config,
             save_auth_config,
             login_with_config,
+            load_app_settings,
+            save_app_settings,
+            write_event_log,
             save_layout_prefs,
             load_layout_prefs,
+            save_session_tabs,
+            load_session_tabs,
+            save_session_board_tabs,
+            load_session_board_tabs,
+            post_reply_multisite,
             create_thread_command,
             save_thread_cache,
             load_thread_cache,
@@ -1305,7 +2287,40 @@ pub fn run() {
             quit_app,
             upload_image,
             load_upload_history,
-            save_upload_history
+            save_upload_history,
+            load_id_highlights,
+            save_id_highlights,
+            load_text_highlights,
+            save_text_highlights,
+            load_external_boards,
+            save_external_boards,
+            save_generic_json,
+            load_generic_json,
+            load_proxy_settings,
+            save_proxy_settings,
+            load_image_url_replace,
+            reset_image_url_replace,
+            load_cookies,
+            save_cookies,
+            sapi_list_voices,
+            sapi_speak_text,
+            sapi_stop_speech,
+            bouyomi_speak_text,
+            voicevox_get_speakers,
+            voicevox_speak_text,
+            tts_stop,
+            fetch_image,
+            open_image_popup,
+            get_image_popup_data,
+            remove_popup_image,
+            clear_popup_images,
+            subtitle_show,
+            subtitle_hide,
+            subtitle_update,
+            subtitle_opacity,
+            subtitle_topmost,
+            subtitle_font_size,
+            subtitle_meta_font_size
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

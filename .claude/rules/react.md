@@ -2,7 +2,7 @@
 globs: "**/*.tsx,**/*.ts"
 ---
 
-## Ember React/TypeScript コード規約
+## LiveFake React/TypeScript コード規約
 
 ### アーキテクチャ
 - `App.tsx` は単一ファイルモノリス — 意図的な設計であり、明示的な指示がない限り分割しない

@@ -52,12 +52,8 @@
 
 ## 未実装（将来対応予定）
 
-- [ ] ウィンドウ位置・サイズの記憶と復元
-  - v0.0.5で実装したがmacOSで起動直後クラッシュが発生しv0.0.6で撤去
-  - Windows版では正常動作を確認済み
-  - macOS環境でのデバッグが必要
-- [ ] 書き込み後のスレ一覧自動更新
-- [ ] Linux版の正式配布
+- [x] ウィンドウ位置・サイズの記憶と復元（Windows専用、macOSは動作対象外）
+- [x] 書き込み後のスレ一覧自動更新
 
 ## 未実装（検討中）
 
@@ -87,113 +83,6 @@
 - 板タイプ（5ch / したらば / おーぷん）を URL パターンから自動判定
 - fetch / parse レイヤーで板タイプに応じたエンコーディング・フォーマットを切り替え
 - フロントエンドは板タイプを意識せず、統一された API で操作
-
-### sync2ch お気に入り同期
-
-sync2ch（https://sync2ch.com/）を利用して、他の専ブラ（chMate, Twinkle, Geschar 等）とお気に入りを同期する。
-
-**API仕様（調査済み）**
-- エンドポイント: `POST http://sync2ch.com/api/sync3`（API v3）
-- 認証: HTTP Basic Auth（sync2ch ユーザーID + API接続パスワード）
-- Content-Type: `application/x-www-form-urlencoded`, charset UTF-8
-- レスポンス圧縮: gzip 対応（Accept-Encoding）
-- 制限: 無料アカウントは1日30回（403で拒否）
-
-**XMLリクエスト形式**
-```xml
-<?xml version="1.0" encoding="utf-8" ?>
-<sync2ch_request sync_number="0" client_id="0"
-    client_version="0.0.69" client_name="Ember" os="Windows">
-  <thread_group category="favorite" struct="Ember">
-    <bd url="https://nova.5ch.io/livegalileo/" title="なんG" />
-    <th url="https://nova.5ch.io/test/read.cgi/livegalileo/123456/"
-        title="スレタイ" read="100" now="100" count="500" />
-  </thread_group>
-</sync2ch_request>
-```
-- リクエストの要素名は省略形: 板=`bd`, スレ=`th`（レスポンスは `board`, `thread`）
-- `thread_group` には `struct` 属性が必要
-- `client_id` は整数。初回は `0` を送信し、サーバーが割り当てた値をレスポンスから取得して以降使用
-
-**XMLレスポンス形式**
-```xml
-<sync2ch_response result="ok" sync_number="1" client_id="12345">
-  <thread_group category="favorite">
-    <board s="a" url="..." title="..." />    <!-- a=追加, u=更新, n=変更なし -->
-    <thread s="a" url="..." title="..." read="50" now="50" count="200" />
-  </thread_group>
-</sync2ch_response>
-```
-
-**HTTPステータス**: 200=成功, 400=不正リクエスト, 401=認証エラー, 403=レート制限, 503=サーバー障害
-
-**同期フロー**
-1. サーバーから前回以降の差分を受信（sync_number で管理）
-2. レスポンスの `s` 属性でローカルにマージ（`a`=追加, `u`=更新）
-3. ローカルのお気に入り変更を含めてリクエストを送信
-4. サーバーが返す新しい sync_number を保存
-
-**実装計画**
-
-Phase 1: Rust バックエンド（core-fetch または新規 crate）
-- sync2ch API クライアント実装（reqwest + HTTP Basic Auth）
-- XML シリアライズ/デシリアライズ（`quick-xml` crate）
-- 認証情報の永続化（core-store に sync2ch 設定を追加）
-- sync_number / client_id の永続化
-- Tauri コマンド: `sync2ch_sync(config) -> Result<SyncResult>`、`save_sync2ch_config`、`load_sync2ch_config`
-
-Phase 2: マージロジック
-- サーバーレスポンスの board/thread をローカル FavoritesData にマージ
-- ローカルのお気に入りを sync2ch XML 形式に変換
-- URL 正規化（5ch.net → 5ch.io）で重複を防止
-
-Phase 3: フロントエンド UI
-- 設定パネル「同期」タブ: ユーザーID・API接続パスワード入力
-- 手動同期ボタン（ツールバーまたは設定内）
-- 同期ステータス表示（最終同期日時、エラーメッセージ）
-- 同期成功/失敗の通知
-
-Phase 4（任意）: 自動同期
-- 設定可能な間隔（最短3分推奨）での自動同期
-- アプリ起動時の自動同期
-
-**データマッピング**
-| Ember | sync2ch XML |
-|-------|-------------|
-| `FavoriteBoard.url` | `board@url` |
-| `FavoriteBoard.boardName` | `board@title` |
-| `FavoriteThread.threadUrl` | `thread@url` |
-| `FavoriteThread.title` | `thread@title` |
-
-**対応状況のある他の専ブラ**
-- chMate（Android）: v0.8.4以降で対応
-- Twinkle（iOS）: お気に入り同期対応
-- Geschar（iOS）: v3.7.0（2025/04）で対応
-
-**参考実装**
-- FoxSync2ch（Firefox addon）: https://github.com/nodaguti/FoxSync2ch
-- syn2chro（非公式Goサーバー）: https://github.com/tanaton/syn2chro
-
-**実装試行の記録（2026-04-08）**
-
-一度実装を試みたが、API が 400 Bad Request を返す問題が未解決。判明した事項:
-
-- `quick-xml` crate で XML 構築・パース、`reqwest` で HTTP Basic Auth + gzip 送信まで実装済み（動作確認済み）
-- reqwest の gzip feature が必要（`features = ["cookies", "json", "rustls-tls", "gzip"]`）
-- Tauri app 側に `chrono` 依存が必要（最終同期日時の生成）
-- `FavoritesData` に `Clone` derive が必要（同期コマンドでの所有権移動対策）
-- FoxSync2ch のソースコードから判明した仕様:
-  - リクエスト要素名は `bd`/`th`（レスポンスは `board`/`thread`）
-  - `client_id` は整数（文字列ではない）、初回 `0`、サーバーが応答で割り当て
-  - `thread_group` に `struct` 属性が必要
-  - お気に入りスレは `dir` 要素（板ごとのディレクトリ）でグループ化される構造がある
-  - Content-Type は `application/x-www-form-urlencoded` で XML を生ボディ送信
-- 400 の原因候補（未検証）:
-  - `dir` 要素によるスレのグループ化が必須の可能性
-  - XML 宣言のフォーマット差異（`<?xml ... ?>` の空白等）
-  - FoxSync2ch は Firefox の XMLSerializer を使用しており、quick-xml の出力との微妙な差異
-  - サーバー側が特定のクライアント名やバージョンを検証している可能性
-- 次回実装時は、まず curl で手動リクエストを送信して正しい XML 形式を特定することを推奨
 
 ## 決定事項
 

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use thiserror::Error;
 use url::Url;
 
-const UA: &str = "Mozilla/5.0 (compatible; Ember/0.1)";
+const UA: &str = "Mozilla/5.0 (compatible; LiveFake/0.1)";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum AuthProvider {

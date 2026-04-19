@@ -96,12 +96,12 @@ export default function App() {
       <main className="page">
         <section className="hero-block">
           <div className="hero-copy">
-            <p className="kicker">Ember</p>
+            <p className="kicker">LiveFake</p>
             <h1>Live5chライクな専ブラを、現代技術で作り直す。</h1>
             <p className="lead">
               PC向け専ブラの選択肢が少なく、SikiはLive5chからの移行には向かない。
               だったら現代の技術でLive5chを作り直す。
-              その課題感から始めたプロジェクトがEmberです。
+              その課題感から始めたプロジェクトがLiveFakeです。
             </p>
             <div className="actions">
               <a className="btn primary" href={primaryDownloadUrl} target="_blank" rel="noreferrer">
@@ -169,31 +169,31 @@ export default function App() {
           <div className="install-platform">
             <h3>Windows版</h3>
             <ol className="install-steps">
-              <li>「最新版をダウンロード」から `ember-win-x64.zip` を取得します。</li>
-              <li>ZIPを展開し、`ember.exe` を実行します。</li>
+              <li>「最新版をダウンロード」から `livefake-win-x64.zip` を取得します。</li>
+              <li>ZIPを展開し、`LiveFake.exe` を実行します。</li>
               <li>初回起動後、板一覧を取得して利用開始します。</li>
             </ol>
             <p className="lead" style={{ marginTop: 8 }}>
-              更新時はアプリ終了後、`ember.exe` を新しいものに上書きしてください。
+              更新時はアプリ終了後、`LiveFake.exe` を新しいものに上書きしてください。
             </p>
           </div>
           <div className="install-platform">
             <h3>Mac版</h3>
             <ol className="install-steps">
-              <li>「最新版をダウンロード」から `ember-mac-arm64.zip` を取得します。</li>
-              <li>ZIPを展開し、`Ember_0.0.1_aarch64.dmg` を開きます。</li>
+              <li>「最新版をダウンロード」から `livefake-mac-arm64.zip` を取得します。</li>
+              <li>ZIPを展開し、`LiveFake_0.0.1_aarch64.dmg` を開きます。</li>
               <li>アプリをApplicationsへ移動して起動します。</li>
             </ol>
             <p className="lead" style={{ marginTop: 8 }}>
-              更新時は新しいDMGを開き、`Ember.app` を Applications に上書きしてください。
+              更新時は新しいDMGを開き、`LiveFake.app` を Applications に上書きしてください。
             </p>
             <p className="lead" style={{ marginTop: 8 }}>
               「壊れているため開けません」と表示される場合は、ターミナルで以下のコマンドを実行してから再度起動してください。
             </p>
             <div className="cmd-block">
-              <code>xattr -dr com.apple.quarantine /Applications/Ember.app</code>
+              <code>xattr -dr com.apple.quarantine /Applications/LiveFake.app</code>
               <button className="cmd-copy" onClick={(e) => {
-                void navigator.clipboard.writeText("xattr -dr com.apple.quarantine /Applications/Ember.app");
+                void navigator.clipboard.writeText("xattr -dr com.apple.quarantine /Applications/LiveFake.app");
                 const btn = e.currentTarget;
                 btn.textContent = "コピーしました";
                 setTimeout(() => { btn.textContent = "コピー"; }, 2000);
