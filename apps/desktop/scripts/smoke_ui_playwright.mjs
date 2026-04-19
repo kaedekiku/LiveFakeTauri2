@@ -33,17 +33,17 @@ try {
   console.log("smoke-ui: runtime indicator ok");
 
   await page.waitForSelector(".layout");
-  const initialColumns = await page.$eval(".layout", (el) => el.style.gridTemplateColumns);
   const splitters = await page.$$(".pane-splitter");
   assert(splitters.length >= 1, "missing pane splitters");
+  const initialWidth = await page.$eval(".pane.boards", (el) => el.style.width);
   const firstSplitterBox = await splitters[0].boundingBox();
   assert(firstSplitterBox, "failed to get splitter bounds");
   await page.mouse.move(firstSplitterBox.x + firstSplitterBox.width / 2, firstSplitterBox.y + firstSplitterBox.height / 2);
   await page.mouse.down();
   await page.mouse.move(firstSplitterBox.x + firstSplitterBox.width / 2 + 48, firstSplitterBox.y + firstSplitterBox.height / 2);
   await page.mouse.up();
-  const resizedColumns = await page.$eval(".layout", (el) => el.style.gridTemplateColumns);
-  assert(initialColumns !== resizedColumns, "pane resize did not update layout columns");
+  const resizedWidth = await page.$eval(".pane.boards", (el) => el.style.width);
+  assert(initialWidth !== resizedWidth, "pane resize did not update board pane width");
   console.log("smoke-ui: pane resize ok");
 
   await page.waitForSelector(".threads tbody tr");

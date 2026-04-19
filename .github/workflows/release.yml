@@ -25,7 +25,7 @@ jobs:
 
       - name: Build Windows exe
         working-directory: apps/desktop
-        run: npx tauri build --bundles none
+        run: npx tauri build --config '{"bundle":{"active":false}}'
 
       - name: Package as ZIP
         shell: pwsh
