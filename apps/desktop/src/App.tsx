@@ -19,14 +19,6 @@ import {
 } from "lucide-react";
 
 type MenuInfo = { topLevelKeys: number; normalizedSample: string };
-type LoginOutcome = {
-  provider: "Be" | "Uplift" | "Donguri";
-  success: boolean;
-  status: number;
-  location: string | null;
-  cookieNames: string[];
-  note: string;
-};
 type PostCookieReport = { targetUrl: string; cookieNames: string[] };
 type PostFormTokens = {
   threadUrl: string;
@@ -106,14 +98,6 @@ const ngScopeMatches = (entry: string | NgEntry, boardUrl: string, threadUrl: st
   if (scope === "board") return boardUrl === url;
   if (scope === "thread") return threadUrl === url;
   return true;
-};
-type AuthConfig = {
-  upliftEmail: string;
-  upliftPassword: string;
-  beEmail: string;
-  bePassword: string;
-  autoLoginBe: boolean;
-  autoLoginUplift: boolean;
 };
 type ThreadTab = {
   threadUrl: string;
@@ -706,6 +690,7 @@ export default function App() {
   const activeBoardTabIndexRef = useRef(-1);
   activeBoardTabIndexRef.current = activeBoardTabIndex;
   const lastBoardUrlRef = useRef("");
+  const activeBoardUrlRef = useRef("");
   const pendingLastBoardRef = useRef<{ boardName: string; url: string } | null>(null);
   const currentThreadUrlRef = useRef("");
   const [selectedBoard, setSelectedBoard] = useState("Favorite");
@@ -741,10 +726,9 @@ export default function App() {
   const [tabMenu, setTabMenu] = useState<{ x: number; y: number; tabIndex: number } | null>(null);
   const [responseReloadMenuOpen, setResponseReloadMenuOpen] = useState(false);
   const [openMenu, setOpenMenu] = useState<string | null>(null);
-  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsCategory, setSettingsCategory] = useState<"display" | "posting" | "tts" | "proxy" | "ng" | "auth" | "subtitle" | "highlights" | "info">("display");
+  const [settingsCategory, setSettingsCategory] = useState<"display" | "posting" | "tts" | "proxy" | "ng" | "subtitle" | "highlights" | "info">("display");
   const [hlWordInput, setHlWordInput] = useState("");
   const [hlWordColor, setHlWordColor] = useState<string>(HIGHLIGHT_COLORS[0].color);
   const [hlNameInput, setHlNameInput] = useState("");
@@ -852,9 +836,17 @@ export default function App() {
   const [newResponseStart, setNewResponseStart] = useState<number | null>(null);
   const [newArrivalPaneOpen, setNewArrivalPaneOpen] = useState(true);
   const [newArrivalPaneHeight, setNewArrivalPaneHeight] = useState(DEFAULT_NEW_ARRIVAL_PX);
+  const [newArrivalFontSize, setNewArrivalFontSize] = useState(13);
   const newArrivalScrollRef = useRef<HTMLDivElement | null>(null);
-  const [newArrivalItems, setNewArrivalItems] = useState<{ threadTitle: string; responseNo: number; name: string; id: string; time: string; text: string; threadUrl: string }[]>([]);
+  type ArrivalItem = { threadTitle: string; responseNo: number; name: string; id: string; time: string; text: string; threadUrl: string };
+  const arrivalQueueRef = useRef<ArrivalItem[]>([]);
+  const [currentArrivalItem, setCurrentArrivalItem] = useState<ArrivalItem | null>(null);
+  const currentArrivalItemRef = useRef<ArrivalItem | null>(null);
+  const arrivalTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const newArrivalBodyRef = useRef<HTMLDivElement | null>(null);
+  const [arrivalQueueCount, setArrivalQueueCount] = useState(0);
   const threadFetchTimesRef = useRef<Record<string, string>>({});
+  const pendingAutoScrollRef = useRef(false);
   const [responseSearchQuery, setResponseSearchQuery] = useState("");
   const [responseSearchBarVisible, setResponseSearchBarVisible] = useState(false);
   const [responseLinkFilter, setResponseLinkFilter] = useState<"" | "image" | "video" | "link">("");
@@ -865,13 +857,6 @@ export default function App() {
   const lastTypingConfettiTsRef = useRef(0);
   const [searchHistoryDropdown, setSearchHistoryDropdown] = useState<{ type: "thread" | "response" } | null>(null);
   const [searchHistoryMenu, setSearchHistoryMenu] = useState<{ x: number; y: number; type: "thread" | "response"; word: string } | null>(null);
-  const [authConfig, setAuthConfig] = useState<AuthConfig>({
-    upliftEmail: "", upliftPassword: "", beEmail: "", bePassword: "", autoLoginBe: false, autoLoginUplift: false,
-  });
-  const [roninLoggedIn, setRoninLoggedIn] = useState(false);
-  const [beLoggedIn, setBeLoggedIn] = useState(false);
-  const [authSaveMsg, setAuthSaveMsg] = useState("");
-
   // Image upload state
   const [uploadPanelOpen, setUploadPanelOpen] = useState(false);
   const [uploadPanelTab, setUploadPanelTab] = useState<"upload" | "history">("upload");
@@ -901,6 +886,14 @@ export default function App() {
         saveToFile("my-posts.json", next);
         return next;
       });
+    }
+  }, [fetchedResponses]);
+
+  useEffect(() => {
+    if (!pendingAutoScrollRef.current) return;
+    pendingAutoScrollRef.current = false;
+    if (responseScrollRef.current) {
+      responseScrollRef.current.scrollTop = responseScrollRef.current.scrollHeight;
     }
   }, [fetchedResponses]);
 
@@ -1047,6 +1040,7 @@ export default function App() {
     const next = [...externalBoards, { boardName: trimmedName, url: trimmedUrl }];
     setExternalBoards(next);
     if (isTauriRuntime()) invoke("save_external_boards", { boards: next }).catch(() => {});
+    setExpandedCategories((prev) => new Set([...prev, "__external__"]));
     setShowExternalBoardDialog(false);
     setExternalBoardUrl("");
     setExternalBoardName("");
@@ -1485,6 +1479,7 @@ export default function App() {
     }
     setActiveTabIndex(index);
     const tab = threadTabs[index];
+    setLastFetchTime(threadFetchTimesRef.current[tab.threadUrl] ?? null);
     const cached = tabCacheRef.current.get(tab.threadUrl);
     if (cached) {
       setFetchedResponses(cached.responses);
@@ -1577,48 +1572,6 @@ export default function App() {
     }
   };
 
-  const doLogin = async (target?: "be" | "uplift") => {
-    if (!isTauriRuntime()) return;
-    const t = target ?? "all";
-    setStatus(`ログイン中... (target=${t}, be=${authConfig.beEmail.length > 0}, uplift=${authConfig.upliftEmail.length > 0})`);
-    try {
-      // Save current config before login attempt
-      await invoke("save_auth_config", { config: authConfig });
-      const results = await invoke<LoginOutcome[]>("login_with_config", {
-        target: t,
-        beEmail: authConfig.beEmail,
-        bePassword: authConfig.bePassword,
-        upliftEmail: authConfig.upliftEmail,
-        upliftPassword: authConfig.upliftPassword,
-      });
-      for (const r of results) {
-        if (r.provider === "Be" && r.success) setBeLoggedIn(true);
-        if (r.provider === "Be" && !r.success) setBeLoggedIn(false);
-        if ((r.provider === "Uplift" || r.provider === "Donguri") && r.success) setRoninLoggedIn(true);
-      }
-      const details = results.map((r) => {
-        if (r.success) return `${r.provider}:OK`;
-        return `${r.provider}:NG(${r.note})`;
-      });
-      setStatus(details.length > 0 ? details.join(" | ") : "ログイン対象なし");
-    } catch (error) {
-      setStatus(`login error: ${String(error)}`);
-    }
-  };
-
-  const doLogout = (provider: "ronin" | "be") => {
-    if (provider === "ronin") {
-      setRoninLoggedIn(false);
-      setStatus("Ronin: ログアウト");
-    } else {
-      setBeLoggedIn(false);
-      setStatus("BE: ログアウト");
-    }
-    if (isTauriRuntime()) {
-      invoke("clear_login_cookies", { provider }).catch((e) => console.warn("clear_login_cookies:", e));
-    }
-  };
-
   const paneFontSize = (pane: PaneName): [number, React.Dispatch<React.SetStateAction<number>>] => {
     switch (pane) {
       case "boards": return [boardsFontSize, setBoardsFontSize];
@@ -1639,6 +1592,11 @@ export default function App() {
     setShowFavoritesOnly(false);
     const url = (targetThreadUrl ?? threadUrl).trim();
     if (!url) return;
+    // Clear stale thread list when switching to a different board
+    if (activeBoardUrlRef.current !== url) {
+      setFetchedThreads([]);
+    }
+    activeBoardUrlRef.current = url;
     // Switch to thread list view whenever a board is being fetched
     setActivePaneView("threads");
     if (!isTauriRuntime()) {
@@ -1655,6 +1613,8 @@ export default function App() {
         threadUrl: url,
         limit: null,
       });
+      // Discard if board switched while this fetch was in flight
+      if (activeBoardUrlRef.current !== url) return;
       await loadReadStatusForBoard(url, rows);
       setFetchedThreads(rows);
       if (!keepSortOnRefreshRef.current) {
@@ -1675,9 +1635,11 @@ export default function App() {
       setThreadListProbe(`ok rows=${rows.length}`);
       setStatus(`threads loaded: ${rows.length}`);
     } catch (error) {
+      if (activeBoardUrlRef.current !== url) return;
       const msg = String(error);
       setThreadListProbe(`error: ${msg}`);
       setStatus(`thread load error: ${msg}`);
+      setFetchedThreads([]);
     }
   };
 
@@ -1718,7 +1680,11 @@ export default function App() {
           };
         });
         if (autoRefreshEnabled && autoScrollEnabled) {
-          setNewArrivalItems((prev) => [...arrivals, ...prev].slice(0, 200));
+          arrivalQueueRef.current.push(...arrivals);
+          setArrivalQueueCount(arrivalQueueRef.current.length);
+          if (!arrivalTimerRef.current && currentArrivalItemRef.current === null) {
+            advanceToNextArrival();
+          }
         }
         if (ttsEnabled && ttsMode !== "off") {
           const site = detectSiteType(tabUrl);
@@ -1737,13 +1703,14 @@ export default function App() {
   };
 
   const refreshThreadListSilently = async () => {
-    const url = threadUrl.trim();
+    const url = (activeBoardUrlRef.current || threadUrl).trim();
     if (!url || !isTauriRuntime()) return;
     try {
       const rows = await invoke<ThreadListItem[]>("fetch_thread_list", {
         threadUrl: url,
         limit: null,
       });
+      if (activeBoardUrlRef.current !== url) return;
       setFetchedThreads(rows);
       void loadReadStatusForBoard(url, rows);
     } catch {
@@ -1850,14 +1817,8 @@ export default function App() {
           return;
         }
         // New responses arrived — update DOM and scroll
+        if (autoScrollEnabled) pendingAutoScrollRef.current = true;
         setFetchedResponses(rows);
-        if (autoScrollEnabled) {
-          requestAnimationFrame(() => {
-            if (responseScrollRef.current) {
-              responseScrollRef.current.scrollTop = responseScrollRef.current.scrollHeight;
-            }
-          });
-        }
       } else if (opts?.resetScroll) {
         setResponsesLoading(false);
         setFetchedResponses(rows);
@@ -1925,7 +1886,11 @@ export default function App() {
         });
         // Only add to new arrivals pane when both autoReload and autoScroll are ON
         if (autoRefreshEnabled && autoScrollEnabled) {
-          setNewArrivalItems((prev) => [...arrivals, ...prev].slice(0, 200));
+          arrivalQueueRef.current.push(...arrivals);
+          setArrivalQueueCount(arrivalQueueRef.current.length);
+          if (!arrivalTimerRef.current && currentArrivalItemRef.current === null) {
+            advanceToNextArrival();
+          }
         }
         // Update subtitle with latest new response
         if (arrivals.length > 0) {
@@ -2261,6 +2226,64 @@ export default function App() {
     invoke("subtitle_update", { data: { ...data, bodyHtml, idColor } }).catch((e) => console.warn("subtitle_update:", e));
   };
 
+  const advanceToNextArrival = () => {
+    if (arrivalTimerRef.current) {
+      clearTimeout(arrivalTimerRef.current);
+      arrivalTimerRef.current = null;
+    }
+    // 次がなければ現アイテムを表示したまま維持
+    if (arrivalQueueRef.current.length === 0) return;
+    // Brief blank phase between items
+    currentArrivalItemRef.current = null;
+    setCurrentArrivalItem(null);
+    arrivalTimerRef.current = setTimeout(() => {
+      arrivalTimerRef.current = null;
+      const next = arrivalQueueRef.current.shift() ?? null;
+      setArrivalQueueCount(arrivalQueueRef.current.length);
+      currentArrivalItemRef.current = next;
+      setCurrentArrivalItem(next);
+      if (next === null) return;
+      _startArrivalTimer();
+    }, 200);
+  };
+
+  const _startArrivalTimer = () => {
+    // After display settles, check for overflow and schedule advance
+    arrivalTimerRef.current = setTimeout(() => {
+      const bodyEl = newArrivalBodyRef.current;
+      if (bodyEl) bodyEl.scrollTop = 0;
+      const isOverflow = bodyEl ? bodyEl.scrollHeight > bodyEl.clientHeight + 2 : false;
+      if (isOverflow) {
+        // 2sec then slow scroll to bottom
+        arrivalTimerRef.current = setTimeout(() => {
+          const el = newArrivalBodyRef.current;
+          if (el) {
+            const dist = el.scrollHeight - el.clientHeight;
+            const duration = Math.max(1000, dist * 8); // ~8ms per px
+            const start = performance.now();
+            const startScrollTop = el.scrollTop;
+            const step = (now: number) => {
+              const progress = Math.min((now - start) / duration, 1);
+              el.scrollTop = startScrollTop + dist * progress;
+              if (progress < 1) {
+                requestAnimationFrame(step);
+              } else {
+                // 5sec after reaching bottom
+                arrivalTimerRef.current = setTimeout(() => advanceToNextArrival(), 5000);
+              }
+            };
+            requestAnimationFrame(step);
+          } else {
+            arrivalTimerRef.current = setTimeout(() => advanceToNextArrival(), 5000);
+          }
+        }, 2000);
+      } else {
+        // No overflow: 5sec total display time
+        arrivalTimerRef.current = setTimeout(() => advanceToNextArrival(), 5000);
+      }
+    }, 100);
+  };
+
   const getBoardUrlFromThreadUrl = (url: string): string => {
     try {
       const u = new URL(url);
@@ -2351,8 +2374,6 @@ export default function App() {
     await invoke("open_external_url", { url: updateResult.downloadPageUrl });
   };
 
-  const beState = beLoggedIn ? "ON" : "OFF";
-  const roninState = roninLoggedIn ? "ON" : "OFF";
   const runtimeState = isTauriRuntime() ? "TAURI" : "WEB";
   const updateState = updateResult
     ? updateResult.hasUpdate
@@ -2621,8 +2642,10 @@ export default function App() {
     const next = rewrite5chNet(locationInput.trim());
     if (!next) return;
     if (next !== locationInput.trim()) setLocationInput(next);
-    // Detect 5ch thread URL and open in tab
-    if (/^https?:\/\/[^/]*\.5ch\.(net|io)\/test\/read\.cgi\//.test(next)) {
+    // Detect thread URL (5ch, shitaraba, jpnkn) and open in tab
+    let pathname = "";
+    try { pathname = new URL(next, "https://dummy").pathname; } catch { /* ignore */ }
+    if (/\/(test|bbs)\/read\.cgi\/[^/]+\/[^/]+/.test(pathname)) {
       const parts = next.replace(/\/+$/, "").split("/");
       const board = parts[parts.length - 2] || "";
       const key = parts[parts.length - 1] || "";
@@ -3023,7 +3046,18 @@ export default function App() {
     if (scrollSaveTimerRef.current) clearTimeout(scrollSaveTimerRef.current);
     scrollSaveTimerRef.current = setTimeout(() => {
       const url = threadUrl.trim();
-      if (url) {
+      if (!url) return;
+      const container = responseScrollRef.current;
+      if (!container) return;
+      const atBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 5;
+      if (atBottom && fetchedResponses.length > 0) {
+        // At bottom: save last response no so restore scrolls to bottom
+        const lastNo = fetchedResponses[fetchedResponses.length - 1].responseNo;
+        threadScrollPositions.current[url] = lastNo;
+        try { localStorage.setItem(SCROLL_POS_KEY, JSON.stringify(threadScrollPositions.current)); } catch { /* ignore */ }
+        saveToFile("scroll-positions.json", threadScrollPositions.current);
+        saveBookmark(url, lastNo);
+      } else {
         saveScrollPos(url);
         const visibleNo = getVisibleResponseNo();
         if (visibleNo > 0) saveBookmark(url, visibleNo);
@@ -3091,6 +3125,8 @@ export default function App() {
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      // Suppress browser's native Ctrl+F find bar
+      if (e.key === "f" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); return; }
       if (e.key === "Escape") {
         if (hoverPreviewSrcRef.current) {
           hoverPreviewSrcRef.current = null;
@@ -3107,117 +3143,10 @@ export default function App() {
         }
         if (responseMenu) { setResponseMenu(null); setHlSubMenu(null); return; }
         if (aboutOpen) { setAboutOpen(false); return; }
-        if (shortcutsOpen) { setShortcutsOpen(false); return; }
         if (responseReloadMenuOpen) { setResponseReloadMenuOpen(false); return; }
         if (openMenu) { setOpenMenu(null); return; }
       }
-      const isRefreshShortcut = e.key === "F5"
-        || ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "r");
-      if (isRefreshShortcut) {
-        e.preventDefault();
-        refreshByLocationInput();
-        return;
-      }
       if (isTypingTarget(e.target)) return;
-      if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "r") {
-        e.preventDefault();
-        void fetchThreadListFromCurrent();
-        return;
-      }
-      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "w") {
-        e.preventDefault();
-        if (activeTabIndex >= 0 && threadTabs.length > 0) {
-          closeTab(activeTabIndex);
-        }
-        return;
-      }
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && e.key.toLowerCase() === "t") {
-        e.preventDefault();
-        const last = closedTabsRef.current.pop();
-        if (last) {
-          openThreadInTab(last.threadUrl, last.title);
-        }
-        return;
-      }
-      if ((e.ctrlKey || e.metaKey) && e.altKey && (e.key === "/" || e.code === "Slash")) {
-        e.preventDefault();
-        const ids = visibleThreadItems.map((t) => t.id);
-        if (ids.length === 0) return;
-        const cur = selectedThread ?? ids[0];
-        const idx = ids.indexOf(cur);
-        const next = ids[(idx + 1 + ids.length) % ids.length];
-        setSelectedThread(next);
-        return;
-      }
-      // Tab switching: Windows Ctrl+←/→, Mac Cmd+Option+←/→
-      if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && threadTabs.length > 1) {
-        const isWinTabSwitch = e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey;
-        const isMacTabSwitch = !e.ctrlKey && e.metaKey && e.altKey && !e.shiftKey;
-        if (isWinTabSwitch || isMacTabSwitch) {
-          e.preventDefault();
-          const dir = e.key === "ArrowRight" ? 1 : -1;
-          const next = (activeTabIndex + dir + threadTabs.length) % threadTabs.length;
-          onTabClick(next);
-          return;
-        }
-      }
-      if ((e.ctrlKey || e.metaKey) && e.altKey && !e.shiftKey && e.key === "ArrowUp") {
-        e.preventDefault();
-        setResponseTopRatio((prev) => clamp(prev - 3, 24, 76));
-        return;
-      }
-      if ((e.ctrlKey || e.metaKey) && e.altKey && !e.shiftKey && e.key === "ArrowDown") {
-        e.preventDefault();
-        setResponseTopRatio((prev) => clamp(prev + 3, 24, 76));
-        return;
-      }
-      if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
-        e.preventDefault();
-        const ids = visibleThreadItems.map((t) => t.id);
-        if (ids.length === 0) return;
-        const cur = selectedThread ?? ids[0];
-        const idx = Math.max(ids.indexOf(cur), 0);
-        const nextIdx = e.key === "ArrowUp" ? Math.max(0, idx - 1) : Math.min(ids.length - 1, idx + 1);
-        setSelectedThread(ids[nextIdx]);
-        return;
-      }
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
-        e.preventDefault();
-        const ids = responseItems.map((r) => r.id);
-        if (ids.length === 0) return;
-        const cur = selectedResponse || ids[0];
-        const idx = Math.max(ids.indexOf(cur), 0);
-        const nextIdx = e.key === "ArrowUp" ? Math.max(0, idx - 1) : Math.min(ids.length - 1, idx + 1);
-        setSelectedResponse(ids[nextIdx]);
-        return;
-      }
-      if (e.key === "Tab" && (e.ctrlKey || e.metaKey) && threadTabs.length > 1) {
-        e.preventDefault();
-        const dir = e.shiftKey ? -1 : 1;
-        const next = (activeTabIndex + dir + threadTabs.length) % threadTabs.length;
-        onTabClick(next);
-        return;
-      }
-      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "f") {
-        e.preventDefault();
-        if (activeTabIndex >= 0 && threadTabs.length > 0) {
-          setResponseSearchBarVisible(true);
-          setTimeout(() => responseSearchRef.current?.focus(), 0);
-        } else {
-          threadSearchRef.current?.focus();
-        }
-        return;
-      }
-      if (e.key.toLowerCase() === "r" && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
-        e.preventDefault();
-        const sel = window.getSelection()?.toString().trim();
-        if (sel) {
-          appendComposeQuote(`>>${selectedResponse}\n${sel}`);
-        } else {
-          appendComposeQuote(`>>${selectedResponse}`);
-        }
-        return;
-      }
       // Arrow keys / PageUp / PageDown / Home / End scroll the response area (no modifier)
       if (!e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && responseScrollRef.current) {
         const el = responseScrollRef.current;
@@ -3283,6 +3212,7 @@ export default function App() {
           autoScrollEnabled?: boolean;
           newArrivalPaneOpen?: boolean;
           newArrivalPaneHeight?: number;
+          newArrivalFontSize?: number;
         };
         if (typeof parsed.boardPanePx === "number") setBoardPanePx(parsed.boardPanePx);
         if (typeof parsed.threadPanePx === "number") {
@@ -3318,6 +3248,7 @@ export default function App() {
         if (typeof parsed.autoScrollEnabled === "boolean") setAutoScrollEnabled(parsed.autoScrollEnabled);
         if (typeof parsed.newArrivalPaneOpen === "boolean") setNewArrivalPaneOpen(parsed.newArrivalPaneOpen);
         if (typeof parsed.newArrivalPaneHeight === "number") setNewArrivalPaneHeight(parsed.newArrivalPaneHeight);
+        if (typeof parsed.newArrivalFontSize === "number") setNewArrivalFontSize(parsed.newArrivalFontSize);
       } catch { /* ignore */ }
     };
     // Try localStorage first, then file-based persistence
@@ -3421,9 +3352,14 @@ export default function App() {
                       responses,
                       selectedResponse: restoreNo,
                     });
+                    setActivePaneView("responses");
                     setFetchedResponses(responses);
                     setSelectedResponse(restoreNo);
-                    if (restoreNo > 1) scrollToResponseNo(restoreNo);
+                    if (restoreNo >= lastNo) {
+                      setTimeout(() => { if (responseScrollRef.current) responseScrollRef.current.scrollTop = responseScrollRef.current.scrollHeight; }, 200);
+                    } else if (restoreNo > 1) {
+                      scrollToResponseNo(restoreNo);
+                    }
                   }
                 })
                 .catch((e) => console.warn("load_thread_cache:", e));
@@ -3555,27 +3491,7 @@ export default function App() {
         })
         .catch(() => {});
     }
-    // Load auth config and auto-login
     if (isTauriRuntime()) {
-      invoke<AuthConfig>("load_auth_config").then((cfg) => {
-        setAuthConfig(cfg);
-        if (cfg.autoLoginBe || cfg.autoLoginUplift) {
-          const target = cfg.autoLoginBe && cfg.autoLoginUplift ? "all" : cfg.autoLoginBe ? "be" : "uplift";
-          invoke<LoginOutcome[]>("login_with_config", {
-            target,
-            beEmail: cfg.beEmail,
-            bePassword: cfg.bePassword,
-            upliftEmail: cfg.upliftEmail,
-            upliftPassword: cfg.upliftPassword,
-          }).then((results) => {
-            for (const r of results) {
-              if (r.provider === "Be" && r.success) setBeLoggedIn(true);
-              if ((r.provider === "Uplift" || r.provider === "Donguri") && r.success) setRoninLoggedIn(true);
-            }
-            setStatus(`auto-login: ${results.map((r) => `${r.provider}:${r.success ? "OK" : "NG"}`).join(", ")}`);
-          }).catch(() => {});
-        }
-      }).catch(() => {});
       // Load upload history
       invoke<{ entries: { sourceUrl: string; thumbnail: string; pageUrl: string; fileName: string; uploadedAt: string }[] }>("load_upload_history").then((data) => {
         setUploadHistory(data.entries);
@@ -3967,18 +3883,14 @@ export default function App() {
       autoScrollEnabled,
       newArrivalPaneOpen,
       newArrivalPaneHeight,
+      newArrivalFontSize,
     });
     localStorage.setItem(LAYOUT_PREFS_KEY, payload);
     if (isTauriRuntime()) {
       void invoke("save_layout_prefs", { prefs: payload }).catch(() => {});
     }
-  }, [boardPanePx, threadPanePx, responseTopRatio, boardsFontSize, threadsFontSize, responsesFontSize, darkMode, fontFamily, threadColWidths, showBoardButtons, keepSortOnRefresh, composeSubmitKey, typingConfettiEnabled, imageSizeLimit, hoverPreviewEnabled, selectedBoard, hoverPreviewDelay, thumbSize, restoreSession, autoRefreshInterval, autoScrollEnabled, newArrivalPaneOpen, newArrivalPaneHeight]);
+  }, [boardPanePx, threadPanePx, responseTopRatio, boardsFontSize, threadsFontSize, responsesFontSize, darkMode, fontFamily, threadColWidths, showBoardButtons, keepSortOnRefresh, composeSubmitKey, typingConfettiEnabled, imageSizeLimit, hoverPreviewEnabled, selectedBoard, hoverPreviewDelay, thumbSize, restoreSession, autoRefreshInterval, autoScrollEnabled, newArrivalPaneOpen, newArrivalPaneHeight, newArrivalFontSize]);
 
-  useEffect(() => {
-    if (newArrivalScrollRef.current) {
-      newArrivalScrollRef.current.scrollTop = 0;
-    }
-  }, [newArrivalItems]);
 
 
   useEffect(() => {
@@ -4123,8 +4035,6 @@ export default function App() {
             { text: "設定を開く", action: () => setSettingsOpen(true) },
           ]},
           { label: "ヘルプ", items: [
-            { text: "ショートカット一覧", action: () => setShortcutsOpen(true) },
-            { text: "sep" },
             { text: "バージョン情報", action: () => requestAnimationFrame(() => { setAboutOpen(true); void checkForUpdates(); }) },
           ]},
         ].map(({ label, items }) => (
@@ -4264,7 +4174,7 @@ export default function App() {
             </>
           )}
           {boardPaneTab === "boards" ? (
-            boardCategories.length > 0 ? (
+            boardCategories.length > 0 || externalBoards.length > 0 ? (
               <div className="board-tree" ref={boardTreeRef} onScroll={onBoardTreeScroll}>
                 {externalBoards.length > 0 && !boardSearchQuery.trim() && (
                   <div className="board-category">
@@ -4434,7 +4344,7 @@ export default function App() {
             <>
               <div className="new-arrival-pane" style={{ height: newArrivalPaneHeight }}>
                 <div className="new-arrival-header">
-                  <span className="new-arrival-title">新着レス ({newArrivalItems.length})</span>
+                  <span className="new-arrival-title">新着レス {arrivalQueueCount > 0 ? `(残 ${arrivalQueueCount})` : ""}</span>
                   <button
                     className={`title-action-btn${subtitleVisible ? " active" : ""}`}
                     title="字幕"
@@ -4448,33 +4358,38 @@ export default function App() {
                       }
                     }}
                   ><Subtitles size={12} /></button>
-                  <button className="title-action-btn" onClick={() => setNewArrivalItems([])} title="クリア"><X size={12} /></button>
+                  <button className="title-action-btn" onClick={() => {
+                    arrivalQueueRef.current = [];
+                    setArrivalQueueCount(0);
+                    if (arrivalTimerRef.current) { clearTimeout(arrivalTimerRef.current); arrivalTimerRef.current = null; }
+                    currentArrivalItemRef.current = null;
+                    setCurrentArrivalItem(null);
+                  }} title="クリア"><X size={12} /></button>
                   <button className="title-action-btn" onClick={() => setNewArrivalPaneOpen(false)} title="閉じる"><ChevronDown size={12} /></button>
                 </div>
                 <div className="new-arrival-scroll" ref={newArrivalScrollRef}>
-                  {newArrivalItems.length === 0 && <div className="new-arrival-empty">新着レスはありません</div>}
-                  {newArrivalItems.map((item, idx) => (
+                  {currentArrivalItem === null && <div className="new-arrival-empty">新着レスはありません</div>}
+                  {currentArrivalItem !== null && (
                     <div
-                      key={`${item.threadUrl}-${item.responseNo}-${idx}`}
                       className="new-arrival-item"
                       onClick={() => {
-                        const tab = threadTabs.find((t) => t.threadUrl === item.threadUrl);
+                        const tab = threadTabs.find((t) => t.threadUrl === currentArrivalItem.threadUrl);
                         if (tab) {
                           onTabClick(threadTabs.indexOf(tab));
-                          setSelectedResponse(item.responseNo);
+                          setSelectedResponse(currentArrivalItem.responseNo);
                         }
                       }}
                     >
                       <div className="new-arrival-meta">
-                        <span className="new-arrival-thread-title">{item.threadTitle}</span>
-                        <span className="new-arrival-res-no">{item.responseNo}</span>
-                        <span className="new-arrival-name">{item.name}</span>
-                        {item.id && <span className="new-arrival-id">ID:{item.id}</span>}
-                        <span className="new-arrival-time">{item.time}</span>
+                        <span className="new-arrival-thread-title">{currentArrivalItem.threadTitle}</span>
+                        <span className="new-arrival-res-no">{currentArrivalItem.responseNo}</span>
+                        <span className="new-arrival-name">{currentArrivalItem.name}</span>
+                        {currentArrivalItem.id && <span className="new-arrival-id">ID:{currentArrivalItem.id}</span>}
+                        <span className="new-arrival-time">{currentArrivalItem.time}</span>
                       </div>
-                      <div className="new-arrival-body">{item.text}</div>
+                      <div className="new-arrival-body" ref={newArrivalBodyRef} style={{ fontSize: `${newArrivalFontSize}px` }}>{currentArrivalItem.text}</div>
                     </div>
-                  ))}
+                  )}
                 </div>
               </div>
               <div className="splitter-h new-arrival-splitter" onMouseDown={beginNewArrivalResize} />
@@ -4864,7 +4779,7 @@ export default function App() {
                 {threadTabs[activeTabIndex].title}
                 {" "}[{fetchedResponses.length}]
               </span>
-              <span className="thread-title-fetch-time">{threadFetchTimesRef.current[threadTabs[activeTabIndex].threadUrl] ?? ""}</span>
+              <span className="thread-title-fetch-time">{lastFetchTime ?? ""}</span>
               <span className="thread-title-actions">
                 <div className="title-split-wrap" onClick={(e) => e.stopPropagation()}>
                   <button className="title-action-btn title-split-main" onClick={fetchNewResponses} title="新着取得">
@@ -4937,10 +4852,14 @@ export default function App() {
                 if (bodyLink) {
                   e.preventDefault();
                   const url = bodyLink.getAttribute("href");
-                  if (url && /^https?:\/\/[^/]*\.5ch\.(net|io)\/test\/read\.cgi\//.test(url)) {
-                    const title = url.split("/").pop() || url;
-                    openThreadInTab(url, title);
-                    return;
+                  if (url) {
+                    let _p = "";
+                    try { _p = new URL(url, "https://dummy").pathname; } catch { /* ignore */ }
+                    if (/\/(test|bbs)\/read\.cgi\/[^/]+\/[^/]+/.test(_p)) {
+                      const title = url.split("/").pop() || url;
+                      openThreadInTab(url, title);
+                      return;
+                    }
                   }
                   if (url && /\.(jpe?g|png|gif|webp|bmp)(\?|$)/i.test(url) && isTauriRuntime()) {
                     void invoke("open_image_popup", { url }).catch(() => window.open(url, "_blank"));
@@ -5161,7 +5080,6 @@ export default function App() {
               <span className="nav-info">
                 着:{visibleResponseItems.length}{ngFilteredCount > 0 ? `(NG${ngFilteredCount})` : ""}
                 {" "}サイズ:{Math.round(visibleResponseItems.reduce((s, r) => s + r.text.length, 0) / 1024)}KB
-                {" "}受信日時:{lastFetchTime ?? "-"}
               </span>
               <button className="title-action-btn" onClick={() => { setResponseSearchBarVisible((v) => !v); if (responseSearchBarVisible) setResponseSearchQuery(""); }} title="レス検索"><Search size={14} /></button>
               {responseSearchBarVisible && (
@@ -5254,22 +5172,6 @@ export default function App() {
         <span>TS～{visibleThreadItems.length}</span>
         <span className="status-sep">|</span>
         <span>US～{unreadThreadCount}</span>
-        <span className="status-sep">|</span>
-        <span>API:ON</span>
-        <span className="status-sep">|</span>
-        <span
-          className="status-clickable"
-          onClick={(e) => { e.stopPropagation(); roninLoggedIn ? doLogout("ronin") : void doLogin("uplift"); }}
-          title="クリックでログイン/ログアウト切替"
-        >Ronin:{roninState}</span>
-        <span className="status-sep">|</span>
-        <span
-          className="status-clickable"
-          onClick={(e) => { e.stopPropagation(); beLoggedIn ? doLogout("be") : void doLogin("be"); }}
-          title="クリックでログイン/ログアウト切替"
-        >BE:{beState}</span>
-        <span className="status-sep">|</span>
-        <span>OK</span>
         <span className="status-sep">|</span>
         <span>Runtime:{runtimeState}</span>
       </footer>
@@ -5683,7 +5585,7 @@ export default function App() {
           {/* ----- セパレーター ----- */}
           <hr className="menu-sep" />
           {/* このレスから読み上げ（レス番号上のみ） */}
-          {responseMenu.isOnResNo && responseMenu.responseId > 0 && (
+          {responseMenu.isOnResNo && responseMenu.responseId > 0 && ttsMode !== "off" && (
             <button onClick={() => {
               const startNo = responseMenu.responseId;
               const items = visibleResponseItems.filter((r) => r.id >= startNo);
@@ -6060,8 +5962,7 @@ export default function App() {
               <div style={{ color: "var(--sub)" }}>v{currentVersion}</div>
               <div style={{ fontSize: "0.85em", color: "var(--sub)", lineHeight: 1.6 }}>
                 5ch専用ブラウザ<br />
-                Runtime: {runtimeState}<br />
-                BE: {beState} / UPLIFT: {roninState}
+                Runtime: {runtimeState}
               </div>
               <div style={{ fontSize: "0.85em", color: updateResult?.hasUpdate ? "#cc3300" : "var(--sub)", marginTop: 4 }}>
                 {updateProbe === "running..." ? "更新確認中..." : updateResult ? (updateResult.hasUpdate ? `新しいバージョンがあります: v${updateResult.latestVersion}` : `最新版です (v${currentVersion})`) : ""}
@@ -6089,40 +5990,6 @@ export default function App() {
           </div>
         </div>
       )}
-      {shortcutsOpen && (
-        <div className="lightbox-overlay" onClick={() => setShortcutsOpen(false)}>
-          <div className="shortcuts-panel" onClick={(e) => e.stopPropagation()}>
-            <header className="shortcuts-header">
-              <strong>ショートカット一覧</strong>
-              <button onClick={() => setShortcutsOpen(false)}>閉じる</button>
-            </header>
-            <div className="shortcuts-body">
-              {[
-                ["Ctrl+W", "選択スレを閉じる"],
-                ["Ctrl+Shift+T", "閉じたタブを再度開く"],
-                ["Ctrl+Shift+R", "スレ一覧を再取得"],
-                ["Ctrl+Alt+/", "次のスレへ切替"],
-                ["Ctrl+Tab", "次のタブ"],
-                ["Ctrl+Shift+Tab", "前のタブ"],
-                ["Ctrl+←/→", "左右のタブへ切替"],
-                ["Ctrl+↑/↓", "スレ選択の上下移動"],
-                ["Ctrl+Shift+↑/↓", "レス選択の上下移動"],
-                ["Ctrl+Alt+←/→", "スレペイン幅の調整"],
-                ["Ctrl+Alt+↑/↓", "レス分割比の調整"],
-                ["R", "選択レスを引用して書き込み"],
-                ["Escape", "ライトボックス/ダイアログを閉じる"],
-                ["ダブルクリック (レス行)", "引用して書き込み"],
-                ["中クリック (タブ)", "タブを閉じる"],
-              ].map(([key, desc]) => (
-                <div key={key} className="shortcut-row">
-                  <kbd>{key}</kbd>
-                  <span>{desc}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
       {settingsOpen && (
         <div className="lightbox-overlay" onClick={() => setSettingsOpen(false)}>
           <div className="settings-panel settings-panel-wide" onClick={(e) => e.stopPropagation()}>
@@ -6132,8 +5999,8 @@ export default function App() {
             </header>
             <div className="settings-2col">
               <nav className="settings-nav">
-                {(["display","posting","tts","subtitle","proxy","ng","auth","highlights","info"] as const).map((cat) => {
-                  const labels: Record<string, string> = { display:"表示", posting:"書き込み", tts:"読み上げ", subtitle:"字幕", proxy:"プロキシ", ng:"NG", auth:"認証", highlights:"ハイライト", info:"情報" };
+                {(["display","posting","tts","subtitle","proxy","ng","highlights","info"] as const).map((cat) => {
+                  const labels: Record<string, string> = { display:"表示", posting:"書き込み", tts:"読み上げ", subtitle:"字幕", proxy:"プロキシ", ng:"NG", highlights:"ハイライト", info:"情報" };
                   return (
                     <button key={cat} className={`settings-nav-item${settingsCategory === cat ? " active" : ""}`} onClick={() => setSettingsCategory(cat)}>{labels[cat]}</button>
                   );
@@ -6174,6 +6041,10 @@ export default function App() {
                 <label className="settings-row">
                   <span>文字サイズ (レス)</span>
                   <input type="number" value={responsesFontSize} min={8} max={20} onChange={(e) => setResponsesFontSize(Number(e.target.value))} />
+                </label>
+                <label className="settings-row">
+                  <span>文字サイズ (新着レス)</span>
+                  <input type="number" value={newArrivalFontSize} min={8} max={24} onChange={(e) => setNewArrivalFontSize(Number(e.target.value))} />
                 </label>
                 <label className="settings-row">
                   <span>自動更新間隔 (秒)</span>
@@ -6290,70 +6161,6 @@ export default function App() {
                   <input type="checkbox" checked={typingConfettiEnabled} onChange={(e) => setTypingConfettiEnabled(e.target.checked)} />
                   <span>入力時コンフェティ</span>
                 </label>
-              </fieldset>
-              </>)}
-              {settingsCategory === "auth" && (<>
-              <fieldset>
-                <legend>5chプレミアム Ronin/BE</legend>
-                <div className="settings-row"><span>Ronin ユーザーID</span></div>
-                <input
-                  value={authConfig.upliftEmail}
-                  onChange={(e) => setAuthConfig({ ...authConfig, upliftEmail: e.target.value })}
-                  placeholder="メールアドレス"
-                  style={{ marginTop: 0 }}
-                />
-                <div className="settings-row"><span>Ronin パスワード/秘密鍵</span></div>
-                <input
-                  type="password"
-                  value={authConfig.upliftPassword}
-                  onChange={(e) => setAuthConfig({ ...authConfig, upliftPassword: e.target.value })}
-                  placeholder="パスワード"
-                  style={{ marginTop: 0 }}
-                />
-                <div className="settings-row" style={{ marginTop: 8 }}><span>BE メールアドレス</span></div>
-                <input
-                  value={authConfig.beEmail}
-                  onChange={(e) => setAuthConfig({ ...authConfig, beEmail: e.target.value })}
-                  placeholder="メールアドレス"
-                  style={{ marginTop: 0 }}
-                />
-                <div className="settings-row"><span>BE パスワード</span></div>
-                <input
-                  type="password"
-                  value={authConfig.bePassword}
-                  onChange={(e) => setAuthConfig({ ...authConfig, bePassword: e.target.value })}
-                  placeholder="パスワード"
-                  style={{ marginTop: 0 }}
-                />
-                <label className="settings-row" style={{ marginTop: 8 }}>
-                  <input
-                    type="checkbox"
-                    checked={authConfig.autoLoginUplift}
-                    onChange={(e) => setAuthConfig({ ...authConfig, autoLoginUplift: e.target.checked })}
-                  />
-                  <span>Ronin: 起動時に自動ログイン</span>
-                </label>
-                <label className="settings-row">
-                  <input
-                    type="checkbox"
-                    checked={authConfig.autoLoginBe}
-                    onChange={(e) => setAuthConfig({ ...authConfig, autoLoginBe: e.target.checked })}
-                  />
-                  <span>BE: 起動時に自動ログイン</span>
-                </label>
-                <div className="settings-row" style={{ marginTop: 8, gap: 4 }}>
-                  <button onClick={() => {
-                    if (!isTauriRuntime()) return;
-                    void invoke("save_auth_config", { config: authConfig }).then(() => {
-                      setStatus("認証設定を保存しました");
-                      setAuthSaveMsg("保存しました");
-                    }).catch((e: unknown) => { setStatus(`save error: ${String(e)}`); setAuthSaveMsg(`保存失敗: ${String(e)}`); });
-                  }}>保存</button>
-                  <button onClick={() => void doLogin("uplift")}>Ronin ログイン</button>
-                  <button onClick={() => void doLogin("be")}>BE ログイン</button>
-                </div>
-                {authSaveMsg && <div className="settings-row"><span>{authSaveMsg}</span></div>}
-                <div className="settings-row"><span>Ronin: {roninState}</span><span>BE: {beState}</span></div>
               </fieldset>
               </>)}
               {settingsCategory === "subtitle" && (<>
@@ -6734,7 +6541,10 @@ export default function App() {
               <fieldset>
                 <legend>情報</legend>
                 <div className="settings-row"><span>バージョン</span><span>{currentVersion}</span></div>
-                <div className="settings-row"><span>スモークテスト</span><span>67項目</span></div>
+                <div className="settings-row">
+                  <span>GitHub</span>
+                  <button onClick={() => { const url = "https://github.com/kaedekiku/LiveFakeTauri2"; if (isTauriRuntime()) void invoke("open_external_url", { url }).catch(() => window.open(url, "_blank")); else window.open(url, "_blank"); }}>GitHubページを開く</button>
+                </div>
               </fieldset>
               </>)}
               </div>

@@ -7,7 +7,6 @@
   "scripts": {
     "dev": "vite --port 1420",
     "build": "tsc && vite build",
-    "test:smoke-ui": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_smoke_ui.ps1",
     "test:e2e": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_e2e.ps1",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build && node -e \"const fs=require('fs');const src='../../target/release/livefake.exe';const dst='../../livefake.exe';fs.copyFileSync(src,dst);console.log('copied: livefake.exe → LiveFakeTauri2/livefake.exe');\""

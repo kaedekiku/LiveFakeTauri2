@@ -864,7 +864,7 @@ li.fav-drag-over {
 .thread-title-fetch-time {
   flex-shrink: 0;
   font-size: 11px;
-  color: #888;
+  color: #fff;
   margin-left: 8px;
   white-space: nowrap;
 }
@@ -1039,9 +1039,10 @@ li.fav-drag-over {
 }
 .new-arrival-scroll {
   flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
+  overflow: hidden;
   font-size: 12px;
+  display: flex;
+  flex-direction: column;
 }
 .new-arrival-empty {
   padding: 12px;
@@ -1053,6 +1054,10 @@ li.fav-drag-over {
   padding: 3px 6px;
   border-bottom: 1px solid #eee;
   cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
 }
 .new-arrival-item:hover {
   background: #e8f0ff;
@@ -1087,9 +1092,11 @@ li.fav-drag-over {
 .new-arrival-body {
   font-size: 11px;
   color: var(--ink);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow-y: auto;
+  overflow-x: hidden;
+  flex: 1;
   line-height: 1.3;
 }
 

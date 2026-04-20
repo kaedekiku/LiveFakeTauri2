@@ -1,5 +1,4 @@
-﻿use core_auth::{login_be_front, login_donguri, login_uplift, LoginOutcome};
-use core_proxy::{
+﻿use core_proxy::{
     protect_password, unprotect_password, update_proxy_settings,
     CookiesFile, ProxySettings, ProxyType, UrlReplaceRule,
     parse_url_replace_rules,
@@ -65,15 +64,6 @@ fn get_login_cookie_header_filtered2(include_be: bool, include_uplift: bool) -> 
 struct MenuSummary {
     top_level_keys: usize,
     normalized_sample: String,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct AuthEnvStatus {
-    be_email_set: bool,
-    be_password_set: bool,
-    uplift_email_set: bool,
-    uplift_password_set: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -199,43 +189,6 @@ async fn fetch_bbsmenu_summary() -> Result<MenuSummary, String> {
         top_level_keys,
         normalized_sample,
     })
-}
-
-fn has_env(name: &str) -> bool {
-    std::env::var(name)
-        .map(|v| !v.trim().is_empty())
-        .unwrap_or(false)
-}
-
-#[tauri::command]
-fn check_auth_env_status() -> AuthEnvStatus {
-    AuthEnvStatus {
-        be_email_set: has_env("BE_EMAIL"),
-        be_password_set: has_env("BE_PASSWORD"),
-        uplift_email_set: has_env("UPLIFT_EMAIL"),
-        uplift_password_set: has_env("UPLIFT_PASSWORD"),
-    }
-}
-
-#[tauri::command]
-async fn probe_auth_logins() -> Result<Vec<LoginOutcome>, String> {
-    let be_email = std::env::var("BE_EMAIL").unwrap_or_default();
-    let be_password = std::env::var("BE_PASSWORD").unwrap_or_default();
-    let uplift_email = std::env::var("UPLIFT_EMAIL").unwrap_or_default();
-    let uplift_password = std::env::var("UPLIFT_PASSWORD").unwrap_or_default();
-
-    let mut out = Vec::new();
-
-    if !be_email.is_empty() && !be_password.is_empty() {
-        out.push(login_be_front(&be_email, &be_password).await.map_err(|e| e.to_string())?);
-    }
-
-    if !uplift_email.is_empty() && !uplift_password.is_empty() {
-        out.push(login_uplift(&uplift_email, &uplift_password).await.map_err(|e| e.to_string())?);
-        out.push(login_donguri(&uplift_email, &uplift_password).await.map_err(|e| e.to_string())?);
-    }
-
-    Ok(out)
 }
 
 #[tauri::command]
@@ -1405,32 +1358,6 @@ fn set_thread_custom_title(board_url: String, thread_key: String, title: Option<
     core_store::save_json("thread-history.json", &history).map_err(|e| e.to_string())
 }
 
-// --- Auth config persistence ---
-
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AuthConfig {
-    uplift_email: String,
-    uplift_password: String,
-    be_email: String,
-    be_password: String,
-    auto_login_be: bool,
-    auto_login_uplift: bool,
-}
-
-#[tauri::command]
-fn load_auth_config() -> Result<AuthConfig, String> {
-    match core_store::load_json::<AuthConfig>("auth_config.json") {
-        Ok(data) => Ok(data),
-        Err(_) => Ok(AuthConfig::default()),
-    }
-}
-
-#[tauri::command]
-fn save_auth_config(config: AuthConfig) -> Result<(), String> {
-    core_store::save_json("auth_config.json", &config).map_err(|e| e.to_string())
-}
-
 #[tauri::command]
 fn load_app_settings() -> Result<HashMap<String, String>, String> {
     core_store::load_settings_ini().map_err(|e| e.to_string())
@@ -1491,104 +1418,6 @@ fn load_layout_prefs() -> Result<String, String> {
 }
 
 #[tauri::command]
-async fn login_with_config(target: String, be_email: String, be_password: String, uplift_email: String, uplift_password: String) -> Result<Vec<LoginOutcome>, String> {
-    let _ = core_store::append_log(&format!(
-        "login_with_config: target={} be_email_len={} be_pw_len={} uplift_email_len={} uplift_pw_len={}",
-        target, be_email.len(), be_password.len(),
-        uplift_email.len(), uplift_password.len()
-    ));
-    let config = AuthConfig {
-        be_email, be_password, uplift_email, uplift_password,
-        auto_login_be: false, auto_login_uplift: false,
-    };
-    let mut out = Vec::new();
-    let do_be = target == "all" || target == "be";
-    let do_uplift = target == "all" || target == "uplift";
-    if do_be && !config.be_email.is_empty() && !config.be_password.is_empty() {
-        match login_be_front(&config.be_email, &config.be_password).await {
-            Ok(r) => {
-                let _ = core_store::append_log(&format!("BE login result: success={} status={} note={}", r.success, r.status, r.note));
-                if r.success {
-                    if let Ok(mut cookies) = LOGIN_COOKIES.lock() {
-                        for (k, v) in &r.cookie_values {
-                            cookies.retain(|(ek, _, _)| ek != k);
-                            cookies.push((k.clone(), v.clone(), "be".to_string()));
-                        }
-                    }
-                }
-                out.push(r);
-            }
-            Err(e) => {
-                let _ = core_store::append_log(&format!("BE login error: {}", e));
-                out.push(LoginOutcome {
-                    provider: core_auth::AuthProvider::Be,
-                    success: false,
-                    status: 0,
-                    location: None,
-                    cookie_names: vec![],
-                    cookie_values: vec![],
-                    note: format!("error: {}", e),
-                });
-            }
-        }
-    } else if do_be {
-        out.push(LoginOutcome {
-            provider: core_auth::AuthProvider::Be,
-            success: false,
-            status: 0,
-            location: None,
-            cookie_names: vec![],
-            cookie_values: vec![],
-            note: "BE email/password is empty".to_string(),
-        });
-    }
-    if do_uplift && !config.uplift_email.is_empty() && !config.uplift_password.is_empty() {
-        match login_uplift(&config.uplift_email, &config.uplift_password).await {
-            Ok(r) => {
-                if r.success {
-                    if let Ok(mut cookies) = LOGIN_COOKIES.lock() {
-                        for (k, v) in &r.cookie_values {
-                            cookies.retain(|(ek, _, _)| ek != k);
-                            cookies.push((k.clone(), v.clone(), "uplift".to_string()));
-                        }
-                    }
-                }
-                out.push(r);
-            }
-            Err(e) => {
-                let _ = core_store::append_log(&format!("Uplift login error: {}", e));
-                out.push(LoginOutcome {
-                    provider: core_auth::AuthProvider::Uplift,
-                    success: false,
-                    status: 0,
-                    location: None,
-                    cookie_names: vec![],
-                    cookie_values: vec![],
-                    note: format!("error: {}", e),
-                });
-            }
-        }
-        match login_donguri(&config.uplift_email, &config.uplift_password).await {
-            Ok(r) => out.push(r),
-            Err(e) => {
-                let _ = core_store::append_log(&format!("Donguri login error: {}", e));
-            }
-        }
-    } else if do_uplift {
-        out.push(LoginOutcome {
-            provider: core_auth::AuthProvider::Uplift,
-            success: false,
-            status: 0,
-            location: None,
-            cookie_names: vec![],
-            cookie_values: vec![],
-            note: "Uplift email/password is empty".to_string(),
-        });
-    }
-    Ok(out)
-}
-
-#[tauri::command]
 fn save_thread_cache(thread_url: String, title: String, responses_json: String) -> Result<(), String> {
     core_store::save_thread_cache(&thread_url, &title, &responses_json)
         .map_err(|e| format!("{}", e))
@@ -1615,20 +1444,6 @@ fn delete_thread_cache(thread_url: String) -> Result<(), String> {
 #[tauri::command]
 fn quit_app() {
     std::process::exit(0);
-}
-
-#[tauri::command]
-fn clear_login_cookies(provider: String) -> Result<(), String> {
-    let mut cookies = LOGIN_COOKIES.lock().unwrap_or_else(|e| e.into_inner());
-    if provider == "all" {
-        cookies.clear();
-    } else if provider == "ronin" || provider == "uplift" {
-        cookies.retain(|(_, _, p)| p != "uplift" && p != "donguri");
-    } else if provider == "be" {
-        cookies.retain(|(_, _, p)| p != "be");
-    }
-    let _ = core_store::append_log(&format!("clear_login_cookies: provider={} remaining={}", provider, cookies.len()));
-    Ok(())
 }
 
 #[derive(Serialize, Deserialize)]
@@ -2106,18 +1921,16 @@ fn subtitle_show(app: AppHandle) -> Result<(), String> {
         win.set_focus().map_err(|e| e.to_string())?;
         return Ok(());
     }
-    // Create new subtitle window — use App path to subtitle.html
-    let win = WebviewWindowBuilder::new(&app, "subtitle", tauri::WebviewUrl::App("subtitle.html".into()))
+    WebviewWindowBuilder::new(&app, "subtitle", tauri::WebviewUrl::App("subtitle.html".into()))
         .title("LiveFake - 字幕")
         .inner_size(800.0, 200.0)
         .decorations(false)
-        .transparent(true)
         .always_on_top(true)
         .resizable(true)
         .skip_taskbar(true)
+        .background_color(tauri::window::Color(26, 26, 46, 255))
         .build()
         .map_err(|e| e.to_string())?;
-    win.show().map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -2233,8 +2046,6 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             fetch_bbsmenu_summary,
             fetch_board_categories,
-            check_auth_env_status,
-            probe_auth_logins,
             probe_post_cookie_scope_simulation,
             probe_thread_post_form,
             fetch_thread_list,
@@ -2262,9 +2073,6 @@ pub fn run() {
             save_thread_history,
             set_thread_custom_title,
             save_read_status,
-            load_auth_config,
-            save_auth_config,
-            login_with_config,
             load_app_settings,
             save_app_settings,
             write_event_log,
@@ -2283,7 +2091,6 @@ pub fn run() {
             set_window_theme,
             save_window_size,
             load_window_size,
-            clear_login_cookies,
             quit_app,
             upload_image,
             load_upload_history,

@@ -435,10 +435,10 @@ pub async fn voicevox_speak(
 }
 
 /// Play WAV bytes via Win32 PlaySoundW (Windows only).
-/// Writes to a fixed temp file and plays asynchronously.
+/// Writes to a fixed temp file and plays synchronously (blocks until playback completes).
 #[cfg(windows)]
 pub fn play_wav_from_bytes(wav: &[u8]) -> Result<(), TtsError> {
-    use windows::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_FILENAME, SND_NODEFAULT};
+    use windows::Win32::Media::Audio::{PlaySoundW, SND_FILENAME, SND_NODEFAULT, SND_SYNC};
     use windows::core::PCWSTR;
 
     let tmp_path = std::env::temp_dir().join("livefake_voicevox.wav");
@@ -450,10 +450,8 @@ pub fn play_wav_from_bytes(wav: &[u8]) -> Result<(), TtsError> {
         .chain(std::iter::once(0u16))
         .collect();
 
-    // SND_ASYNC: returns immediately; SND_FILENAME: pszSound is a file path
-    // A new PlaySoundW call automatically stops the previous one
     unsafe {
-        let _ = PlaySoundW(PCWSTR(wide.as_ptr()), None, SND_ASYNC | SND_FILENAME | SND_NODEFAULT);
+        let _ = PlaySoundW(PCWSTR(wide.as_ptr()), None, SND_SYNC | SND_FILENAME | SND_NODEFAULT);
     }
 
     Ok(())

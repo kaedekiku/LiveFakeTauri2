@@ -2061,7 +2061,6 @@ version = "0.0.71"
 dependencies = [
  "base64 0.22.1",
  "chrono",
- "core-auth",
  "core-fetch",
  "core-proxy",
  "core-store",

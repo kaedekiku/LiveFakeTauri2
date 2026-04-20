@@ -10,13 +10,10 @@
     width: 100%;
     height: 100%;
     overflow: hidden;
-    background: transparent;
+    background: #1a1a2e;
     font-family: "MS UI Gothic", "Meiryo", "Segoe UI Emoji", "Apple Color Emoji", sans-serif;
     color: #ffffff;
     user-select: none;
-  }
-  body {
-    background: rgba(26, 26, 46, 0.85);
   }
   #dragRegion {
     width: 100%;
@@ -57,65 +54,88 @@
 <body>
 <div id="dragRegion" data-tauri-drag-region>
   <div id="subtitleMeta"></div>
-  <div id="subtitleBody"></div>
+  <div id="subtitleBody">字幕ウィンドウ</div>
 </div>
 <script>
+  var _setupDone = false;
+
+  function tauriInvoke(cmd, args) {
+    var ti = window.__TAURI_INTERNALS__;
+    if (!ti) return Promise.reject("no tauri");
+    return ti.invoke(cmd, args || {});
+  }
+
   function tauriListen(eventName, callback) {
-    const ti = window.__TAURI_INTERNALS__;
+    var ti = window.__TAURI_INTERNALS__;
     if (!ti) return;
-    const cbId = ti.transformCallback((ev) => { callback(ev.payload); });
-    ti.invoke("plugin:event|listen", {
+    var cbId = ti.transformCallback(function(ev) { callback(ev.payload); });
+    tauriInvoke("plugin:event|listen", {
       event: eventName,
       target: { kind: "Any" },
       handler: cbId,
-    }).catch(() => {});
-  }
-
-  function waitForTauri() {
-    if (window.__TAURI_INTERNALS__) { setup(); return; }
-    const id = setInterval(() => {
-      if (window.__TAURI_INTERNALS__) { clearInterval(id); setup(); }
-    }, 50);
+    });
   }
 
   function setup() {
-    tauriListen("subtitle-update", (p) => { if (p) updateContent(p); });
-    tauriListen("subtitle-opacity", (p) => {
-      if (p != null) document.body.style.background = "rgba(26, 26, 46, " + (p.opacity || 0.85) + ")";
+    if (_setupDone) return;
+    _setupDone = true;
+
+    tauriListen("subtitle-update", function(p) { if (p) updateContent(p); });
+    tauriListen("subtitle-opacity", function(p) {
+      if (p && p.opacity != null) {
+        var o = p.opacity;
+        var r = Math.round(26 + (255 - 26) * (1 - o));
+        var g = Math.round(26 + (255 - 26) * (1 - o));
+        var b = Math.round(46 + (255 - 46) * (1 - o));
+        document.body.style.background = "rgb(" + r + "," + g + "," + b + ")";
+      }
     });
-    tauriListen("subtitle-font-size", (p) => {
-      if (p != null) document.getElementById("subtitleBody").style.fontSize = p.size + "px";
+    tauriListen("subtitle-font-size", function(p) {
+      if (p && p.size) document.getElementById("subtitleBody").style.fontSize = p.size + "px";
     });
-    tauriListen("subtitle-meta-font-size", (p) => {
-      if (p != null) document.getElementById("subtitleMeta").style.fontSize = p.size + "px";
+    tauriListen("subtitle-meta-font-size", function(p) {
+      if (p && p.size) document.getElementById("subtitleMeta").style.fontSize = p.size + "px";
     });
   }
 
-  waitForTauri();
+  // Poll for Tauri internals — retry up to 5 seconds
+  var _retries = 0;
+  function waitForTauri() {
+    if (window.__TAURI_INTERNALS__) {
+      setup();
+      return;
+    }
+    if (_retries < 100) {
+      _retries++;
+      setTimeout(waitForTauri, 50);
+    }
+  }
+
+  document.addEventListener("DOMContentLoaded", function() {
+    waitForTauri();
+  });
 
   function escapeHtml(str) {
-    const d = document.createElement("div");
+    var d = document.createElement("div");
     d.textContent = str;
     return d.innerHTML;
   }
 
   function updateContent(data) {
-    const meta = document.getElementById("subtitleMeta");
-    const body = document.getElementById("subtitleBody");
+    var meta = document.getElementById("subtitleMeta");
+    var body = document.getElementById("subtitleBody");
     if (!data) return;
 
-    // Build meta line
-    const parts = [];
-    if (data.threadTitle) parts.push(`<span class="meta-thread-title">${escapeHtml(data.threadTitle)}</span>`);
-    if (data.name) parts.push(`<span class="meta-name">${escapeHtml(data.name)}</span>`);
+    var parts = [];
+    if (data.threadTitle) parts.push('<span class="meta-thread-title">' + escapeHtml(data.threadTitle) + '</span>');
+    if (data.name) parts.push('<span class="meta-name">' + escapeHtml(data.name) + '</span>');
     if (data.id) {
-      const color = data.idColor || "#cc8800";
-      parts.push(`<span class="meta-id hl-id" style="color:${color}">${escapeHtml("ID:" + data.id)}</span>`);
+      var color = data.idColor || "#cc8800";
+      parts.push('<span class="meta-id hl-id" style="color:' + color + '">' + escapeHtml("ID:" + data.id) + '</span>');
     }
-    if (data.date) parts.push(`<span class="meta-date">${escapeHtml(data.date)}</span>`);
+    if (data.date) parts.push('<span class="meta-date">' + escapeHtml(data.date) + '</span>');
     meta.innerHTML = parts.join(" ");
 
-    // Build body - sanitize HTML but allow highlight spans
     if (data.bodyHtml) {
       body.innerHTML = data.bodyHtml;
     } else {

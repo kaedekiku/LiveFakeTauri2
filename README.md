@@ -14,9 +14,7 @@ ZIP を展開するだけでインストール不要で使えます。
 | プラットフォーム | ファイル |
 |----------------|---------|
 | Windows 10/11 (64bit) | `livefake-win-x64.zip` |
-| macOS (Apple Silicon) | `livefake-mac-arm64.zip` |
 
-> **Windows の場合**  
 > WebView2 Runtime が必要です。Windows 10/11 には通常プリインストール済みです。
 
 ---

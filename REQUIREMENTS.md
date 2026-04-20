@@ -3,6 +3,7 @@
 ## 概要
 
 Tauri（Rust バックエンド + JavaScript フロントエンド）ベースの日本語掲示板専用実況ブラウザ。  
+**対応OS: Windows 10 / Windows 11（64ビット）のみ。Linux・macOS は対象外。**  
 対応サイト: 5ch.io / したらば / JPNKN  
 Portable 形式（EXE 同梱フォルダで自己完結）で配布する。
 
@@ -522,6 +523,7 @@ const HIGHLIGHT_COLORS = [
 
 | レイヤー | 技術 |
 |---------|------|
+| 対応 OS | Windows 10 / 11（64ビット）のみ |
 | フレームワーク | Tauri |
 | バックエンド | Rust |
 | フロントエンド | JavaScript / HTML / CSS |
@@ -529,7 +531,7 @@ const HIGHLIGHT_COLORS = [
 | Cookie 管理 | カスタム実装（cookies.json） |
 | 暗号化 | なし（パスワードは平文保存） |
 | 音声合成 | Windows SAPI（COM）/ 棒読みちゃん / VOICEVOX |
-| 配布形式 | Portable（EXE 同梱フォルダ） |
+| 配布形式 | Portable（EXE 同梱フォルダ、Windows のみ） |
 
 ---
 
