@@ -2369,7 +2369,10 @@ export default function App() {
 
   const composeMailValue = composeSage ? "sage" : composeMail;
   const boardItems: string[] = [];
-  const fallbackThreadItems: { id: number; title: string; res: number; got: number; speed: number; lastLoad: string; lastPost: string; threadUrl: string; threadKey: string }[] = [];
+  const fallbackThreadItems = [
+    { id: 1, title: "プローブスレッド", res: 999, got: 24, speed: 2.5, lastLoad: "14:42", lastPost: "14:44", threadUrl: "https://mao.5ch.io/test/read.cgi/ngt/1/", threadKey: "1" },
+    { id: 2, title: "認証テスト", res: 120, got: 8, speed: 0.8, lastLoad: "13:08", lastPost: "13:09", threadUrl: "https://mao.5ch.io/test/read.cgi/ngt/2/", threadKey: "2" },
+  ];
   const favThreadUrls = useMemo(() => new Set(favorites.threads.map((t) => t.threadUrl)), [favorites.threads]);
   const extractThreadKey = (url: string): string => {
     const segs = url.replace(/\/$/, "").split("/").filter(Boolean);
@@ -2501,7 +2504,13 @@ export default function App() {
             watchoi,
           };
         })
-      : []),
+      : [
+          { id: 1, name: "名無しさん", mail: "", nameWithoutWatchoi: "名無しさん", time: "2026/03/07 10:00", text: ">>1 投稿フロートレース準備完了", beNumber: null, watchoi: null },
+          { id: 2, name: "名無しさん", mail: "", nameWithoutWatchoi: "名無しさん", time: "2026/03/07 10:02", text: "BE/UPLIFT/どんぐりログイン確認済み", beNumber: null, watchoi: null },
+          { id: 3, name: "名無しさん", mail: "", nameWithoutWatchoi: "名無しさん", time: "2026/03/07 10:04", text: "次: subject/dat取得連携", beNumber: null, watchoi: null },
+          { id: 4, name: "名無しさん", mail: "", nameWithoutWatchoi: "名無しさん", time: "2026/03/07 10:06", text: "参考 https://example.com/page を参照", beNumber: null, watchoi: null },
+          { id: 5, name: "名無しさん", mail: "", nameWithoutWatchoi: "名無しさん", time: "2026/03/07 10:08", text: "テスト完了", beNumber: null, watchoi: null },
+        ]),
   ];
   const extractId = (time: string) => {
     const m = time.match(/ID:(\S+)/);
