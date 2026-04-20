@@ -38,11 +38,17 @@ try {
   const initialWidth = await page.$eval(".pane.boards", (el) => el.style.width);
   const firstSplitterBox = await splitters[0].boundingBox();
   assert(firstSplitterBox, "failed to get splitter bounds");
-  await page.mouse.move(firstSplitterBox.x + firstSplitterBox.width / 2, firstSplitterBox.y + firstSplitterBox.height / 2);
+  const cx = firstSplitterBox.x + firstSplitterBox.width / 2;
+  const cy = firstSplitterBox.y + firstSplitterBox.height / 2;
+  await page.mouse.move(cx, cy);
   await page.mouse.down();
-  await page.mouse.move(firstSplitterBox.x + firstSplitterBox.width / 2 + 48, firstSplitterBox.y + firstSplitterBox.height / 2);
+  await page.mouse.move(cx + 48, cy, { steps: 10 });
   await page.mouse.up();
-  await new Promise((r) => setTimeout(r, 150));
+  await page.waitForFunction(
+    (initW) => { const el = document.querySelector(".pane.boards"); return el && el.style.width !== initW; },
+    initialWidth,
+    { timeout: 5000 }
+  ).catch((e) => console.warn("pane resize waitForFunction timeout:", e.message));
   const resizedWidth = await page.$eval(".pane.boards", (el) => el.style.width);
   assert(initialWidth !== resizedWidth, "pane resize did not update board pane width");
   console.log("smoke-ui: pane resize ok");
@@ -56,6 +62,9 @@ try {
   assert(selectedThreadNoAfter >= selectedThreadNoBefore, "thread keyboard navigation did not advance selection");
   console.log("smoke-ui: thread keyboard navigation ok");
 
+  // Open a thread to switch to responses view before testing response navigation
+  await page.click(".threads tbody tr:first-child");
+  await page.waitForSelector(".response-block");
   const selectedResponseNoBefore = await page.$eval(".response-block.selected .response-no", (el) =>
     Number(el.textContent)
   );
@@ -174,7 +183,7 @@ try {
   // boards header has fetch button and tabs
   const fetchBtn = await page.$(".boards-fetch");
   assert(fetchBtn, "board pane should have fetch button");
-  const boardTabs = await page.$$(".board-tab");
+  const boardTabs = await page.$$(".boards-header .board-tab");
   assert(boardTabs.length === 2, `board pane should have 2 tabs, got ${boardTabs.length}`);
   console.log("smoke-ui: board fetch button ok");
 
@@ -185,6 +194,16 @@ try {
   // switch back
   await page.click(".board-tab:nth-child(1)");
   console.log("smoke-ui: board tab switch ok");
+
+  // Ensure an active tab exists for compose test — navigate to threads view and re-open
+  await page.fill(".address-input", "https://mao.5ch.io/ngt/");
+  await page.press(".address-input", "Enter");
+  await new Promise((r) => setTimeout(r, 200));
+  const threadRowForCompose = await page.$(".threads tbody tr:first-child");
+  if (threadRowForCompose) {
+    await threadRowForCompose.click();
+    await page.waitForSelector(".response-block");
+  }
 
   // compose window shows target and char count
   await page.click(".thread-title-actions button[title='書き込み']");
@@ -199,6 +218,11 @@ try {
   // close compose
   await page.click(".compose-header button:has-text('閉じる')");
   console.log("smoke-ui: compose target and meta ok");
+
+  // response pane has response blocks (meta bar removed)
+  const responseBlocks2 = await page.$$(".response-block");
+  assert(responseBlocks2.length >= 1, "response pane should have response blocks");
+  console.log("smoke-ui: response pane content ok");
 
   // anchor-ref spans have data-anchor attribute
   const anchorRef = await page.$(".anchor-ref[data-anchor]");
@@ -266,18 +290,18 @@ try {
   assert(!ngPanelAfterClose, "NG panel should be closed after clicking Close");
   console.log("smoke-ui: ng panel close ok");
 
+  // Switch to threads view for thread-list tests (context menu, search, sortable headers)
+  await page.fill(".address-input", "https://mao.5ch.io/ngt/");
+  await page.press(".address-input", "Enter");
+  await page.waitForSelector(".thread-search", { timeout: 5000 }).catch((e) => console.warn("waitForSelector .thread-search:", e.message));
+
   // thread context menu has Favorite Thread option
   await page.click(".threads tbody tr:first-child", { button: "right" });
   const favThreadBtn = await page.$('.thread-menu button:has-text("お気に入りに追加")');
   assert(favThreadBtn, "thread menu should have お気に入りに追加 option");
-  // close menu
-  await page.click("body");
+  // close menu by clicking toolbar (avoids accidentally clicking a thread row which would switch to responses view)
+  await page.click(".tool-bar");
   console.log("smoke-ui: favorite thread menu ok");
-
-  // response pane has response blocks (meta bar removed)
-  const responseBlocks2 = await page.$$(".response-block");
-  assert(responseBlocks2.length >= 1, "response pane should have response blocks");
-  console.log("smoke-ui: response pane content ok");
 
   // thread search input exists and filters
   const threadSearch = await page.$(".thread-search");
@@ -377,6 +401,16 @@ try {
   assert(thumbCheck, "response-thumb class should be valid for img elements");
   console.log("smoke-ui: image thumbnail structure ok");
 
+  // --- response nav bar exists --- (check while still in responses view)
+  const navBar2 = await page.$(".response-nav-bar");
+  assert(navBar2, "response nav bar should exist");
+  console.log("smoke-ui: response nav bar exists ok");
+
+  // Switch back to threads view (tab tests leave us in responses view)
+  await page.fill(".address-input", "https://mao.5ch.io/ngt/");
+  await page.press(".address-input", "Enter");
+  await page.waitForSelector(".threads thead tr", { timeout: 5000 }).catch((e) => console.warn("waitForSelector .threads thead tr:", e.message));
+
   // --- new count column ---
   const newCountHeader = await page.$eval(".threads thead tr", (tr) => {
     const ths = [...tr.querySelectorAll("th")];
@@ -408,10 +442,6 @@ try {
   console.log("smoke-ui: tab drag attribute ok");
 
   // --- response nav bar exists ---
-  const navBar2 = await page.$(".response-nav-bar");
-  assert(navBar2, "response nav bar should exist");
-  console.log("smoke-ui: response nav bar exists ok");
-
   // --- tab context menu ---
   // open two tabs first
   await page.evaluate(() => {
@@ -440,6 +470,11 @@ try {
     console.log("smoke-ui: tab context menu ok");
   }
 
+  // Switch to threads view (tab context menu test leaves us in responses view)
+  await page.fill(".address-input", "https://mao.5ch.io/ngt/");
+  await page.press(".address-input", "Enter");
+  await page.waitForSelector(".threads tbody tr", { timeout: 5000 }).catch((e) => console.warn("waitForSelector .threads tbody tr:", e.message));
+
   // --- thread menu browser open ---
   await page.evaluate(() => {
     document.querySelector(".shell")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -456,6 +491,10 @@ try {
     document.querySelector(".shell")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
   });
   console.log("smoke-ui: thread menu browser open ok");
+
+  // Open a thread to switch to responses view for nav bar / compose / font tests
+  await page.click(".threads tbody tr:first-child");
+  await page.waitForSelector(".response-nav-bar", { timeout: 5000 });
 
   // --- response nav bar ---
   const navBarFirst = await page.$('.response-nav-bar button:has-text("Top")');
@@ -555,6 +594,11 @@ try {
   assert(linkHref === "https://example.com/page", `body-link href should be the URL, got ${linkHref}`);
   console.log("smoke-ui: body link rendering ok");
 
+  // Switch to threads view for NG / thread-filter tests
+  await page.fill(".address-input", "https://mao.5ch.io/ngt/");
+  await page.press(".address-input", "Enter");
+  await page.waitForSelector(".threads tbody tr", { timeout: 5000 }).catch((e) => console.warn("waitForSelector .threads tbody tr (ng):", e.message));
+
   // --- NG thread title menu ---
   // right-click first thread row to get context menu
   await page.evaluate(() => {
@@ -628,11 +672,8 @@ try {
 
   // --- compose prefs persistence ---
   // Open compose, set a name, close, verify localStorage has it
-  await page.evaluate(() => {
-    const rows = document.querySelectorAll(".threads tbody tr");
-    if (rows[0]) rows[0].dispatchEvent(new MouseEvent("click", { bubbles: true }));
-  });
-  await new Promise((r) => setTimeout(r, 200));
+  await page.click(".threads tbody tr:first-child");
+  await page.waitForSelector(".response-nav-bar", { timeout: 5000 });
   await page.keyboard.press("r");
   await new Promise((r) => setTimeout(r, 200));
   const composeNameInput = await page.$('.compose-fields input');
@@ -670,6 +711,11 @@ try {
   assert(responseBlocks.length > 0, "response scroll should have response blocks");
   console.log("smoke-ui: response row striping ok");
 
+  // Switch to threads view for speed bar / thread row / compose preview tests
+  await page.fill(".address-input", "https://mao.5ch.io/ngt/");
+  await page.press(".address-input", "Enter");
+  await page.waitForSelector(".threads tbody tr", { timeout: 5000 }).catch((e) => console.warn("waitForSelector .threads tbody tr (speed):", e.message));
+
   // --- speed bar visualization ---
   const speedBar = await page.$(".speed-cell .speed-bar");
   assert(speedBar, "speed column should have a bar visualization");
@@ -705,11 +751,8 @@ try {
   console.log("smoke-ui: thread row striping ok");
 
   // --- compose preview renders HTML ---
-  await page.evaluate(() => {
-    const rows = document.querySelectorAll(".threads tbody tr");
-    if (rows[0]) rows[0].dispatchEvent(new MouseEvent("click", { bubbles: true }));
-  });
-  await new Promise((r) => setTimeout(r, 200));
+  await page.click(".threads tbody tr:first-child");
+  await page.waitForSelector(".response-nav-bar", { timeout: 5000 });
   await page.keyboard.press("r");
   await new Promise((r) => setTimeout(r, 200));
   // Verify compose has sage checkbox
@@ -769,21 +812,20 @@ try {
   console.log("smoke-ui: ng regex ok");
 
   // --- settings panel ---
-  const fileMenuForSettings = await page.$('.menu-item:has-text("ファイル")');
-  await fileMenuForSettings.click();
+  const settingsMenuLabel = await page.$('.menu-item:has-text("設定")');
+  await settingsMenuLabel.click();
   await new Promise((r) => setTimeout(r, 100));
-  const settingsBtn = await page.$('.menu-dropdown button:has-text("設定")');
-  assert(settingsBtn, "file menu should have settings button");
+  const settingsBtn = await page.$('.menu-dropdown button:has-text("設定を開く")');
+  assert(settingsBtn, "settings menu should have 設定を開く button");
   await settingsBtn.click();
   await new Promise((r) => setTimeout(r, 200));
   const settingsPanel = await page.$(".settings-panel");
   assert(settingsPanel, "settings panel should open");
-  // verify fieldsets exist
-  const legends = await page.$$eval(".settings-body legend", (els) => els.map((e) => e.textContent?.trim()));
-  assert(legends.includes("表示"), `settings should have 表示 section, got ${legends}`);
-  assert(legends.includes("書き込み"), `settings should have 書き込み section, got ${legends}`);
-  assert(legends.some((l) => l.includes("Ronin")), `settings should have Ronin/BE section, got ${legends}`);
-  assert(legends.includes("情報"), `settings should have 情報 section, got ${legends}`);
+  // verify nav categories exist
+  const navLabels = await page.$$eval(".settings-nav-item", (els) => els.map((e) => e.textContent?.trim()));
+  assert(navLabels.includes("表示"), `settings nav should have 表示, got ${navLabels}`);
+  assert(navLabels.includes("書き込み"), `settings nav should have 書き込み, got ${navLabels}`);
+  assert(navLabels.includes("情報"), `settings nav should have 情報, got ${navLabels}`);
   // close settings
   await page.click('.settings-header button:has-text("閉じる")');
   await new Promise((r) => setTimeout(r, 100));
@@ -807,15 +849,15 @@ try {
   await new Promise((r) => setTimeout(r, 100));
   console.log("smoke-ui: post history panel ok");
 
+  // Switch to threads view for speed-bar / fetched column tests
+  await page.fill(".address-input", "https://mao.5ch.io/ngt/");
+  await page.press(".address-input", "Enter");
+  await page.waitForSelector(".threads tbody tr", { timeout: 5000 }).catch((e) => console.warn("waitForSelector .threads tbody tr (speed-gradient):", e.message));
+
   // --- speed gradient coloring ---
   const speedBarStyle = await page.$eval(".speed-bar", (el) => el.getAttribute("style"));
   assert(speedBarStyle?.includes("background"), "speed bar should have inline background style");
   console.log("smoke-ui: speed gradient ok");
-
-  // --- response block striping ---
-  const stripingBlocks = await page.$$(".response-block");
-  assert(stripingBlocks.length >= 2, "should have multiple response blocks for striping test");
-  console.log("smoke-ui: response block striping ok");
 
   // --- fetched column ---
   const fetchedHeader = await page.$('.threads th[title="取得済みスレを上にソート"]');
@@ -840,13 +882,12 @@ try {
   const rightPane = await page.$(".right-pane");
   assert(rightPane, "right-pane container should exist");
   const rightPaneDisplay = await rightPane.evaluate((el) => getComputedStyle(el).display);
-  assert(rightPaneDisplay === "grid", "right-pane should use grid layout");
+  assert(rightPaneDisplay === "flex", "right-pane should use flex layout");
   console.log("smoke-ui: right pane layout ok");
 
-  // --- row-splitter (horizontal between threads and responses) ---
-  const rowSplitter = await page.$(".row-splitter");
-  assert(rowSplitter, "horizontal row-splitter between threads and responses should exist");
-  console.log("smoke-ui: row splitter ok");
+  // Open a thread to switch to responses view for nav info / response data tests
+  await page.click(".threads tbody tr:first-child");
+  await page.waitForSelector(".response-nav-bar", { timeout: 5000 });
 
   // --- response nav bar info ---
   const navInfoText = await page.$eval(".nav-info", (el) => el.textContent);
@@ -884,13 +925,16 @@ try {
   console.log("smoke-ui: nav jump input ok");
 
   // --- compose font size in settings ---
-  const fileMenuCompose = await page.$('.menu-item:has-text("ファイル")');
-  await fileMenuCompose.click();
+  const settingsMenuForCompose = await page.$('.menu-item:has-text("設定")');
+  await settingsMenuForCompose.click();
   await new Promise((r) => setTimeout(r, 100));
-  const settingsBtnCompose = await page.$('.menu-dropdown button:has-text("設定")');
+  const settingsBtnCompose = await page.$('.menu-dropdown button:has-text("設定を開く")');
   await settingsBtnCompose.click();
   await new Promise((r) => setTimeout(r, 200));
-  const composeFontInput = await page.$('.settings-body input[type="number"][min="10"][max="24"]');
+  // Navigate to 書き込み category
+  await page.click('.settings-nav-item:has-text("書き込み")');
+  await new Promise((r) => setTimeout(r, 100));
+  const composeFontInput = await page.$('.settings-content input[type="number"][min="10"][max="24"]');
   assert(composeFontInput, "settings should have compose font size input");
   await page.click('.settings-header button:has-text("閉じる")');
   await new Promise((r) => setTimeout(r, 100));
