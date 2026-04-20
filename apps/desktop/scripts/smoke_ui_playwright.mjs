@@ -42,6 +42,7 @@ try {
   await page.mouse.down();
   await page.mouse.move(firstSplitterBox.x + firstSplitterBox.width / 2 + 48, firstSplitterBox.y + firstSplitterBox.height / 2);
   await page.mouse.up();
+  await new Promise((r) => setTimeout(r, 150));
   const resizedWidth = await page.$eval(".pane.boards", (el) => el.style.width);
   assert(initialWidth !== resizedWidth, "pane resize did not update board pane width");
   console.log("smoke-ui: pane resize ok");
