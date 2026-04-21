@@ -6,9 +6,8 @@ Usage example:
   python scripts/generate_latest_json.py \
     --version 0.2.0 \
     --released-at 2026-03-07T15:30:00+09:00 \
-    --download-page-url https://github.com/kiyohken2000/5ch-browser-template/releases/tag/v0.2.0 \
-    --windows-zip C:\\path\\5ch-browser-win-x64.zip \
-    --mac-zip C:\\path\\5ch-browser-mac-arm64.zip \
+    --download-page-url https://github.com/kaedekiku/LiveFakeTauri2/releases/tag/v0.2.0 \
+    --windows-zip C:\\path\\livefake-win-x64.zip \
     --out C:\\path\\public\\latest.json
 """
 
@@ -42,7 +41,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--released-at", required=True, help="Release datetime in ISO8601")
     parser.add_argument("--download-page-url", required=True, help="Public GitHub release page URL")
     parser.add_argument("--windows-zip", required=True, help="Path to windows x64 ZIP")
-    parser.add_argument("--mac-zip", required=True, help="Path to macOS arm64 ZIP")
     parser.add_argument(
         "--out",
         default="apps/landing/public/latest.json",
@@ -55,13 +53,10 @@ def main() -> int:
     args = parse_args()
 
     windows_zip = Path(args.windows_zip).expanduser().resolve()
-    mac_zip = Path(args.mac_zip).expanduser().resolve()
     out_path = Path(args.out).expanduser().resolve()
 
     if not windows_zip.exists():
         raise FileNotFoundError(f"windows zip not found: {windows_zip}")
-    if not mac_zip.exists():
-        raise FileNotFoundError(f"mac zip not found: {mac_zip}")
 
     payload = {
         "version": args.version,
@@ -69,7 +64,6 @@ def main() -> int:
         "download_page_url": args.download_page_url,
         "platforms": {
             "windows-x64": build_platform_entry(windows_zip),
-            "macos-arm64": build_platform_entry(mac_zip),
         },
     }
 

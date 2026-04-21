@@ -48,13 +48,13 @@
 - [x] CI: GitHub Actions（Windows cargo check + smoke-ui、Ubuntu landing build）
 
 ### 配布
-- [x] GitHub Releases（Windows/macOS ZIP）
+- [x] GitHub Releases（Windows ZIP）
 - [x] Cloudflare Pages（公式サイト + latest.json）
 - [x] アプリ内更新チェック
 
 ## 未実装（将来対応予定）
 
-- [x] ウィンドウ位置・サイズの記憶と復元（Windows専用、macOSは動作対象外）
+- [x] ウィンドウ位置・サイズの記憶と復元
 - [x] 書き込み後のスレ一覧自動更新
 
 ## 未実装（検討中）

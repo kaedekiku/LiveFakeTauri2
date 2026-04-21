@@ -9,9 +9,9 @@
 | 識別子 | `io.livefake.browser` |
 | 目的 | 実況向け日本語掲示板専用ブラウザ |
 | 対応サイト | 5ch.io / したらば / JPNKN |
-| 対象プラットフォーム | Windows (10/11), macOS (13.0+) |
+| 対象プラットフォーム | Windows 10/11 (64bit) |
 | ライセンス | MIT |
-| 現バージョン | 0.0.72 |
+| 現バージョン | 0.0.73 |
 
 ---
 
@@ -24,20 +24,15 @@
 
 ### 2.2 ZIP 内ファイル構成
 
-**Windows:**
 - `LiveFake.exe` — メイン実行ファイル
 - `WebView2Loader.dll` — WebView2 ランタイムローダー
 - 設定ファイル群（初回起動時に自動生成）
-
-**macOS:**
-- `LiveFake.app` — アプリケーションバンドル
 
 ### 2.3 必須ランタイム
 
 | プラットフォーム | ランタイム | 備考 |
 |----------------|-----------|------|
 | Windows | WebView2 Runtime | Windows 10/11 には通常プリインストール済み |
-| macOS | WebKit (WKWebView) | OS 標準搭載 |
 
 ### 2.4 ビルド方法
 
@@ -85,9 +80,8 @@ livefake (Tauri App)
 
 ### 3.4 WebView2 依存
 
-- Windows: Microsoft Edge WebView2 Runtime に依存
-- macOS: WKWebView (OS 組込み) を使用
-- Tauri v2 がランタイム検出・フォールバックを自動処理
+- Microsoft Edge WebView2 Runtime に依存
+- Windows 10/11 には通常プリインストール済み
 
 ### 3.5 IPC 通信
 
@@ -260,7 +254,7 @@ livefake (Tauri App)
 |---------|----------------|---------|
 | SAPI | Windows | COM (STA スレッド) |
 | 棒読みちゃん | Windows | RemoteTalk.exe (外部プロセス) |
-| VOICEVOX | Windows / macOS | HTTP API (`http://127.0.0.1:50021`) |
+| VOICEVOX | Windows | HTTP API (`http://127.0.0.1:50021`) |
 
 #### 4.13.2 読み上げ仕様
 - 新着レス取得時に自動読み上げ

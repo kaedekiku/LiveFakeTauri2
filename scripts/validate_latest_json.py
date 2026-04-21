@@ -12,7 +12,7 @@ from pathlib import Path
 
 REQUIRED_TOP = ["version", "released_at", "download_page_url", "platforms"]
 REQUIRED_PLATFORM_KEYS = ["sha256", "size", "filename"]
-REQUIRED_PLATFORMS = ["windows-x64", "macos-arm64"]
+REQUIRED_PLATFORMS = ["windows-x64"]
 
 
 def parse_args() -> argparse.Namespace:
