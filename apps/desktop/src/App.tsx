@@ -562,7 +562,7 @@ export default function App() {
   const [postFinalizePreviewProbe, setPostFinalizePreviewProbe] = useState("not run");
   const [postFinalizeSubmitProbe, setPostFinalizeSubmitProbe] = useState("not run");
   const [allowRealSubmit, setAllowRealSubmit] = useState(false);
-  const [metadataUrl, setMetadataUrl] = useState("");
+  const [metadataUrl, setMetadataUrl] = useState("https://raw.githubusercontent.com/kaedekiku/LiveFakeTauri2/main/apps/landing/public/latest.json");
   const [currentVersion, setCurrentVersion] = useState(typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "0.0.0");
   const [updateResult, setUpdateResult] = useState<UpdateCheckResult | null>(null);
   const [updateProbe, setUpdateProbe] = useState("not run");
