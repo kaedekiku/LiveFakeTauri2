@@ -19,6 +19,7 @@ use std::collections::HashMap;
 use std::process::Command;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri::webview::WebviewWindowBuilder;
+use tauri::window::Color;
 use std::sync::Mutex;
 
 /// Multi-tab image data for the popup window.
@@ -31,6 +32,9 @@ struct PopupImageEntry {
     label: String,
 }
 struct ImagePopupState(Mutex<Vec<PopupImageEntry>>);
+
+/// Saved subtitle window position before moving off-screen
+static SUBTITLE_SAVED_POS: Mutex<Option<(i32, i32)>> = Mutex::new(None);
 
 /// (cookie_name, cookie_value, provider)
 static LOGIN_COOKIES: Mutex<Vec<(String, String, String)>> = Mutex::new(Vec::new());
@@ -1915,43 +1919,103 @@ fn clear_popup_images(app: AppHandle) -> Result<(), String> {
 // ===== Subtitle Window Commands =====
 
 #[tauri::command]
-fn subtitle_show(app: AppHandle) -> Result<(), String> {
+async fn subtitle_show(app: AppHandle) -> Result<(), String> {
+    let _ = core_store::append_log("subtitle_show: called");
+    // Close existing window first to avoid duplicate
     if let Some(win) = app.get_webview_window("subtitle") {
-        win.show().map_err(|e| e.to_string())?;
-        win.set_focus().map_err(|e| e.to_string())?;
-        return Ok(());
+        let _ = core_store::append_log("subtitle_show: closing existing window");
+        let _ = win.close();
+        let _ = core_store::append_log("subtitle_show: close() returned");
     }
-    WebviewWindowBuilder::new(&app, "subtitle", tauri::WebviewUrl::App("subtitle.html".into()))
+    let _ = core_store::append_log("subtitle_show: before lock");
+    let saved = SUBTITLE_SAVED_POS.lock().unwrap_or_else(|e| e.into_inner()).take();
+    let _ = core_store::append_log("subtitle_show: before build");
+    let win = WebviewWindowBuilder::new(&app, "subtitle", tauri::WebviewUrl::App("subtitle.html".into()))
         .title("LiveFake - 字幕")
         .inner_size(800.0, 200.0)
         .decorations(false)
-        .always_on_top(true)
+        .transparent(true)
+        .background_color(Color(0, 0, 0, 0))
         .resizable(true)
-        .skip_taskbar(true)
-        .background_color(tauri::window::Color(26, 26, 46, 255))
         .build()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            let _ = core_store::append_log(&format!("subtitle_show: build FAILED: {e}"));
+            e.to_string()
+        })?;
+    let _ = core_store::append_log("subtitle_show: window built ok");
+    // Restore previous position or center on primary monitor
+    if let Some((x, y)) = saved {
+        let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
+    } else if let Ok(Some(monitor)) = app.primary_monitor() {
+        let ms = monitor.size();
+        let ws = win.outer_size().unwrap_or(tauri::PhysicalSize::new(800, 200));
+        let x = (ms.width as i32 - ws.width as i32) / 2;
+        let y = (ms.height as i32 - ws.height as i32) / 2;
+        let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
+    }
     Ok(())
 }
 
 #[tauri::command]
-fn subtitle_hide(app: AppHandle) -> Result<(), String> {
+async fn subtitle_hide(app: AppHandle) -> Result<(), String> {
+    let _ = core_store::append_log("subtitle_hide: called");
     if let Some(win) = app.get_webview_window("subtitle") {
-        win.hide().map_err(|e| e.to_string())?;
+        let _ = core_store::append_log("subtitle_hide: window found");
+        if let Ok(pos) = win.outer_position() {
+            let mut guard = SUBTITLE_SAVED_POS.lock().unwrap_or_else(|e| e.into_inner());
+            *guard = Some((pos.x, pos.y));
+        }
+        // Run on main thread — window close must dispatch from UI thread
+        app.run_on_main_thread(move || {
+            let r = win.close();
+            let _ = core_store::append_log(&format!("subtitle_hide: close() ok={}", r.is_ok()));
+            if r.is_err() {
+                // Fallback: destroy
+                let r2 = win.destroy();
+                let _ = core_store::append_log(&format!("subtitle_hide: destroy() ok={}", r2.is_ok()));
+            }
+        }).map_err(|e| e.to_string())?;
+    } else {
+        let _ = core_store::append_log("subtitle_hide: window NOT found");
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn subtitle_reset_position(app: AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("subtitle") {
+        if let Ok(Some(monitor)) = app.primary_monitor() {
+            let ms = monitor.size();
+            let ws = win.outer_size().unwrap_or(tauri::PhysicalSize::new(800, 200));
+            let x = (ms.width as i32 - ws.width as i32) / 2;
+            let y = (ms.height as i32 - ws.height as i32) / 2;
+            win.set_position(tauri::PhysicalPosition::new(x, y)).map_err(|e| e.to_string())?;
+        }
     }
     Ok(())
 }
 
 #[tauri::command]
 fn subtitle_update(app: AppHandle, data: serde_json::Value) -> Result<(), String> {
-    app.emit_to("subtitle", "subtitle-update", data)
-        .map_err(|e| e.to_string())
+    if let Some(win) = app.get_webview_window("subtitle") {
+        let js = format!(
+            "if(window.__subtitleEntry)window.__subtitleEntry({})",
+            serde_json::to_string(&data).unwrap_or_default()
+        );
+        let _ = win.eval(&js);
+    }
+    Ok(())
 }
 
 #[tauri::command]
 fn subtitle_opacity(app: AppHandle, opacity: f64) -> Result<(), String> {
-    app.emit_to("subtitle", "subtitle-opacity", serde_json::json!({ "opacity": opacity }))
-        .map_err(|e| e.to_string())
+    if let Some(win) = app.get_webview_window("subtitle") {
+        let _ = win.eval(&format!(
+            "if(window.__setOpacity)window.__setOpacity({})",
+            opacity
+        ));
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1964,14 +2028,24 @@ fn subtitle_topmost(app: AppHandle, enabled: bool) -> Result<(), String> {
 
 #[tauri::command]
 fn subtitle_font_size(app: AppHandle, size: u32) -> Result<(), String> {
-    app.emit_to("subtitle", "subtitle-font-size", serde_json::json!({ "size": size }))
-        .map_err(|e| e.to_string())
+    if let Some(win) = app.get_webview_window("subtitle") {
+        let _ = win.eval(&format!(
+            "if(window.__setFontSize)window.__setFontSize({})",
+            size
+        ));
+    }
+    Ok(())
 }
 
 #[tauri::command]
 fn subtitle_meta_font_size(app: AppHandle, size: u32) -> Result<(), String> {
-    app.emit_to("subtitle", "subtitle-meta-font-size", serde_json::json!({ "size": size }))
-        .map_err(|e| e.to_string())
+    if let Some(win) = app.get_webview_window("subtitle") {
+        let _ = win.eval(&format!(
+            "if(window.__setMetaFontSize)window.__setMetaFontSize({})",
+            size
+        ));
+    }
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -2040,6 +2114,16 @@ pub fn run() {
                         }
                     }
                 }
+            }
+            // Close subtitle/popup windows when main window closes
+            if let Some(main_win) = app.get_webview_window("main") {
+                let handle = app.handle().clone();
+                main_win.on_window_event(move |event| {
+                    if let tauri::WindowEvent::Destroyed = event {
+                        if let Some(w) = handle.get_webview_window("subtitle") { let _ = w.close(); }
+                        if let Some(w) = handle.get_webview_window("image_popup") { let _ = w.close(); }
+                    }
+                });
             }
             Ok(())
         })
@@ -2123,6 +2207,7 @@ pub fn run() {
             clear_popup_images,
             subtitle_show,
             subtitle_hide,
+            subtitle_reset_position,
             subtitle_update,
             subtitle_opacity,
             subtitle_topmost,

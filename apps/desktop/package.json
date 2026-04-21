@@ -1,7 +1,7 @@
 {
   "name": "livefake",
   "private": true,
-  "version": "0.0.71",
+  "version": "0.0.73",
   "license": "MIT",
   "type": "module",
   "scripts": {

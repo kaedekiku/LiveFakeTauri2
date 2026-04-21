@@ -10,138 +10,113 @@
     width: 100%;
     height: 100%;
     overflow: hidden;
-    background: #1a1a2e;
+    background: transparent;
     font-family: "MS UI Gothic", "Meiryo", "Segoe UI Emoji", "Apple Color Emoji", sans-serif;
-    color: #ffffff;
     user-select: none;
   }
-  #dragRegion {
+  #subtitleRoot {
+    position: relative;
     width: 100%;
     height: 100%;
+    background: rgba(26, 26, 46, 1.0);
+    color: #ffffff;
     display: flex;
     flex-direction: column;
-    padding: 8px 12px;
     overflow: hidden;
-    cursor: move;
+  }
+  #subtitleContent {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    padding: 6px 10px;
+    pointer-events: none;
   }
   #subtitleMeta {
     font-size: 12px;
     line-height: 1.4;
-    color: #cccccc;
+    color: rgba(255,255,255,0.75);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
     margin-bottom: 4px;
     flex-shrink: 0;
+    text-shadow: 0 0 2px rgba(0,0,0,0.9), 1px 1px 2px rgba(0,0,0,0.9);
   }
   #subtitleBody {
     font-size: 28px;
     line-height: 1.4;
     color: #ffffff;
-    word-wrap: break-word;
-    overflow-wrap: break-word;
+    word-break: break-word;
     overflow-y: auto;
     flex: 1;
+    white-space: pre-wrap;
+    text-shadow: 0 0 2px rgba(0,0,0,0.9), 0 0 4px rgba(0,0,0,0.9), 1px 1px 2px rgba(0,0,0,0.9);
   }
   .hl-text { border-radius: 2px; padding: 0 1px; }
   .hl-id { font-weight: bold; }
-  #subtitleMeta .meta-thread-title { color: #88aaff; }
-  #subtitleMeta .meta-name { color: #88ff88; }
-  #subtitleMeta .meta-id { font-weight: bold; }
-  #subtitleMeta .meta-date { color: #999999; }
 </style>
 </head>
 <body>
-<div id="dragRegion" data-tauri-drag-region>
-  <div id="subtitleMeta"></div>
-  <div id="subtitleBody">字幕ウィンドウ</div>
+<div id="subtitleRoot">
+  <div id="subtitleContent">
+    <div id="subtitleMeta"></div>
+    <div id="subtitleBody">字幕待機中</div>
+  </div>
 </div>
 <script>
-  var _setupDone = false;
+  var rootEl = document.getElementById("subtitleRoot");
+  var metaEl = document.getElementById("subtitleMeta");
+  var bodyEl = document.getElementById("subtitleBody");
 
-  function tauriInvoke(cmd, args) {
-    var ti = window.__TAURI_INTERNALS__;
-    if (!ti) return Promise.reject("no tauri");
-    return ti.invoke(cmd, args || {});
-  }
-
-  function tauriListen(eventName, callback) {
-    var ti = window.__TAURI_INTERNALS__;
-    if (!ti) return;
-    var cbId = ti.transformCallback(function(ev) { callback(ev.payload); });
-    tauriInvoke("plugin:event|listen", {
-      event: eventName,
-      target: { kind: "Any" },
-      handler: cbId,
-    });
-  }
-
-  function setup() {
-    if (_setupDone) return;
-    _setupDone = true;
-
-    tauriListen("subtitle-update", function(p) { if (p) updateContent(p); });
-    tauriListen("subtitle-opacity", function(p) {
-      if (p && p.opacity != null) {
-        var o = p.opacity;
-        var r = Math.round(26 + (255 - 26) * (1 - o));
-        var g = Math.round(26 + (255 - 26) * (1 - o));
-        var b = Math.round(46 + (255 - 46) * (1 - o));
-        document.body.style.background = "rgb(" + r + "," + g + "," + b + ")";
-      }
-    });
-    tauriListen("subtitle-font-size", function(p) {
-      if (p && p.size) document.getElementById("subtitleBody").style.fontSize = p.size + "px";
-    });
-    tauriListen("subtitle-meta-font-size", function(p) {
-      if (p && p.size) document.getElementById("subtitleMeta").style.fontSize = p.size + "px";
-    });
-  }
-
-  // Poll for Tauri internals — retry up to 5 seconds
-  var _retries = 0;
-  function waitForTauri() {
-    if (window.__TAURI_INTERNALS__) {
-      setup();
-      return;
-    }
-    if (_retries < 100) {
-      _retries++;
-      setTimeout(waitForTauri, 50);
-    }
-  }
-
-  document.addEventListener("DOMContentLoaded", function() {
-    waitForTauri();
-  });
-
-  function escapeHtml(str) {
+  function escapeHtml(s) {
     var d = document.createElement("div");
-    d.textContent = str;
+    d.textContent = String(s);
     return d.innerHTML;
   }
 
-  function updateContent(data) {
-    var meta = document.getElementById("subtitleMeta");
-    var body = document.getElementById("subtitleBody");
-    if (!data) return;
-
+  window.__subtitleEntry = function(entry) {
+    var e = entry || {};
     var parts = [];
-    if (data.threadTitle) parts.push('<span class="meta-thread-title">' + escapeHtml(data.threadTitle) + '</span>');
-    if (data.name) parts.push('<span class="meta-name">' + escapeHtml(data.name) + '</span>');
-    if (data.id) {
-      var color = data.idColor || "#cc8800";
-      parts.push('<span class="meta-id hl-id" style="color:' + color + '">' + escapeHtml("ID:" + data.id) + '</span>');
+    if (e.threadTitle) parts.push('<span style="color:#88aaff">' + escapeHtml(e.threadTitle) + '</span>');
+    if (e.responseNo != null) parts.push('<span style="color:#aaaaaa">' + escapeHtml(e.responseNo) + '番</span>');
+    if (e.name)        parts.push('<span style="color:#88ff88">' + escapeHtml(e.name) + '</span>');
+    if (e.id) {
+      var idColor = (e.idColor || "#cc8800").replace(/[^#a-zA-Z0-9]/g, "");
+      parts.push('<span class="hl-id" style="color:' + idColor + '">ID:' + escapeHtml(e.id) + '</span>');
     }
-    if (data.date) parts.push('<span class="meta-date">' + escapeHtml(data.date) + '</span>');
-    meta.innerHTML = parts.join(" ");
+    if (e.date) parts.push('<span style="color:#999999">' + escapeHtml(e.date) + '</span>');
+    metaEl.innerHTML = parts.join("&nbsp;&nbsp;");
 
-    if (data.bodyHtml) {
-      body.innerHTML = data.bodyHtml;
+    if (e.bodyHtml) {
+      bodyEl.innerHTML = e.bodyHtml;
     } else {
-      body.textContent = data.body || "";
+      bodyEl.textContent = e.body || "";
     }
-  }
+  };
+
+  window.__setOpacity = function(value) {
+    var a = Math.max(0.1, Math.min(1.0, Number(value) || 1.0));
+    rootEl.style.background = "rgba(26, 26, 46, " + a + ")";
+  };
+
+  window.__setFontSize = function(size) {
+    var s = Math.max(10, Math.min(96, Number(size) || 28));
+    bodyEl.style.fontSize = s + "px";
+  };
+
+  window.__setMetaFontSize = function(size) {
+    var s = Math.max(8, Math.min(48, Number(size) || 12));
+    metaEl.style.fontSize = s + "px";
+  };
+
+  rootEl.addEventListener("mousedown", function(e) {
+    if (e.button === 0 && window.__TAURI_INTERNALS__) {
+      window.__TAURI_INTERNALS__.invoke("plugin:window|start_dragging").catch(function(){});
+    }
+  });
 </script>
 </body>
 </html>

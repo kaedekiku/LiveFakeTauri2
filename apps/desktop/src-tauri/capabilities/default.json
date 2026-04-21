@@ -2,5 +2,5 @@
   "identifier": "default",
   "description": "Default desktop capability",
   "windows": ["main", "subtitle", "image_popup"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "core:window:allow-start-dragging"]
 }

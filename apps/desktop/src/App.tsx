@@ -1895,7 +1895,7 @@ export default function App() {
         // Update subtitle with latest new response
         if (arrivals.length > 0) {
           const latest = arrivals[arrivals.length - 1];
-          subtitleUpdate({ threadTitle: latest.threadTitle, name: latest.name, id: latest.id, date: latest.time, body: latest.text });
+          subtitleUpdate({ threadTitle: latest.threadTitle, responseNo: latest.responseNo, name: latest.name, id: latest.id, date: latest.time, body: latest.text });
         }
         // TTS: read new responses (skip 1001/1002)
         if (ttsEnabled && ttsMode !== "off") {
@@ -2217,7 +2217,7 @@ export default function App() {
   };
 
   // Subtitle: send update to subtitle window
-  const subtitleUpdate = (data: { threadTitle?: string; name?: string; id?: string; date?: string; body?: string }) => {
+  const subtitleUpdate = (data: { threadTitle?: string; name?: string; id?: string; date?: string; body?: string; responseNo?: number }) => {
     if (!isTauriRuntime() || !subtitleVisible) return;
     const bodyHtml = data.body
       ? renderResponseBodyHighlighted(data.body, "", { hideImages: true }, textHighlights.filter((h) => h.type === "word")).__html
@@ -3795,6 +3795,7 @@ export default function App() {
       if (map["App.fontSize"]) { const n = parseInt(map["App.fontSize"], 10); if (!isNaN(n)) { setResponsesFontSize(n); setBoardsFontSize(n); setThreadsFontSize(n); } }
       if (map["App.responseGap"]) { const n = parseInt(map["App.responseGap"], 10); if (!isNaN(n)) setResponseGap(n); }
       if (map["App.autoReloadIntervalSec"]) { const n = parseInt(map["App.autoReloadIntervalSec"], 10); if (!isNaN(n)) setAutoRefreshInterval(n); }
+      if (map["App.autoReload"]) setAutoRefreshEnabled(map["App.autoReload"] === "true");
       if (map["App.autoScroll"]) setAutoScrollEnabled(map["App.autoScroll"] === "true");
       if (map["App.smoothScroll"]) setSmoothScroll(map["App.smoothScroll"] === "true");
       if (map["App.maxOpenTabs"]) { const n = parseInt(map["App.maxOpenTabs"], 10); if (!isNaN(n) && n >= 1) setMaxOpenTabs(n); }
@@ -3829,6 +3830,7 @@ export default function App() {
       "App.fontSize": String(responsesFontSize),
       "App.responseGap": String(responseGap),
       "App.autoReloadIntervalSec": String(autoRefreshInterval),
+      "App.autoReload": String(autoRefreshEnabled),
       "App.autoScroll": String(autoScrollEnabled),
       "App.smoothScroll": String(smoothScroll),
       "App.maxOpenTabs": String(maxOpenTabs),
@@ -3852,7 +3854,7 @@ export default function App() {
       "Posting.sage": String(composeSage),
       "Posting.fontSize": String(composeFontSize),
     } }).catch(() => {});
-  }, [responsesFontSize, responseGap, autoRefreshInterval, autoScrollEnabled, smoothScroll, maxOpenTabs, logRetentionDays, imageSaveFolder,
+  }, [responsesFontSize, responseGap, autoRefreshInterval, autoRefreshEnabled, autoScrollEnabled, smoothScroll, maxOpenTabs, logRetentionDays, imageSaveFolder,
       ttsMode, ttsEnabled, ttsMaxReadLength, sapiVoiceIndex, sapiRate, sapiVolume, bouyomiPath,
       voicevoxEndpoint, voicevoxSpeakerId, voicevoxSpeedScale, voicevoxPitchScale, voicevoxIntonationScale, voicevoxVolumeScale,
       composeName, composeMail, composeSage, composeFontSize]);
@@ -4351,7 +4353,14 @@ export default function App() {
                     onClick={() => {
                       if (!subtitleVisible) {
                         setSubtitleVisible(true);
-                        if (isTauriRuntime()) invoke("subtitle_show").catch((e) => console.warn("subtitle_show:", e));
+                        if (isTauriRuntime()) invoke("subtitle_show").then(() => {
+                          setTimeout(() => {
+                            invoke("subtitle_opacity", { opacity: subtitleOpacity }).catch(() => {});
+                            invoke("subtitle_font_size", { size: subtitleBodyFontSize }).catch(() => {});
+                            invoke("subtitle_meta_font_size", { size: subtitleMetaFontSize }).catch(() => {});
+                            invoke("subtitle_topmost", { enabled: subtitleAlwaysOnTop }).catch(() => {});
+                          }, 400);
+                        }).catch((e) => console.warn("subtitle_show:", e));
                       } else {
                         setSubtitleVisible(false);
                         if (isTauriRuntime()) invoke("subtitle_hide").catch((e) => console.warn("subtitle_hide:", e));
@@ -4811,7 +4820,14 @@ export default function App() {
                   onClick={() => {
                     if (!subtitleVisible) {
                       setSubtitleVisible(true);
-                      if (isTauriRuntime()) invoke("subtitle_show").catch((e) => console.warn("subtitle_show:", e));
+                      if (isTauriRuntime()) invoke("subtitle_show").then(() => {
+                        setTimeout(() => {
+                          invoke("subtitle_opacity", { opacity: subtitleOpacity }).catch(() => {});
+                          invoke("subtitle_font_size", { size: subtitleBodyFontSize }).catch(() => {});
+                          invoke("subtitle_meta_font_size", { size: subtitleMetaFontSize }).catch(() => {});
+                          invoke("subtitle_topmost", { enabled: subtitleAlwaysOnTop }).catch(() => {});
+                        }, 400);
+                      }).catch((e) => console.warn("subtitle_show:", e));
                     } else {
                       setSubtitleVisible(false);
                       if (isTauriRuntime()) invoke("subtitle_hide").catch((e) => console.warn("subtitle_hide:", e));
@@ -6197,6 +6213,12 @@ export default function App() {
                     setSubtitleAlwaysOnTop(e.target.checked);
                     if (isTauriRuntime()) invoke("subtitle_topmost", { enabled: e.target.checked }).catch(() => {});
                   }} />
+                </div>
+                <div className="settings-row">
+                  <span>ウィンドウ位置</span>
+                  <button onClick={() => {
+                    if (isTauriRuntime()) invoke("subtitle_reset_position").catch((e) => console.warn("subtitle_reset_position:", e));
+                  }}>中央に戻す</button>
                 </div>
               </fieldset>
               </>)}
