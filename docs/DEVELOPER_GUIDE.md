@@ -376,12 +376,12 @@ npm run check:latest:strict  # 厳密検証（SHA256チェックなど）
 
 | ジョブ | OS | 内容 |
 |-------|-----|------|
-| `rust-check-windows` | Windows | `cargo check --workspace` → `npm run build` → `npm run test:smoke-ui` |
+| `rust-check-windows` | Windows | `cargo check --workspace` → `npm run build` |
 | `landing-build` | Ubuntu | `npm run check:latest` → `npm run build` |
 
 ### リリースフロー
 
-1. `npm run tauri:build` で Windows/macOS バイナリをビルド
+1. `npm run tauri:build` で Windows バイナリをビルド
 2. GitHub Release にタグ付きでZIPをアップロード
 3. `scripts/prepare_release_metadata.py` で `latest.json` を生成
 4. `apps/landing/public/latest.json` を更新

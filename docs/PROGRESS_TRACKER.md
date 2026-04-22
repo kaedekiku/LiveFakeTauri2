@@ -7,7 +7,7 @@
 | v0.0.1 | 2026-03-07 | 初回リリース |
 | v0.0.2 | 2026-03-08 | ポップアップ改善、更新チェック、キーボードショートカット |
 | v0.0.3 | 2026-03-09 | ポップアップ画像操作、dat落ちモード修正 |
-| v0.0.4 | 2026-03-22 | Linux対応(PR#1)、タブドラッグ並べ替え、日時表示 |
+| v0.0.4 | 2026-03-22 | タブドラッグ並べ替え、日時表示 |
 | v0.0.5 | 2026-03-22 | UI改善（公式サイトリンク、更新確認移動、自動更新チェック） |
 | v0.0.6 | 2026-03-23 | macOS起動クラッシュ修正（ウィンドウ状態永続化を撤去） |
 | v0.0.7 | 2026-03-23 | 過去ログ倉庫スレ対応、画像プレビュー幅制限、バージョン自動取得 |
@@ -45,7 +45,7 @@
 ### テスト
 - [x] smoke-ui: Playwrightによる UIスモークテスト
 - [x] E2E: Tauri + Playwright via WebView2 CDP
-- [x] CI: GitHub Actions（Windows cargo check + smoke-ui、Ubuntu landing build）
+- [x] CI: GitHub Actions（Windows cargo check、landing build）
 
 ### 配布
 - [x] GitHub Releases（Windows ZIP）
