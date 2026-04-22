@@ -678,7 +678,7 @@ export default function App() {
   const [boardTabs, setBoardTabs] = useState<{boardUrl: string, title: string}[]>([]);
   const [activeBoardTabIndex, setActiveBoardTabIndex] = useState(-1);
   const [activePaneView, setActivePaneView] = useState<"threads" | "responses">("threads");
-  const tabCacheRef = useRef<Map<string, { responses: ThreadResponseItem[]; selectedResponse: number; scrollResponseNo?: number; newResponseStart?: number | null }>>(new Map());
+  const tabCacheRef = useRef<Map<string, { responses: ThreadResponseItem[]; selectedResponse: number; scrollResponseNo?: number; scrollAtBottom?: boolean; newResponseStart?: number | null }>>(new Map());
   const closedTabsRef = useRef<{ threadUrl: string; title: string }[]>([]);
   const [tabRestoreReady, setTabRestoreReady] = useState(false);
   const threadTabsRef = useRef<ThreadTab[]>([]);
@@ -1302,6 +1302,24 @@ export default function App() {
     } catch { /* ignore */ }
     return 0;
   };
+  const isScrollAtBottom = () => {
+    const c = responseScrollRef.current;
+    if (!c) return false;
+    return c.scrollHeight - c.scrollTop - c.clientHeight < 50;
+  };
+
+  const scrollToBottom = () => {
+    const tryScroll = (attempts: number) => {
+      const c = responseScrollRef.current;
+      if (!c) return;
+      c.scrollTop = c.scrollHeight;
+      if (c.scrollHeight - c.scrollTop - c.clientHeight > 8 && attempts < 10) {
+        requestAnimationFrame(() => tryScroll(attempts + 1));
+      }
+    };
+    requestAnimationFrame(() => tryScroll(0));
+  };
+
   const scrollToResponseNo = (no: number) => {
     if (no <= 1) return;
     let attempts = 0;
@@ -1343,6 +1361,7 @@ export default function App() {
         const cached = tabCacheRef.current.get(curUrl);
         if (cached) {
           cached.selectedResponse = selectedResponse;
+          cached.scrollAtBottom = isScrollAtBottom();
           cached.scrollResponseNo = getVisibleResponseNo();
           cached.newResponseStart = newResponseStart;
           saveScrollPos(curUrl);
@@ -1356,7 +1375,8 @@ export default function App() {
         const bm = loadBookmark(url);
         setSelectedResponse(bm ?? cached.selectedResponse);
         setNewResponseStart(cached.newResponseStart ?? null);
-        scrollToResponseNo(cached.scrollResponseNo ?? loadScrollPos(url));
+        if (cached.scrollAtBottom) scrollToBottom();
+        else scrollToResponseNo(cached.scrollResponseNo ?? loadScrollPos(url));
       } else if (isTauriRuntime()) {
         invoke<string | null>("load_thread_cache", { threadUrl: url }).then((json) => {
           if (json) {
@@ -1384,6 +1404,7 @@ export default function App() {
       const cached = tabCacheRef.current.get(curUrl);
       if (cached) {
         cached.selectedResponse = selectedResponse;
+        cached.scrollAtBottom = isScrollAtBottom();
         cached.scrollResponseNo = getVisibleResponseNo();
         cached.newResponseStart = newResponseStart;
         saveScrollPos(curUrl);
@@ -1459,7 +1480,8 @@ export default function App() {
     if (cached) {
       setFetchedResponses(cached.responses);
       setSelectedResponse(cached.selectedResponse);
-      scrollToResponseNo(cached.scrollResponseNo ?? 0);
+      if (cached.scrollAtBottom) scrollToBottom();
+      else scrollToResponseNo(cached.scrollResponseNo ?? 0);
     }
     setThreadUrl(tab.threadUrl);
     setLocationInput(tab.threadUrl);
@@ -1473,6 +1495,7 @@ export default function App() {
       const cached = tabCacheRef.current.get(curUrl);
       if (cached) {
         cached.selectedResponse = selectedResponse;
+        cached.scrollAtBottom = isScrollAtBottom();
         cached.scrollResponseNo = getVisibleResponseNo();
         saveScrollPos(curUrl);
       }
@@ -1484,7 +1507,8 @@ export default function App() {
     if (cached) {
       setFetchedResponses(cached.responses);
       setSelectedResponse(cached.selectedResponse);
-      scrollToResponseNo(cached.scrollResponseNo ?? 0);
+      if (cached.scrollAtBottom) scrollToBottom();
+      else scrollToResponseNo(cached.scrollResponseNo ?? 0);
     } else {
       setFetchedResponses([]);
       setSelectedResponse(1);
