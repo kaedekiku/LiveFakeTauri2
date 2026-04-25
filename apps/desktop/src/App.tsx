@@ -115,7 +115,6 @@ const SPLITTER_PX = 6;
 const DEFAULT_BOARD_PANE_PX = 220;
 const DEFAULT_THREAD_PANE_PX = 420;
 const DEFAULT_RESPONSE_TOP_RATIO = 42;
-const LAYOUT_PREFS_KEY = "desktop.layoutPrefs.v1";
 const MIN_NEW_ARRIVAL_PX = 80;
 const MAX_NEW_ARRIVAL_PX = 420;
 const DEFAULT_NEW_ARRIVAL_PX = 150;
@@ -130,22 +129,11 @@ const DEFAULT_COL_WIDTHS: Record<string, number> = {
   speed: 54,
 };
 const COL_RESIZE_HANDLE_PX = 5;
-const COMPOSE_PREFS_KEY = "desktop.composePrefs.v1";
-const NAME_HISTORY_KEY = "desktop.nameHistory.v1";
-const BOOKMARK_KEY = "desktop.bookmarks.v1";
 const BOARD_CACHE_KEY = "desktop.boardCategories.v1";
-const EXPANDED_CATS_KEY = "desktop.expandedCategories.v1";
 const LANDING_PAGE_URL = "";
 const GITHUB_RELEASE_URL = "https://github.com/kaedekiku/LiveFakeTauri2";
 const BOARD_TREE_SCROLL_KEY = "desktop.boardTreeScrollTop.v1";
-const SCROLL_POS_KEY = "desktop.scrollPositions.v1";
 const NEW_THREAD_SIZE_KEY = "desktop.newThreadDialogSize.v1";
-const THREAD_FETCH_TIMES_KEY = "desktop.threadFetchTimes.v1";
-const WINDOW_STATE_KEY = "desktop.windowState.v1";
-const SEARCH_HISTORY_KEY = "desktop.searchHistory.v1";
-const MY_POSTS_KEY = "desktop.myPosts.v1";
-const THREAD_TABS_KEY = "desktop.threadTabs.v1";
-const BOARD_TABS_KEY = "desktop.boardTabs.v1";
 const MAX_SEARCH_HISTORY = 20;
 const MENU_EDGE_PADDING = 8;
 
@@ -591,10 +579,7 @@ export default function App() {
   const newThreadPanelRef = useRef<HTMLDivElement>(null);
   const [postHistory, setPostHistory] = useState<{ time: string; threadUrl: string; body: string; ok: boolean }[]>([]);
   const [postHistoryOpen, setPostHistoryOpen] = useState(false);
-  const [myPosts, setMyPosts] = useState<Record<string, number[]>>(() => {
-    try { const v = localStorage.getItem(MY_POSTS_KEY); if (v) return JSON.parse(v); } catch { /* ignore */ }
-    return {};
-  });
+  const [myPosts, setMyPosts] = useState<Record<string, number[]>>({});
   const pendingMyPostRef = useRef<{ threadUrl: string; body: string; prevCount: number } | null>(null);
   const [postFlowTraceProbe, setPostFlowTraceProbe] = useState("not run");
   const [threadListProbe, setThreadListProbe] = useState("not run");
@@ -883,7 +868,6 @@ export default function App() {
         const list = prev[pending.threadUrl] ?? [];
         if (list.includes(matched.responseNo)) return prev;
         const next = { ...prev, [pending.threadUrl]: [...list, matched.responseNo] };
-        try { localStorage.setItem(MY_POSTS_KEY, JSON.stringify(next)); } catch { /* ignore */ }
         saveToFile("my-posts.json", next);
         return next;
       });
@@ -1263,7 +1247,6 @@ export default function App() {
   const saveBookmark = (url: string, responseNo: number) => {
     bookmarkCacheRef.current[url] = responseNo;
     const data = bookmarkCacheRef.current;
-    try { localStorage.setItem(BOOKMARK_KEY, JSON.stringify(data)); } catch { /* ignore */ }
     saveToFile("bookmarks.json", data);
   };
 
@@ -1288,20 +1271,10 @@ export default function App() {
     const no = responseNo ?? getVisibleResponseNo();
     if (no <= 1) return;
     threadScrollPositions.current[url] = no;
-    try { localStorage.setItem(SCROLL_POS_KEY, JSON.stringify(threadScrollPositions.current)); } catch { /* ignore */ }
     saveToFile("scroll-positions.json", threadScrollPositions.current);
   };
   const loadScrollPos = (url: string): number => {
-    if (threadScrollPositions.current[url] != null) return threadScrollPositions.current[url];
-    try {
-      const raw = localStorage.getItem(SCROLL_POS_KEY);
-      if (raw) {
-        const data: Record<string, number> = JSON.parse(raw);
-        Object.assign(threadScrollPositions.current, data);
-        return data[url] ?? 0;
-      }
-    } catch { /* ignore */ }
-    return 0;
+    return threadScrollPositions.current[url] ?? 0;
   };
   const isScrollAtBottom = () => {
     const c = responseScrollRef.current;
@@ -1340,7 +1313,6 @@ export default function App() {
     setExpandedCategories((prev) => {
       const next = new Set(prev);
       if (next.has(name)) next.delete(name); else next.add(name);
-      try { localStorage.setItem(EXPANDED_CATS_KEY, JSON.stringify([...next])); } catch { /* ignore */ }
       saveToFile("expanded-categories.json", [...next]);
       return next;
     });
@@ -1873,7 +1845,6 @@ export default function App() {
       const timeStr = `${now.getFullYear()}/${String(now.getMonth() + 1).padStart(2, "0")}/${String(now.getDate()).padStart(2, "0")} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
       setLastFetchTime(timeStr);
       threadFetchTimesRef.current[url] = timeStr;
-      try { localStorage.setItem(THREAD_FETCH_TIMES_KEY, JSON.stringify(threadFetchTimesRef.current)); } catch { /* ignore */ }
       saveToFile("thread-fetch-times.json", threadFetchTimesRef.current);
       // Update thread list read counts and response count
       const threadListIndex = fetchedThreads.findIndex((ft) => ft.threadUrl === url);
@@ -2134,7 +2105,6 @@ export default function App() {
     if (composeName.trim()) {
       setNameHistory((prev) => {
         const next = [composeName.trim(), ...prev.filter((n) => n !== composeName.trim())].slice(0, 20);
-        try { localStorage.setItem(NAME_HISTORY_KEY, JSON.stringify(next)); } catch { /* ignore */ }
         saveToFile("name-history.json", next);
         return next;
       });
@@ -2347,8 +2317,7 @@ export default function App() {
         if (newThreadName.trim()) {
           setNameHistory((prev) => {
             const next = [newThreadName.trim(), ...prev.filter((n) => n !== newThreadName.trim())].slice(0, 20);
-            try { localStorage.setItem(NAME_HISTORY_KEY, JSON.stringify(next)); } catch { /* ignore */ }
-        saveToFile("name-history.json", next);
+            saveToFile("name-history.json", next);
             return next;
           });
         }
@@ -2720,7 +2689,6 @@ export default function App() {
   const searchHistoryRef = useRef({ thread: threadSearchHistory, response: responseSearchHistory });
   searchHistoryRef.current = { thread: threadSearchHistory, response: responseSearchHistory };
   const persistSearchHistory = (thread: string[], response: string[]) => {
-    try { localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify({ thread, response })); } catch { /* ignore */ }
     saveToFile("search-history.json", { thread, response });
   };
   const addSearchHistory = (type: "thread" | "response", word: string) => {
@@ -2843,7 +2811,7 @@ export default function App() {
     tabCacheRef.current.delete(url);
     // clear fetch timestamp
     delete threadFetchTimesRef.current[url];
-    try { localStorage.setItem(THREAD_FETCH_TIMES_KEY, JSON.stringify(threadFetchTimesRef.current)); } catch { /* ignore */ }
+    saveToFile("thread-fetch-times.json", threadFetchTimesRef.current);
     // clear read status for this thread in the thread list
     const threadId = threadItems.find((t) => "threadUrl" in t && t.threadUrl === url)?.id;
     if (threadId != null) {
@@ -2871,7 +2839,7 @@ export default function App() {
     invoke("delete_thread_cache", { threadUrl: url }).catch(() => {});
     tabCacheRef.current.delete(url);
     delete threadFetchTimesRef.current[url];
-    try { localStorage.setItem(THREAD_FETCH_TIMES_KEY, JSON.stringify(threadFetchTimesRef.current)); } catch { /* ignore */ }
+    saveToFile("thread-fetch-times.json", threadFetchTimesRef.current);
   };
 
   const runOnActiveThread = (action: (url: string) => void) => {
@@ -3048,7 +3016,6 @@ export default function App() {
     setBoardsFontSize(12);
     setThreadsFontSize(12);
     setResponsesFontSize(12);
-    localStorage.removeItem(LAYOUT_PREFS_KEY);
     setStatus("layout reset");
   };
 
@@ -3081,7 +3048,6 @@ export default function App() {
         // At bottom: save last response no so restore scrolls to bottom
         const lastNo = fetchedResponses[fetchedResponses.length - 1].responseNo;
         threadScrollPositions.current[url] = lastNo;
-        try { localStorage.setItem(SCROLL_POS_KEY, JSON.stringify(threadScrollPositions.current)); } catch { /* ignore */ }
         saveToFile("scroll-positions.json", threadScrollPositions.current);
         saveBookmark(url, lastNo);
       } else {
@@ -3278,8 +3244,7 @@ export default function App() {
         if (typeof parsed.newArrivalFontSize === "number") setNewArrivalFontSize(parsed.newArrivalFontSize);
       } catch { /* ignore */ }
     };
-    // Try localStorage first, then file-based persistence
-    applyPrefs(localStorage.getItem(LAYOUT_PREFS_KEY));
+    // Layout prefs from file (settings.json via IPC)
     if (isTauriRuntime()) {
       invoke<string>("load_layout_prefs").then((raw) => {
         if (raw) applyPrefs(raw);
@@ -3288,31 +3253,6 @@ export default function App() {
     } else {
       layoutPrefsLoadedRef.current = true;
     }
-    try {
-      const composeRaw = localStorage.getItem(COMPOSE_PREFS_KEY);
-      if (composeRaw) {
-        const cp = JSON.parse(composeRaw) as { name?: string; mail?: string; sage?: boolean; fontSize?: number };
-        if (typeof cp.name === "string") setComposeName(cp.name);
-        if (typeof cp.fontSize === "number") setComposeFontSize(cp.fontSize);
-        if (typeof cp.mail === "string") setComposeMail(cp.mail);
-        if (typeof cp.sage === "boolean") setComposeSage(cp.sage);
-        try {
-          const nh = localStorage.getItem(NAME_HISTORY_KEY);
-          if (nh) setNameHistory(JSON.parse(nh));
-        } catch { /* ignore */ }
-      }
-    } catch {
-      // ignore
-    }
-    // Restore search history
-    try {
-      const sh = localStorage.getItem(SEARCH_HISTORY_KEY);
-      if (sh) {
-        const parsed = JSON.parse(sh) as { thread?: string[]; response?: string[] };
-        if (Array.isArray(parsed.thread)) setThreadSearchHistory(parsed.thread);
-        if (Array.isArray(parsed.response)) setResponseSearchHistory(parsed.response);
-      }
-    } catch { /* ignore */ }
     // Restore board categories cache
     try {
       const boardRaw = localStorage.getItem(BOARD_CACHE_KEY);
@@ -3321,25 +3261,12 @@ export default function App() {
         if (Array.isArray(cached) && cached.length > 0) setBoardCategories(cached);
       }
     } catch { /* ignore */ }
-    // Restore expanded categories
-    try {
-      const expRaw = localStorage.getItem(EXPANDED_CATS_KEY);
-      if (expRaw) {
-        const arr = JSON.parse(expRaw) as string[];
-        if (Array.isArray(arr)) setExpandedCategories(new Set(arr));
-      }
-    } catch { /* ignore */ }
     try {
       const saved = localStorage.getItem(BOARD_TREE_SCROLL_KEY);
       if (saved != null) {
         const n = Number(saved);
         if (Number.isFinite(n) && n >= 0) boardTreeScrollRestoreRef.current = n;
       }
-    } catch { /* ignore */ }
-    // Load thread fetch times
-    try {
-      const ftRaw = localStorage.getItem(THREAD_FETCH_TIMES_KEY);
-      if (ftRaw) threadFetchTimesRef.current = JSON.parse(ftRaw);
     } catch { /* ignore */ }
     // Restore last selected board
     if (restoreSessionRef.current && pendingLastBoardRef.current) {
@@ -3411,33 +3338,19 @@ export default function App() {
         } catch { /* ignore */ }
       };
 
-      // Collect all async restore promises so we finishRestore after ALL complete
       const restorePromises: Promise<void>[] = [];
-
-      // Board tabs
-      const localBoardRaw = localStorage.getItem(BOARD_TABS_KEY);
-      if (localBoardRaw) {
-        applyBoardTabs(localBoardRaw);
-      } else if (isTauriRuntime()) {
+      if (isTauriRuntime()) {
         restorePromises.push(
           invoke<string>("load_session_board_tabs")
             .then((raw) => { if (raw) applyBoardTabs(raw); })
             .catch(() => {})
         );
-      }
-
-      // Thread tabs
-      const localRaw = localStorage.getItem(THREAD_TABS_KEY);
-      if (localRaw) {
-        applyRestoredTabs(localRaw);
-      } else if (isTauriRuntime()) {
         restorePromises.push(
           invoke<string>("load_session_tabs")
             .then((raw) => { if (raw) applyRestoredTabs(raw); })
             .catch(() => {})
         );
       }
-
       if (restorePromises.length > 0) {
         Promise.all(restorePromises).then(finishRestore);
       } else {
@@ -3446,14 +3359,6 @@ export default function App() {
     } else {
       finishRestore();
     }
-    // Save tabs on window close using current ref values
-    const handleBeforeUnload = () => {
-      try {
-        localStorage.setItem(THREAD_TABS_KEY, JSON.stringify({ tabs: threadTabsRef.current, activeIndex: activeTabIndexRef.current }));
-        localStorage.setItem(BOARD_TABS_KEY, JSON.stringify({ tabs: boardTabsRef.current, activeIndex: activeBoardTabIndexRef.current }));
-      } catch { /* ignore */ }
-    };
-    window.addEventListener("beforeunload", handleBeforeUnload);
     // Silently refresh board list from server
     void fetchBoardCategories();
     void loadFavorites();
@@ -3537,15 +3442,11 @@ export default function App() {
         setImageUrlRules(rules);
       }).catch(() => {});
     }
-    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, []);
 
   useEffect(() => {
     if (!tabRestoreReady) return;
     const data = JSON.stringify({ tabs: threadTabs, activeIndex: activeTabIndex });
-    try {
-      localStorage.setItem(THREAD_TABS_KEY, data);
-    } catch { /* ignore */ }
     if (isTauriRuntime()) {
       invoke("save_session_tabs", { data }).catch(() => {});
     }
@@ -3555,7 +3456,6 @@ export default function App() {
   useEffect(() => {
     if (!tabRestoreReady) return;
     const data = JSON.stringify({ tabs: boardTabs, activeIndex: activeBoardTabIndex });
-    try { localStorage.setItem(BOARD_TABS_KEY, data); } catch { /* ignore */ }
     if (isTauriRuntime()) { invoke("save_session_board_tabs", { data }).catch(() => {}); }
   }, [tabRestoreReady, boardTabs, activeBoardTabIndex]);
 
@@ -3790,7 +3690,6 @@ export default function App() {
     const saveWindowState = () => {
       const width = window.innerWidth;
       const height = window.innerHeight;
-      localStorage.setItem(WINDOW_STATE_KEY, JSON.stringify({ width, height }));
       if (isTauriRuntime()) {
         void invoke("save_window_size", { width, height }).catch((e: unknown) => console.warn("save_window_size failed", e));
       }
@@ -3914,7 +3813,6 @@ export default function App() {
       newArrivalPaneHeight,
       newArrivalFontSize,
     });
-    localStorage.setItem(LAYOUT_PREFS_KEY, payload);
     if (isTauriRuntime()) {
       void invoke("save_layout_prefs", { prefs: payload }).catch(() => {});
     }
@@ -3953,13 +3851,6 @@ export default function App() {
       invoke("set_window_theme", { dark: darkMode }).catch(() => {});
     }
   }, [darkMode]);
-
-  useEffect(() => {
-    if (!isTauriRuntime()) {
-      // Web preview: keep localStorage fallback
-      localStorage.setItem(COMPOSE_PREFS_KEY, JSON.stringify({ name: composeName, mail: composeMail, sage: composeSage, fontSize: composeFontSize }));
-    }
-  }, [composeName, composeMail, composeSage, composeFontSize]);
 
   useEffect(() => {
     if (suppressThreadScrollRef.current) {
