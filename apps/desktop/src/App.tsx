@@ -129,15 +129,12 @@ const DEFAULT_COL_WIDTHS: Record<string, number> = {
   speed: 54,
 };
 const COL_RESIZE_HANDLE_PX = 5;
-const BOARD_CACHE_KEY = "desktop.boardCategories.v1";
 const LANDING_PAGE_URL = "";
 const GITHUB_RELEASE_URL = "https://github.com/kaedekiku/LiveFakeTauri2";
-const BOARD_TREE_SCROLL_KEY = "desktop.boardTreeScrollTop.v1";
-const NEW_THREAD_SIZE_KEY = "desktop.newThreadDialogSize.v1";
 const MAX_SEARCH_HISTORY = 20;
 const MENU_EDGE_PADDING = 8;
 
-// --- File-based persistence helpers (localStorage fallback) ---
+// --- File-based persistence helpers (Portable JSON via save_generic_json IPC) ---
 const saveToFile = (filename: string, data: unknown) => {
   if (isTauriRuntime()) {
     invoke("save_generic_json", { filename, data }).catch(() => {});
@@ -572,10 +569,7 @@ export default function App() {
   const [newThreadBody, setNewThreadBody] = useState("");
   const [newThreadResult, setNewThreadResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [newThreadSubmitting, setNewThreadSubmitting] = useState(false);
-  const [newThreadDialogSize, setNewThreadDialogSize] = useState<{ w: number; h: number }>(() => {
-    try { const v = localStorage.getItem(NEW_THREAD_SIZE_KEY); if (v) return JSON.parse(v); } catch { /* ignore */ }
-    return { w: 520, h: 420 };
-  });
+  const [newThreadDialogSize, setNewThreadDialogSize] = useState<{ w: number; h: number }>({ w: 520, h: 420 });
   const newThreadPanelRef = useRef<HTMLDivElement>(null);
   const [postHistory, setPostHistory] = useState<{ time: string; threadUrl: string; body: string; ok: boolean }[]>([]);
   const [postHistoryOpen, setPostHistoryOpen] = useState(false);
@@ -943,7 +937,7 @@ export default function App() {
     try {
       const cats = await invoke<BoardCategory[]>("fetch_board_categories");
       setBoardCategories(cats);
-      try { localStorage.setItem(BOARD_CACHE_KEY, JSON.stringify(cats)); } catch { /* ignore */ }
+      saveToFile("board-categories.json", cats);
       setStatus(`boards loaded: ${cats.length} categories, ${cats.reduce((s, c) => s + c.boards.length, 0)} boards`);
     } catch (error) {
       setStatus(`board load error: ${String(error)}`);
@@ -3032,7 +3026,7 @@ export default function App() {
   };
   const onBoardTreeScroll: UIEventHandler<HTMLDivElement> = (event) => {
     const top = event.currentTarget.scrollTop;
-    try { localStorage.setItem(BOARD_TREE_SCROLL_KEY, String(top)); } catch { /* ignore */ }
+    saveToFile("board-tree-scroll.json", top);
   };
   const scrollSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onResponseScroll: UIEventHandler<HTMLDivElement> = () => {
@@ -3253,21 +3247,6 @@ export default function App() {
     } else {
       layoutPrefsLoadedRef.current = true;
     }
-    // Restore board categories cache
-    try {
-      const boardRaw = localStorage.getItem(BOARD_CACHE_KEY);
-      if (boardRaw) {
-        const cached = JSON.parse(boardRaw) as BoardCategory[];
-        if (Array.isArray(cached) && cached.length > 0) setBoardCategories(cached);
-      }
-    } catch { /* ignore */ }
-    try {
-      const saved = localStorage.getItem(BOARD_TREE_SCROLL_KEY);
-      if (saved != null) {
-        const n = Number(saved);
-        if (Number.isFinite(n) && n >= 0) boardTreeScrollRestoreRef.current = n;
-      }
-    } catch { /* ignore */ }
     // Restore last selected board
     if (restoreSessionRef.current && pendingLastBoardRef.current) {
       const lb = pendingLastBoardRef.current;
@@ -3364,7 +3343,7 @@ export default function App() {
     void loadFavorites();
     void loadExternalBoards();
     void loadNgFilters();
-    // Migrate localStorage data from file-based storage (Portable mode)
+    // Restore from file-based persistence (Portable mode)
     if (isTauriRuntime()) {
       loadFromFile<Record<string, number>>("bookmarks.json").then((d) => {
         if (d && typeof d === "object") Object.assign(bookmarkCacheRef.current, d);
@@ -3389,6 +3368,15 @@ export default function App() {
       });
       loadFromFile<string[]>("expanded-categories.json").then((d) => {
         if (Array.isArray(d) && d.length > 0) setExpandedCategories(new Set(d));
+      });
+      loadFromFile<BoardCategory[]>("board-categories.json").then((d) => {
+        if (Array.isArray(d) && d.length > 0) setBoardCategories(d);
+      });
+      loadFromFile<number>("board-tree-scroll.json").then((d) => {
+        if (typeof d === "number" && Number.isFinite(d) && d >= 0) boardTreeScrollRestoreRef.current = d;
+      });
+      loadFromFile<{ w: number; h: number }>("new-thread-dialog-size.json").then((d) => {
+        if (d && typeof d.w === "number" && typeof d.h === "number") setNewThreadDialogSize(d);
       });
     }
     // Load highlights
@@ -6580,7 +6568,7 @@ export default function App() {
             const w = el.offsetWidth, h = el.offsetHeight;
             if (w !== newThreadDialogSize.w || h !== newThreadDialogSize.h) {
               setNewThreadDialogSize({ w, h });
-              try { localStorage.setItem(NEW_THREAD_SIZE_KEY, JSON.stringify({ w, h })); } catch { /* ignore */ }
+              saveToFile("new-thread-dialog-size.json", { w, h });
             }
           }}>
             <header className="settings-header">
