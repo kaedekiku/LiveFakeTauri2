@@ -721,8 +721,9 @@ export default function App() {
   const favDragRef = useRef<{ type: "board" | "thread"; srcIndex: number; startY: number } | null>(null);
   const [favDragState, setFavDragState] = useState<{ type: "board" | "thread"; srcIndex: number; overIndex: number | null } | null>(null);
   const [tabDragIndex, setTabDragIndex] = useState<number | null>(null);
-  const tabDragRef = useRef<{ srcIndex: number; startX: number } | null>(null);
-  const tabDragOverRef = useRef<number | null>(null);
+  const tabDragSuppressClickRef = useRef(false);
+  const [boardTabDragIndex, setBoardTabDragIndex] = useState<number | null>(null);
+  const boardTabDragSuppressClickRef = useRef(false);
   const [tabMenu, setTabMenu] = useState<{ x: number; y: number; tabIndex: number } | null>(null);
   const [responseReloadMenuOpen, setResponseReloadMenuOpen] = useState(false);
   const [openMenu, setOpenMenu] = useState<string | null>(null);
@@ -1703,10 +1704,11 @@ export default function App() {
             threadUrl: tabUrl,
           };
         });
-        if (autoRefreshEnabled && autoScrollEnabled) {
+        if (autoRefreshEnabled) {
+          const queueWasEmpty = arrivalQueueRef.current.length === 0;
           arrivalQueueRef.current.push(...arrivals);
           setArrivalQueueCount(arrivalQueueRef.current.length);
-          if (!arrivalTimerRef.current && currentArrivalItemRef.current === null) {
+          if (!arrivalTimerRef.current && (currentArrivalItemRef.current === null || queueWasEmpty)) {
             advanceToNextArrival();
           }
         }
@@ -1908,11 +1910,12 @@ export default function App() {
             threadUrl: url,
           };
         });
-        // Only add to new arrivals pane when both autoReload and autoScroll are ON
-        if (autoRefreshEnabled && autoScrollEnabled) {
+        // Add to new arrivals pane when autoReload is ON
+        if (autoRefreshEnabled) {
+          const queueWasEmpty = arrivalQueueRef.current.length === 0;
           arrivalQueueRef.current.push(...arrivals);
           setArrivalQueueCount(arrivalQueueRef.current.length);
-          if (!arrivalTimerRef.current && currentArrivalItemRef.current === null) {
+          if (!arrivalTimerRef.current && (currentArrivalItemRef.current === null || queueWasEmpty)) {
             advanceToNextArrival();
           }
         }
@@ -3741,7 +3744,7 @@ export default function App() {
         return;
       }
       if (drag.mode === "new-arrival-resize") {
-        const deltaY = drag.startY - event.clientY;
+        const deltaY = event.clientY - drag.startY;
         const next = clamp(drag.startHeight + deltaY, MIN_NEW_ARRIVAL_PX, MAX_NEW_ARRIVAL_PX);
         setNewArrivalPaneHeight(next);
         return;
@@ -4168,7 +4171,7 @@ export default function App() {
         </div>
       )}
       <main className="layout">
-        <section className="pane boards" onMouseDown={() => setFocusedPane("boards")} style={{ '--fs-delta': `${boardsFontSize - 12}px`, width: boardPanePx, flexShrink: 0 } as React.CSSProperties}>
+        <section className="pane boards" onMouseDown={() => setFocusedPane("boards")} style={{ '--fs-delta': `${boardsFontSize - 12}px`, width: boardPanePx, maxWidth: `calc(100% - ${MIN_RESPONSE_PANE_PX + SPLITTER_PX}px)`, flexShrink: 0 } as React.CSSProperties}>
           <div className="boards-header">
             <div className="board-tabs">
               <button
@@ -4443,8 +4446,9 @@ export default function App() {
             {boardTabs.map((tab, i) => (
               <div
                 key={tab.boardUrl}
-                className={`board-tab ${i === activeBoardTabIndex ? "active" : ""}`}
+                className={`board-tab ${i === activeBoardTabIndex ? "active" : ""} ${boardTabDragIndex !== null && boardTabDragIndex !== i ? "drag-target" : ""}`}
                 onClick={() => {
+                  if (boardTabDragSuppressClickRef.current) return;
                   setActiveBoardTabIndex(i);
                   setActivePaneView("threads");
                   setSelectedBoard(tab.title);
@@ -4453,11 +4457,63 @@ export default function App() {
                   void fetchThreadListFromCurrent(tab.boardUrl);
                 }}
                 onContextMenu={(e) => { e.preventDefault(); const p = clampMenuPosition(e.clientX, e.clientY, 180, 60); setBoardContextMenu({ x: p.x, y: p.y, board: { boardName: tab.title, url: tab.boardUrl } }); }}
+                onMouseDown={(e) => {
+                  if (e.button !== 0) return;
+                  e.preventDefault();
+                  const startX = e.clientX;
+                  let dragging = false;
+                  let dst = i;
+                  const onMove = (mv: MouseEvent) => {
+                    const dx = mv.clientX - startX;
+                    if (!dragging && Math.abs(dx) <= 6) return;
+                    if (!dragging) {
+                      dragging = true;
+                      setBoardTabDragIndex(i);
+                    }
+                    const els = boardTabBarRef.current?.querySelectorAll<HTMLElement>(".board-tab:not(.placeholder)");
+                    if (!els) return;
+                    els.forEach((el) => el.classList.remove("drag-over"));
+                    for (let j = 0; j < els.length; j++) {
+                      const r = els[j].getBoundingClientRect();
+                      if (mv.clientX >= r.left && mv.clientX <= r.right) {
+                        dst = j;
+                        if (j !== i) els[j].classList.add("drag-over");
+                        break;
+                      }
+                    }
+                  };
+                  const onUp = () => {
+                    document.removeEventListener("mousemove", onMove);
+                    document.removeEventListener("mouseup", onUp);
+                    setBoardTabDragIndex(null);
+                    boardTabBarRef.current?.querySelectorAll<HTMLElement>(".drag-over").forEach((el) => el.classList.remove("drag-over"));
+                    if (dragging) {
+                      boardTabDragSuppressClickRef.current = true;
+                      setTimeout(() => { boardTabDragSuppressClickRef.current = false; }, 0);
+                    }
+                    if (!dragging || dst === i) return;
+                    setBoardTabs((prev) => {
+                      const next = [...prev];
+                      const [moved] = next.splice(i, 1);
+                      next.splice(dst, 0, moved);
+                      return next;
+                    });
+                    setActiveBoardTabIndex((prev) => {
+                      if (prev === i) return dst;
+                      if (i < prev && dst >= prev) return prev - 1;
+                      if (i > prev && dst <= prev) return prev + 1;
+                      return prev;
+                    });
+                  };
+                  document.addEventListener("mousemove", onMove);
+                  document.addEventListener("mouseup", onUp);
+                }}
                 title={tab.boardUrl}
               >
                 <span className="board-tab-title">{tab.title}</span>
                 <button
                   className="tab-close-btn"
+                  onMouseDown={(e) => e.stopPropagation()}
                   onClick={(e) => {
                     e.stopPropagation();
                     setBoardTabs((prev) => {
@@ -4488,7 +4544,7 @@ export default function App() {
               <div
                 key={tab.threadUrl}
                 className={`thread-tab ${i === activeTabIndex ? "active" : ""} ${tabDragIndex !== null && tabDragIndex !== i ? "drag-target" : ""}`}
-                onClick={() => { if (tabDragRef.current) return; onTabClick(i); }}
+                onClick={() => { if (tabDragSuppressClickRef.current) return; onTabClick(i); }}
                 onDoubleClick={() => { void fetchResponsesFromCurrent(tab.threadUrl, { keepSelection: true }); }}
                 onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); closeTab(i); } }}
                 onContextMenu={(e) => {
@@ -4499,48 +4555,52 @@ export default function App() {
                 }}
                 onMouseDown={(e) => {
                   if (e.button !== 0) return;
-                  tabDragRef.current = { srcIndex: i, startX: e.clientX };
-                  tabDragOverRef.current = null;
+                  e.preventDefault();
+                  const startX = e.clientX;
+                  let dragging = false;
+                  let dst = i;
                   const onMove = (mv: MouseEvent) => {
-                    if (!tabDragRef.current) return;
-                    const dx = mv.clientX - tabDragRef.current.startX;
-                    if (Math.abs(dx) > 6) {
-                      const els = tabBarRef.current?.querySelectorAll<HTMLElement>(".thread-tab:not(.placeholder)");
-                      if (!els) return;
-                      els.forEach((el) => el.classList.remove("drag-over"));
-                      for (let j = 0; j < els.length; j++) {
-                        const r = els[j].getBoundingClientRect();
-                        if (mv.clientX >= r.left && mv.clientX <= r.right) {
-                          tabDragOverRef.current = j;
-                          if (j !== tabDragRef.current.srcIndex) els[j].classList.add("drag-over");
-                          break;
-                        }
+                    const dx = mv.clientX - startX;
+                    if (!dragging && Math.abs(dx) <= 6) return;
+                    if (!dragging) {
+                      dragging = true;
+                      setTabDragIndex(i);
+                    }
+                    const els = tabBarRef.current?.querySelectorAll<HTMLElement>(".thread-tab:not(.placeholder)");
+                    if (!els) return;
+                    els.forEach((el) => el.classList.remove("drag-over"));
+                    for (let j = 0; j < els.length; j++) {
+                      const r = els[j].getBoundingClientRect();
+                      if (mv.clientX >= r.left && mv.clientX <= r.right) {
+                        dst = j;
+                        if (j !== i) els[j].classList.add("drag-over");
+                        break;
                       }
                     }
                   };
                   const onUp = () => {
                     document.removeEventListener("mousemove", onMove);
                     document.removeEventListener("mouseup", onUp);
-                    tabDragRef.current = null;
-                    tabDragOverRef.current = null;
                     setTabDragIndex(null);
                     tabBarRef.current?.querySelectorAll<HTMLElement>(".drag-over").forEach((el) => el.classList.remove("drag-over"));
-                    if (src === null || dst === null || src === dst) return;
+                    if (dragging) {
+                      tabDragSuppressClickRef.current = true;
+                      setTimeout(() => { tabDragSuppressClickRef.current = false; }, 0);
+                    }
+                    if (!dragging || dst === i) return;
                     setThreadTabs((prev) => {
                       const next = [...prev];
-                      const [moved] = next.splice(src, 1);
+                      const [moved] = next.splice(i, 1);
                       next.splice(dst, 0, moved);
                       return next;
                     });
                     setActiveTabIndex((prev) => {
-                      if (prev === src) return dst;
-                      if (src < prev && dst >= prev) return prev - 1;
-                      if (src > prev && dst <= prev) return prev + 1;
+                      if (prev === i) return dst;
+                      if (i < prev && dst >= prev) return prev - 1;
+                      if (i > prev && dst <= prev) return prev + 1;
                       return prev;
                     });
                   };
-                  let src = i; let dst = i;
-                  Object.defineProperty(tabDragOverRef, "current", { get: () => dst, set: (v) => { dst = v ?? i; } });
                   document.addEventListener("mousemove", onMove);
                   document.addEventListener("mouseup", onUp);
                 }}
@@ -4551,6 +4611,7 @@ export default function App() {
                 )}
                 <button
                   className="thread-tab-close"
+                  onMouseDown={(e) => e.stopPropagation()}
                   onClick={(e) => { e.stopPropagation(); closeTab(i); }}
                 >
                   ×
