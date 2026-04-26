@@ -121,8 +121,9 @@ cd apps/desktop && npx tsc --noEmit      # TypeScript型チェック
 
 リリースフローの詳細は `docs/DEPLOYMENT_RUNBOOK.md` を参照。
 
-- `scripts/release.sh <version> <release-notes>` — バージョン更新からデプロイまで一括実行（Mac版ビルド待ちで一時停止）
-- `/release` スキル — バージョン更新・検証・差分確認のみ（コミットやビルドは行わない）
+- `/release` スキル — バージョン更新・検証・差分確認（コミットやビルドは行わない）
+- タグ push (`git push origin v<バージョン>`) で GitHub Actions が Windows ビルド・Release 作成を自動実行
+- `scripts/prepare_release_metadata.py` で `latest.json` を生成・検証
 
 ---
 
