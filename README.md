@@ -75,42 +75,6 @@ ZIP を展開するだけでインストール不要で使えます。
 
 ---
 
-## 画面構成
-
-```
-┌─────────────────────────────────────────────────┐
-│ ツールバー (URL / 検索 / 設定 / 字幕トグル)       │
-├──────────┬──────────────────────────────────────┤
-│ 板ペイン  │ タブバー                              │
-│ (ツリー)  ├──────────────────────────────────────┤
-│          │ レス表示エリア                         │
-│ ─────── │                                      │
-│ 新着ペイン│                                      │
-│          ├──────────────────────────────────────┤
-│          │ 書き込みフォーム                       │
-├──────────┴──────────────────────────────────────┤
-│ ステータスバー                                    │
-└─────────────────────────────────────────────────┘
-```
-
-各パネルはドラッグで幅・高さを自由に調整できます。
-
----
-
-## キーボードショートカット
-
-| キー | 動作 |
-|------|------|
-| `Enter` | URL 読み込み |
-| `Ctrl+F` | 検索欄フォーカス |
-| `Ctrl+W` | タブを閉じる |
-| `Ctrl+R` | 再読み込み |
-| `Ctrl+Tab` | 次のタブへ |
-| `Ctrl+Shift+Tab` | 前のタブへ |
-| `Escape` | モーダル / メニューを閉じる |
-
----
-
 ## 設定ファイル（Portable 形式）
 
 全ファイルは EXE と同じフォルダに自動生成されます。
@@ -129,65 +93,7 @@ ZIP を展開するだけでインストール不要で使えます。
 
 ---
 
-## 開発者向け
-
-### 前提条件
-
-- Rust stable (1.77+)
-- Node.js v22+
-- Tauri CLI（`devDependencies` に含まれる）
-
-### セットアップ
-
-```bash
-cd apps/desktop
-npm install
-
-# 開発サーバー起動
-npx tauri dev
-
-# 本番ビルド
-npx tauri build
-```
-
-> **注意:** `cargo build --release` を直接使用しないでください。  
-> フロントエンドが埋め込まれず白画面になります。必ず `npx tauri build` を使用してください。
-
-### テスト
-
-```bash
-# Rust ユニットテスト
-cargo test --workspace
-
-# UI スモークテスト（Tauri 不要）
-cd apps/desktop
-npm run build && npx playwright test scripts/smoke_ui_playwright.mjs
-```
-
-### プロジェクト構成
-
-```
-LiveFakeTauri2/
-├── apps/
-│   ├── desktop/          # Tauri + React デスクトップアプリ（メイン）
-│   │   ├── src/          # フロントエンド（App.tsx + styles.css）
-│   │   ├── public/       # 静的ファイル（subtitle.html 等）
-│   │   └── src-tauri/    # Rust バックエンド
-│   └── landing/          # 公式サイト（Cloudflare Pages）
-├── crates/
-│   ├── core-auth/        # BE / UPLIFT / どんぐり認証
-│   ├── core-fetch/       # HTTP 取得・投稿フロー
-│   ├── core-parse/       # dat / subject.txt パーサ
-│   ├── core-store/       # JSON 永続化 / SQLite キャッシュ
-│   ├── core-proxy/       # プロキシ / DPAPI / Cookie 管理
-│   └── core-tts/         # 音声読み上げ（SAPI / 棒読みちゃん / VOICEVOX）
-├── docs/                 # 技術ドキュメント
-├── scripts/              # ビルド・リリーススクリプト
-├── SPEC.md               # 技術仕様書
-└── REQUIREMENTS.md       # 機能要件定義書
-```
-
-### ドキュメント
+## ドキュメント
 
 | ファイル | 内容 |
 |---------|------|
