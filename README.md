@@ -97,6 +97,7 @@ ZIP を展開するだけでインストール不要で使えます。
 
 | ファイル | 内容 |
 |---------|------|
+| [docs/USER_MANUAL.md](docs/USER_MANUAL.md) | ユーザー向け説明書（操作・機能の使い方） |
 | [SPEC.md](SPEC.md) | 技術仕様書（アーキテクチャ・API・データ形式） |
 | [REQUIREMENTS.md](REQUIREMENTS.md) | 機能要件定義書 |
 | [docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md) | 開発手順・環境構築 |

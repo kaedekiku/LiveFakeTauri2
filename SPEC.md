@@ -11,7 +11,7 @@
 | 対応サイト | 5ch.io / したらば / JPNKN |
 | 対象プラットフォーム | Windows 10/11 (64bit) |
 | ライセンス | MIT |
-| 現バージョン | 0.0.73 |
+| 現バージョン | 0.0.76 |
 
 ---
 
@@ -138,11 +138,12 @@ livefake (Tauri App)
 
 ### 4.5 タブ
 
-- 複数スレッド同時閲覧（デフォルト最大 20 タブ）
-- ドラッグ＆ドロップでタブ順序変更
-- 右クリックメニュー: 閉じる / 他を閉じる / 全て閉じる / コピー / キャッシュ削除
-- `Ctrl+Tab` / `Ctrl+Shift+Tab` で切替
+- 複数スレッド同時閲覧（デフォルト最大 20 タブ、設定で変更可）
+- 板タブ・スレタブともに **マウスドラッグ** で順序変更 (移動量 6px 以上で発火)
+- スレタブ右クリックメニュー: 閉じる / 他を閉じる / 全て閉じる / コピー / キャッシュ削除
+- 板タブ右クリックメニュー: 板情報、お気に入り操作
 - レス数バッジ表示
+- タブ閉じるボタン (×) は mousedown 伝播停止で誤ドラッグを防止
 
 ### 4.6 書き込み (投稿)
 
@@ -305,11 +306,25 @@ livefake (Tauri App)
 
 ### 4.18 検索
 
-- スレッド一覧検索
-- レス内検索 (テキスト / 名前 / ID)
-- リンクフィルタ (画像 / 動画)
-- 板ツリー検索
-- 検索履歴
+#### 4.18.1 板/スレッド一覧の検索
+- 板ツリー検索 (左ペイン)
+- スレッド一覧検索 (タイトル絞り込み、リアルタイム)
+- 検索履歴 (Enter で保存、最大 20 件)、ドロップダウンから再利用、右クリックで削除
+
+#### 4.18.2 レス検索 (2 モード)
+レス画面の **🔍 ボタン** (書き込みボタン横) を押すとプルダウンで 2 択:
+
+| モード | 挙動 |
+|-------|------|
+| **レス抽出** | 検索ワードを含むレスのみ表示 (フィルタ)。残ったレスでハイライト |
+| **スレ内検索** | フィルタせず、ヒットレスをハイライトのみ。`N/M` 件数表示 + ↑/↓ でジャンプ。Enter で次へ。クエリ変更時に最初のヒットへ自動スクロール |
+
+- どちらも検索バーを閉じるとハイライト解除 (一時ハイライト)
+- 検索対象: レス本文 + 投稿者名
+- 状態: `responseSearchMode: "extract" | "in-thread" | null`
+
+#### 4.18.3 リンクフィルタ
+- レス画面下部のナビバーで画像/動画/外部リンクを含むレスのみ抽出
 
 ### 4.19 コンテキストメニュー (レス領域)
 
@@ -339,17 +354,30 @@ livefake (Tauri App)
 └──────────────────────────────┘
 ```
 
-### 4.20 キーボードショートカット
+### 4.20 キーボード操作
 
+#### 4.20.1 グローバル
 | キー | 動作 |
 |------|------|
-| `Enter` | URL 読み込み |
-| `Ctrl+F` | 検索欄フォーカス |
-| `Ctrl+W` | タブを閉じる |
-| `Ctrl+R` | 再読み込み |
-| `Ctrl+Tab` | 次のタブ |
-| `Ctrl+Shift+Tab` | 前のタブ |
-| `Escape` | モーダル / メニューを閉じる |
+| `Escape` | ホバープレビュー → メニュー → ポップアップを順に閉じる |
+| `Ctrl+F` | (ブラウザ標準のページ内検索を抑止) |
+
+#### 4.20.2 レス領域フォーカス時
+| キー | 動作 |
+|------|------|
+| `↑` / `↓` | 60px ずつスクロール |
+| `PageUp` / `PageDown` | 1 ページ分スクロール |
+| `Home` / `End` | 先頭 / 末尾へ |
+
+#### 4.20.3 入力欄
+| キー | 動作 |
+|------|------|
+| `Enter` (URL欄) | URL 読み込み |
+| `Enter` (検索欄) | 検索履歴に保存 / スレ内検索モードでは次のヒットへ |
+| `Escape` (検索欄) | 検索バーを閉じる |
+| `Ctrl+Enter` / `Shift+Enter` (書き込み欄) | 投稿送信 (設定で切替) |
+
+> Ctrl+Tab / Ctrl+W などのアプリ全体ショートカットは現在実装されていない。
 
 ### 4.21 テキスト表示設定
 
@@ -393,25 +421,53 @@ livefake (Tauri App)
 
 ### 5.2 ファイル一覧
 
+全ファイルは EXE 同梱フォルダ (Portable) に保存される。`core_store::portable_data_dir()` がパスを返す。
+
+#### 5.2.1 設定 (App / Speech / Posting)
 | ファイル名 | 形式 | 内容 |
 |-----------|------|------|
-| `favorites.json` | JSON | お気に入り (板 / スレ) |
-| `ng-settings.json` | JSON | NG フィルター設定 |
-| `read-status.json` | JSON | 既読状態 |
-| `thread-history.json` | JSON | スレッド履歴 (最終既読/閲覧日時/カスタムタイトル) |
-| `auth.json` | JSON | 認証設定 (BE/UPLIFT/どんぐり) |
-| `app-settings.json` | JSON | アプリ設定 (Key-Value) |
-| `id-highlights.json` | JSON | ID ハイライト (当日分) |
-| `text-highlights.json` | JSON | テキスト/名前ハイライト |
-| `bbs-menu.json` | JSON | BBS Menu キャッシュ |
-| `cookies.json` | JSON | Cookie 永続保存 |
-| `proxy.json` | JSON | プロキシ設定 |
-| `ImageViewURLReplace.txt` | TSV | 画像 URL 置換ルール |
-| `layout-prefs.json` | JSON | レイアウト設定 (ペイン幅等) |
-| `session-tabs.json` | JSON | セッション復元データ |
-| `upload-history.json` | JSON | 画像アップロード履歴 |
-| `thread-cache.db` | SQLite | スレッドレスキャッシュ |
-| `eventlog/*.log` | テキスト | イベントログ |
+| `settings.ini` | INI | App / Speech / Proxy / Posting / Window セクション |
+
+#### 5.2.2 ユーザーデータ (Tauri IPC 経由 JSON)
+| ファイル名 | 内容 | 主な IPC |
+|-----------|------|---------|
+| `favorites.json` | お気に入り (板 / スレ) | `load_favorites` / `save_favorites` |
+| `external-boards.json` | 外部板 (したらば / JPNKN 等) | `load_external_boards` / `save_external_boards` |
+| `ng-settings.json` | NG フィルタ設定 | `load_ng_filters` / `save_ng_filters` |
+| `read-status.json` | 既読状態 | `load_read_status` / `save_read_status` |
+| `thread-history.json` | スレ訪問履歴 (最終既読 / 閲覧日時 / カスタムタイトル) | `load_thread_history` / `save_thread_history` |
+| `id-highlights.json` | ID ハイライト (当日分のみ、日付不一致時に自動リセット) | `load_id_highlights` / `save_id_highlights` |
+| `text-highlights.json` | テキスト / 名前ハイライト | `load_text_highlights` / `save_text_highlights` |
+| `cookies.json` | 認証 Cookie (Set-Cookie 解析、UA フィルタ付き) | `load_cookies` / `save_cookies` |
+| `proxy-settings.json` | プロキシ設定 (パスワードは DPAPI 暗号化) | `load_proxy_settings` / `save_proxy_settings` |
+| `upload-history.json` | 画像アップロード履歴 (tadaup.jp) | `load_upload_history` / `save_upload_history` |
+| `layout-prefs.json` | ペイン幅、ダークモード、タブ上限等 UI 状態 | `load_layout_prefs` / `save_layout_prefs` |
+| `session-tabs.json` | スレタブ復元データ | `load_session_tabs` / `save_session_tabs` |
+| `session-board-tabs.json` | 板タブ復元データ | `load_session_board_tabs` / `save_session_board_tabs` |
+
+#### 5.2.3 ユーザーデータ (汎用 JSON: `save_generic_json` / `load_generic_json` 経由)
+| ファイル名 | 内容 |
+|-----------|------|
+| `bookmarks.json` | スレごとのしおり位置 |
+| `scroll-positions.json` | スレごとのスクロール位置 (レス番号) |
+| `name-history.json` | 投稿者名の履歴 (最大 20 件) |
+| `my-posts.json` | 自分の投稿レス番号 (スレ別) |
+| `search-history.json` | 板検索 / レス検索の履歴 |
+| `thread-fetch-times.json` | スレごとの最終取得時刻 |
+| `expanded-categories.json` | 板ツリーの展開状態 |
+| `board-categories.json` | BBS Menu のキャッシュ |
+| `board-tree-scroll.json` | 板ツリーのスクロール位置 |
+| `new-thread-dialog-size.json` | スレ立てダイアログのサイズ |
+
+#### 5.2.4 その他
+| ファイル名 | 形式 | 内容 |
+|-----------|------|------|
+| `bbs-menu.json` | JSON | BBS Menu の生キャッシュ (core-fetch 経由) |
+| `ImageViewURLReplace.txt` | TSV | 画像 URL 置換ルール (`load_image_url_replace`) |
+| `thread-cache.db` | SQLite | スレッドレスキャッシュ (rusqlite, bundled) |
+| `eventlog/{YYYY-MM-DD}.log` | テキスト | イベントログ (既定 7 日保持、自動ローテーション) |
+
+> アプリ内の `localStorage` 参照は廃止済み (v0.0.76)。永続化はすべて IPC 経由のファイル保存。
 
 ### 5.3 NG フィルター形式
 
@@ -573,6 +629,20 @@ connect-src 'self' https: http: ws: wss:
 - [x] ウィンドウ位置・サイズ復元 (Windows専用)
 - [x] 書き込み後のスレ一覧自動更新
 - [x] 外部板の手動追加 UI
+- [x] settings.ini への完全移行 (v0.0.76 で localStorage 完全撤廃)
+- [x] レス抽出 / スレ内検索の 2 モード分離 (v0.0.76)
+- [x] 板タブ / スレタブのドラッグ並び替え修正 (v0.0.76)
 - [ ] おーぷん2ch 対応
-- [x] settings.ini への段階的移行 (localStorage → ファイルベース)
-- [ ] SOCKS4 プロキシ対応
+- [ ] SOCKS4 プロキシ対応 (型定義のみ実装、UI 未対応)
+
+---
+
+## 10. 関連ドキュメント
+
+| ファイル | 内容 |
+|---------|------|
+| [USER_MANUAL.md](docs/USER_MANUAL.md) | エンドユーザー向け説明書 |
+| [REQUIREMENTS.md](REQUIREMENTS.md) | 機能要件定義書 |
+| [docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md) | 開発者向け技術ガイド |
+| [docs/DEPLOYMENT_RUNBOOK.md](docs/DEPLOYMENT_RUNBOOK.md) | リリース手順書 |
+| [docs/PROGRESS_TRACKER.md](docs/PROGRESS_TRACKER.md) | 実装進捗トラッカー |
