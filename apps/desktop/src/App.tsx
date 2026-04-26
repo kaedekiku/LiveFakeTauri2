@@ -828,7 +828,9 @@ export default function App() {
   const threadFetchTimesRef = useRef<Record<string, string>>({});
   const pendingAutoScrollRef = useRef(false);
   const [responseSearchQuery, setResponseSearchQuery] = useState("");
-  const [responseSearchBarVisible, setResponseSearchBarVisible] = useState(false);
+  const [responseSearchMode, setResponseSearchMode] = useState<"extract" | "in-thread" | null>(null);
+  const [searchModeMenuOpen, setSearchModeMenuOpen] = useState(false);
+  const [searchMatchIndex, setSearchMatchIndex] = useState(0);
   const [responseLinkFilter, setResponseLinkFilter] = useState<"" | "image" | "video" | "link">("");
   const threadSearchRef = useRef<HTMLInputElement | null>(null);
   const responseSearchRef = useRef<HTMLInputElement | null>(null);
@@ -1315,6 +1317,8 @@ export default function App() {
   const openThreadInTab = (url: string, title: string) => {
     setActivePaneView("responses");
     setResponseSearchQuery("");
+    setResponseSearchMode(null);
+    setSearchMatchIndex(0);
     const existingIndex = threadTabs.findIndex((t) => t.threadUrl === url);
     if (existingIndex >= 0) {
       if (existingIndex === activeTabIndex) {
@@ -2581,7 +2585,7 @@ export default function App() {
   const visibleResponseItems = responseItems.filter((r) => {
     const ngResult = ngResultMap.get(r.id);
     if (ngResult === "hide") return false;
-    if (responseSearchQuery) {
+    if (responseSearchMode === "extract" && responseSearchQuery) {
       const q = responseSearchQuery.toLowerCase();
       const plainText = r.text.replace(/<[^>]+>/g, "").toLowerCase();
       const nameText = r.name.toLowerCase();
@@ -2605,6 +2609,35 @@ export default function App() {
   });
   const activeResponse = visibleResponseItems.find((r) => r.id === selectedResponse) ?? visibleResponseItems[0];
   const selectedResponseLabel = activeResponse ? `#${activeResponse.id}` : "-";
+
+  // In-thread search: list of response ids matching the query (for ↑↓ navigation)
+  const searchMatchIds = useMemo(() => {
+    if (responseSearchMode !== "in-thread" || !responseSearchQuery.trim()) return [] as number[];
+    const q = responseSearchQuery.toLowerCase();
+    return visibleResponseItems
+      .filter((r) => {
+        const plain = r.text.replace(/<[^>]+>/g, "").toLowerCase();
+        return plain.includes(q) || r.name.toLowerCase().includes(q);
+      })
+      .map((r) => r.id);
+  }, [responseSearchMode, responseSearchQuery, visibleResponseItems]);
+
+  const jumpToMatch = (index: number) => {
+    if (searchMatchIds.length === 0) return;
+    const safeIdx = ((index % searchMatchIds.length) + searchMatchIds.length) % searchMatchIds.length;
+    setSearchMatchIndex(safeIdx);
+    setSelectedResponse(searchMatchIds[safeIdx]);
+    scrollToResponseNo(searchMatchIds[safeIdx]);
+  };
+
+  useEffect(() => {
+    if (responseSearchMode === "in-thread" && searchMatchIds.length > 0) {
+      setSearchMatchIndex(0);
+      setSelectedResponse(searchMatchIds[0]);
+      scrollToResponseNo(searchMatchIds[0]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [responseSearchMode, responseSearchQuery]);
 
   // Build back-reference map: responseNo → list of responseNos that reference it
   const backRefMap = (() => {
@@ -3131,6 +3164,7 @@ export default function App() {
         if (responseMenu) { setResponseMenu(null); setHlSubMenu(null); return; }
         if (aboutOpen) { setAboutOpen(false); return; }
         if (responseReloadMenuOpen) { setResponseReloadMenuOpen(false); return; }
+        if (searchModeMenuOpen) { setSearchModeMenuOpen(false); return; }
         if (openMenu) { setOpenMenu(null); return; }
       }
       if (isTypingTarget(e.target)) return;
@@ -3899,6 +3933,7 @@ export default function App() {
         setSearchHistoryDropdown(null);
         setSearchHistoryMenu(null);
         setResponseReloadMenuOpen(false);
+        setSearchModeMenuOpen(false);
       }}
     >
       <header className="menu-bar">
@@ -4779,6 +4814,28 @@ export default function App() {
                   )}
                 </div>
                 <button className="title-action-btn" onClick={() => { setComposeOpen(true); setComposePos(null); setComposeBody(""); setComposeResult(null); }} title="書き込み"><Pencil size={14} /></button>
+                <div className="title-split-wrap" onClick={(e) => e.stopPropagation()}>
+                  <button
+                    className={`title-action-btn ${responseSearchMode ? "active" : ""}`}
+                    onClick={() => {
+                      if (responseSearchMode) {
+                        setResponseSearchMode(null);
+                        setResponseSearchQuery("");
+                        setSearchMatchIndex(0);
+                        setSearchModeMenuOpen(false);
+                      } else {
+                        setSearchModeMenuOpen((v) => !v);
+                      }
+                    }}
+                    title="検索"
+                  ><Search size={14} /></button>
+                  {searchModeMenuOpen && (
+                    <div className="title-split-menu">
+                      <button onClick={() => { setSearchModeMenuOpen(false); setResponseSearchQuery(""); setSearchMatchIndex(0); setResponseSearchMode("extract"); setTimeout(() => responseSearchRef.current?.focus(), 0); }}>レス抽出</button>
+                      <button onClick={() => { setSearchModeMenuOpen(false); setResponseSearchQuery(""); setSearchMatchIndex(0); setResponseSearchMode("in-thread"); setTimeout(() => responseSearchRef.current?.focus(), 0); }}>スレ内検索</button>
+                    </div>
+                  )}
+                </div>
                 <button
                   className={`title-action-btn ${subtitleVisible ? "active" : ""}`}
                   onClick={() => {
@@ -4814,6 +4871,64 @@ export default function App() {
                   <Star size={14} fill={favorites.threads.some((f) => f.threadUrl === threadTabs[activeTabIndex].threadUrl) ? "currentColor" : "none"} />
                 </button>
               </span>
+            </div>
+          )}
+          {responseSearchMode && (
+            <div className="response-search-bar">
+              <span className="search-mode-label">{responseSearchMode === "extract" ? "レス抽出:" : "スレ内検索:"}</span>
+              <div className="search-with-history" style={{ flex: 1 }}>
+                <input
+                  ref={responseSearchRef}
+                  className="thread-search"
+                  value={responseSearchQuery}
+                  onChange={(e) => setResponseSearchQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.nativeEvent.isComposing) return;
+                    if (e.key === "Enter") {
+                      addSearchHistory("response", responseSearchQuery);
+                      setSearchHistoryDropdown(null);
+                      if (responseSearchMode === "in-thread" && searchMatchIds.length > 0) {
+                        jumpToMatch(searchMatchIndex + 1);
+                      }
+                    }
+                    if (e.key === "Escape") { setResponseSearchMode(null); setResponseSearchQuery(""); setSearchMatchIndex(0); setSearchHistoryDropdown(null); }
+                  }}
+                  placeholder={responseSearchMode === "extract" ? "抽出ワード (Enter:履歴保存)" : "検索ワード (Enter/↓:次へ)"}
+                />
+                <button
+                  className="search-history-btn"
+                  onClick={(e) => { e.stopPropagation(); setSearchHistoryDropdown((prev) => prev?.type === "response" ? null : { type: "response" }); }}
+                  title="検索履歴"
+                ><ChevronDown size={10} /></button>
+                {searchHistoryDropdown?.type === "response" && responseSearchHistory.length > 0 && (
+                  <div className="search-history-dropdown" onMouseDown={(e) => e.preventDefault()}>
+                    {responseSearchHistory
+                      .filter((w) => !responseSearchQuery.trim() || w.toLowerCase().includes(responseSearchQuery.trim().toLowerCase()))
+                      .map((w) => (
+                        <div
+                          key={w}
+                          className="search-history-item"
+                          onClick={() => { setResponseSearchQuery(w); setSearchHistoryDropdown(null); }}
+                          onContextMenu={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            const p = clampMenuPosition(e.clientX, e.clientY, 120, 30);
+                            setSearchHistoryMenu({ x: p.x, y: p.y, type: "response", word: w });
+                          }}
+                        >{w}</div>
+                      ))}
+                  </div>
+                )}
+              </div>
+              {responseSearchMode === "in-thread" && (
+                <>
+                  <span className="match-counter">{searchMatchIds.length === 0 ? "0/0" : `${searchMatchIndex + 1}/${searchMatchIds.length}`}</span>
+                  <button className="title-action-btn" onClick={() => jumpToMatch(searchMatchIndex - 1)} disabled={searchMatchIds.length === 0} title="前のヒット"><ChevronUp size={14} /></button>
+                  <button className="title-action-btn" onClick={() => jumpToMatch(searchMatchIndex + 1)} disabled={searchMatchIds.length === 0} title="次のヒット"><ChevronDown size={14} /></button>
+                </>
+              )}
+              {responseSearchQuery && <button className="title-action-btn" onClick={() => setResponseSearchQuery("")} title="クリア"><X size={14} /></button>}
+              <button className="title-action-btn" onClick={() => { setResponseSearchMode(null); setResponseSearchQuery(""); setSearchMatchIndex(0); }} title="閉じる"><X size={14} /></button>
             </div>
           )}
           <div
@@ -5061,50 +5176,6 @@ export default function App() {
                 着:{visibleResponseItems.length}{ngFilteredCount > 0 ? `(NG${ngFilteredCount})` : ""}
                 {" "}サイズ:{Math.round(visibleResponseItems.reduce((s, r) => s + r.text.length, 0) / 1024)}KB
               </span>
-              <button className="title-action-btn" onClick={() => { setResponseSearchBarVisible((v) => !v); if (responseSearchBarVisible) setResponseSearchQuery(""); }} title="レス検索"><Search size={14} /></button>
-              {responseSearchBarVisible && (
-                <>
-                  <div className="search-with-history" style={{ flex: 1 }}>
-                    <input
-                      ref={responseSearchRef}
-                      className="thread-search"
-                      value={responseSearchQuery}
-                      onChange={(e) => setResponseSearchQuery(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.nativeEvent.isComposing) return;
-                        if (e.key === "Enter") { addSearchHistory("response", responseSearchQuery); setSearchHistoryDropdown(null); }
-                        if (e.key === "Escape") { setResponseSearchBarVisible(false); setResponseSearchQuery(""); setSearchHistoryDropdown(null); }
-                      }}
-                      placeholder="レス検索 (Enter:保存 / 右クリック:削除)"
-                    />
-                    <button
-                      className="search-history-btn"
-                      onClick={(e) => { e.stopPropagation(); setSearchHistoryDropdown((prev) => prev?.type === "response" ? null : { type: "response" }); }}
-                      title="検索履歴"
-                    ><ChevronDown size={10} /></button>
-                    {searchHistoryDropdown?.type === "response" && responseSearchHistory.length > 0 && (
-                      <div className="search-history-dropdown dropdown-up" onMouseDown={(e) => e.preventDefault()}>
-                        {responseSearchHistory
-                          .filter((w) => !responseSearchQuery.trim() || w.toLowerCase().includes(responseSearchQuery.trim().toLowerCase()))
-                          .map((w) => (
-                            <div
-                              key={w}
-                              className="search-history-item"
-                              onClick={() => { setResponseSearchQuery(w); setSearchHistoryDropdown(null); }}
-                              onContextMenu={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                const p = clampMenuPosition(e.clientX, e.clientY, 120, 30);
-                                setSearchHistoryMenu({ x: p.x, y: p.y, type: "response", word: w });
-                              }}
-                            >{w}</div>
-                          ))}
-                      </div>
-                    )}
-                  </div>
-                  {responseSearchQuery && <button className="title-action-btn" onClick={() => setResponseSearchQuery("")} title="検索クリア"><X size={14} /></button>}
-                </>
-              )}
               <span className="link-filter-buttons">
                 <button className={`link-filter-btn ${responseLinkFilter === "image" ? "active" : ""}`} onClick={() => setResponseLinkFilter((p) => p === "image" ? "" : "image")} title="画像リンク"><Image size={13} /></button>
                 <button className={`link-filter-btn ${responseLinkFilter === "video" ? "active" : ""}`} onClick={() => setResponseLinkFilter((p) => p === "video" ? "" : "video")} title="動画リンク"><Film size={13} /></button>

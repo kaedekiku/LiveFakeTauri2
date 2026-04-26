@@ -854,6 +854,49 @@ li.fav-drag-over {
   flex-shrink: 0;
 }
 
+.response-search-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+
+.response-search-bar .search-mode-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--sub);
+  flex-shrink: 0;
+}
+
+.response-search-bar .match-counter {
+  font-size: 11px;
+  color: var(--sub);
+  min-width: 40px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.response-search-bar .title-action-btn {
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 2px 4px;
+  cursor: pointer;
+  color: var(--ink);
+}
+
+.response-search-bar .title-action-btn:hover:not(:disabled) {
+  background: var(--bg-light, #ddd);
+}
+
+.response-search-bar .title-action-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .thread-title-text {
   flex: 1;
   overflow: hidden;
