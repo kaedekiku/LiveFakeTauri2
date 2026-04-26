@@ -111,3 +111,15 @@ ZIP を展開するだけでインストール不要で使えます。
 MIT License
 
 GPL ライセンスのライブラリは使用していません。
+
+---
+
+## 謝辞
+
+LiveFakeTauri2 は [kiyohken2000](https://github.com/kiyohken2000) 氏による [Ember (5ch-browser-template)](https://github.com/kiyohken2000/5ch-browser-template) をベースにしています（MIT License）。
+
+Ember から継承している基盤:
+- Tauri + Rust + React/TypeScript のデスクトップアプリ構成
+- BBS データパーサ（dat / subject.txt / bbsmenu）
+- どんぐり認証
+- JSON 永続化 / SQLite キャッシュ機構
