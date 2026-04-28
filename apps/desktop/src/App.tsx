@@ -1201,9 +1201,9 @@ export default function App() {
     return target.toLowerCase().includes(pattern.toLowerCase());
   };
 
-  const getNgResult = (resp: { name: string; time: string; text: string }): null | "hide" | "hide-images" => {
+  const getNgResult = (resp: { name: string; time: string; text: string }, threadUrlForScope?: string): null | "hide" | "hide-images" => {
     if (ngFilters.words.length === 0 && ngFilters.ids.length === 0 && ngFilters.names.length === 0) return null;
-    const curThread = threadUrl.trim();
+    const curThread = (threadUrlForScope ?? threadUrl).trim();
     const curBoard = getBoardUrlFromThreadUrl(curThread);
     let result: null | "hide" | "hide-images" = null;
     for (const w of ngFilters.words) {
@@ -1661,20 +1661,22 @@ export default function App() {
         const now = new Date();
         const timeStr = `${now.getFullYear()}/${String(now.getMonth() + 1).padStart(2, "0")}/${String(now.getDate()).padStart(2, "0")} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
         threadFetchTimesRef.current[tabUrl] = timeStr;
-        const arrivals = newRows.map((r) => {
-          const idMatch = r.dateAndId.match(/ID:([^\s]+)/);
-          const timeMatch = r.dateAndId.match(/^[\d/]+\s+[\d:]+/);
-          return {
-            threadTitle: tabTitle,
-            responseNo: r.responseNo,
-            name: r.name,
-            id: idMatch ? idMatch[1] : "",
-            time: timeMatch ? timeMatch[0] : r.dateAndId.slice(0, 20),
-            text: r.body.replace(/<[^>]*>/g, "").slice(0, 200),
-            threadUrl: tabUrl,
-          };
-        });
-        if (autoRefreshEnabled) {
+        const arrivals = newRows
+          .filter((r) => getNgResult({ name: r.name, time: r.dateAndId, text: r.body.replace(/<[^>]*>/g, "") }, tabUrl) !== "hide")
+          .map((r) => {
+            const idMatch = r.dateAndId.match(/ID:([^\s]+)/);
+            const timeMatch = r.dateAndId.match(/^[\d/]+\s+[\d:]+/);
+            return {
+              threadTitle: tabTitle,
+              responseNo: r.responseNo,
+              name: r.name,
+              id: idMatch ? idMatch[1] : "",
+              time: timeMatch ? timeMatch[0] : r.dateAndId.slice(0, 20),
+              text: r.body.replace(/<[^>]*>/g, "").slice(0, 200),
+              threadUrl: tabUrl,
+            };
+          });
+        if (autoRefreshEnabled && arrivals.length > 0) {
           const queueWasEmpty = arrivalQueueRef.current.length === 0;
           arrivalQueueRef.current.push(...arrivals);
           setArrivalQueueCount(arrivalQueueRef.current.length);
@@ -1866,21 +1868,23 @@ export default function App() {
           ?? fetchedThreads.find((t) => t.threadUrl === url)?.title
           ?? url;
         const newRows = rows.slice(prevCount);
-        const arrivals = newRows.map((r) => {
-          const idMatch = r.dateAndId.match(/ID:([^\s]+)/);
-          const timeMatch = r.dateAndId.match(/^[\d/]+\s+[\d:]+/);
-          return {
-            threadTitle: arrivalTitle,
-            responseNo: r.responseNo,
-            name: r.name,
-            id: idMatch ? idMatch[1] : "",
-            time: timeMatch ? timeMatch[0] : r.dateAndId.slice(0, 20),
-            text: r.body.replace(/<[^>]*>/g, "").slice(0, 200),
-            threadUrl: url,
-          };
-        });
+        const arrivals = newRows
+          .filter((r) => getNgResult({ name: r.name, time: r.dateAndId, text: r.body.replace(/<[^>]*>/g, "") }, url) !== "hide")
+          .map((r) => {
+            const idMatch = r.dateAndId.match(/ID:([^\s]+)/);
+            const timeMatch = r.dateAndId.match(/^[\d/]+\s+[\d:]+/);
+            return {
+              threadTitle: arrivalTitle,
+              responseNo: r.responseNo,
+              name: r.name,
+              id: idMatch ? idMatch[1] : "",
+              time: timeMatch ? timeMatch[0] : r.dateAndId.slice(0, 20),
+              text: r.body.replace(/<[^>]*>/g, "").slice(0, 200),
+              threadUrl: url,
+            };
+          });
         // Add to new arrivals pane when autoReload is ON
-        if (autoRefreshEnabled) {
+        if (autoRefreshEnabled && arrivals.length > 0) {
           const queueWasEmpty = arrivalQueueRef.current.length === 0;
           arrivalQueueRef.current.push(...arrivals);
           setArrivalQueueCount(arrivalQueueRef.current.length);
@@ -1888,7 +1892,7 @@ export default function App() {
             advanceToNextArrival();
           }
         }
-        // Update subtitle with latest new response
+        // Update subtitle with latest new response (skipping NG-filtered ones)
         if (arrivals.length > 0) {
           const latest = arrivals[arrivals.length - 1];
           subtitleUpdate({ threadTitle: latest.threadTitle, responseNo: latest.responseNo, name: latest.name, id: latest.id, date: latest.time, body: latest.text });
