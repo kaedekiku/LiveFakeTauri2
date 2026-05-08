@@ -6103,8 +6103,8 @@ export default function App() {
                 </label>
                 <label className="settings-row">
                   <span>自動更新間隔 (秒)</span>
-                  <input type="number" value={autoRefreshInterval} min={15} max={300} step={15} onChange={(e) => {
-                    const v = Math.max(15, Math.min(300, Number(e.target.value)));
+                  <input type="number" value={autoRefreshInterval} min={10} max={300} step={1} onChange={(e) => {
+                    const v = Math.max(10, Math.min(300, Number(e.target.value)));
                     setAutoRefreshInterval(v);
                   }} />
                 </label>
