@@ -781,6 +781,7 @@ export default function App() {
   const [boardsFontSize, setBoardsFontSize] = useState(12);
   const [threadsFontSize, setThreadsFontSize] = useState(12);
   const [responsesFontSize, setResponsesFontSize] = useState(12);
+  const [responsesHeaderFontSize, setResponsesHeaderFontSize] = useState(11);
   type PaneName = "boards" | "threads" | "responses";
   const [focusedPane, setFocusedPane] = useState<PaneName>("responses");
   const [fontFamily, setFontFamily] = useState("");
@@ -3220,6 +3221,7 @@ export default function App() {
           boardsFontSize?: number;
           threadsFontSize?: number;
           responsesFontSize?: number;
+          responsesHeaderFontSize?: number;
           darkMode?: boolean;
           fontFamily?: string;
           threadColWidths?: Record<string, number>;
@@ -3252,6 +3254,7 @@ export default function App() {
         setBoardsFontSize(typeof parsed.boardsFontSize === "number" ? parsed.boardsFontSize : fallbackFs);
         setThreadsFontSize(typeof parsed.threadsFontSize === "number" ? parsed.threadsFontSize : fallbackFs);
         setResponsesFontSize(typeof parsed.responsesFontSize === "number" ? parsed.responsesFontSize : fallbackFs);
+        if (typeof parsed.responsesHeaderFontSize === "number") setResponsesHeaderFontSize(parsed.responsesHeaderFontSize);
         if (typeof parsed.darkMode === "boolean") setDarkMode(parsed.darkMode);
         if (typeof parsed.fontFamily === "string") setFontFamily(parsed.fontFamily);
         if (parsed.threadColWidths && typeof parsed.threadColWidths === "object") {
@@ -3820,6 +3823,7 @@ export default function App() {
       boardsFontSize,
       threadsFontSize,
       responsesFontSize,
+      responsesHeaderFontSize,
       darkMode,
       fontFamily,
       threadColWidths,
@@ -3842,7 +3846,7 @@ export default function App() {
     if (isTauriRuntime()) {
       void invoke("save_layout_prefs", { prefs: payload }).catch(() => {});
     }
-  }, [boardPanePx, threadPanePx, responseTopRatio, boardsFontSize, threadsFontSize, responsesFontSize, darkMode, fontFamily, threadColWidths, showBoardButtons, keepSortOnRefresh, composeSubmitKey, typingConfettiEnabled, imageSizeLimit, hoverPreviewEnabled, selectedBoard, hoverPreviewDelay, thumbSize, restoreSession, autoRefreshInterval, autoScrollEnabled, newArrivalPaneOpen, newArrivalPaneHeight, newArrivalFontSize]);
+  }, [boardPanePx, threadPanePx, responseTopRatio, boardsFontSize, threadsFontSize, responsesFontSize, responsesHeaderFontSize, darkMode, fontFamily, threadColWidths, showBoardButtons, keepSortOnRefresh, composeSubmitKey, typingConfettiEnabled, imageSizeLimit, hoverPreviewEnabled, selectedBoard, hoverPreviewDelay, thumbSize, restoreSession, autoRefreshInterval, autoScrollEnabled, newArrivalPaneOpen, newArrivalPaneHeight, newArrivalFontSize]);
 
 
 
@@ -4784,7 +4788,7 @@ export default function App() {
           </div>
         </section>
         ) : (
-        <section className="pane responses" onMouseDown={() => setFocusedPane("responses")} style={{ '--fs-delta': `${responsesFontSize - 12}px` } as React.CSSProperties}>
+        <section className="pane responses" onMouseDown={() => setFocusedPane("responses")} style={{ '--fs-delta': `${responsesFontSize - 12}px`, '--fs-header-delta': `${responsesHeaderFontSize - 11}px` } as React.CSSProperties}>
           {activeTabIndex >= 0 && activeTabIndex < threadTabs.length && (
             <div className="thread-title-bar">
               <span className="thread-title-text" title={threadTabs[activeTabIndex].title}>
@@ -6096,6 +6100,10 @@ export default function App() {
                 <label className="settings-row">
                   <span>文字サイズ (レス)</span>
                   <input type="number" value={responsesFontSize} min={8} max={20} onChange={(e) => setResponsesFontSize(Number(e.target.value))} />
+                </label>
+                <label className="settings-row">
+                  <span>文字サイズ (レスヘッダ)</span>
+                  <input type="number" value={responsesHeaderFontSize} min={8} max={20} onChange={(e) => setResponsesHeaderFontSize(Number(e.target.value))} />
                 </label>
                 <label className="settings-row">
                   <span>文字サイズ (新着レス)</span>

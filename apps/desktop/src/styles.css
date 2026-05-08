@@ -756,7 +756,7 @@ li.fav-drag-over {
   flex-wrap: wrap;
   gap: 4px;
   align-items: baseline;
-  font-size: calc(12px + var(--fs-delta, 0px));
+  font-size: calc(11px + var(--fs-header-delta, 0px));
   margin-bottom: 1px;
 }
 
@@ -804,7 +804,7 @@ li.fav-drag-over {
 }
 
 .response-date {
-  font-size: calc(11px + var(--fs-delta, 0px));
+  font-size: calc(11px + var(--fs-header-delta, 0px));
   color: var(--sub);
 }
 
@@ -1015,7 +1015,7 @@ li.fav-drag-over {
 .response-new-marker {
   color: #ff0000;
   font-weight: 700;
-  font-size: calc(11px + var(--fs-delta, 0px));
+  font-size: calc(11px + var(--fs-header-delta, 0px));
   margin-left: 4px;
 }
 .response-id-cell {
@@ -3341,7 +3341,7 @@ button.search-history-btn:hover {
 }
 /* Mail column in response header */
 .response-mail {
-  font-size: 11px;
+  font-size: calc(11px + var(--fs-header-delta, 0px));
   color: #888;
   margin-left: 4px;
 }
