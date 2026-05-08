@@ -1893,8 +1893,8 @@ export default function App() {
             advanceToNextArrival();
           }
         }
-        // Update subtitle with latest new response (skipping NG-filtered ones)
-        if (arrivals.length > 0) {
+        // Update subtitle directly only on manual refresh (auto-refresh uses queue via advanceToNextArrival)
+        if (arrivals.length > 0 && !autoRefreshEnabled) {
           const latest = arrivals[arrivals.length - 1];
           subtitleUpdate({ threadTitle: latest.threadTitle, responseNo: latest.responseNo, name: latest.name, id: latest.id, date: latest.time, body: latest.text });
         }
@@ -2243,6 +2243,7 @@ export default function App() {
       currentArrivalItemRef.current = next;
       setCurrentArrivalItem(next);
       if (next === null) return;
+      subtitleUpdate({ threadTitle: next.threadTitle, responseNo: next.responseNo, name: next.name, id: next.id, date: next.time, body: next.text });
       _startArrivalTimer();
     }, 200);
   };
