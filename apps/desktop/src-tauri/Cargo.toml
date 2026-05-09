@@ -1,6 +1,6 @@
 [package]
 name = "livefake"
-version = "0.0.81"
+version = "0.0.82"
 license = "MIT"
 description = "実況向け掲示板ブラウザ"
 homepage = ""

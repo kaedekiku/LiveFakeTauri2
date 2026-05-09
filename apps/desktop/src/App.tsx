@@ -15,7 +15,7 @@ import {
   ClipboardList, RefreshCw, Pencil, FilePenLine, Save,
   Star, X, ChevronLeft, ChevronRight, ChevronDown, Ban,
   Image, Film, ExternalLink, Upload, History, Copy, Trash2,
-  Subtitles, Volume2, ChevronUp, Search,
+  Subtitles, Volume2, ChevronUp, Search, PanelLeftClose, PanelLeftOpen,
 } from "lucide-react";
 
 type MenuInfo = { topLevelKeys: number; normalizedSample: string };
@@ -796,6 +796,7 @@ export default function App() {
   const [watchoiMenu, setWatchoiMenu] = useState<{ x: number; y: number; watchoi: string } | null>(null);
   const [composePos, setComposePos] = useState<{ x: number; y: number } | null>(null);
   const composeDragRef = useRef<{ startX: number; startY: number; startPosX: number; startPosY: number } | null>(null);
+  const [boardPaneVisible, setBoardPaneVisible] = useState(true);
   const [boardPanePx, setBoardPanePx] = useState(DEFAULT_BOARD_PANE_PX);
   const [threadPanePx, setThreadPanePx] = useState(DEFAULT_THREAD_PANE_PX);
   const [responseTopRatio, setResponseTopRatio] = useState(DEFAULT_RESPONSE_TOP_RATIO);
@@ -3215,6 +3216,7 @@ export default function App() {
       if (!raw) return;
       try {
         const parsed = JSON.parse(raw) as {
+          boardPaneVisible?: boolean;
           boardPanePx?: number;
           threadPanePx?: number;
           responseTopRatio?: number;
@@ -3242,6 +3244,7 @@ export default function App() {
           newArrivalPaneHeight?: number;
           newArrivalFontSize?: number;
         };
+        if (typeof parsed.boardPaneVisible === "boolean") setBoardPaneVisible(parsed.boardPaneVisible);
         if (typeof parsed.boardPanePx === "number") setBoardPanePx(parsed.boardPanePx);
         if (typeof parsed.threadPanePx === "number") {
           setThreadPanePx(parsed.threadPanePx);
@@ -3818,6 +3821,7 @@ export default function App() {
   useEffect(() => {
     if (!layoutPrefsLoadedRef.current) return;
     const payload = JSON.stringify({
+      boardPaneVisible,
       boardPanePx,
       threadPanePx,
       responseTopRatio,
@@ -3847,7 +3851,7 @@ export default function App() {
     if (isTauriRuntime()) {
       void invoke("save_layout_prefs", { prefs: payload }).catch(() => {});
     }
-  }, [boardPanePx, threadPanePx, responseTopRatio, boardsFontSize, threadsFontSize, responsesFontSize, responsesHeaderFontSize, darkMode, fontFamily, threadColWidths, showBoardButtons, keepSortOnRefresh, composeSubmitKey, typingConfettiEnabled, imageSizeLimit, hoverPreviewEnabled, selectedBoard, hoverPreviewDelay, thumbSize, restoreSession, autoRefreshInterval, autoScrollEnabled, newArrivalPaneOpen, newArrivalPaneHeight, newArrivalFontSize]);
+  }, [boardPaneVisible, boardPanePx, threadPanePx, responseTopRatio, boardsFontSize, threadsFontSize, responsesFontSize, responsesHeaderFontSize, darkMode, fontFamily, threadColWidths, showBoardButtons, keepSortOnRefresh, composeSubmitKey, typingConfettiEnabled, imageSizeLimit, hoverPreviewEnabled, selectedBoard, hoverPreviewDelay, thumbSize, restoreSession, autoRefreshInterval, autoScrollEnabled, newArrivalPaneOpen, newArrivalPaneHeight, newArrivalFontSize]);
 
 
 
@@ -3972,6 +3976,7 @@ export default function App() {
             { text: "sep" },
             { text: darkMode ? "ライトテーマ" : "ダークテーマ", action: () => setDarkMode((v) => !v) },
             { text: "sep" },
+            { text: boardPaneVisible ? "板一覧を非表示" : "板一覧を表示", action: () => setBoardPaneVisible((v) => !v) },
             { text: showBoardButtons ? "板ボタンを非表示" : "板ボタンを表示", action: () => setShowBoardButtons((v) => !v) },
           ]},
           { label: "板", items: [
@@ -4018,6 +4023,9 @@ export default function App() {
         ))}
       </header>
       <div className="tool-bar">
+        <button onClick={() => setBoardPaneVisible((v) => !v)} title={boardPaneVisible ? "板一覧を非表示" : "板一覧を表示"}>
+          {boardPaneVisible ? <PanelLeftClose size={14} /> : <PanelLeftOpen size={14} />}
+        </button>
         <button onClick={() => { void fetchMenu(); void fetchBoardCategories(); }} title="板更新"><ClipboardList size={14} /></button>
         <span className="tool-sep" />
         <input className="address-input" value={locationInput} onChange={(e) => setLocationInput(e.target.value)} onKeyDown={onLocationInputKeyDown} onFocus={(e) => e.target.select()} />
@@ -4094,7 +4102,7 @@ export default function App() {
         </div>
       )}
       <main className="layout">
-        <section className="pane boards" onMouseDown={() => setFocusedPane("boards")} style={{ '--fs-delta': `${boardsFontSize - 12}px`, width: boardPanePx, maxWidth: `calc(100% - ${MIN_RESPONSE_PANE_PX + SPLITTER_PX}px)`, flexShrink: 0 } as React.CSSProperties}>
+        {boardPaneVisible && <section className="pane boards" onMouseDown={() => setFocusedPane("boards")} style={{ '--fs-delta': `${boardsFontSize - 12}px`, width: boardPanePx, maxWidth: `calc(100% - ${MIN_RESPONSE_PANE_PX + SPLITTER_PX}px)`, flexShrink: 0 } as React.CSSProperties}>
           <div className="boards-header">
             <div className="board-tabs">
               <button
@@ -4281,15 +4289,15 @@ export default function App() {
               )}
             </div>
           )}
-        </section>
-        <div
+        </section>}
+        {boardPaneVisible && <div
           className="pane-splitter"
           role="separator"
           aria-orientation="vertical"
           aria-label="Resize boards pane"
           onMouseDown={(e) => beginHorizontalResize("board-thread", e)}
           onClick={(e) => e.stopPropagation()}
-        />
+        />}
         <div className="right-body">
           {/* New arrivals pane — inside right-body, above tab bar */}
           {newArrivalPaneOpen && (
