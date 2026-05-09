@@ -700,8 +700,8 @@ pub async fn fetch_jpnkn_responses(
     }).collect(), title))
 }
 
-/// Post a reply to 5ch.io directly (bypasses reqwest token fetch to avoid session mismatch).
-pub fn post_5ch_reply(
+/// Post a reply to 5ch.io via reqwest+rustls (avoids Windows Schannel SSL issues).
+pub async fn post_5ch_reply(
     thread_url: &str,
     from: &str,
     mail: &str,
@@ -736,7 +736,7 @@ pub fn post_5ch_reply(
         ("submit", "書き込む"),
     ];
 
-    let (status, ct, body) = curl_post_5ch(&normalized, &post_url, &fields, extra_cookies)?;
+    let (status, ct, body) = reqwest_post_5ch(&normalized, &post_url, &fields, extra_cookies).await?;
     let is_ok = body.contains("書きこみが終わりました") || body.contains("書き込みが終わりました") || body.contains("投稿が完了");
     let contains_error = !is_ok && (body.contains("ERROR") || body.contains("エラー") || status >= 400);
 
@@ -846,6 +846,133 @@ fn url_encode_sjis_bytes(bytes: &[u8]) -> String {
     }
     out
 }
+
+// ─── reqwest-based 5ch POST helpers ─────────────────────────────────────────
+
+fn seed_extra_cookies(jar: &Jar, target_url: &str, extra_cookies: Option<&str>) {
+    let Some(cookies) = extra_cookies.filter(|s| !s.is_empty()) else { return };
+    let Ok(url) = Url::parse(target_url) else { return };
+    for pair in cookies.split(';') {
+        let pair = pair.trim();
+        if !pair.is_empty() {
+            jar.add_cookie_str(pair, &url);
+        }
+    }
+}
+
+async fn decode_5ch_response(
+    resp: reqwest::Response,
+) -> Result<(u16, Option<String>, String, Option<String>), FetchError> {
+    let status = resp.status().as_u16();
+    let ct = resp.headers().get("content-type")
+        .and_then(|v| v.to_str().ok()).map(|s| s.to_string());
+    let redir = resp.headers().get("location")
+        .and_then(|v| v.to_str().ok()).map(|s| s.to_string());
+    let bytes = resp.bytes().await?;
+    let (body, _, _) = SHIFT_JIS.decode(&bytes);
+    Ok((status, ct, body.into_owned(), redir))
+}
+
+/// reqwest-based 5ch POST flow — replaces curl_post_5ch for the main posting path.
+/// Same steps as curl_post_5ch_inner: GET thread → POST → redirect → confirm → uplift.
+async fn reqwest_post_5ch(
+    thread_url: &str,
+    post_url: &str,
+    fields: &[(&str, &str)],
+    extra_cookies: Option<&str>,
+) -> Result<(u16, Option<String>, String), FetchError> {
+    let (client, jar) = build_cookie_client("Monazilla/1.00 LiveFake/0.1")?;
+    seed_extra_cookies(&jar, post_url, extra_cookies);
+
+    // Step 1: GET thread page to collect session cookies
+    let _ = client.get(thread_url).send().await;
+
+    let body = build_sjis_form_body(fields);
+
+    // Step 2: POST to bbs.cgi
+    let resp = client.post(post_url)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header("Referer", thread_url)
+        .body(body.clone())
+        .send().await?;
+    let (mut status, mut ct, mut resp_body, mut redir) = decode_5ch_response(resp).await?;
+
+    // Step 3: Follow redirects manually (up to 5), normalizing .5ch.net → .5ch.io
+    for _ in 0..5 {
+        if (status == 301 || status == 302) && redir.is_some() {
+            let next_url = normalize_5ch_url(&redir.take().unwrap());
+            let r = client.get(&next_url).header("Referer", post_url).send().await?;
+            let (s, c, b, rd) = decode_5ch_response(r).await?;
+            status = s; ct = c; resp_body = b; redir = rd;
+        } else {
+            break;
+        }
+    }
+
+    // Step 4: Confirm form (has hidden name="bbs") — auto-submit in same session
+    let has_confirm = resp_body.contains("name=\"bbs\"") || resp_body.contains("name=bbs ");
+    if has_confirm && status == 200 {
+        if let Ok(form) = parse_confirm_submit_form_internal(&resp_body, post_url) {
+            let confirm_body = build_sjis_form_body(
+                &form.fields.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect::<Vec<_>>(),
+            );
+            let r = client.post(&form.action_url)
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .header("Referer", post_url)
+                .body(confirm_body)
+                .send().await?;
+            let (s2, c2, b2, mut rd2) = decode_5ch_response(r).await?;
+            status = s2; ct = c2; resp_body = b2;
+            for _ in 0..5 {
+                if (status == 301 || status == 302) && rd2.is_some() {
+                    let next_url = normalize_5ch_url(&rd2.take().unwrap());
+                    let r = client.get(&next_url).header("Referer", post_url).send().await?;
+                    let (s, c, b, rd) = decode_5ch_response(r).await?;
+                    status = s; ct = c; resp_body = b; rd2 = rd;
+                } else { break; }
+            }
+        }
+    } else if !has_confirm && status == 200 {
+        // Step 5: Uplift/consent form — submit consent then retry original POST
+        if let Some(consent_form) = find_first_generic_form(&resp_body) {
+            let consent_url = if consent_form.action.starts_with("http") {
+                normalize_5ch_url(&consent_form.action)
+            } else {
+                consent_form.action.clone()
+            };
+            let consent_body = consent_form.fields.iter()
+                .map(|(k, v)| {
+                    let (sjis, _, _) = SHIFT_JIS.encode(v);
+                    format!("{}={}", k, url_encode_sjis_bytes(&sjis))
+                })
+                .collect::<Vec<_>>().join("&");
+            let _ = client.post(&consent_url)
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .header("Referer", post_url)
+                .body(consent_body)
+                .send().await;
+        }
+        let r = client.post(post_url)
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .header("Referer", thread_url)
+            .body(body)
+            .send().await?;
+        let (s2, c2, b2, mut rd2) = decode_5ch_response(r).await?;
+        status = s2; ct = c2; resp_body = b2;
+        for _ in 0..5 {
+            if (status == 301 || status == 302) && rd2.is_some() {
+                let next_url = normalize_5ch_url(&rd2.take().unwrap());
+                let r = client.get(&next_url).header("Referer", post_url).send().await?;
+                let (s, c, b, rd) = decode_5ch_response(r).await?;
+                status = s; ct = c; resp_body = b; rd2 = rd;
+            } else { break; }
+        }
+    }
+
+    Ok((status, ct, resp_body))
+}
+
+// ─── curl-based helpers (kept for probe_post_flow_trace) ─────────────────────
 
 /// Execute a curl request with a shared cookie jar. Returns (status, content_type, redirect_url, body).
 fn curl_exec(
@@ -1122,7 +1249,7 @@ pub async fn submit_post_confirm_with_html(
     }
 
     let (final_status, final_ct, final_body) =
-        curl_post_5ch(&tokens.thread_url, &tokens.post_url, &fields, extra_cookies)?;
+        reqwest_post_5ch(&tokens.thread_url, &tokens.post_url, &fields, extra_cookies).await?;
 
     let contains_confirm = final_body.contains("confirm");
     let contains_error = final_body.contains("error");
@@ -1290,7 +1417,7 @@ pub async fn create_jpnkn_thread(
 
 /// Create a new thread on a 5ch board.
 /// `board_url` should be like "https://greta.5ch.io/poverty/" or "https://greta.5ch.io/test/read.cgi/poverty/..."
-pub fn create_thread(
+pub async fn create_thread(
     board_url: &str,
     subject: &str,
     from: &str,
@@ -1332,7 +1459,7 @@ pub fn create_thread(
         ("submit", "\u{65B0}\u{898F}\u{30B9}\u{30EC}\u{30C3}\u{30C9}\u{4F5C}\u{6210}"),  // "新規スレッド作成"
     ];
 
-    let (status, ct, body) = curl_post_5ch(&referer, &post_url, &fields, extra_cookies)?;
+    let (status, ct, body) = reqwest_post_5ch(&referer, &post_url, &fields, extra_cookies).await?;
     let contains_error = body.contains("ＥＲＲＯＲ")
         || body.contains("ERROR!")
         || (body.contains("error") && !body.contains("error.css") && !body.contains("error.js"));
@@ -1468,7 +1595,7 @@ pub async fn submit_post_finalize_from_confirm(
     let thread_url = fallback_post_url
         .replace("/test/bbs.cgi", "/test/read.cgi/");
     let (final_status, final_ct, final_body) =
-        curl_post_5ch(&thread_url, &form.action_url, &fields, extra_cookies)?;
+        reqwest_post_5ch(&thread_url, &form.action_url, &fields, extra_cookies).await?;
 
     let contains_error = final_body.contains("error");
     let body_preview: String = final_body.chars().take(1000).collect();

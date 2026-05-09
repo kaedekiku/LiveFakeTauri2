@@ -595,7 +595,7 @@ async fn post_reply_multisite(
             Ok(format!("status={}", result.status))
         }
         _ => {
-            // 5ch: direct curl-based post (avoids reqwest/curl session mismatch)
+            // 5ch: reqwest+rustls based post (avoids Windows Schannel SSL issues)
             let ch = get_login_cookie_header();
             let result = post_5ch_reply(
                 &thread_url,
@@ -604,6 +604,7 @@ async fn post_reply_multisite(
                 &message,
                 ch.as_deref(),
             )
+            .await
             .map_err(|e| format!("{:?}", e))?;
             if result.contains_error {
                 Err(format!("Post failed: status={} body={}", result.status, &result.body_preview[..result.body_preview.len().min(300)]))
@@ -649,19 +650,16 @@ async fn create_thread_command(
         }
         _ => {
             let cookie_header = get_login_cookie_header();
-            tauri::async_runtime::spawn_blocking(move || {
-                create_thread(
-                    &board_url,
-                    &subject,
-                    &from_str,
-                    &mail_str,
-                    &message,
-                    cookie_header.as_deref(),
-                )
-                .map_err(|e| format!("{:?}", e))
-            })
+            create_thread(
+                &board_url,
+                &subject,
+                &from_str,
+                &mail_str,
+                &message,
+                cookie_header.as_deref(),
+            )
             .await
-            .map_err(|e| format!("task join: {}", e))?
+            .map_err(|e| format!("{:?}", e))
         }
     }
 }
