@@ -1299,11 +1299,53 @@ export default function App() {
 
   const scrollToResponseNo = (no: number) => {
     if (no <= 1) return;
+    // Phase 1: wait for the element to appear in DOM (rAF retry)
     let attempts = 0;
     const tryScroll = () => {
-      const el = responseScrollRef.current?.querySelector(`[data-response-no="${no}"]`);
-      if (el) {
-        el.scrollIntoView({ block: "start", behavior: smoothScrollRef.current ? "smooth" : "instant" });
+      const container = responseScrollRef.current;
+      const el = container?.querySelector<HTMLElement>(`[data-response-no="${no}"]`);
+      if (el && container) {
+        el.scrollIntoView({ block: "start", behavior: "instant" });
+
+        // Phase 2: correct scroll after images load (ResizeObserver)
+        let active = true;
+        let lastProgrammaticScrollTop = container.scrollTop;
+        let correctionTimer: ReturnType<typeof setTimeout> | null = null;
+
+        const correct = () => {
+          if (!active) return;
+          const elRect = el.getBoundingClientRect();
+          const cRect = container.getBoundingClientRect();
+          if (Math.abs(elRect.top - cRect.top) > 20) {
+            lastProgrammaticScrollTop = container.scrollTop;
+            el.scrollIntoView({ block: "start", behavior: "instant" });
+          }
+        };
+
+        const onScroll = () => {
+          // If user scrolls significantly away from programmatic position, stop correcting
+          if (Math.abs(container.scrollTop - lastProgrammaticScrollTop) > 80) {
+            active = false;
+            cleanup();
+          }
+        };
+        container.addEventListener("scroll", onScroll, { passive: true });
+
+        const observer = new ResizeObserver(() => {
+          if (!active) return;
+          if (correctionTimer) clearTimeout(correctionTimer);
+          correctionTimer = setTimeout(correct, 150);
+        });
+        observer.observe(container);
+
+        const cleanup = () => {
+          active = false;
+          observer.disconnect();
+          if (correctionTimer) clearTimeout(correctionTimer);
+          container.removeEventListener("scroll", onScroll);
+        };
+        // Stop observing after 4 seconds — images should all be loaded by then
+        setTimeout(cleanup, 4000);
       } else if (attempts < 10) {
         attempts++;
         requestAnimationFrame(tryScroll);
