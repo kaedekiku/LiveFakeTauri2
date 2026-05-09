@@ -1307,9 +1307,12 @@ export default function App() {
       if (el && container) {
         el.scrollIntoView({ block: "start", behavior: "instant" });
 
-        // Phase 2: correct scroll after images load (ResizeObserver)
+        // Phase 2: correct scroll as images load and expand scrollHeight
+        // ResizeObserver watches clientHeight (layout box) — doesn't fire when scrollHeight grows.
+        // Poll scrollHeight instead, which reliably detects image-load-driven content expansion.
         let active = true;
         let lastProgrammaticScrollTop = container.scrollTop;
+        let prevScrollHeight = container.scrollHeight;
         let correctionTimer: ReturnType<typeof setTimeout> | null = null;
 
         const correct = () => {
@@ -1317,13 +1320,12 @@ export default function App() {
           const elRect = el.getBoundingClientRect();
           const cRect = container.getBoundingClientRect();
           if (Math.abs(elRect.top - cRect.top) > 20) {
-            lastProgrammaticScrollTop = container.scrollTop;
             el.scrollIntoView({ block: "start", behavior: "instant" });
+            lastProgrammaticScrollTop = container.scrollTop; // update AFTER scroll
           }
         };
 
         const onScroll = () => {
-          // If user scrolls significantly away from programmatic position, stop correcting
           if (Math.abs(container.scrollTop - lastProgrammaticScrollTop) > 80) {
             active = false;
             cleanup();
@@ -1331,20 +1333,21 @@ export default function App() {
         };
         container.addEventListener("scroll", onScroll, { passive: true });
 
-        const observer = new ResizeObserver(() => {
-          if (!active) return;
-          if (correctionTimer) clearTimeout(correctionTimer);
-          correctionTimer = setTimeout(correct, 150);
-        });
-        observer.observe(container);
+        const pollInterval = setInterval(() => {
+          if (!active) { clearInterval(pollInterval); return; }
+          if (container.scrollHeight !== prevScrollHeight) {
+            prevScrollHeight = container.scrollHeight;
+            if (correctionTimer) clearTimeout(correctionTimer);
+            correctionTimer = setTimeout(correct, 150);
+          }
+        }, 100);
 
         const cleanup = () => {
           active = false;
-          observer.disconnect();
+          clearInterval(pollInterval);
           if (correctionTimer) clearTimeout(correctionTimer);
           container.removeEventListener("scroll", onScroll);
         };
-        // Stop observing after 4 seconds — images should all be loaded by then
         setTimeout(cleanup, 4000);
       } else if (attempts < 10) {
         attempts++;
