@@ -1448,6 +1448,41 @@ fn quit_app() {
     std::process::exit(0);
 }
 
+#[tauri::command]
+fn list_system_fonts() -> Vec<String> {
+    #[cfg(target_os = "windows")]
+    {
+        use winreg::enums::HKEY_LOCAL_MACHINE;
+        use winreg::RegKey;
+        let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+        let Ok(key) = hklm.open_subkey(
+            "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Fonts"
+        ) else {
+            return vec![];
+        };
+        let mut names: Vec<String> = key
+            .enum_values()
+            .filter_map(|item| item.ok())
+            .map(|(name, _)| {
+                // Strip parenthetical suffix: "Arial (TrueType)" → "Arial"
+                if let Some(pos) = name.rfind('(') {
+                    name[..pos].trim().to_string()
+                } else {
+                    name.trim().to_string()
+                }
+            })
+            .filter(|s| !s.is_empty())
+            .collect();
+        names.sort();
+        names.dedup();
+        names
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        vec![]
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct WindowState {
@@ -2210,7 +2245,8 @@ pub fn run() {
             subtitle_opacity,
             subtitle_topmost,
             subtitle_font_size,
-            subtitle_meta_font_size
+            subtitle_meta_font_size,
+            list_system_fonts
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

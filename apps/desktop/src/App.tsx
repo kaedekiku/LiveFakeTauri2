@@ -785,6 +785,8 @@ export default function App() {
   type PaneName = "boards" | "threads" | "responses";
   const [focusedPane, setFocusedPane] = useState<PaneName>("responses");
   const [fontFamily, setFontFamily] = useState("");
+  const [fontBold, setFontBold] = useState(false);
+  const [systemFonts, setSystemFonts] = useState<string[]>([]);
   const [darkMode, setDarkMode] = useState(false);
   const [composeFontSize, setComposeFontSize] = useState(13);
   const [idPopup, setIdPopup] = useState<{ right: number; y: number; anchorTop: number; id: string } | null>(null);
@@ -3227,6 +3229,7 @@ export default function App() {
           responsesHeaderFontSize?: number;
           darkMode?: boolean;
           fontFamily?: string;
+          fontBold?: boolean;
           threadColWidths?: Record<string, number>;
           showBoardButtons?: boolean;
           keepSortOnRefresh?: boolean;
@@ -3260,7 +3263,18 @@ export default function App() {
         setResponsesFontSize(typeof parsed.responsesFontSize === "number" ? parsed.responsesFontSize : fallbackFs);
         if (typeof parsed.responsesHeaderFontSize === "number") setResponsesHeaderFontSize(parsed.responsesHeaderFontSize);
         if (typeof parsed.darkMode === "boolean") setDarkMode(parsed.darkMode);
-        if (typeof parsed.fontFamily === "string") setFontFamily(parsed.fontFamily);
+        if (typeof parsed.fontFamily === "string") {
+          // Normalize legacy CSS values like "'Meiryo', sans-serif" → "Meiryo"
+          const raw = parsed.fontFamily;
+          if (raw.includes(",") || raw.includes("'") || raw.includes('"')) {
+            const first = raw.split(",")[0].trim().replace(/^['"]|['"]$/g, "");
+            const generics = ["sans-serif", "serif", "monospace", "cursive", "fantasy"];
+            setFontFamily(generics.includes(first) ? "" : first);
+          } else {
+            setFontFamily(raw);
+          }
+        }
+        if (typeof parsed.fontBold === "boolean") setFontBold(parsed.fontBold);
         if (parsed.threadColWidths && typeof parsed.threadColWidths === "object") {
           setThreadColWidths((prev) => ({ ...prev, ...parsed.threadColWidths }));
         }
@@ -3831,6 +3845,7 @@ export default function App() {
       responsesHeaderFontSize,
       darkMode,
       fontFamily,
+      fontBold,
       threadColWidths,
       showBoardButtons,
       keepSortOnRefresh,
@@ -3851,7 +3866,7 @@ export default function App() {
     if (isTauriRuntime()) {
       void invoke("save_layout_prefs", { prefs: payload }).catch(() => {});
     }
-  }, [boardPaneVisible, boardPanePx, threadPanePx, responseTopRatio, boardsFontSize, threadsFontSize, responsesFontSize, responsesHeaderFontSize, darkMode, fontFamily, threadColWidths, showBoardButtons, keepSortOnRefresh, composeSubmitKey, typingConfettiEnabled, imageSizeLimit, hoverPreviewEnabled, selectedBoard, hoverPreviewDelay, thumbSize, restoreSession, autoRefreshInterval, autoScrollEnabled, newArrivalPaneOpen, newArrivalPaneHeight, newArrivalFontSize]);
+  }, [boardPaneVisible, boardPanePx, threadPanePx, responseTopRatio, boardsFontSize, threadsFontSize, responsesFontSize, responsesHeaderFontSize, darkMode, fontFamily, fontBold, threadColWidths, showBoardButtons, keepSortOnRefresh, composeSubmitKey, typingConfettiEnabled, imageSizeLimit, hoverPreviewEnabled, selectedBoard, hoverPreviewDelay, thumbSize, restoreSession, autoRefreshInterval, autoScrollEnabled, newArrivalPaneOpen, newArrivalPaneHeight, newArrivalFontSize]);
 
 
 
@@ -3926,10 +3941,15 @@ export default function App() {
     return () => clearInterval(id);
   }, [autoRefreshEnabled, autoRefreshInterval, threadUrl, threadTabs, activeTabIndex]);
 
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    invoke<string[]>("list_system_fonts").then(setSystemFonts).catch(() => {});
+  }, []);
+
   return (
     <div
       className={`shell${darkMode ? " dark" : ""}`}
-      style={{ fontFamily: fontFamily || undefined, gridTemplateRows: showBoardButtons && favorites.boards.length > 0 ? "26px 32px auto 1fr 22px" : undefined, "--thumb-size": `${thumbSize}px` } as React.CSSProperties}
+      style={{ fontFamily: fontFamily ? `"${fontFamily}", "Emoji", sans-serif` : undefined, fontWeight: fontBold ? "bold" : undefined, gridTemplateRows: showBoardButtons && favorites.boards.length > 0 ? "26px 32px auto 1fr 22px" : undefined, "--thumb-size": `${thumbSize}px` } as React.CSSProperties}
       onClick={() => {
         setThreadMenu(null);
         setResponseMenu(null);
@@ -6087,16 +6107,24 @@ export default function App() {
                 </label>
                 <label className="settings-row">
                   <span>フォント</span>
-                  <select value={fontFamily} onChange={(e) => setFontFamily(e.target.value)}>
-                    <option value="">デフォルト</option>
-                    <option value="'MS Gothic', monospace">MS ゴシック</option>
-                    <option value="'MS PGothic', sans-serif">MS Pゴシック</option>
-                    <option value="'Meiryo', sans-serif">メイリオ</option>
-                    <option value="'Yu Gothic UI', sans-serif">Yu Gothic UI</option>
-                    <option value="'BIZ UDGothic', sans-serif">BIZ UDゴシック</option>
-                    <option value="'Noto Sans JP', sans-serif">Noto Sans JP</option>
-                    <option value="monospace">等幅</option>
-                  </select>
+                  <div style={{ display: "flex", gap: 4, flex: 1, minWidth: 0 }}>
+                    <input
+                      type="text"
+                      list="system-fonts-list"
+                      value={fontFamily}
+                      onChange={(e) => setFontFamily(e.target.value)}
+                      placeholder="デフォルト (入力または選択)"
+                      style={{ flex: 1, minWidth: 0 }}
+                    />
+                    {fontFamily && <button onClick={() => setFontFamily("")} style={{ flexShrink: 0 }}>×</button>}
+                  </div>
+                  <datalist id="system-fonts-list">
+                    {systemFonts.map((f) => <option key={f} value={f} />)}
+                  </datalist>
+                </label>
+                <label className="settings-row">
+                  <input type="checkbox" checked={fontBold} onChange={(e) => setFontBold(e.target.checked)} />
+                  <span>太字</span>
                 </label>
                 <label className="settings-row">
                   <span>文字サイズ (板)</span>
