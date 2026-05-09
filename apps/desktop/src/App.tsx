@@ -428,7 +428,7 @@ const renderResponseBody = (html: string, opts?: { hideImages?: boolean; imageSi
         if (sizeGated) {
           collectedThumbs.push(`<span class="thumb-link thumb-size-gate" data-lightbox-src="${href}" data-gate-src="${href}" data-size-limit="${opts.imageSizeLimitKb}"><span class="thumb-gate-loading">画像を確認中…</span></span>`);
         } else {
-          collectedThumbs.push(`<span class="thumb-link" data-lightbox-src="${href}"><img class="response-thumb" src="${href}" loading="lazy" alt="" /></span>`);
+          collectedThumbs.push(`<span class="thumb-link" data-lightbox-src="${href}"><img class="response-thumb" src="${href}" loading="eager" alt="" /></span>`);
         }
         return `<a class="body-link" href="${href}" target="_blank" rel="noopener">${match}</a>`;
       }
@@ -484,7 +484,7 @@ const renderResponseBody = (html: string, opts?: { hideImages?: boolean; imageSi
   // Convert sssp:// BE icons to https:// img preview
   safe = safe.replace(
     /sssp:\/\/(img\.5ch\.net\/[^\s<>&]+|img\.5ch\.io\/[^\s<>&]+)/gi,
-    (_match, path) => `<img class="be-icon" src="https://${(path as string).replace("img.5ch.net", "img.5ch.io")}" loading="lazy" alt="BE" />`
+    (_match, path) => `<img class="be-icon" src="https://${(path as string).replace("img.5ch.net", "img.5ch.io")}" loading="eager" alt="BE" />`
   );
   if (collectedThumbs.length > 0) {
     safe += `<div class="response-thumbs-row">${collectedThumbs.join("")}</div>`;
@@ -602,6 +602,7 @@ export default function App() {
   const [composeSubmitKey, setComposeSubmitKey] = useState<"shift" | "ctrl">("shift");
   const [typingConfettiEnabled, setTypingConfettiEnabled] = useState(false);
   const [imageSizeLimit, setImageSizeLimit] = useState(0); // KB, 0 = unlimited
+  const [showImagePreview, setShowImagePreview] = useState(true);
   const [hoverPreviewEnabled, setHoverPreviewEnabled] = useState(false);
   const [hoverPreviewDelay, setHoverPreviewDelay] = useState(0);
   const hoverPreviewDelayRef = useRef(0);
@@ -910,12 +911,12 @@ export default function App() {
             const sizeStr = size >= 1024 * 1024 ? `${(size / 1024 / 1024).toFixed(1)}MB` : `${Math.round(size / 1024)}KB`;
             gate.innerHTML = `<span class="thumb-gate-blocked" data-reveal-src="${src}">サイズ制限 (${sizeStr}) により非表示 — クリックで表示</span>`;
           } else {
-            gate.innerHTML = `<img class="response-thumb" src="${src}" loading="lazy" alt="" />`;
+            gate.innerHTML = `<img class="response-thumb" src="${src}" loading="eager" alt="" />`;
           }
         }).catch(() => {
           if (!gate.dataset.gateSrc) return;
           delete gate.dataset.gateSrc;
-          gate.innerHTML = `<img class="response-thumb" src="${src}" loading="lazy" alt="" />`;
+          gate.innerHTML = `<img class="response-thumb" src="${src}" loading="eager" alt="" />`;
         });
       });
     };
@@ -3246,6 +3247,7 @@ export default function App() {
           newArrivalPaneOpen?: boolean;
           newArrivalPaneHeight?: number;
           newArrivalFontSize?: number;
+          showImagePreview?: boolean;
         };
         if (typeof parsed.boardPaneVisible === "boolean") setBoardPaneVisible(parsed.boardPaneVisible);
         if (typeof parsed.boardPanePx === "number") setBoardPanePx(parsed.boardPanePx);
@@ -3283,6 +3285,7 @@ export default function App() {
         if (parsed.composeSubmitKey === "shift" || parsed.composeSubmitKey === "ctrl") setComposeSubmitKey(parsed.composeSubmitKey);
         if (typeof parsed.typingConfettiEnabled === "boolean") setTypingConfettiEnabled(parsed.typingConfettiEnabled);
         if (typeof parsed.imageSizeLimit === "number") setImageSizeLimit(parsed.imageSizeLimit);
+        if (typeof parsed.showImagePreview === "boolean") setShowImagePreview(parsed.showImagePreview);
         if (typeof parsed.hoverPreviewEnabled === "boolean") setHoverPreviewEnabled(parsed.hoverPreviewEnabled);
         if (parsed.lastBoard && typeof parsed.lastBoard.boardName === "string" && typeof parsed.lastBoard.url === "string") {
           pendingLastBoardRef.current = parsed.lastBoard;
@@ -3852,6 +3855,7 @@ export default function App() {
       composeSubmitKey,
       typingConfettiEnabled,
       imageSizeLimit,
+      showImagePreview,
       hoverPreviewEnabled,
       lastBoard: lastBoardUrlRef.current ? { boardName: selectedBoard, url: lastBoardUrlRef.current } : undefined,
       hoverPreviewDelay,
@@ -3866,7 +3870,7 @@ export default function App() {
     if (isTauriRuntime()) {
       void invoke("save_layout_prefs", { prefs: payload }).catch(() => {});
     }
-  }, [boardPaneVisible, boardPanePx, threadPanePx, responseTopRatio, boardsFontSize, threadsFontSize, responsesFontSize, responsesHeaderFontSize, darkMode, fontFamily, fontBold, threadColWidths, showBoardButtons, keepSortOnRefresh, composeSubmitKey, typingConfettiEnabled, imageSizeLimit, hoverPreviewEnabled, selectedBoard, hoverPreviewDelay, thumbSize, restoreSession, autoRefreshInterval, autoScrollEnabled, newArrivalPaneOpen, newArrivalPaneHeight, newArrivalFontSize]);
+  }, [boardPaneVisible, boardPanePx, threadPanePx, responseTopRatio, boardsFontSize, threadsFontSize, responsesFontSize, responsesHeaderFontSize, darkMode, fontFamily, fontBold, threadColWidths, showBoardButtons, keepSortOnRefresh, composeSubmitKey, typingConfettiEnabled, imageSizeLimit, showImagePreview, hoverPreviewEnabled, selectedBoard, hoverPreviewDelay, thumbSize, restoreSession, autoRefreshInterval, autoScrollEnabled, newArrivalPaneOpen, newArrivalPaneHeight, newArrivalFontSize]);
 
 
 
@@ -5202,7 +5206,7 @@ export default function App() {
                         )}
                       </span>
                     </div>
-                    <div className={`response-body${(aaOverrides.has(r.id) ? aaOverrides.get(r.id) : isAsciiArt(r.text)) ? " aa" : ""}`} dangerouslySetInnerHTML={renderResponseBodyHighlighted(r.text, responseSearchQuery, { hideImages: ngResultMap.get(r.id) === "hide-images", imageSizeLimitKb: imageSizeLimit, urlRules: imageUrlRules }, textHighlights.filter((h) => h.type === "word"))} />
+                    <div className={`response-body${(aaOverrides.has(r.id) ? aaOverrides.get(r.id) : isAsciiArt(r.text)) ? " aa" : ""}`} dangerouslySetInnerHTML={renderResponseBodyHighlighted(r.text, responseSearchQuery, { hideImages: !showImagePreview || ngResultMap.get(r.id) === "hide-images", imageSizeLimitKb: imageSizeLimit, urlRules: imageUrlRules }, textHighlights.filter((h) => h.type === "word"))} />
                   </div>
                   </Fragment>
                 );
@@ -6185,6 +6189,10 @@ export default function App() {
                 <label className="settings-row">
                   <input type="checkbox" checked={restoreSession} onChange={(e) => setRestoreSession(e.target.checked)} />
                   <span>起動時に前回のタブと板を復元</span>
+                </label>
+                <label className="settings-row">
+                  <input type="checkbox" checked={showImagePreview} onChange={(e) => setShowImagePreview(e.target.checked)} />
+                  <span>画像をプレビュー表示</span>
                 </label>
                 <label className="settings-row">
                   <span>画像サイズ制限 (KB)</span>
