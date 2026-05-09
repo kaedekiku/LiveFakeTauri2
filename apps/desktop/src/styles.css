@@ -3381,3 +3381,55 @@ button.search-history-btn:hover {
     /* コンフェティはアプリ内設定で制御するため、OS設定を無視 */
   }
 }
+
+/* ===== Font Picker ===== */
+.font-picker {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+.font-picker-input {
+  width: 100%;
+  box-sizing: border-box;
+}
+.font-picker-dropdown {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  right: 0;
+  max-height: 260px;
+  overflow-y: auto;
+  background: #fff;
+  border: 1px solid #bbb;
+  border-radius: 3px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  z-index: 9999;
+}
+.font-picker-option {
+  padding: 5px 10px;
+  font-size: 14px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #1b1b1b;
+}
+.font-picker-option:hover {
+  background: #e8f0fe;
+}
+.font-picker-option.selected {
+  background: #d0e4ff;
+}
+.dark .font-picker-dropdown {
+  background: #2d2d30;
+  border-color: #555;
+}
+.dark .font-picker-option {
+  color: #ddd;
+}
+.dark .font-picker-option:hover {
+  background: #094771;
+}
+.dark .font-picker-option.selected {
+  background: #005a9e;
+}

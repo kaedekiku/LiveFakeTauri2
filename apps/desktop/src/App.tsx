@@ -788,6 +788,8 @@ export default function App() {
   const [fontFamily, setFontFamily] = useState("");
   const [fontBold, setFontBold] = useState(false);
   const [systemFonts, setSystemFonts] = useState<string[]>([]);
+  const [fontPickerInput, setFontPickerInput] = useState("");
+  const [fontPickerOpen, setFontPickerOpen] = useState(false);
   const [darkMode, setDarkMode] = useState(false);
   const [composeFontSize, setComposeFontSize] = useState(13);
   const [idPopup, setIdPopup] = useState<{ right: number; y: number; anchorTop: number; id: string } | null>(null);
@@ -3268,13 +3270,16 @@ export default function App() {
         if (typeof parsed.fontFamily === "string") {
           // Normalize legacy CSS values like "'Meiryo', sans-serif" → "Meiryo"
           const raw = parsed.fontFamily;
+          let normalized: string;
           if (raw.includes(",") || raw.includes("'") || raw.includes('"')) {
             const first = raw.split(",")[0].trim().replace(/^['"]|['"]$/g, "");
             const generics = ["sans-serif", "serif", "monospace", "cursive", "fantasy"];
-            setFontFamily(generics.includes(first) ? "" : first);
+            normalized = generics.includes(first) ? "" : first;
           } else {
-            setFontFamily(raw);
+            normalized = raw;
           }
+          setFontFamily(normalized);
+          setFontPickerInput(normalized);
         }
         if (typeof parsed.fontBold === "boolean") setFontBold(parsed.fontBold);
         if (parsed.threadColWidths && typeof parsed.threadColWidths === "object") {
@@ -6109,22 +6114,48 @@ export default function App() {
                     <option value="dark">ダーク</option>
                   </select>
                 </label>
-                <label className="settings-row">
-                  <span>フォント</span>
-                  <div style={{ display: "flex", gap: 4, flex: 1, minWidth: 0 }}>
-                    <input
-                      type="text"
-                      list="system-fonts-list"
-                      value={fontFamily}
-                      onChange={(e) => setFontFamily(e.target.value)}
-                      placeholder="デフォルト (入力または選択)"
-                      style={{ flex: 1, minWidth: 0 }}
-                    />
-                    {fontFamily && <button onClick={() => setFontFamily("")} style={{ flexShrink: 0 }}>×</button>}
+                <label className="settings-row" style={{ alignItems: "flex-start" }}>
+                  <span style={{ paddingTop: 4 }}>フォント</span>
+                  <div className="font-picker">
+                    <div style={{ display: "flex", gap: 4 }}>
+                      <input
+                        type="text"
+                        className="font-picker-input"
+                        value={fontPickerInput}
+                        onChange={(e) => { setFontPickerInput(e.target.value); setFontPickerOpen(true); }}
+                        onFocus={() => setFontPickerOpen(true)}
+                        onBlur={() => setTimeout(() => setFontPickerOpen(false), 150)}
+                        placeholder="デフォルト (入力またはクリック)"
+                        style={{ flex: 1, minWidth: 0 }}
+                      />
+                      {fontFamily && (
+                        <button style={{ flexShrink: 0 }} onClick={() => { setFontFamily(""); setFontPickerInput(""); }}>×</button>
+                      )}
+                    </div>
+                    {fontPickerOpen && (() => {
+                      const q = fontPickerInput.toLowerCase();
+                      const filtered = q ? systemFonts.filter((f) => f.toLowerCase().includes(q)) : systemFonts;
+                      return filtered.length > 0 ? (
+                        <div className="font-picker-dropdown">
+                          {filtered.slice(0, 120).map((f) => (
+                            <div
+                              key={f}
+                              className={`font-picker-option${f === fontFamily ? " selected" : ""}`}
+                              style={{ fontFamily: `"${f}", sans-serif` }}
+                              onMouseDown={(e) => {
+                                e.preventDefault();
+                                setFontFamily(f);
+                                setFontPickerInput(f);
+                                setFontPickerOpen(false);
+                              }}
+                            >
+                              {f}
+                            </div>
+                          ))}
+                        </div>
+                      ) : null;
+                    })()}
                   </div>
-                  <datalist id="system-fonts-list">
-                    {systemFonts.map((f) => <option key={f} value={f} />)}
-                  </datalist>
                 </label>
                 <label className="settings-row">
                   <input type="checkbox" checked={fontBold} onChange={(e) => setFontBold(e.target.checked)} />

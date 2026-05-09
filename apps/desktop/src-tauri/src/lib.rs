@@ -1463,13 +1463,20 @@ fn list_system_fonts() -> Vec<String> {
         let mut names: Vec<String> = key
             .enum_values()
             .filter_map(|item| item.ok())
-            .map(|(name, _)| {
-                // Strip parenthetical suffix: "Arial (TrueType)" → "Arial"
-                if let Some(pos) = name.rfind('(') {
+            .flat_map(|(name, _)| {
+                // Strip parenthetical suffix: "MS Gothic & MS UI Gothic (TrueType)" → "MS Gothic & MS UI Gothic"
+                let base = if let Some(pos) = name.rfind('(') {
                     name[..pos].trim().to_string()
                 } else {
                     name.trim().to_string()
-                }
+                };
+                // Split grouped entries: "MS Gothic & MS UI Gothic" → ["MS Gothic", "MS UI Gothic"]
+                // Handle both ASCII '&' and full-width '＆'
+                base.split('&')
+                    .flat_map(|s| s.split('\u{FF06}')) // full-width ＆
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
             })
             .filter(|s| !s.is_empty())
             .collect();
