@@ -118,6 +118,9 @@ const DEFAULT_RESPONSE_TOP_RATIO = 42;
 const MIN_NEW_ARRIVAL_PX = 80;
 const MAX_NEW_ARRIVAL_PX = 420;
 const DEFAULT_NEW_ARRIVAL_PX = 150;
+const MIN_COMPOSE_PANEL_PX = 120;
+const MAX_COMPOSE_PANEL_PX = 800;
+const DEFAULT_COMPOSE_PANEL_PX = 260;
 const MIN_COL_WIDTH = 16;
 const DEFAULT_COL_WIDTHS: Record<string, number> = {
   fetched: 18,
@@ -153,7 +156,8 @@ type ResizeDragState =
   | { mode: "thread-response"; startX: number; startBoardPx: number; startThreadPx: number }
   | { mode: "response-rows"; startY: number; startThreadPx: number; responseLayoutHeight: number }
   | { mode: "col-resize"; colKey: string; startX: number; startWidth: number; reverse: boolean }
-  | { mode: "new-arrival-resize"; startY: number; startHeight: number };
+  | { mode: "new-arrival-resize"; startY: number; startHeight: number }
+  | { mode: "compose-resize"; startY: number; startHeight: number };
 
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
 const clampMenuPosition = (x: number, y: number, width: number, height: number) => {
@@ -552,6 +556,7 @@ export default function App() {
   const [updateResult, setUpdateResult] = useState<UpdateCheckResult | null>(null);
   const [updateProbe, setUpdateProbe] = useState("not run");
   const [composeOpen, setComposeOpen] = useState(false);
+  const [composePanelPx, setComposePanelPx] = useState(DEFAULT_COMPOSE_PANEL_PX);
   const [composeNewThread, setComposeNewThread] = useState(false);
   const [composeSubject, setComposeSubject] = useState("");
   const [composeName, setComposeName] = useState("");
@@ -799,8 +804,7 @@ export default function App() {
   const anchorPopupCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [backRefPopup, setBackRefPopup] = useState<{ x: number; y: number; anchorTop: number; responseIds: number[] } | null>(null);
   const [watchoiMenu, setWatchoiMenu] = useState<{ x: number; y: number; watchoi: string } | null>(null);
-  const [composePos, setComposePos] = useState<{ x: number; y: number } | null>(null);
-  const composeDragRef = useRef<{ startX: number; startY: number; startPosX: number; startPosY: number } | null>(null);
+
   const [boardPaneVisible, setBoardPaneVisible] = useState(true);
   const [boardPanePx, setBoardPanePx] = useState(DEFAULT_BOARD_PANE_PX);
   const [threadPanePx, setThreadPanePx] = useState(DEFAULT_THREAD_PANE_PX);
@@ -1286,14 +1290,51 @@ export default function App() {
   };
 
   const scrollToBottom = () => {
+    const c = responseScrollRef.current;
+    if (!c) return;
+
+    let active = true;
+    let prevScrollHeight = c.scrollHeight;
+    // Shared with tryScroll so it stays in sync before the async scroll event fires.
+    let lastProgrammaticScrollTop = c.scrollTop;
+
     const tryScroll = (attempts: number) => {
-      const c = responseScrollRef.current;
-      if (!c) return;
-      c.scrollTop = c.scrollHeight;
-      if (c.scrollHeight - c.scrollTop - c.clientHeight > 8 && attempts < 10) {
+      const el = responseScrollRef.current;
+      if (!el) return;
+      el.scrollTop = el.scrollHeight;
+      lastProgrammaticScrollTop = el.scrollTop; // update synchronously before scroll event fires
+      if (el.scrollHeight - el.scrollTop - el.clientHeight > 8 && attempts < 10) {
         requestAnimationFrame(() => tryScroll(attempts + 1));
       }
     };
+
+    const onScroll = () => {
+      if (!active) return;
+      if (Math.abs(c.scrollTop - lastProgrammaticScrollTop) > 80) {
+        active = false;
+        cleanup();
+      }
+    };
+
+    // Poll for scrollHeight changes from images loading after the initial scroll.
+    // rAF retries finish in ~160ms but network images expand scrollHeight over seconds.
+    const pollInterval = setInterval(() => {
+      if (!active) { clearInterval(pollInterval); return; }
+      if (c.scrollHeight !== prevScrollHeight) {
+        prevScrollHeight = c.scrollHeight;
+        c.scrollTop = c.scrollHeight;
+        lastProgrammaticScrollTop = c.scrollTop;
+      }
+    }, 150);
+
+    const cleanup = () => {
+      active = false;
+      clearInterval(pollInterval);
+      c.removeEventListener("scroll", onScroll);
+    };
+
+    c.addEventListener("scroll", onScroll, { passive: true });
+    setTimeout(cleanup, 5000);
     requestAnimationFrame(() => tryScroll(0));
   };
 
@@ -3714,14 +3755,6 @@ export default function App() {
       if (hoverPreviewRef.current) hoverPreviewRef.current.style.display = "none";
     };
     const onMouseMove = (event: MouseEvent) => {
-      const cdrag = composeDragRef.current;
-      if (cdrag) {
-        setComposePos({
-          x: cdrag.startPosX + (event.clientX - cdrag.startX),
-          y: cdrag.startPosY + (event.clientY - cdrag.startY),
-        });
-        return;
-      }
       const drag = resizeDragRef.current;
       if (!drag) return;
 
@@ -3749,6 +3782,13 @@ export default function App() {
         setNewArrivalPaneHeight(next);
         return;
       }
+      if (drag.mode === "compose-resize") {
+        // Handle is at the top edge — dragging up grows the panel
+        const deltaY = event.clientY - drag.startY;
+        const next = clamp(drag.startHeight - deltaY, MIN_COMPOSE_PANEL_PX, MAX_COMPOSE_PANEL_PX);
+        setComposePanelPx(next);
+        return;
+      }
       const deltaX = event.clientX - drag.startX;
       if (drag.mode === "board-thread") {
         const maxBoard = Math.max(
@@ -3761,12 +3801,6 @@ export default function App() {
     };
 
     const onMouseUp = () => {
-      if (composeDragRef.current) {
-        composeDragRef.current = null;
-        document.body.style.userSelect = "";
-        document.body.style.cursor = "";
-        return;
-      }
       if (!resizeDragRef.current) return;
       resizeDragRef.current = null;
       document.body.style.userSelect = "";
@@ -4029,7 +4063,7 @@ export default function App() {
             { text: "スレ取得", action: () => fetchThreadListFromCurrent() },
             { text: "レス取得", action: () => fetchResponsesFromCurrent() },
             { text: "sep" },
-            { text: "書き込み", action: () => { setComposeOpen(true); setComposePos(null); setComposeBody(""); setComposeResult(null); } },
+            { text: "書き込み", action: () => { setComposeOpen(true); setComposeBody(""); setComposeResult(null); } },
             { text: "書き込み履歴", action: () => setPostHistoryOpen(true) },
             ...(navigator.userAgent.includes("Windows") ? [
               { text: "sep" },
@@ -4904,7 +4938,7 @@ export default function App() {
                     </div>
                   )}
                 </div>
-                <button className="title-action-btn" onClick={() => { setComposeOpen(true); setComposePos(null); setComposeBody(""); setComposeResult(null); }} title="書き込み"><Pencil size={14} /></button>
+                <button className="title-action-btn" onClick={() => { setComposeOpen(true); setComposeBody(""); setComposeResult(null); }} title="書き込み"><Pencil size={14} /></button>
                 <div className="title-split-wrap" onClick={(e) => e.stopPropagation()}>
                   <button
                     className={`title-action-btn ${responseSearchMode ? "active" : ""}`}
@@ -5308,6 +5342,160 @@ export default function App() {
         </div>
         </div>{/* /right-body */}
       </main>
+      <section
+        className={`compose-window${composeOpen ? " compose-window--open" : ""}`}
+        aria-label="書き込み"
+        style={composeOpen ? { height: composePanelPx } : undefined}
+      >
+        {composeOpen && (
+          <div
+            className="compose-resize-handle"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              resizeDragRef.current = { mode: "compose-resize", startY: e.clientY, startHeight: composePanelPx };
+              document.body.style.userSelect = "none";
+              document.body.style.cursor = "row-resize";
+            }}
+          />
+        )}
+        <header
+          className="compose-header"
+          onClick={(e) => {
+            if ((e.target as HTMLElement).closest("button")) return;
+            setComposeOpen((v) => !v);
+          }}
+        >
+          {composeOpen ? <ChevronDown size={13} /> : <ChevronUp size={13} />}
+          <strong>{composeNewThread ? "新スレ作成" : "書き込み"}</strong>
+          {composeOpen && (
+            <>
+              <button className={`compose-mode-btn ${!composeNewThread ? "active" : ""}`} onClick={() => setComposeNewThread(false)}>レス</button>
+              <button className={`compose-mode-btn ${composeNewThread ? "active" : ""}`} onClick={() => setComposeNewThread(true)}>新スレ</button>
+              <span className="compose-target" title={threadTabs[activeTabIndex]?.threadUrl ?? threadUrl}>
+                {threadTabs[activeTabIndex]?.title ?? threadUrl}
+              </span>
+            </>
+          )}
+        </header>
+        {composeOpen && (
+          <>
+            <div className="compose-grid">
+              {composeNewThread && (
+                <label style={{ gridColumn: "1 / -1" }}>
+                  スレッドタイトル
+                  <input value={composeSubject} onChange={(e) => setComposeSubject(e.target.value)} placeholder="スレッドタイトルを入力" autoFocus />
+                </label>
+              )}
+              <label>
+                名前
+                <input value={composeName} onChange={(e) => setComposeName(e.target.value)} list="name-history-list" />
+                <datalist id="name-history-list">
+                  {nameHistory.map((n) => <option key={n} value={n} />)}
+                </datalist>
+              </label>
+              <label>
+                メール
+                <input value={composeMailValue} onChange={(e) => setComposeMail(e.target.value)} disabled={composeSage} />
+              </label>
+              <label className="check">
+                <input type="checkbox" checked={composeSage} onChange={(e) => setComposeSage(e.target.checked)} />
+                sage
+              </label>
+            </div>
+            <textarea
+              className="compose-body"
+              value={composeBody}
+              onChange={(e) => setComposeBody(e.target.value)}
+              onKeyDown={onComposeBodyKeyDown}
+              placeholder="本文を入力"
+              autoFocus
+              style={{ fontSize: `${composeFontSize}px` }}
+            />
+            <div className="compose-meta">
+              <span>{composeBody.length}文字</span>
+              <span>{composeBody.split("\n").length}行</span>
+            </div>
+            {composePreview && (
+              <div className="compose-preview" dangerouslySetInnerHTML={renderResponseBody(composeBody || "(空)")} />
+            )}
+            <div className="compose-actions">
+              <button onClick={composeNewThread ? handleCreateThread : probePostFlowTraceFromCompose} disabled={composeSubmitting}>{composeSubmitting ? "送信中..." : composeNewThread ? "スレッド作成" : `送信 (${composeSubmitKey === "shift" ? "Shift" : "Ctrl"}+Enter)`}</button>
+              <button onClick={() => setUploadPanelOpen((v) => { if (v) setUploadResults([]); return !v; })} title="画像アップロード" style={{ marginLeft: 4 }}><Upload size={14} /></button>
+              <button onClick={async () => {
+                setComposeResult({ ok: false, message: "診断中..." });
+                try {
+                  const r = await invoke<string>("debug_post_connectivity", { threadUrl });
+                  setComposeResult({ ok: true, message: r });
+                } catch (e) {
+                  setComposeResult({ ok: false, message: `診断エラー: ${String(e)}` });
+                }
+              }} style={{ marginLeft: "auto", fontSize: "0.85em" }}>接続診断</button>
+            </div>
+            {uploadPanelOpen && (
+              <div className="upload-panel">
+                <div className="upload-panel-tabs">
+                  <button className={uploadPanelTab === "upload" ? "active" : ""} onClick={() => setUploadPanelTab("upload")}><Upload size={12} /> アップロード</button>
+                  <button className={uploadPanelTab === "history" ? "active" : ""} onClick={() => setUploadPanelTab("history")}><History size={12} /> 履歴 ({uploadHistory.length})</button>
+                </div>
+                {uploadPanelTab === "upload" && (
+                  <div className="upload-tab-content">
+                    <input ref={uploadFileRef} type="file" multiple accept="image/*,video/mp4,video/webm" style={{ display: "none" }} onChange={(e) => { if (e.target.files) handleUploadFiles(e.target.files); e.target.value = ""; }} />
+                    <button className="upload-select-btn" onClick={() => uploadFileRef.current?.click()} disabled={uploadingFiles.length > 0}>
+                      {uploadingFiles.length > 0 ? `アップロード中... (${uploadingFiles.length}件)` : "ファイルを選択 (最大4枚)"}
+                    </button>
+                    {uploadingFiles.length > 0 && (
+                      <div className="upload-progress">
+                        {uploadingFiles.map((f, i) => <div key={i} className="upload-progress-item">⏳ {f}</div>)}
+                      </div>
+                    )}
+                    {uploadResults.length > 0 && (
+                      <div className="upload-results">
+                        {uploadResults.map((r, i) => (
+                          <div key={i} className={`upload-result-item ${r.error ? "upload-err" : "upload-ok"}`}>
+                            {r.thumbnail && <img src={r.thumbnail} alt="" className="upload-result-thumb" />}
+                            <span className="upload-result-name">{r.fileName}</span>
+                            {r.sourceUrl ? (
+                              <span className="upload-result-actions">
+                                <button onClick={() => insertUploadUrl(r.sourceUrl!)} title="本文に挿入"><Copy size={12} /> 挿入</button>
+                                <span className="upload-result-link" onClick={() => { void invoke("open_external_url", { url: r.sourceUrl }).catch(() => window.open(r.sourceUrl, "_blank")); }} title="ブラウザで開く">{r.sourceUrl}</span>
+                              </span>
+                            ) : (
+                              <span className="upload-result-error">{r.error}</span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {uploadPanelTab === "history" && (
+                  <div className="upload-tab-content upload-history-list">
+                    {uploadHistory.length === 0 && <div className="upload-empty">アップロード履歴はありません</div>}
+                    {uploadHistory.map((entry, i) => (
+                      <div key={i} className="upload-history-item">
+                        {entry.thumbnail && <img src={entry.thumbnail} alt="" className="upload-history-thumb" loading="lazy" />}
+                        <div className="upload-history-info">
+                          <span className="upload-history-name">{entry.fileName}</span>
+                          <span className="upload-history-date">{new Date(entry.uploadedAt).toLocaleString()}</span>
+                        </div>
+                        <div className="upload-history-actions">
+                          <button onClick={() => insertUploadUrl(entry.sourceUrl)} title="本文に挿入"><Copy size={12} /></button>
+                          <button onClick={() => deleteHistoryEntry(i)} title="削除"><Trash2 size={12} /></button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+            {composeResult && (
+              <div className={`compose-result ${composeResult.ok ? "compose-result-ok" : "compose-result-err"}`}>
+                {composeResult.ok ? "OK" : "NG"}: {composeResult.message}
+              </div>
+            )}
+          </>
+        )}
+      </section>
       <footer className="status-bar">
         <span className="status-main">{status}</span>
         <span className="status-sep">|</span>
@@ -5317,154 +5505,6 @@ export default function App() {
         <span className="status-sep">|</span>
         <span>Runtime:{runtimeState}</span>
       </footer>
-      {composeOpen && (
-        <section
-          className="compose-window"
-          role="dialog"
-          aria-label="書き込み"
-          style={composePos ? { right: "auto", bottom: "auto", left: composePos.x, top: composePos.y } : undefined}
-        >
-          <header
-            className="compose-header"
-            onMouseDown={(e) => {
-              if ((e.target as HTMLElement).tagName === "BUTTON") return;
-              e.preventDefault();
-              const rect = (e.currentTarget.parentElement as HTMLElement).getBoundingClientRect();
-              composeDragRef.current = {
-                startX: e.clientX,
-                startY: e.clientY,
-                startPosX: rect.left,
-                startPosY: rect.top,
-              };
-              if (!composePos) setComposePos({ x: rect.left, y: rect.top });
-              document.body.style.userSelect = "none";
-              document.body.style.cursor = "move";
-            }}
-          >
-            <strong>{composeNewThread ? "新スレ作成" : "書き込み"}</strong>
-            <button className={`compose-mode-btn ${!composeNewThread ? "active" : ""}`} onClick={() => setComposeNewThread(false)}>レス</button>
-            <button className={`compose-mode-btn ${composeNewThread ? "active" : ""}`} onClick={() => setComposeNewThread(true)}>新スレ</button>
-            <span className="compose-target" title={threadTabs[activeTabIndex]?.threadUrl ?? threadUrl}>
-              {threadTabs[activeTabIndex]?.title ?? threadUrl}
-            </span>
-            <button onClick={() => { setComposeOpen(false); setComposeResult(null); setUploadPanelOpen(false); setUploadResults([]); }}>閉じる</button>
-          </header>
-          <div className="compose-grid">
-            {composeNewThread && (
-              <label style={{ gridColumn: "1 / -1" }}>
-                スレッドタイトル
-                <input value={composeSubject} onChange={(e) => setComposeSubject(e.target.value)} placeholder="スレッドタイトルを入力" autoFocus />
-              </label>
-            )}
-            <label>
-              名前
-              <input value={composeName} onChange={(e) => setComposeName(e.target.value)} list="name-history-list" />
-              <datalist id="name-history-list">
-                {nameHistory.map((n) => <option key={n} value={n} />)}
-              </datalist>
-            </label>
-            <label>
-              メール
-              <input value={composeMailValue} onChange={(e) => setComposeMail(e.target.value)} disabled={composeSage} />
-            </label>
-            <label className="check">
-              <input type="checkbox" checked={composeSage} onChange={(e) => setComposeSage(e.target.checked)} />
-              sage
-            </label>
-          </div>
-          <textarea
-            className="compose-body"
-            value={composeBody}
-            onChange={(e) => setComposeBody(e.target.value)}
-            onKeyDown={onComposeBodyKeyDown}
-            placeholder="本文を入力"
-            autoFocus
-            style={{ fontSize: `${composeFontSize}px` }}
-          />
-          <div className="compose-meta">
-            <span>{composeBody.length}文字</span>
-            <span>{composeBody.split("\n").length}行</span>
-          </div>
-          {composePreview && (
-            <div className="compose-preview" dangerouslySetInnerHTML={renderResponseBody(composeBody || "(空)")} />
-          )}
-          <div className="compose-actions">
-            <button onClick={composeNewThread ? handleCreateThread : probePostFlowTraceFromCompose} disabled={composeSubmitting}>{composeSubmitting ? "送信中..." : composeNewThread ? "スレッド作成" : `送信 (${composeSubmitKey === "shift" ? "Shift" : "Ctrl"}+Enter)`}</button>
-            <button onClick={() => setUploadPanelOpen((v) => { if (v) setUploadResults([]); return !v; })} title="画像アップロード" style={{ marginLeft: 4 }}><Upload size={14} /></button>
-            <button onClick={async () => {
-              setComposeResult({ ok: false, message: "診断中..." });
-              try {
-                const r = await invoke<string>("debug_post_connectivity", { threadUrl });
-                setComposeResult({ ok: true, message: r });
-              } catch (e) {
-                setComposeResult({ ok: false, message: `診断エラー: ${String(e)}` });
-              }
-            }} style={{ marginLeft: "auto", fontSize: "0.85em" }}>接続診断</button>
-          </div>
-          {uploadPanelOpen && (
-            <div className="upload-panel">
-              <div className="upload-panel-tabs">
-                <button className={uploadPanelTab === "upload" ? "active" : ""} onClick={() => setUploadPanelTab("upload")}><Upload size={12} /> アップロード</button>
-                <button className={uploadPanelTab === "history" ? "active" : ""} onClick={() => setUploadPanelTab("history")}><History size={12} /> 履歴 ({uploadHistory.length})</button>
-              </div>
-              {uploadPanelTab === "upload" && (
-                <div className="upload-tab-content">
-                  <input ref={uploadFileRef} type="file" multiple accept="image/*,video/mp4,video/webm" style={{ display: "none" }} onChange={(e) => { if (e.target.files) handleUploadFiles(e.target.files); e.target.value = ""; }} />
-                  <button className="upload-select-btn" onClick={() => uploadFileRef.current?.click()} disabled={uploadingFiles.length > 0}>
-                    {uploadingFiles.length > 0 ? `アップロード中... (${uploadingFiles.length}件)` : "ファイルを選択 (最大4枚)"}
-                  </button>
-                  {uploadingFiles.length > 0 && (
-                    <div className="upload-progress">
-                      {uploadingFiles.map((f, i) => <div key={i} className="upload-progress-item">⏳ {f}</div>)}
-                    </div>
-                  )}
-                  {uploadResults.length > 0 && (
-                    <div className="upload-results">
-                      {uploadResults.map((r, i) => (
-                        <div key={i} className={`upload-result-item ${r.error ? "upload-err" : "upload-ok"}`}>
-                          {r.thumbnail && <img src={r.thumbnail} alt="" className="upload-result-thumb" />}
-                          <span className="upload-result-name">{r.fileName}</span>
-                          {r.sourceUrl ? (
-                            <span className="upload-result-actions">
-                              <button onClick={() => insertUploadUrl(r.sourceUrl!)} title="本文に挿入"><Copy size={12} /> 挿入</button>
-                              <span className="upload-result-link" onClick={() => { void invoke("open_external_url", { url: r.sourceUrl }).catch(() => window.open(r.sourceUrl, "_blank")); }} title="ブラウザで開く">{r.sourceUrl}</span>
-                            </span>
-                          ) : (
-                            <span className="upload-result-error">{r.error}</span>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-              {uploadPanelTab === "history" && (
-                <div className="upload-tab-content upload-history-list">
-                  {uploadHistory.length === 0 && <div className="upload-empty">アップロード履歴はありません</div>}
-                  {uploadHistory.map((entry, i) => (
-                    <div key={i} className="upload-history-item">
-                      {entry.thumbnail && <img src={entry.thumbnail} alt="" className="upload-history-thumb" loading="lazy" />}
-                      <div className="upload-history-info">
-                        <span className="upload-history-name">{entry.fileName}</span>
-                        <span className="upload-history-date">{new Date(entry.uploadedAt).toLocaleString()}</span>
-                      </div>
-                      <div className="upload-history-actions">
-                        <button onClick={() => insertUploadUrl(entry.sourceUrl)} title="本文に挿入"><Copy size={12} /></button>
-                        <button onClick={() => deleteHistoryEntry(i)} title="削除"><Trash2 size={12} /></button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-          {composeResult && (
-            <div className={`compose-result ${composeResult.ok ? "compose-result-ok" : "compose-result-err"}`}>
-              {composeResult.ok ? "OK" : "NG"}: {composeResult.message}
-            </div>
-          )}
-        </section>
-      )}
       {ngPanelOpen && (
         <section className="ng-panel" role="dialog" aria-label="NGフィルタ">
           <header className="ng-panel-header">
