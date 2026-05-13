@@ -1615,8 +1615,21 @@ pre {
 
 .compose-grid {
   display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  align-items: end;
   gap: 6px;
-  padding: 8px;
+  padding: 6px 8px;
+}
+.compose-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.compose-grid label.check {
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  padding-bottom: 3px;
 }
 
 .compose-body {
