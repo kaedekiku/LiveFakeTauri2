@@ -2204,7 +2204,6 @@ export default function App() {
         return next;
       });
     }
-    setComposeOpen(false);
     setUploadPanelOpen(false);
     setUploadResults([]);
     const prevCount = tabCacheRef.current.get(threadUrl.trim())?.responses.length ?? 0;
