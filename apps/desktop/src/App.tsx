@@ -714,7 +714,7 @@ export default function App() {
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsCategory, setSettingsCategory] = useState<"display" | "posting" | "tts" | "proxy" | "ng" | "subtitle" | "highlights" | "info">("display");
+  const [settingsCategory, setSettingsCategory] = useState<"display" | "posting" | "tts" | "tts-dict" | "proxy" | "ng" | "subtitle" | "highlights" | "info">("display");
   const [hlWordInput, setHlWordInput] = useState("");
   const [hlWordColor, setHlWordColor] = useState<string>(HIGHLIGHT_COLORS[0].color);
   const [hlNameInput, setHlNameInput] = useState("");
@@ -727,8 +727,11 @@ export default function App() {
   const [subtitleMetaFontSize, setSubtitleMetaFontSize] = useState(12);
   const [subtitleOpacity, setSubtitleOpacity] = useState(0.85);
   const [subtitleAlwaysOnTop, setSubtitleAlwaysOnTop] = useState(true);
+  const [subtitleIdFontSize, setSubtitleIdFontSize] = useState(0); // 0 = メタと同じ
+  const [subtitleIdFontFamily, setSubtitleIdFontFamily] = useState("");
   // TTS state
   type TtsMode = "off" | "sapi" | "bouyomi" | "voicevox";
+  type TtsDictEntry = { from: string; to: string; fullReplace?: boolean };
   const [ttsMode, setTtsMode] = useState<TtsMode>("off");
   const [ttsEnabled, setTtsEnabled] = useState(false);
   const [ttsMaxReadLength, setTtsMaxReadLength] = useState(0);
@@ -748,6 +751,13 @@ export default function App() {
   const [voicevoxIntonationScale, setVoicevoxIntonationScale] = useState(1.0);
   const [voicevoxVolumeScale, setVoicevoxVolumeScale] = useState(1.0);
   const [voicevoxSpeakers, setVoicevoxSpeakers] = useState<{ name: string; styles: { name: string; id: number }[] }[]>([]);
+  const DEFAULT_TTS_DICT: TtsDictEntry[] = [{ from: "WebABC", to: "このレスは番組表です", fullReplace: true }];
+  const [ttsDictEntries, setTtsDictEntries] = useState<TtsDictEntry[]>(DEFAULT_TTS_DICT);
+  const ttsDictRef = useRef<TtsDictEntry[]>(DEFAULT_TTS_DICT);
+  ttsDictRef.current = ttsDictEntries;
+  const [ttsDictNewFrom, setTtsDictNewFrom] = useState("");
+  const [ttsDictNewTo, setTtsDictNewTo] = useState("");
+  const [ttsDictNewFullReplace, setTtsDictNewFullReplace] = useState(false);
   const ttsIsSpeaking = useRef(false);
   const ttsQueueRef = useRef<string[]>([]);
   const ttsProcessingRef = useRef(false);
@@ -797,6 +807,16 @@ export default function App() {
   const [fontPickerOpen, setFontPickerOpen] = useState(false);
   const [darkMode, setDarkMode] = useState(false);
   const [composeFontSize, setComposeFontSize] = useState(13);
+  const [resIdFontSize, setResIdFontSize] = useState(0); // 0 = same as parent, ±px delta
+  const [resIdFontFamily, setResIdFontFamily] = useState("");
+  const [resIdFontPickerInput, setResIdFontPickerInput] = useState("");
+  const [resIdFontPickerOpen, setResIdFontPickerOpen] = useState(false);
+  const [newArrivalIdFontSize, setNewArrivalIdFontSize] = useState(0); // 0 = same as parent, ±px delta
+  const [newArrivalIdFontFamily, setNewArrivalIdFontFamily] = useState("");
+  const [newArrivalIdFontPickerInput, setNewArrivalIdFontPickerInput] = useState("");
+  const [newArrivalIdFontPickerOpen, setNewArrivalIdFontPickerOpen] = useState(false);
+  const [subtitleIdFontPickerInput, setSubtitleIdFontPickerInput] = useState("");
+  const [subtitleIdFontPickerOpen, setSubtitleIdFontPickerOpen] = useState(false);
   const [idPopup, setIdPopup] = useState<{ right: number; y: number; anchorTop: number; id: string } | null>(null);
   const idPopupCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [idMenu, setIdMenu] = useState<{ x: number; y: number; id: string } | null>(null);
@@ -2285,6 +2305,17 @@ export default function App() {
     // Strip HTML tags, then decode HTML entities to get true character count
     let plain = bodyText.replace(/<[^>]*>/g, "");
     plain = plain.replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16))).replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)));
+    // Apply TTS dictionary: fullReplace entries first (if matched, skip all remaining preprocessing)
+    const dict = ttsDictRef.current;
+    const fullReplaceEntry = dict.find((e) => e.fullReplace && plain.includes(e.from));
+    if (fullReplaceEntry) {
+      ttsQueueRef.current.push(prefix ? `${prefix} ${fullReplaceEntry.to}` : fullReplaceEntry.to);
+      void processTtsQueue();
+      return;
+    }
+    for (const entry of dict) {
+      if (!entry.fullReplace && entry.from) plain = plain.split(entry.from).join(entry.to);
+    }
     // Replace YouTube URLs with "ユーチューブ", then remove remaining URLs
     plain = plain.replace(/(?:https?|ttp):\/\/[^\s]*youtube[^\s]*/gi, "ユーチューブ");
     plain = plain.replace(/(?:https?|ttp):\/\/[^\s]+/g, "");
@@ -3335,6 +3366,12 @@ export default function App() {
           newArrivalPaneHeight?: number;
           newArrivalFontSize?: number;
           showImagePreview?: boolean;
+          resIdFontSize?: number;
+          resIdFontFamily?: string;
+          newArrivalIdFontSize?: number;
+          newArrivalIdFontFamily?: string;
+          subtitleIdFontSize?: number;
+          subtitleIdFontFamily?: string;
         };
         if (typeof parsed.boardPaneVisible === "boolean") setBoardPaneVisible(parsed.boardPaneVisible);
         if (typeof parsed.boardPanePx === "number") setBoardPanePx(parsed.boardPanePx);
@@ -3388,6 +3425,12 @@ export default function App() {
         if (typeof parsed.newArrivalPaneOpen === "boolean") setNewArrivalPaneOpen(parsed.newArrivalPaneOpen);
         if (typeof parsed.newArrivalPaneHeight === "number") setNewArrivalPaneHeight(parsed.newArrivalPaneHeight);
         if (typeof parsed.newArrivalFontSize === "number") setNewArrivalFontSize(parsed.newArrivalFontSize);
+        if (typeof parsed.resIdFontSize === "number") setResIdFontSize(parsed.resIdFontSize);
+        if (typeof parsed.resIdFontFamily === "string") { setResIdFontFamily(parsed.resIdFontFamily); setResIdFontPickerInput(parsed.resIdFontFamily); }
+        if (typeof parsed.newArrivalIdFontSize === "number") setNewArrivalIdFontSize(parsed.newArrivalIdFontSize);
+        if (typeof parsed.newArrivalIdFontFamily === "string") { setNewArrivalIdFontFamily(parsed.newArrivalIdFontFamily); setNewArrivalIdFontPickerInput(parsed.newArrivalIdFontFamily); }
+        if (typeof parsed.subtitleIdFontSize === "number") setSubtitleIdFontSize(parsed.subtitleIdFontSize);
+        if (typeof parsed.subtitleIdFontFamily === "string") { setSubtitleIdFontFamily(parsed.subtitleIdFontFamily); setSubtitleIdFontPickerInput(parsed.subtitleIdFontFamily); }
       } catch { /* ignore */ }
     };
     // Layout prefs from file (settings.json via IPC)
@@ -3879,8 +3922,23 @@ export default function App() {
       if (map["Posting.mail"] !== undefined) setComposeMail(map["Posting.mail"]);
       if (map["Posting.sage"]) setComposeSage(map["Posting.sage"] === "true");
       if (map["Posting.fontSize"]) { const n = parseInt(map["Posting.fontSize"], 10); if (!isNaN(n) && n >= 10 && n <= 24) setComposeFontSize(n); }
+      if (map["Posting.composeOpen"]) setComposeOpen(map["Posting.composeOpen"] === "true");
     }).catch(() => {});
   }, []);
+
+  // Load TTS dictionary on startup
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    invoke<TtsDictEntry[]>("load_tts_dict").then((entries) => {
+      setTtsDictEntries(entries);
+    }).catch(() => {});
+  }, []);
+
+  // Save TTS dictionary when entries change
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    void invoke("save_tts_dict", { entries: ttsDictEntries }).catch(() => {});
+  }, [ttsDictEntries]);
 
   // Save app settings to settings.ini when relevant values change
   useEffect(() => {
@@ -3912,11 +3970,12 @@ export default function App() {
       "Posting.mail": composeMail,
       "Posting.sage": String(composeSage),
       "Posting.fontSize": String(composeFontSize),
+      "Posting.composeOpen": String(composeOpen),
     } }).catch(() => {});
   }, [responsesFontSize, responseGap, autoRefreshInterval, autoRefreshEnabled, autoScrollEnabled, smoothScroll, maxOpenTabs, logRetentionDays, imageSaveFolder,
       ttsMode, ttsEnabled, ttsMaxReadLength, sapiVoiceIndex, sapiRate, sapiVolume, bouyomiPath,
       voicevoxEndpoint, voicevoxSpeakerId, voicevoxSpeedScale, voicevoxPitchScale, voicevoxIntonationScale, voicevoxVolumeScale,
-      composeName, composeMail, composeSage, composeFontSize]);
+      composeName, composeMail, composeSage, composeFontSize, composeOpen]);
 
   useEffect(() => {
     if (!layoutPrefsLoadedRef.current) return;
@@ -3949,11 +4008,17 @@ export default function App() {
       newArrivalPaneOpen,
       newArrivalPaneHeight,
       newArrivalFontSize,
+      resIdFontSize,
+      resIdFontFamily,
+      newArrivalIdFontSize,
+      newArrivalIdFontFamily,
+      subtitleIdFontSize,
+      subtitleIdFontFamily,
     });
     if (isTauriRuntime()) {
       void invoke("save_layout_prefs", { prefs: payload }).catch(() => {});
     }
-  }, [boardPaneVisible, boardPanePx, threadPanePx, responseTopRatio, boardsFontSize, threadsFontSize, responsesFontSize, responsesHeaderFontSize, darkMode, fontFamily, fontBold, threadColWidths, showBoardButtons, keepSortOnRefresh, composeSubmitKey, typingConfettiEnabled, imageSizeLimit, showImagePreview, hoverPreviewEnabled, selectedBoard, hoverPreviewDelay, thumbSize, restoreSession, autoRefreshInterval, autoScrollEnabled, newArrivalPaneOpen, newArrivalPaneHeight, newArrivalFontSize]);
+  }, [boardPaneVisible, boardPanePx, threadPanePx, responseTopRatio, boardsFontSize, threadsFontSize, responsesFontSize, responsesHeaderFontSize, darkMode, fontFamily, fontBold, threadColWidths, showBoardButtons, keepSortOnRefresh, composeSubmitKey, typingConfettiEnabled, imageSizeLimit, showImagePreview, hoverPreviewEnabled, selectedBoard, hoverPreviewDelay, thumbSize, restoreSession, autoRefreshInterval, autoScrollEnabled, newArrivalPaneOpen, newArrivalPaneHeight, newArrivalFontSize, resIdFontSize, resIdFontFamily, newArrivalIdFontSize, newArrivalIdFontFamily, subtitleIdFontSize, subtitleIdFontFamily]);
 
 
 
@@ -4424,6 +4489,8 @@ export default function App() {
                             invoke("subtitle_font_size", { size: subtitleBodyFontSize }).catch(() => {});
                             invoke("subtitle_meta_font_size", { size: subtitleMetaFontSize }).catch(() => {});
                             invoke("subtitle_topmost", { enabled: subtitleAlwaysOnTop }).catch(() => {});
+                            invoke("subtitle_id_font_size", { size: subtitleIdFontSize }).catch(() => {});
+                            if (subtitleIdFontFamily) invoke("subtitle_id_font_family", { family: subtitleIdFontFamily }).catch(() => {});
                           }, 400);
                         }).catch((e) => console.warn("subtitle_show:", e));
                       } else {
@@ -4458,7 +4525,7 @@ export default function App() {
                         <span className="new-arrival-thread-title">{currentArrivalItem.threadTitle}</span>
                         <span className="new-arrival-res-no">{currentArrivalItem.responseNo}</span>
                         <span className="new-arrival-name">{currentArrivalItem.name}</span>
-                        {currentArrivalItem.id && <span className="new-arrival-id">ID:{currentArrivalItem.id}</span>}
+                        {currentArrivalItem.id && <span className="new-arrival-id" style={{ ...(newArrivalIdFontSize !== 0 ? { fontSize: `${Math.max(6, newArrivalFontSize + newArrivalIdFontSize)}px` } : {}), ...(newArrivalIdFontFamily ? { fontFamily: `"${newArrivalIdFontFamily}", sans-serif` } : {}) }}>ID:{currentArrivalItem.id}</span>}
                         <span className="new-arrival-time">{currentArrivalItem.time}</span>
                       </div>
                       <div className="new-arrival-body" ref={newArrivalBodyRef} style={{ fontSize: `${newArrivalFontSize}px` }}>{currentArrivalItem.text}</div>
@@ -5247,7 +5314,7 @@ export default function App() {
                           <>
                             <span
                               className="response-id-cell"
-                              style={{ color: idHighlights[id] ?? undefined }}
+                              style={{ color: idHighlights[id] ?? undefined, ...(resIdFontSize !== 0 ? { fontSize: `${Math.max(6, responsesFontSize + resIdFontSize)}px` } : {}), ...(resIdFontFamily ? { fontFamily: `"${resIdFontFamily}", sans-serif` } : {}) }}
                               onClick={(e) => {
                                 e.stopPropagation();
                                 if (idPopupCloseTimer.current) { clearTimeout(idPopupCloseTimer.current); idPopupCloseTimer.current = null; }
@@ -6180,8 +6247,8 @@ export default function App() {
             </header>
             <div className="settings-2col">
               <nav className="settings-nav">
-                {(["display","posting","tts","subtitle","proxy","ng","highlights","info"] as const).map((cat) => {
-                  const labels: Record<string, string> = { display:"表示", posting:"書き込み", tts:"読み上げ", subtitle:"字幕", proxy:"プロキシ", ng:"NG", highlights:"ハイライト", info:"情報" };
+                {(["display","posting","tts","tts-dict","subtitle","proxy","ng","highlights","info"] as const).map((cat) => {
+                  const labels: Record<string, string> = { display:"表示", posting:"書き込み", tts:"読み上げ", "tts-dict":"読み上げ辞書", subtitle:"字幕", proxy:"プロキシ", ng:"NG", highlights:"ハイライト", info:"情報" };
                   return (
                     <button key={cat} className={`settings-nav-item${settingsCategory === cat ? " active" : ""}`} onClick={() => setSettingsCategory(cat)}>{labels[cat]}</button>
                   );
@@ -6264,6 +6331,64 @@ export default function App() {
                 <label className="settings-row">
                   <span>文字サイズ (新着レス)</span>
                   <input type="number" value={newArrivalFontSize} min={8} max={24} onChange={(e) => setNewArrivalFontSize(Number(e.target.value))} />
+                </label>
+                <label className="settings-row">
+                  <span>レスID 文字サイズ補正 (0=同じ、±px)</span>
+                  <input type="number" value={resIdFontSize} min={-20} max={24} onChange={(e) => setResIdFontSize(Number(e.target.value))} style={{ width: 60 }} />
+                </label>
+                <label className="settings-row" style={{ alignItems: "flex-start" }}>
+                  <span style={{ paddingTop: 4 }}>レスID フォント</span>
+                  <div className="font-picker">
+                    <div style={{ display: "flex", gap: 4 }}>
+                      <input type="text" className="font-picker-input" value={resIdFontPickerInput}
+                        onChange={(e) => { setResIdFontPickerInput(e.target.value); setResIdFontPickerOpen(true); }}
+                        onFocus={() => setResIdFontPickerOpen(true)}
+                        onBlur={() => setTimeout(() => setResIdFontPickerOpen(false), 150)}
+                        placeholder="デフォルト (入力またはクリック)" style={{ flex: 1, minWidth: 0 }} />
+                      {resIdFontFamily && <button style={{ flexShrink: 0 }} onClick={() => { setResIdFontFamily(""); setResIdFontPickerInput(""); }}>×</button>}
+                    </div>
+                    {resIdFontPickerOpen && (() => {
+                      const q = resIdFontPickerInput.toLowerCase();
+                      const filtered = q ? systemFonts.filter((f) => f.toLowerCase().includes(q)) : systemFonts;
+                      return filtered.length > 0 ? (
+                        <div className="font-picker-dropdown">
+                          {filtered.slice(0, 120).map((f) => (
+                            <div key={f} className={`font-picker-option${f === resIdFontFamily ? " selected" : ""}`} style={{ fontFamily: `"${f}", sans-serif` }}
+                              onMouseDown={(e) => { e.preventDefault(); setResIdFontFamily(f); setResIdFontPickerInput(f); setResIdFontPickerOpen(false); }}>{f}</div>
+                          ))}
+                        </div>
+                      ) : null;
+                    })()}
+                  </div>
+                </label>
+                <label className="settings-row">
+                  <span>新着ID 文字サイズ補正 (0=同じ、±px)</span>
+                  <input type="number" value={newArrivalIdFontSize} min={-20} max={24} onChange={(e) => setNewArrivalIdFontSize(Number(e.target.value))} style={{ width: 60 }} />
+                </label>
+                <label className="settings-row" style={{ alignItems: "flex-start" }}>
+                  <span style={{ paddingTop: 4 }}>新着ID フォント</span>
+                  <div className="font-picker">
+                    <div style={{ display: "flex", gap: 4 }}>
+                      <input type="text" className="font-picker-input" value={newArrivalIdFontPickerInput}
+                        onChange={(e) => { setNewArrivalIdFontPickerInput(e.target.value); setNewArrivalIdFontPickerOpen(true); }}
+                        onFocus={() => setNewArrivalIdFontPickerOpen(true)}
+                        onBlur={() => setTimeout(() => setNewArrivalIdFontPickerOpen(false), 150)}
+                        placeholder="デフォルト (入力またはクリック)" style={{ flex: 1, minWidth: 0 }} />
+                      {newArrivalIdFontFamily && <button style={{ flexShrink: 0 }} onClick={() => { setNewArrivalIdFontFamily(""); setNewArrivalIdFontPickerInput(""); }}>×</button>}
+                    </div>
+                    {newArrivalIdFontPickerOpen && (() => {
+                      const q = newArrivalIdFontPickerInput.toLowerCase();
+                      const filtered = q ? systemFonts.filter((f) => f.toLowerCase().includes(q)) : systemFonts;
+                      return filtered.length > 0 ? (
+                        <div className="font-picker-dropdown">
+                          {filtered.slice(0, 120).map((f) => (
+                            <div key={f} className={`font-picker-option${f === newArrivalIdFontFamily ? " selected" : ""}`} style={{ fontFamily: `"${f}", sans-serif` }}
+                              onMouseDown={(e) => { e.preventDefault(); setNewArrivalIdFontFamily(f); setNewArrivalIdFontPickerInput(f); setNewArrivalIdFontPickerOpen(false); }}>{f}</div>
+                          ))}
+                        </div>
+                      ) : null;
+                    })()}
+                  </div>
                 </label>
                 <label className="settings-row">
                   <span>自動更新間隔 (秒)</span>
@@ -6422,6 +6547,46 @@ export default function App() {
                   }} />
                 </div>
                 <div className="settings-row">
+                  <span>ID 文字サイズ補正 (0=メタと同じ、±px)</span>
+                  <input type="number" min={-48} max={48} value={subtitleIdFontSize} onChange={(e) => {
+                    const v = Number(e.target.value);
+                    setSubtitleIdFontSize(v);
+                    if (isTauriRuntime()) invoke("subtitle_id_font_size", { size: v }).catch(() => {});
+                  }} style={{ width: 60 }} />
+                </div>
+                <div className="settings-row" style={{ alignItems: "flex-start" }}>
+                  <span style={{ paddingTop: 4 }}>ID フォント</span>
+                  <div className="font-picker">
+                    <div style={{ display: "flex", gap: 4 }}>
+                      <input type="text" className="font-picker-input" value={subtitleIdFontPickerInput}
+                        onChange={(e) => { setSubtitleIdFontPickerInput(e.target.value); setSubtitleIdFontPickerOpen(true); }}
+                        onFocus={() => setSubtitleIdFontPickerOpen(true)}
+                        onBlur={() => setTimeout(() => setSubtitleIdFontPickerOpen(false), 150)}
+                        placeholder="デフォルト (入力またはクリック)" style={{ flex: 1, minWidth: 0 }} />
+                      {subtitleIdFontFamily && <button style={{ flexShrink: 0 }} onClick={() => {
+                        setSubtitleIdFontFamily(""); setSubtitleIdFontPickerInput("");
+                        if (isTauriRuntime()) invoke("subtitle_id_font_family", { family: "" }).catch(() => {});
+                      }}>×</button>}
+                    </div>
+                    {subtitleIdFontPickerOpen && (() => {
+                      const q = subtitleIdFontPickerInput.toLowerCase();
+                      const filtered = q ? systemFonts.filter((f) => f.toLowerCase().includes(q)) : systemFonts;
+                      return filtered.length > 0 ? (
+                        <div className="font-picker-dropdown">
+                          {filtered.slice(0, 120).map((f) => (
+                            <div key={f} className={`font-picker-option${f === subtitleIdFontFamily ? " selected" : ""}`} style={{ fontFamily: `"${f}", sans-serif` }}
+                              onMouseDown={(e) => {
+                                e.preventDefault();
+                                setSubtitleIdFontFamily(f); setSubtitleIdFontPickerInput(f); setSubtitleIdFontPickerOpen(false);
+                                if (isTauriRuntime()) invoke("subtitle_id_font_family", { family: f }).catch(() => {});
+                              }}>{f}</div>
+                          ))}
+                        </div>
+                      ) : null;
+                    })()}
+                  </div>
+                </div>
+                <div className="settings-row">
                   <span>ウィンドウ位置</span>
                   <button onClick={() => {
                     if (isTauriRuntime()) invoke("subtitle_reset_position").catch((e) => console.warn("subtitle_reset_position:", e));
@@ -6523,6 +6688,56 @@ export default function App() {
                 <div className="settings-row">
                   <button onClick={() => ttsSpeak("テスト読み上げです")}>テスト</button>
                   <button onClick={() => ttsStop()}>停止</button>
+                </div>
+              </fieldset>
+              </>)}
+              {settingsCategory === "tts-dict" && (<>
+              <fieldset>
+                <legend>読み上げ辞書</legend>
+                <div style={{ fontSize: 11, color: "var(--text-secondary, #888)", marginBottom: 6 }}>
+                  「全置換」: テキストにキーワードが含まれる場合、レス全体を「読み上げテキスト」で置換します。
+                </div>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, marginBottom: 6 }}>
+                  <thead>
+                    <tr style={{ borderBottom: "1px solid var(--border, #ccc)", textAlign: "left" }}>
+                      <th style={{ padding: "2px 6px" }}>キーワード</th>
+                      <th style={{ padding: "2px 6px" }}>読み上げテキスト</th>
+                      <th style={{ padding: "2px 6px", textAlign: "center" }}>全置換</th>
+                      <th style={{ padding: "2px 6px" }}></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ttsDictEntries.map((entry, i) => (
+                      <tr key={i} style={{ borderBottom: "1px solid var(--border-light, #eee)" }}>
+                        <td style={{ padding: "3px 6px" }}>
+                          <input type="text" value={entry.from} onChange={(e) => setTtsDictEntries((prev) => prev.map((x, j) => j === i ? { ...x, from: e.target.value } : x))} style={{ width: 110 }} />
+                        </td>
+                        <td style={{ padding: "3px 6px" }}>
+                          <input type="text" value={entry.to} onChange={(e) => setTtsDictEntries((prev) => prev.map((x, j) => j === i ? { ...x, to: e.target.value } : x))} style={{ width: 150 }} />
+                        </td>
+                        <td style={{ padding: "3px 6px", textAlign: "center" }}>
+                          <input type="checkbox" checked={!!entry.fullReplace} onChange={(e) => setTtsDictEntries((prev) => prev.map((x, j) => j === i ? { ...x, fullReplace: e.target.checked } : x))} />
+                        </td>
+                        <td style={{ padding: "3px 6px" }}>
+                          <button onClick={() => setTtsDictEntries((prev) => prev.filter((_, j) => j !== i))}>削除</button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <div style={{ display: "flex", gap: 4, alignItems: "center", marginTop: 4 }}>
+                  <input type="text" value={ttsDictNewFrom} onChange={(e) => setTtsDictNewFrom(e.target.value)} placeholder="キーワード" style={{ width: 110 }} />
+                  <span>→</span>
+                  <input type="text" value={ttsDictNewTo} onChange={(e) => setTtsDictNewTo(e.target.value)} placeholder="読み上げテキスト" style={{ width: 150 }} />
+                  <label style={{ display: "flex", alignItems: "center", gap: 2, fontSize: 11 }}>
+                    <input type="checkbox" checked={ttsDictNewFullReplace} onChange={(e) => setTtsDictNewFullReplace(e.target.checked)} />
+                    全置換
+                  </label>
+                  <button onClick={() => {
+                    if (!ttsDictNewFrom) return;
+                    setTtsDictEntries((prev) => [...prev, { from: ttsDictNewFrom, to: ttsDictNewTo, fullReplace: ttsDictNewFullReplace }]);
+                    setTtsDictNewFrom(""); setTtsDictNewTo(""); setTtsDictNewFullReplace(false);
+                  }}>追加</button>
                 </div>
               </fieldset>
               </>)}

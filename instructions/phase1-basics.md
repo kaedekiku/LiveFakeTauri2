@@ -4,7 +4,7 @@ REQUIREMENTS.md の §2.6, §2.7, §8 を参照。
 
 ## 1-1. 自動更新の間隔を可変にする
 
-現状: 60秒固定（既存）
+現状: 60秒固定（Ember既存）
 目標: 15〜300秒の範囲で設定可能にする
 
 ### 実装箇所
@@ -37,7 +37,7 @@ REQUIREMENTS.md の §2.6, §2.7, §8 を参照。
 
 ## 1-3. Portable INI 設定の基盤作成
 
-現状: localStorage + JSON/SQLite で設定管理
+現状: Ember は localStorage + JSON/SQLite で設定管理
 目標: INI ファイルベースの設定管理基盤を作る（段階的移行の第一歩）
 
 ### 実装箇所

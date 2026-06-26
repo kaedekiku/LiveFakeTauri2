@@ -38,9 +38,9 @@
     font-size: 12px;
     line-height: 1.4;
     color: rgba(255,255,255,0.75);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    white-space: normal;
+    overflow: visible;
+    word-break: break-word;
     margin-bottom: 4px;
     flex-shrink: 0;
     text-shadow: 0 0 2px rgba(0,0,0,0.9), 1px 1px 2px rgba(0,0,0,0.9);
@@ -56,7 +56,7 @@
     text-shadow: 0 0 2px rgba(0,0,0,0.9), 0 0 4px rgba(0,0,0,0.9), 1px 1px 2px rgba(0,0,0,0.9);
   }
   .hl-text { border-radius: 2px; padding: 0 1px; }
-  .hl-id { font-weight: bold; }
+  .hl-id { font-weight: bold; display: inline-block; white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -71,10 +71,27 @@
   var metaEl = document.getElementById("subtitleMeta");
   var bodyEl = document.getElementById("subtitleBody");
 
+  var metaFontSizeVal = 12;
+  var idFontDelta = 0;
+  var idFontFamilyVal = "";
+
   function escapeHtml(s) {
     var d = document.createElement("div");
     d.textContent = String(s);
     return d.innerHTML;
+  }
+
+  function applyIdStyle() {
+    var els = metaEl.querySelectorAll(".hl-id");
+    for (var i = 0; i < els.length; i++) {
+      if (idFontDelta !== 0) {
+        var computed = Math.max(8, metaFontSizeVal + idFontDelta);
+        els[i].style.fontSize = computed + "px";
+      } else {
+        els[i].style.fontSize = "";
+      }
+      els[i].style.fontFamily = idFontFamilyVal || "";
+    }
   }
 
   window.__subtitleEntry = function(entry) {
@@ -83,12 +100,13 @@
     if (e.threadTitle) parts.push('<span style="color:#88aaff">' + escapeHtml(e.threadTitle) + '</span>');
     if (e.responseNo != null) parts.push('<span style="color:#aaaaaa">' + escapeHtml(e.responseNo) + '番</span>');
     if (e.name)        parts.push('<span style="color:#88ff88">' + escapeHtml(e.name) + '</span>');
+    if (e.date) parts.push('<span style="color:#999999">' + escapeHtml(e.date) + '</span>');
     if (e.id) {
       var idColor = (e.idColor || "#cc8800").replace(/[^#a-zA-Z0-9]/g, "");
       parts.push('<span class="hl-id" style="color:' + idColor + '">ID:' + escapeHtml(e.id) + '</span>');
     }
-    if (e.date) parts.push('<span style="color:#999999">' + escapeHtml(e.date) + '</span>');
     metaEl.innerHTML = parts.join("&nbsp;&nbsp;");
+    applyIdStyle();
 
     if (e.bodyHtml) {
       bodyEl.innerHTML = e.bodyHtml;
@@ -108,8 +126,19 @@
   };
 
   window.__setMetaFontSize = function(size) {
-    var s = Math.max(8, Math.min(48, Number(size) || 12));
-    metaEl.style.fontSize = s + "px";
+    metaFontSizeVal = Math.max(8, Math.min(48, Number(size) || 12));
+    metaEl.style.fontSize = metaFontSizeVal + "px";
+    applyIdStyle();
+  };
+
+  window.__setIdFontSize = function(delta) {
+    idFontDelta = Number(delta) || 0;
+    applyIdStyle();
+  };
+
+  window.__setIdFontFamily = function(family) {
+    idFontFamilyVal = String(family || "");
+    applyIdStyle();
   };
 
   rootEl.addEventListener("mousedown", function(e) {

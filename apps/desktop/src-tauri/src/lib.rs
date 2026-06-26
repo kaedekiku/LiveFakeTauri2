@@ -1282,6 +1282,38 @@ fn save_ng_filters(filters: NgFilters) -> Result<(), String> {
     core_store::save_json("ng-settings.json", &filters).map_err(|e| e.to_string())
 }
 
+// --- TTS dictionary persistence ---
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct TtsDictEntry {
+    from: String,
+    to: String,
+    #[serde(default)]
+    full_replace: bool,
+}
+
+fn default_tts_dict() -> Vec<TtsDictEntry> {
+    vec![TtsDictEntry {
+        from: "WebABC".to_string(),
+        to: "このレスは番組表です".to_string(),
+        full_replace: true,
+    }]
+}
+
+#[tauri::command]
+fn load_tts_dict() -> Result<Vec<TtsDictEntry>, String> {
+    match core_store::load_json::<Vec<TtsDictEntry>>("tts-dict.json") {
+        Ok(data) => Ok(data),
+        Err(_) => Ok(default_tts_dict()),
+    }
+}
+
+#[tauri::command]
+fn save_tts_dict(entries: Vec<TtsDictEntry>) -> Result<(), String> {
+    core_store::save_json("tts-dict.json", &entries).map_err(|e| e.to_string())
+}
+
 // --- Read status persistence ---
 
 /// Map of board_url -> { thread_key -> last_read_response_no }
@@ -2088,6 +2120,29 @@ fn subtitle_meta_font_size(app: AppHandle, size: u32) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn subtitle_id_font_size(app: AppHandle, size: i32) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("subtitle") {
+        let _ = win.eval(&format!(
+            "if(window.__setIdFontSize)window.__setIdFontSize({})",
+            size
+        ));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn subtitle_id_font_family(app: AppHandle, family: String) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("subtitle") {
+        let escaped = serde_json::to_string(&family).unwrap_or_else(|_| "\"\"".to_string());
+        let _ = win.eval(&format!(
+            "if(window.__setIdFontFamily)window.__setIdFontFamily({})",
+            escaped
+        ));
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Disable WebKit2GTK's DMA-BUF renderer and GPU compositing on Wayland
@@ -2192,6 +2247,8 @@ pub fn run() {
             save_favorites,
             load_ng_filters,
             save_ng_filters,
+            load_tts_dict,
+            save_tts_dict,
             load_read_status,
             load_thread_history,
             save_thread_history,
@@ -2253,6 +2310,8 @@ pub fn run() {
             subtitle_topmost,
             subtitle_font_size,
             subtitle_meta_font_size,
+            subtitle_id_font_size,
+            subtitle_id_font_family,
             list_system_fonts
         ])
         .run(tauri::generate_context!())
