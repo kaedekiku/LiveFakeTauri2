@@ -1280,8 +1280,8 @@ li.fav-drag-over {
 .id-popup {
   position: fixed;
   z-index: 59;
-  width: min(520px, calc(100vw - 16px));
-  max-width: 520px;
+  width: fit-content;
+  max-width: min(var(--popup-max-width, 520px), calc(100vw - 16px));
   max-height: 360px;
   overflow-y: auto;
   background: #ffffff;
@@ -1320,9 +1320,7 @@ li.fav-drag-over {
   background: #e8f0ff;
 }
 .id-popup-text {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  word-break: break-word;
   flex: 1;
   font-size: calc(11px + var(--fs-delta, 0px));
 }

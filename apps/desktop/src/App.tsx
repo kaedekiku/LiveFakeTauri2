@@ -799,6 +799,7 @@ export default function App() {
   const [responsesFontSize, setResponsesFontSize] = useState(12);
   const [responsesHeaderFontSize, setResponsesHeaderFontSize] = useState(11);
   const [popupFontSize, setPopupFontSize] = useState(12);
+  const [popupMaxWidth, setPopupMaxWidth] = useState(520);
   type PaneName = "boards" | "threads" | "responses";
   const [focusedPane, setFocusedPane] = useState<PaneName>("responses");
   const [fontFamily, setFontFamily] = useState("");
@@ -3180,6 +3181,7 @@ export default function App() {
     setThreadsFontSize(12);
     setResponsesFontSize(12);
     setPopupFontSize(12);
+    setPopupMaxWidth(520);
     setStatus("layout reset");
   };
 
@@ -3382,6 +3384,7 @@ export default function App() {
           subtitleIdFontSize?: number;
           subtitleIdFontFamily?: string;
           popupFontSize?: number;
+          popupMaxWidth?: number;
           composePanelPx?: number;
         };
         if (typeof parsed.boardPaneVisible === "boolean") setBoardPaneVisible(parsed.boardPaneVisible);
@@ -3443,6 +3446,7 @@ export default function App() {
         if (typeof parsed.subtitleIdFontSize === "number") setSubtitleIdFontSize(parsed.subtitleIdFontSize);
         if (typeof parsed.subtitleIdFontFamily === "string") { setSubtitleIdFontFamily(parsed.subtitleIdFontFamily); setSubtitleIdFontPickerInput(parsed.subtitleIdFontFamily); }
         if (typeof parsed.popupFontSize === "number") setPopupFontSize(parsed.popupFontSize);
+        if (typeof parsed.popupMaxWidth === "number") setPopupMaxWidth(clamp(parsed.popupMaxWidth, 300, 1200));
         if (typeof parsed.composePanelPx === "number") setComposePanelPx(clamp(parsed.composePanelPx, MIN_COMPOSE_PANEL_PX, MAX_COMPOSE_PANEL_PX));
       } catch { /* ignore */ }
     };
@@ -4028,12 +4032,13 @@ export default function App() {
       subtitleIdFontSize,
       subtitleIdFontFamily,
       popupFontSize,
+      popupMaxWidth,
       composePanelPx,
     });
     if (isTauriRuntime()) {
       void invoke("save_layout_prefs", { prefs: payload }).catch(() => {});
     }
-  }, [boardPaneVisible, boardPanePx, threadPanePx, responseTopRatio, boardsFontSize, threadsFontSize, responsesFontSize, responsesHeaderFontSize, darkMode, fontFamily, fontBold, threadColWidths, showBoardButtons, keepSortOnRefresh, composeSubmitKey, typingConfettiEnabled, imageSizeLimit, showImagePreview, hoverPreviewEnabled, selectedBoard, hoverPreviewDelay, thumbSize, restoreSession, autoRefreshInterval, autoScrollEnabled, newArrivalPaneOpen, newArrivalPaneHeight, newArrivalFontSize, resIdFontSize, resIdFontFamily, newArrivalIdFontSize, newArrivalIdFontFamily, subtitleIdFontSize, subtitleIdFontFamily, popupFontSize, composePanelPx]);
+  }, [boardPaneVisible, boardPanePx, threadPanePx, responseTopRatio, boardsFontSize, threadsFontSize, responsesFontSize, responsesHeaderFontSize, darkMode, fontFamily, fontBold, threadColWidths, showBoardButtons, keepSortOnRefresh, composeSubmitKey, typingConfettiEnabled, imageSizeLimit, showImagePreview, hoverPreviewEnabled, selectedBoard, hoverPreviewDelay, thumbSize, restoreSession, autoRefreshInterval, autoScrollEnabled, newArrivalPaneOpen, newArrivalPaneHeight, newArrivalFontSize, resIdFontSize, resIdFontFamily, newArrivalIdFontSize, newArrivalIdFontFamily, subtitleIdFontSize, subtitleIdFontFamily, popupFontSize, popupMaxWidth, composePanelPx]);
 
 
 
@@ -6162,7 +6167,7 @@ export default function App() {
         return (
           <div
             className="id-popup"
-            style={{ ...idPosStyle, '--fs-delta': `${popupFontSize - 12}px` } as unknown as React.CSSProperties}
+            style={{ ...idPosStyle, '--fs-delta': `${popupFontSize - 12}px`, '--popup-max-width': `${popupMaxWidth}px` } as unknown as React.CSSProperties}
             onMouseEnter={() => { if (idPopupCloseTimer.current) { clearTimeout(idPopupCloseTimer.current); idPopupCloseTimer.current = null; } }}
             onMouseLeave={(ev) => {
               const next = ev.relatedTarget as HTMLElement | null;
@@ -6353,6 +6358,10 @@ export default function App() {
                 <label className="settings-row">
                   <span>文字サイズ (ポップアップ)</span>
                   <input type="number" value={popupFontSize} min={8} max={40} onChange={(e) => setPopupFontSize(Number(e.target.value))} />
+                </label>
+                <label className="settings-row">
+                  <span>最大幅 (IDポップアップ) px</span>
+                  <input type="number" value={popupMaxWidth} min={300} max={1200} step={20} onChange={(e) => setPopupMaxWidth(Number(e.target.value))} />
                 </label>
                 <label className="settings-row">
                   <span>レスID 文字サイズ補正 (0=同じ、±px)</span>
