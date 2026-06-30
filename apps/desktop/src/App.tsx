@@ -686,7 +686,7 @@ export default function App() {
   const [threadMenu, setThreadMenu] = useState<{ x: number; y: number; threadId: number } | null>(null);
   const [responseMenu, setResponseMenu] = useState<{
     x: number; y: number; responseId: number;
-    selection?: string; resId?: string; resName?: string; isOnResNo?: boolean; imageUrl?: string;
+    selection?: string; resId?: string; resName?: string; isOnResNo?: boolean; imageUrl?: string; linkUrl?: string;
   } | null>(null);
   const [hlSubMenu, setHlSubMenu] = useState<{ type: "text" | "id" | "name"; value: string; nearRight?: boolean } | null>(null);
   const [boardContextMenu, setBoardContextMenu] = useState<{ x: number; y: number; board: BoardEntry } | null>(null);
@@ -798,6 +798,7 @@ export default function App() {
   const [threadsFontSize, setThreadsFontSize] = useState(12);
   const [responsesFontSize, setResponsesFontSize] = useState(12);
   const [responsesHeaderFontSize, setResponsesHeaderFontSize] = useState(11);
+  const [popupFontSize, setPopupFontSize] = useState(12);
   type PaneName = "boards" | "threads" | "responses";
   const [focusedPane, setFocusedPane] = useState<PaneName>("responses");
   const [fontFamily, setFontFamily] = useState("");
@@ -2900,6 +2901,7 @@ export default function App() {
     const target = e.target as HTMLElement;
     // Detect image URL from thumbnail or image link
     let imageUrl: string | undefined;
+    let linkUrl: string | undefined;
     const thumbEl = target.closest<HTMLElement>("[data-lightbox-src]");
     if (thumbEl?.dataset.lightboxSrc) {
       imageUrl = thumbEl.dataset.lightboxSrc;
@@ -2909,6 +2911,11 @@ export default function App() {
         const href = imgLink.getAttribute("href") ?? "";
         if (/\.(jpe?g|png|gif|webp|bmp)(\?|$)/i.test(href)) imageUrl = href;
       }
+    }
+    const bodyLink = target.closest<HTMLAnchorElement>("a.body-link");
+    if (bodyLink) {
+      const href = bodyLink.getAttribute("href") ?? "";
+      if (/^https?:\/\//i.test(href)) linkUrl = href;
     }
     // Gather context
     const selection = window.getSelection()?.toString().trim() ?? "";
@@ -2932,6 +2939,7 @@ export default function App() {
       resName: resName || undefined,
       isOnResNo: isOnResNo || undefined,
       imageUrl,
+      linkUrl,
     });
   };
 
@@ -3171,6 +3179,7 @@ export default function App() {
     setBoardsFontSize(12);
     setThreadsFontSize(12);
     setResponsesFontSize(12);
+    setPopupFontSize(12);
     setStatus("layout reset");
   };
 
@@ -3372,6 +3381,8 @@ export default function App() {
           newArrivalIdFontFamily?: string;
           subtitleIdFontSize?: number;
           subtitleIdFontFamily?: string;
+          popupFontSize?: number;
+          composePanelPx?: number;
         };
         if (typeof parsed.boardPaneVisible === "boolean") setBoardPaneVisible(parsed.boardPaneVisible);
         if (typeof parsed.boardPanePx === "number") setBoardPanePx(parsed.boardPanePx);
@@ -3431,6 +3442,8 @@ export default function App() {
         if (typeof parsed.newArrivalIdFontFamily === "string") { setNewArrivalIdFontFamily(parsed.newArrivalIdFontFamily); setNewArrivalIdFontPickerInput(parsed.newArrivalIdFontFamily); }
         if (typeof parsed.subtitleIdFontSize === "number") setSubtitleIdFontSize(parsed.subtitleIdFontSize);
         if (typeof parsed.subtitleIdFontFamily === "string") { setSubtitleIdFontFamily(parsed.subtitleIdFontFamily); setSubtitleIdFontPickerInput(parsed.subtitleIdFontFamily); }
+        if (typeof parsed.popupFontSize === "number") setPopupFontSize(parsed.popupFontSize);
+        if (typeof parsed.composePanelPx === "number") setComposePanelPx(clamp(parsed.composePanelPx, MIN_COMPOSE_PANEL_PX, MAX_COMPOSE_PANEL_PX));
       } catch { /* ignore */ }
     };
     // Layout prefs from file (settings.json via IPC)
@@ -4014,6 +4027,8 @@ export default function App() {
       newArrivalIdFontFamily,
       subtitleIdFontSize,
       subtitleIdFontFamily,
+      popupFontSize,
+      composePanelPx,
     });
     if (isTauriRuntime()) {
       void invoke("save_layout_prefs", { prefs: payload }).catch(() => {});
@@ -5799,9 +5814,12 @@ export default function App() {
               }}>ハイライト解除</button>
             );
           })()}
-          {/* ----- 画像保存 ----- */}
+          {/* ----- 画像保存 / URLコピー ----- */}
           {responseMenu.imageUrl && isTauriRuntime() && (
             <button onClick={() => { void saveImage(responseMenu.imageUrl!); setResponseMenu(null); }}>画像を保存</button>
+          )}
+          {responseMenu.linkUrl && (
+            <button onClick={() => { void navigator.clipboard.writeText(responseMenu.linkUrl!); setStatus("URLをコピーしました"); setResponseMenu(null); }}>URLをコピー</button>
           )}
           {/* ----- セパレーター ----- */}
           <hr className="menu-sep" />
@@ -5970,7 +5988,7 @@ export default function App() {
         return (
           <div
             className="anchor-popup"
-            style={posStyle}
+            style={{ ...posStyle, '--fs-delta': `${popupFontSize - 12}px` } as unknown as React.CSSProperties}
             onMouseEnter={() => {
               if (anchorPopupCloseTimer.current) {
                 clearTimeout(anchorPopupCloseTimer.current);
@@ -6024,7 +6042,7 @@ export default function App() {
         return (
           <div
             className="anchor-popup back-ref-popup"
-            style={{ left: backRefPopup.x, bottom: window.innerHeight - backRefPopup.y }}
+            style={{ left: backRefPopup.x, bottom: window.innerHeight - backRefPopup.y, '--fs-delta': `${popupFontSize - 12}px` } as React.CSSProperties}
             onMouseLeave={(ev) => {
               const next = ev.relatedTarget as HTMLElement | null;
               if (next?.closest(".anchor-popup")) return;
@@ -6079,7 +6097,7 @@ export default function App() {
           <div
             key={`${np.responseIds[0]}-${i}`}
             className="anchor-popup nested-popup"
-            style={nPosStyle}
+            style={{ ...nPosStyle, '--fs-delta': `${popupFontSize - 12}px` } as unknown as React.CSSProperties}
             onMouseEnter={() => {
               if (anchorPopupCloseTimer.current) {
                 clearTimeout(anchorPopupCloseTimer.current);
@@ -6144,7 +6162,7 @@ export default function App() {
         return (
           <div
             className="id-popup"
-            style={idPosStyle}
+            style={{ ...idPosStyle, '--fs-delta': `${popupFontSize - 12}px` } as unknown as React.CSSProperties}
             onMouseEnter={() => { if (idPopupCloseTimer.current) { clearTimeout(idPopupCloseTimer.current); idPopupCloseTimer.current = null; } }}
             onMouseLeave={(ev) => {
               const next = ev.relatedTarget as HTMLElement | null;
@@ -6331,6 +6349,10 @@ export default function App() {
                 <label className="settings-row">
                   <span>文字サイズ (新着レス)</span>
                   <input type="number" value={newArrivalFontSize} min={8} max={24} onChange={(e) => setNewArrivalFontSize(Number(e.target.value))} />
+                </label>
+                <label className="settings-row">
+                  <span>文字サイズ (ポップアップ)</span>
+                  <input type="number" value={popupFontSize} min={8} max={40} onChange={(e) => setPopupFontSize(Number(e.target.value))} />
                 </label>
                 <label className="settings-row">
                   <span>レスID 文字サイズ補正 (0=同じ、±px)</span>
