@@ -5465,25 +5465,21 @@ export default function App() {
         </header>
         {composeOpen && (
           <>
-            <div className="compose-grid">
-              {composeNewThread && (
-                <label style={{ gridColumn: "1 / -1" }}>
-                  スレッドタイトル
-                  <input value={composeSubject} onChange={(e) => setComposeSubject(e.target.value)} placeholder="スレッドタイトルを入力" autoFocus />
-                </label>
-              )}
-              <label>
-                名前
-                <input value={composeName} onChange={(e) => setComposeName(e.target.value)} list="name-history-list" />
-                <datalist id="name-history-list">
-                  {nameHistory.map((n) => <option key={n} value={n} />)}
-                </datalist>
-              </label>
-              <label>
-                メール
-                <input value={composeMailValue} onChange={(e) => setComposeMail(e.target.value)} disabled={composeSage} />
-              </label>
-              <label className="check">
+            {composeNewThread && (
+              <div className="compose-row">
+                <span className="compose-label">スレタイ</span>
+                <input className="compose-input-full" value={composeSubject} onChange={(e) => setComposeSubject(e.target.value)} placeholder="スレッドタイトルを入力" autoFocus />
+              </div>
+            )}
+            <div className="compose-row">
+              <span className="compose-label">名前</span>
+              <input className="compose-input" value={composeName} onChange={(e) => setComposeName(e.target.value)} list="name-history-list" />
+              <datalist id="name-history-list">
+                {nameHistory.map((n) => <option key={n} value={n} />)}
+              </datalist>
+              <span className="compose-label">メール</span>
+              <input className="compose-input" value={composeMailValue} onChange={(e) => setComposeMail(e.target.value)} disabled={composeSage} />
+              <label className="compose-check">
                 <input type="checkbox" checked={composeSage} onChange={(e) => setComposeSage(e.target.checked)} />
                 sage
               </label>

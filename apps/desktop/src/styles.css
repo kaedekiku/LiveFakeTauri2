@@ -1611,23 +1611,32 @@ pre {
   white-space: nowrap;
 }
 
-.compose-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr auto;
-  align-items: end;
-  gap: 6px;
-  padding: 6px 8px;
-}
-.compose-grid label {
+.compose-row {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.compose-grid label.check {
-  flex-direction: row;
   align-items: center;
-  gap: 4px;
-  padding-bottom: 3px;
+  gap: 6px;
+  padding: 4px 8px;
+}
+.compose-label {
+  white-space: nowrap;
+  font-size: 0.85em;
+  color: var(--sub);
+  flex-shrink: 0;
+}
+.compose-input {
+  flex: 1;
+  min-width: 60px;
+}
+.compose-input-full {
+  flex: 1;
+}
+.compose-check {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  cursor: pointer;
 }
 
 .compose-body {
