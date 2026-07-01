@@ -800,6 +800,7 @@ export default function App() {
   const [responsesHeaderFontSize, setResponsesHeaderFontSize] = useState(11);
   const [popupFontSize, setPopupFontSize] = useState(12);
   const [popupMaxWidth, setPopupMaxWidth] = useState(520);
+  const [popupMaxHeight, setPopupMaxHeight] = useState(360);
   type PaneName = "boards" | "threads" | "responses";
   const [focusedPane, setFocusedPane] = useState<PaneName>("responses");
   const [fontFamily, setFontFamily] = useState("");
@@ -819,7 +820,7 @@ export default function App() {
   const [newArrivalIdFontPickerOpen, setNewArrivalIdFontPickerOpen] = useState(false);
   const [subtitleIdFontPickerInput, setSubtitleIdFontPickerInput] = useState("");
   const [subtitleIdFontPickerOpen, setSubtitleIdFontPickerOpen] = useState(false);
-  const [idPopup, setIdPopup] = useState<{ right: number; y: number; anchorTop: number; id: string } | null>(null);
+  const [idPopup, setIdPopup] = useState<{ anchorLeft: number; anchorRight: number; anchorY: number; id: string } | null>(null);
   const idPopupCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [idMenu, setIdMenu] = useState<{ x: number; y: number; id: string } | null>(null);
   const [beMenu, setBeMenu] = useState<{ x: number; y: number; beNumber: string } | null>(null);
@@ -3182,6 +3183,7 @@ export default function App() {
     setResponsesFontSize(12);
     setPopupFontSize(12);
     setPopupMaxWidth(520);
+    setPopupMaxHeight(360);
     setStatus("layout reset");
   };
 
@@ -3385,6 +3387,7 @@ export default function App() {
           subtitleIdFontFamily?: string;
           popupFontSize?: number;
           popupMaxWidth?: number;
+          popupMaxHeight?: number;
           composePanelPx?: number;
         };
         if (typeof parsed.boardPaneVisible === "boolean") setBoardPaneVisible(parsed.boardPaneVisible);
@@ -3446,7 +3449,8 @@ export default function App() {
         if (typeof parsed.subtitleIdFontSize === "number") setSubtitleIdFontSize(parsed.subtitleIdFontSize);
         if (typeof parsed.subtitleIdFontFamily === "string") { setSubtitleIdFontFamily(parsed.subtitleIdFontFamily); setSubtitleIdFontPickerInput(parsed.subtitleIdFontFamily); }
         if (typeof parsed.popupFontSize === "number") setPopupFontSize(parsed.popupFontSize);
-        if (typeof parsed.popupMaxWidth === "number") setPopupMaxWidth(clamp(parsed.popupMaxWidth, 300, 1200));
+        if (typeof parsed.popupMaxWidth === "number") setPopupMaxWidth(clamp(parsed.popupMaxWidth, 300, 2400));
+        if (typeof parsed.popupMaxHeight === "number") setPopupMaxHeight(clamp(parsed.popupMaxHeight, 200, 1800));
         if (typeof parsed.composePanelPx === "number") setComposePanelPx(clamp(parsed.composePanelPx, MIN_COMPOSE_PANEL_PX, MAX_COMPOSE_PANEL_PX));
       } catch { /* ignore */ }
     };
@@ -4033,12 +4037,13 @@ export default function App() {
       subtitleIdFontFamily,
       popupFontSize,
       popupMaxWidth,
+      popupMaxHeight,
       composePanelPx,
     });
     if (isTauriRuntime()) {
       void invoke("save_layout_prefs", { prefs: payload }).catch(() => {});
     }
-  }, [boardPaneVisible, boardPanePx, threadPanePx, responseTopRatio, boardsFontSize, threadsFontSize, responsesFontSize, responsesHeaderFontSize, darkMode, fontFamily, fontBold, threadColWidths, showBoardButtons, keepSortOnRefresh, composeSubmitKey, typingConfettiEnabled, imageSizeLimit, showImagePreview, hoverPreviewEnabled, selectedBoard, hoverPreviewDelay, thumbSize, restoreSession, autoRefreshInterval, autoScrollEnabled, newArrivalPaneOpen, newArrivalPaneHeight, newArrivalFontSize, resIdFontSize, resIdFontFamily, newArrivalIdFontSize, newArrivalIdFontFamily, subtitleIdFontSize, subtitleIdFontFamily, popupFontSize, popupMaxWidth, composePanelPx]);
+  }, [boardPaneVisible, boardPanePx, threadPanePx, responseTopRatio, boardsFontSize, threadsFontSize, responsesFontSize, responsesHeaderFontSize, darkMode, fontFamily, fontBold, threadColWidths, showBoardButtons, keepSortOnRefresh, composeSubmitKey, typingConfettiEnabled, imageSizeLimit, showImagePreview, hoverPreviewEnabled, selectedBoard, hoverPreviewDelay, thumbSize, restoreSession, autoRefreshInterval, autoScrollEnabled, newArrivalPaneOpen, newArrivalPaneHeight, newArrivalFontSize, resIdFontSize, resIdFontFamily, newArrivalIdFontSize, newArrivalIdFontFamily, subtitleIdFontSize, subtitleIdFontFamily, popupFontSize, popupMaxWidth, popupMaxHeight, composePanelPx]);
 
 
 
@@ -5344,8 +5349,7 @@ export default function App() {
                               onMouseEnter={(e) => {
                                 if (idPopupCloseTimer.current) { clearTimeout(idPopupCloseTimer.current); idPopupCloseTimer.current = null; }
                                 const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                                const right = Math.max(8, window.innerWidth - rect.right);
-                                setIdPopup({ right, y: rect.bottom + 2, anchorTop: rect.top, id });
+                                setIdPopup({ anchorLeft: rect.left, anchorRight: rect.right, anchorY: rect.top, id });
                               }}
                               onMouseLeave={() => {
                                 idPopupCloseTimer.current = setTimeout(() => setIdPopup(null), 150);
@@ -5989,7 +5993,7 @@ export default function App() {
         return (
           <div
             className="anchor-popup"
-            style={{ ...posStyle, '--fs-delta': `${popupFontSize - 12}px` } as unknown as React.CSSProperties}
+            style={{ ...posStyle, '--fs-delta': `${popupFontSize - 12}px`, '--popup-max-height': `${popupMaxHeight}px` } as unknown as React.CSSProperties}
             onMouseEnter={() => {
               if (anchorPopupCloseTimer.current) {
                 clearTimeout(anchorPopupCloseTimer.current);
@@ -6043,7 +6047,7 @@ export default function App() {
         return (
           <div
             className="anchor-popup back-ref-popup"
-            style={{ left: backRefPopup.x, bottom: window.innerHeight - backRefPopup.y, '--fs-delta': `${popupFontSize - 12}px` } as React.CSSProperties}
+            style={{ left: backRefPopup.x, bottom: window.innerHeight - backRefPopup.y, '--fs-delta': `${popupFontSize - 12}px`, '--popup-max-height': `${popupMaxHeight}px` } as React.CSSProperties}
             onMouseLeave={(ev) => {
               const next = ev.relatedTarget as HTMLElement | null;
               if (next?.closest(".anchor-popup")) return;
@@ -6098,7 +6102,7 @@ export default function App() {
           <div
             key={`${np.responseIds[0]}-${i}`}
             className="anchor-popup nested-popup"
-            style={{ ...nPosStyle, '--fs-delta': `${popupFontSize - 12}px` } as unknown as React.CSSProperties}
+            style={{ ...nPosStyle, '--fs-delta': `${popupFontSize - 12}px`, '--popup-max-height': `${popupMaxHeight}px` } as unknown as React.CSSProperties}
             onMouseEnter={() => {
               if (anchorPopupCloseTimer.current) {
                 clearTimeout(anchorPopupCloseTimer.current);
@@ -6154,16 +6158,24 @@ export default function App() {
       })}
       {idPopup && (() => {
         const idResponses = responseItems.filter((r) => extractId(r.time) === idPopup.id);
-        const idMaxH = 360;
-        const idSpaceBelow = window.innerHeight - idPopup.y;
-        const idFlipUp = idSpaceBelow < idMaxH && idPopup.anchorTop > idSpaceBelow;
-        const idPosStyle = idFlipUp
-          ? { right: idPopup.right, bottom: window.innerHeight - idPopup.anchorTop + 2 }
-          : { right: idPopup.right, top: idPopup.y };
+        const GAP = 6;
+        const spaceRight = window.innerWidth - idPopup.anchorRight - GAP;
+        const hDir = spaceRight >= 200 ? "right" : "left";
+        const hStyle = hDir === "right"
+          ? { left: idPopup.anchorRight + GAP }
+          : { right: window.innerWidth - idPopup.anchorLeft + GAP };
+        // 推定高さでtop:0（大）かカーソル近く（小）かを切り替え
+        const estimatedItemH = Math.round(popupFontSize * 2.5 + 16);
+        const estimatedH = Math.min(32 + idResponses.length * estimatedItemH, popupMaxHeight);
+        const useLargeAnchor = estimatedH > window.innerHeight * 0.5;
+        const nearTop = useLargeAnchor
+          ? 0
+          : clamp(idPopup.anchorY - 4, 4, Math.max(4, window.innerHeight - estimatedH - 4));
+        const idPosStyle = { ...hStyle, top: nearTop };
         return (
           <div
             className="id-popup"
-            style={{ ...idPosStyle, '--fs-delta': `${popupFontSize - 12}px`, '--popup-max-width': `${popupMaxWidth}px` } as unknown as React.CSSProperties}
+            style={{ ...idPosStyle, '--fs-delta': `${popupFontSize - 12}px`, '--popup-max-width': `${popupMaxWidth}px`, '--popup-max-height': `${popupMaxHeight}px` } as unknown as React.CSSProperties}
             onMouseEnter={() => { if (idPopupCloseTimer.current) { clearTimeout(idPopupCloseTimer.current); idPopupCloseTimer.current = null; } }}
             onMouseLeave={(ev) => {
               const next = ev.relatedTarget as HTMLElement | null;
@@ -6356,8 +6368,12 @@ export default function App() {
                   <input type="number" value={popupFontSize} min={8} max={40} onChange={(e) => setPopupFontSize(Number(e.target.value))} />
                 </label>
                 <label className="settings-row">
-                  <span>最大幅 (IDポップアップ) px</span>
-                  <input type="number" value={popupMaxWidth} min={300} max={1200} step={20} onChange={(e) => setPopupMaxWidth(Number(e.target.value))} />
+                  <span>最大幅 (ポップアップ) px</span>
+                  <input type="number" value={popupMaxWidth} min={300} max={2400} step={20} onChange={(e) => setPopupMaxWidth(Number(e.target.value))} />
+                </label>
+                <label className="settings-row">
+                  <span>最大高さ (ポップアップ) px</span>
+                  <input type="number" value={popupMaxHeight} min={200} max={1800} step={20} onChange={(e) => setPopupMaxHeight(Number(e.target.value))} />
                 </label>
                 <label className="settings-row">
                   <span>レスID 文字サイズ補正 (0=同じ、±px)</span>

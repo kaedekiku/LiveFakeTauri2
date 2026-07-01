@@ -1208,7 +1208,7 @@ li.fav-drag-over {
   width: fit-content;
   min-width: 320px;
   max-width: min(820px, calc(100vw - 24px));
-  max-height: 300px;
+  max-height: min(var(--popup-max-height, 300px), calc(100vh - 32px));
   overflow-y: auto;
   border: 1px solid #a0a0a0;
   background: #ffffff;
@@ -1218,7 +1218,7 @@ li.fav-drag-over {
 }
 .back-ref-popup {
   pointer-events: auto;
-  max-height: 360px;
+  max-height: min(var(--popup-max-height, 360px), calc(100vh - 32px));
   min-width: 480px;
   max-width: 680px;
 }
@@ -1282,7 +1282,7 @@ li.fav-drag-over {
   z-index: 59;
   width: fit-content;
   max-width: min(var(--popup-max-width, 520px), calc(100vw - 16px));
-  max-height: 360px;
+  max-height: min(var(--popup-max-height, 360px), calc(100vh - 32px));
   overflow-y: auto;
   background: #ffffff;
   border: 1px solid #a0a0a0;
