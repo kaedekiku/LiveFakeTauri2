@@ -13,7 +13,6 @@ LiveFakeプロジェクトの概要統計を収集して表示する。
    - `apps/desktop/src-tauri/src/lib.rs`
    - `crates/core-fetch/src/lib.rs`
    - `crates/core-parse/src/lib.rs`
-   - `crates/core-auth/src/lib.rs`
    - `crates/core-store/src/lib.rs`
 
 2. **Rustワークスペース構成** — `Cargo.toml` の `[workspace] members` を表示  

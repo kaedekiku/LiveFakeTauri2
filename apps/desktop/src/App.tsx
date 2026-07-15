@@ -14,37 +14,11 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   ClipboardList, RefreshCw, Pencil, FilePenLine, Save,
   Star, X, ChevronLeft, ChevronRight, ChevronDown, Ban,
-  Image, Film, ExternalLink, Upload, History, Copy, Trash2,
+  Image, Film, ExternalLink,
   Subtitles, Volume2, ChevronUp, Search, PanelLeftClose, PanelLeftOpen,
 } from "lucide-react";
 
 type MenuInfo = { topLevelKeys: number; normalizedSample: string };
-type PostCookieReport = { targetUrl: string; cookieNames: string[] };
-type PostFormTokens = {
-  threadUrl: string;
-  postUrl: string;
-  bbs: string;
-  key: string;
-  time: string;
-  oekakiThread1: string | null;
-  hasMessageTextarea: boolean;
-};
-type PostConfirmResult = {
-  postUrl: string;
-  status: number;
-  contentType: string | null;
-  containsConfirm: boolean;
-  containsError: boolean;
-  bodyPreview: string;
-};
-type PostFinalizePreview = { actionUrl: string; fieldNames: string[]; fieldCount: number };
-type PostSubmitResult = {
-  actionUrl: string;
-  status: number;
-  contentType: string | null;
-  containsError: boolean;
-  bodyPreview: string;
-};
 type UpdateCheckResult = {
   metadataUrl: string;
   currentVersion: string;
@@ -56,15 +30,6 @@ type UpdateCheckResult = {
   currentPlatformAsset:
     | { key: string; sha256: string; size: number; filename: string }
     | null;
-};
-type PostFlowTrace = {
-  threadUrl: string;
-  allowRealSubmit: boolean;
-  tokenSummary: string | null;
-  confirmSummary: string | null;
-  finalizeSummary: string | null;
-  submitSummary: string | null;
-  blocked: boolean;
 };
 type ThreadListItem = {
   threadKey: string;
@@ -207,6 +172,9 @@ const escapeHtml = (s: string) =>
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+// ReDoS mitigation: user-supplied regex patterns (NG filters, URL replace rules)
+// are rejected beyond this length
+const MAX_USER_REGEX_LEN = 512;
 const highlightHtmlPreservingTags = (html: string, query: string) => {
   const q = query.trim();
   if (!q) return html;
@@ -396,6 +364,7 @@ type UrlReplaceRuleOpts = { pattern: string; replacement: string; referer?: stri
 
 const applyUrlRules = (url: string, rules: UrlReplaceRuleOpts[]): string => {
   for (const rule of rules) {
+    if (rule.pattern.length > MAX_USER_REGEX_LEN) continue;
     try {
       const re = new RegExp(rule.pattern);
       if (re.test(url)) return url.replace(re, rule.replacement);
@@ -543,14 +512,9 @@ const extractBeNumber = (...sources: string[]): string | null => {
 
 export default function App() {
   const [status, setStatus] = useState("not fetched");
-  const [postCookieProbe, setPostCookieProbe] = useState("not run");
   const [threadUrl, setThreadUrl] = useState("https://mao.5ch.io/test/read.cgi/ngt/9240230711/");
   const [locationInput, setLocationInput] = useState("https://mao.5ch.io/test/read.cgi/ngt/9240230711/");
-  const [postFormProbe, setPostFormProbe] = useState("not run");
-  const [postConfirmProbe, setPostConfirmProbe] = useState("not run");
-  const [postFinalizePreviewProbe, setPostFinalizePreviewProbe] = useState("not run");
-  const [postFinalizeSubmitProbe, setPostFinalizeSubmitProbe] = useState("not run");
-  const [allowRealSubmit, setAllowRealSubmit] = useState(false);
+  const [diagnosticsEnabled, setDiagnosticsEnabled] = useState(false);
   const [metadataUrl, setMetadataUrl] = useState("https://raw.githubusercontent.com/kaedekiku/LiveFakeTauri2/main/apps/landing/public/latest.json");
   const [currentVersion, setCurrentVersion] = useState(typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "0.0.0");
   const [updateResult, setUpdateResult] = useState<UpdateCheckResult | null>(null);
@@ -580,7 +544,6 @@ export default function App() {
   const [postHistoryOpen, setPostHistoryOpen] = useState(false);
   const [myPosts, setMyPosts] = useState<Record<string, number[]>>({});
   const pendingMyPostRef = useRef<{ threadUrl: string; body: string; prevCount: number } | null>(null);
-  const [postFlowTraceProbe, setPostFlowTraceProbe] = useState("not run");
   const [threadListProbe, setThreadListProbe] = useState("not run");
   const [responseListProbe, setResponseListProbe] = useState("not run");
   const [fetchedThreads, setFetchedThreads] = useState<ThreadListItem[]>([]);
@@ -846,6 +809,9 @@ export default function App() {
   const boardTabBarRef = useRef<HTMLDivElement | null>(null);
   const threadListScrollRef = useRef<HTMLDivElement | null>(null);
   const suppressThreadScrollRef = useRef(false);
+  // Set before setSelectedResponse on tab-switch/restore paths so the
+  // selection-scroll effect doesn't fight scrollToBottom/scrollToResponseNo.
+  const suppressResponseSelScrollRef = useRef(false);
   const [lastFetchTime, setLastFetchTime] = useState<string | null>(null);
   const [newResponseStart, setNewResponseStart] = useState<number | null>(null);
   const [newArrivalPaneOpen, setNewArrivalPaneOpen] = useState(true);
@@ -873,13 +839,6 @@ export default function App() {
   const lastTypingConfettiTsRef = useRef(0);
   const [searchHistoryDropdown, setSearchHistoryDropdown] = useState<{ type: "thread" | "response" } | null>(null);
   const [searchHistoryMenu, setSearchHistoryMenu] = useState<{ x: number; y: number; type: "thread" | "response"; word: string } | null>(null);
-  // Image upload state
-  const [uploadPanelOpen, setUploadPanelOpen] = useState(false);
-  const [uploadPanelTab, setUploadPanelTab] = useState<"upload" | "history">("upload");
-  const [uploadingFiles, setUploadingFiles] = useState<string[]>([]);
-  const [uploadResults, setUploadResults] = useState<{ fileName: string; sourceUrl?: string; thumbnail?: string; error?: string }[]>([]);
-  const [uploadHistory, setUploadHistory] = useState<{ sourceUrl: string; thumbnail: string; pageUrl: string; fileName: string; uploadedAt: string }[]>([]);
-  const uploadFileRef = useRef<HTMLInputElement | null>(null);
 
   // Detect own post after re-fetch
   useEffect(() => {
@@ -1226,6 +1185,7 @@ export default function App() {
 
   const ngMatch = (pattern: string, target: string): boolean => {
     if (pattern.startsWith("/") && pattern.endsWith("/") && pattern.length > 2) {
+      if (pattern.length > MAX_USER_REGEX_LEN) return false;
       try {
         return new RegExp(pattern.slice(1, -1), "i").test(target);
       } catch {
@@ -1312,53 +1272,80 @@ export default function App() {
     return c.scrollHeight - c.scrollTop - c.clientHeight < 50;
   };
 
+  // Capture the active tab's live scroll state into tabCacheRef.
+  // The DOM reads are skipped when the responses pane is unmounted
+  // (thread-list view) — reading then would overwrite the last good
+  // capture with false/0.
+  const saveActiveTabScrollState = () => {
+    if (activeTabIndex < 0 || activeTabIndex >= threadTabs.length) return;
+    const curUrl = threadTabs[activeTabIndex].threadUrl;
+    const cached = tabCacheRef.current.get(curUrl);
+    if (!cached) return;
+    cached.selectedResponse = selectedResponse;
+    if (responseScrollRef.current) {
+      cached.scrollAtBottom = isScrollAtBottom();
+      cached.scrollResponseNo = getVisibleResponseNo();
+      saveScrollPos(curUrl);
+    }
+  };
+
   const scrollToBottom = () => {
-    const c = responseScrollRef.current;
-    if (!c) return;
-
-    let active = true;
-    let prevScrollHeight = c.scrollHeight;
-    // Shared with tryScroll so it stays in sync before the async scroll event fires.
-    let lastProgrammaticScrollTop = c.scrollTop;
-
-    const tryScroll = (attempts: number) => {
-      const el = responseScrollRef.current;
-      if (!el) return;
-      el.scrollTop = el.scrollHeight;
-      lastProgrammaticScrollTop = el.scrollTop; // update synchronously before scroll event fires
-      if (el.scrollHeight - el.scrollTop - el.clientHeight > 8 && attempts < 10) {
-        requestAnimationFrame(() => tryScroll(attempts + 1));
+    // Phase 0: the responses pane may not be mounted yet (e.g. switching from
+    // the thread-list view unmounts it) — wait for the container to appear.
+    let mountAttempts = 0;
+    const start = () => {
+      const c = responseScrollRef.current;
+      if (!c) {
+        if (mountAttempts < 10) {
+          mountAttempts++;
+          requestAnimationFrame(start);
+        }
+        return;
       }
-    };
 
-    const onScroll = () => {
-      if (!active) return;
-      if (Math.abs(c.scrollTop - lastProgrammaticScrollTop) > 80) {
+      let active = true;
+      let prevScrollHeight = c.scrollHeight;
+
+      const tryScroll = (attempts: number) => {
+        if (!active) return;
+        const el = responseScrollRef.current;
+        if (!el) return;
+        el.scrollTop = el.scrollHeight;
+        if (el.scrollHeight - el.scrollTop - el.clientHeight > 8 && attempts < 10) {
+          requestAnimationFrame(() => tryScroll(attempts + 1));
+        }
+      };
+
+      // Cancel only on real user input. Programmatic scrolls and the browser
+      // clamping scrollTop when tab content is swapped never fire these events,
+      // so content swaps can't be mistaken for a user scroll.
+      const onUserInput = () => cleanup();
+
+      // Poll for scrollHeight changes from images loading after the initial scroll.
+      // rAF retries finish in ~160ms but network images expand scrollHeight over seconds.
+      const pollInterval = setInterval(() => {
+        if (!active) { clearInterval(pollInterval); return; }
+        if (c.scrollHeight !== prevScrollHeight) {
+          prevScrollHeight = c.scrollHeight;
+          c.scrollTop = c.scrollHeight;
+        }
+      }, 150);
+
+      const cleanup = () => {
         active = false;
-        cleanup();
-      }
+        clearInterval(pollInterval);
+        c.removeEventListener("wheel", onUserInput);
+        c.removeEventListener("mousedown", onUserInput);
+        c.removeEventListener("touchstart", onUserInput);
+      };
+
+      c.addEventListener("wheel", onUserInput, { passive: true });
+      c.addEventListener("mousedown", onUserInput, { passive: true });
+      c.addEventListener("touchstart", onUserInput, { passive: true });
+      setTimeout(cleanup, 5000);
+      requestAnimationFrame(() => tryScroll(0));
     };
-
-    // Poll for scrollHeight changes from images loading after the initial scroll.
-    // rAF retries finish in ~160ms but network images expand scrollHeight over seconds.
-    const pollInterval = setInterval(() => {
-      if (!active) { clearInterval(pollInterval); return; }
-      if (c.scrollHeight !== prevScrollHeight) {
-        prevScrollHeight = c.scrollHeight;
-        c.scrollTop = c.scrollHeight;
-        lastProgrammaticScrollTop = c.scrollTop;
-      }
-    }, 150);
-
-    const cleanup = () => {
-      active = false;
-      clearInterval(pollInterval);
-      c.removeEventListener("scroll", onScroll);
-    };
-
-    c.addEventListener("scroll", onScroll, { passive: true });
-    setTimeout(cleanup, 5000);
-    requestAnimationFrame(() => tryScroll(0));
+    start();
   };
 
   const scrollToResponseNo = (no: number) => {
@@ -1375,7 +1362,6 @@ export default function App() {
         // ResizeObserver watches clientHeight (layout box) — doesn't fire when scrollHeight grows.
         // Poll scrollHeight instead, which reliably detects image-load-driven content expansion.
         let active = true;
-        let lastProgrammaticScrollTop = container.scrollTop;
         let prevScrollHeight = container.scrollHeight;
         let correctionTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -1385,17 +1371,15 @@ export default function App() {
           const cRect = container.getBoundingClientRect();
           if (Math.abs(elRect.top - cRect.top) > 20) {
             el.scrollIntoView({ block: "start", behavior: "instant" });
-            lastProgrammaticScrollTop = container.scrollTop; // update AFTER scroll
           }
         };
 
-        const onScroll = () => {
-          if (Math.abs(container.scrollTop - lastProgrammaticScrollTop) > 80) {
-            active = false;
-            cleanup();
-          }
-        };
-        container.addEventListener("scroll", onScroll, { passive: true });
+        // Cancel only on real user input — programmatic scrolls and scrollTop
+        // clamping from content swaps never fire these events.
+        const onUserInput = () => cleanup();
+        container.addEventListener("wheel", onUserInput, { passive: true });
+        container.addEventListener("mousedown", onUserInput, { passive: true });
+        container.addEventListener("touchstart", onUserInput, { passive: true });
 
         const pollInterval = setInterval(() => {
           if (!active) { clearInterval(pollInterval); return; }
@@ -1410,7 +1394,9 @@ export default function App() {
           active = false;
           clearInterval(pollInterval);
           if (correctionTimer) clearTimeout(correctionTimer);
-          container.removeEventListener("scroll", onScroll);
+          container.removeEventListener("wheel", onUserInput);
+          container.removeEventListener("mousedown", onUserInput);
+          container.removeEventListener("touchstart", onUserInput);
         };
         setTimeout(cleanup, 4000);
       } else if (attempts < 10) {
@@ -1446,13 +1432,8 @@ export default function App() {
       if (activeTabIndex >= 0 && activeTabIndex < threadTabs.length) {
         const curUrl = threadTabs[activeTabIndex].threadUrl;
         const cached = tabCacheRef.current.get(curUrl);
-        if (cached) {
-          cached.selectedResponse = selectedResponse;
-          cached.scrollAtBottom = isScrollAtBottom();
-          cached.scrollResponseNo = getVisibleResponseNo();
-          cached.newResponseStart = newResponseStart;
-          saveScrollPos(curUrl);
-        }
+        if (cached) cached.newResponseStart = newResponseStart;
+        saveActiveTabScrollState();
         saveBookmark(curUrl, selectedResponse);
       }
       setActiveTabIndex(existingIndex);
@@ -1460,7 +1441,9 @@ export default function App() {
       if (cached && cached.responses.length > 0) {
         setFetchedResponses(cached.responses);
         const bm = loadBookmark(url);
-        setSelectedResponse(bm ?? cached.selectedResponse);
+        const nextSel = bm ?? cached.selectedResponse;
+        if (nextSel !== selectedResponse) suppressResponseSelScrollRef.current = true;
+        setSelectedResponse(nextSel);
         setNewResponseStart(cached.newResponseStart ?? null);
         if (cached.scrollAtBottom) scrollToBottom();
         else scrollToResponseNo(cached.scrollResponseNo ?? loadScrollPos(url));
@@ -1474,7 +1457,10 @@ export default function App() {
                 const savedNo = loadScrollPos(url);
                 const restoreNo = bm ?? (savedNo > 1 ? savedNo : 1);
                 setFetchedResponses(rows);
-                setSelectedResponse(restoreNo);
+                setSelectedResponse((prev) => {
+                  if (restoreNo > 1 && restoreNo !== prev) suppressResponseSelScrollRef.current = true;
+                  return restoreNo;
+                });
                 tabCacheRef.current.set(url, { responses: rows, selectedResponse: restoreNo });
                 if (restoreNo > 1) scrollToResponseNo(restoreNo);
               }
@@ -1489,13 +1475,8 @@ export default function App() {
     if (activeTabIndex >= 0 && activeTabIndex < threadTabs.length) {
       const curUrl = threadTabs[activeTabIndex].threadUrl;
       const cached = tabCacheRef.current.get(curUrl);
-      if (cached) {
-        cached.selectedResponse = selectedResponse;
-        cached.scrollAtBottom = isScrollAtBottom();
-        cached.scrollResponseNo = getVisibleResponseNo();
-        cached.newResponseStart = newResponseStart;
-        saveScrollPos(curUrl);
-      }
+      if (cached) cached.newResponseStart = newResponseStart;
+      saveActiveTabScrollState();
       saveBookmark(curUrl, selectedResponse);
     }
     if (threadTabs.length >= maxOpenTabsRef.current) {
@@ -1566,6 +1547,7 @@ export default function App() {
     const cached = tabCacheRef.current.get(tab.threadUrl);
     if (cached) {
       setFetchedResponses(cached.responses);
+      if (cached.selectedResponse !== selectedResponse) suppressResponseSelScrollRef.current = true;
       setSelectedResponse(cached.selectedResponse);
       if (cached.scrollAtBottom) scrollToBottom();
       else scrollToResponseNo(cached.scrollResponseNo ?? 0);
@@ -1575,24 +1557,32 @@ export default function App() {
   };
 
   const onTabClick = (index: number) => {
+    const paneWasUnmounted = activePaneView === "threads";
     setActivePaneView("responses");
-    if (index === activeTabIndex) return;
-    if (activeTabIndex >= 0 && activeTabIndex < threadTabs.length) {
-      const curUrl = threadTabs[activeTabIndex].threadUrl;
-      const cached = tabCacheRef.current.get(curUrl);
-      if (cached) {
-        cached.selectedResponse = selectedResponse;
-        cached.scrollAtBottom = isScrollAtBottom();
-        cached.scrollResponseNo = getVisibleResponseNo();
-        saveScrollPos(curUrl);
+    if (index === activeTabIndex) {
+      // Same tab, but coming back from the thread-list view: the responses
+      // pane is remounting at scrollTop=0 and no tab switch will restore it.
+      if (paneWasUnmounted && index >= 0 && index < threadTabs.length) {
+        const tab = threadTabs[index];
+        const cached = tabCacheRef.current.get(tab.threadUrl);
+        if (cached) {
+          if (cached.scrollAtBottom) scrollToBottom();
+          else scrollToResponseNo(cached.scrollResponseNo ?? loadScrollPos(tab.threadUrl));
+        } else {
+          const savedNo = loadScrollPos(tab.threadUrl);
+          if (savedNo > 1) scrollToResponseNo(savedNo);
+        }
       }
+      return;
     }
+    saveActiveTabScrollState();
     setActiveTabIndex(index);
     const tab = threadTabs[index];
     setLastFetchTime(threadFetchTimesRef.current[tab.threadUrl] ?? null);
     const cached = tabCacheRef.current.get(tab.threadUrl);
     if (cached) {
       setFetchedResponses(cached.responses);
+      if (cached.selectedResponse !== selectedResponse) suppressResponseSelScrollRef.current = true;
       setSelectedResponse(cached.selectedResponse);
       if (cached.scrollAtBottom) scrollToBottom();
       else scrollToResponseNo(cached.scrollResponseNo ?? 0);
@@ -1659,30 +1649,6 @@ export default function App() {
   };
 
 
-  const probePostCookieScope = async () => {
-    setPostCookieProbe("running...");
-    try {
-      const r = await invoke<PostCookieReport>("probe_post_cookie_scope_simulation");
-      setPostCookieProbe(`${r.targetUrl} -> ${r.cookieNames.join(",") || "(none)"}`);
-    } catch (error) {
-      setPostCookieProbe(`error: ${String(error)}`);
-    }
-  };
-
-  const probeThreadPostForm = async () => {
-    setPostFormProbe("running...");
-    try {
-      const r = await invoke<PostFormTokens>("probe_thread_post_form", { threadUrl });
-      setPostFormProbe(
-        `postUrl=${r.postUrl} bbs=${r.bbs} key=${r.key} time=${r.time} oekaki=${r.oekakiThread1 ?? "-"} MESSAGE=${
-          r.hasMessageTextarea
-        }`
-      );
-    } catch (error) {
-      setPostFormProbe(`error: ${String(error)}`);
-    }
-  };
-
   const paneFontSize = (pane: PaneName): [number, React.Dispatch<React.SetStateAction<number>>] => {
     switch (pane) {
       case "boards": return [boardsFontSize, setBoardsFontSize];
@@ -1700,6 +1666,9 @@ export default function App() {
   };
 
   const fetchThreadListFromCurrent = async (targetThreadUrl?: string) => {
+    // Switching to the thread-list view unmounts the responses pane —
+    // capture the active tab's scroll state before it's destroyed.
+    saveActiveTabScrollState();
     setShowFavoritesOnly(false);
     const url = (targetThreadUrl ?? threadUrl).trim();
     if (!url) return;
@@ -1945,7 +1914,11 @@ export default function App() {
         setFetchedResponses(rows);
         const savedNo = loadScrollPos(url);
         const bm = loadBookmark(url);
-        setSelectedResponse(bm ?? (rows.length > 0 ? rows[0].responseNo : 1));
+        const nextSel = bm ?? (rows.length > 0 ? rows[0].responseNo : 1);
+        setSelectedResponse((prev) => {
+          if (savedNo > 1 && nextSel !== prev) suppressResponseSelScrollRef.current = true;
+          return nextSel;
+        });
         if (savedNo > 1) {
           scrollToResponseNo(savedNo);
         }
@@ -2040,75 +2013,6 @@ export default function App() {
     }
   };
 
-  const probePostConfirmEmpty = async () => {
-    setPostConfirmProbe("running...");
-    try {
-      const r = await invoke<PostConfirmResult>("probe_post_confirm_empty", { threadUrl });
-      setPostConfirmProbe(
-        `status=${r.status} type=${r.contentType ?? "-"} confirm=${r.containsConfirm} error=${r.containsError} preview=${r.bodyPreview}`
-      );
-    } catch (error) {
-      setPostConfirmProbe(`error: ${String(error)}`);
-    }
-  };
-
-  const probePostConfirmFromCompose = async () => {
-    setPostConfirmProbe("running...");
-    try {
-      const r = await invoke<PostConfirmResult>("probe_post_confirm", {
-        threadUrl,
-        from: composeName || null,
-        mail: composeMailValue || null,
-        message: composeBody || null,
-      });
-      setPostConfirmProbe(
-        `status=${r.status} type=${r.contentType ?? "-"} confirm=${r.containsConfirm} error=${r.containsError} preview=${r.bodyPreview}`
-      );
-    } catch (error) {
-      setPostConfirmProbe(`error: ${String(error)}`);
-    }
-  };
-
-  const probePostFinalizePreview = async () => {
-    setPostFinalizePreviewProbe("running...");
-    try {
-      const r = await invoke<PostFinalizePreview>("probe_post_finalize_preview", { threadUrl });
-      setPostFinalizePreviewProbe(`action=${r.actionUrl} fields=${r.fieldCount} names=${r.fieldNames.join(",")}`);
-    } catch (error) {
-      setPostFinalizePreviewProbe(`error: ${String(error)}`);
-    }
-  };
-
-  const probePostFinalizePreviewFromCompose = async () => {
-    setPostFinalizePreviewProbe("running...");
-    try {
-      const r = await invoke<PostFinalizePreview>("probe_post_finalize_preview_from_input", {
-        threadUrl,
-        from: composeName || null,
-        mail: composeMailValue || null,
-        message: composeBody || null,
-      });
-      setPostFinalizePreviewProbe(`action=${r.actionUrl} fields=${r.fieldCount} names=${r.fieldNames.join(",")}`);
-    } catch (error) {
-      setPostFinalizePreviewProbe(`error: ${String(error)}`);
-    }
-  };
-
-  const probePostFinalizeSubmitEmpty = async () => {
-    setPostFinalizeSubmitProbe("running...");
-    try {
-      const r = await invoke<PostSubmitResult>("probe_post_finalize_submit_empty", {
-        threadUrl,
-        allowRealSubmit,
-      });
-      setPostFinalizeSubmitProbe(
-        `status=${r.status} type=${r.contentType ?? "-"} error=${r.containsError} preview=${r.bodyPreview}`
-      );
-    } catch (error) {
-      setPostFinalizeSubmitProbe(`error: ${String(error)}`);
-    }
-  };
-
   const handleCreateThread = async () => {
     if (!composeSubject.trim()) { setComposeResult({ ok: false, message: "スレッドタイトルを入力してください" }); return; }
     if (!composeBody.trim()) { setComposeResult({ ok: false, message: "本文を入力してください" }); return; }
@@ -2138,86 +2042,6 @@ export default function App() {
     }
   };
 
-  const probePostFinalizeSubmitFromCompose = async () => {
-    setPostFinalizeSubmitProbe("running...");
-    setComposeResult(null);
-    try {
-      const r = await invoke<PostSubmitResult>("probe_post_finalize_submit_from_input", {
-        threadUrl,
-        from: composeName || null,
-        mail: composeMailValue || null,
-        message: composeBody || null,
-        allowRealSubmit,
-      });
-      setPostFinalizeSubmitProbe(
-        `status=${r.status} type=${r.contentType ?? "-"} error=${r.containsError} preview=${r.bodyPreview}`
-      );
-      const ok = !r.containsError;
-      const msg = ok ? `Post submitted (status ${r.status})` : `Post failed: ${r.bodyPreview}`;
-      setComposeResult({ ok, message: msg });
-      setPostHistory((prev) => [{ time: new Date().toLocaleTimeString(), threadUrl, body: composeBody.slice(0, 100), ok }, ...prev].slice(0, 50));
-      if (ok) {
-        const prevCount = tabCacheRef.current.get(threadUrl.trim())?.responses.length ?? 0;
-        pendingMyPostRef.current = { threadUrl: threadUrl.trim(), body: composeBody, prevCount };
-        void fetchResponsesFromCurrent();
-        void refreshThreadListSilently();
-      }
-    } catch (error) {
-      setPostFinalizeSubmitProbe(`error: ${String(error)}`);
-      setComposeResult({ ok: false, message: `Error: ${String(error)}` });
-      setPostHistory((prev) => [{ time: new Date().toLocaleTimeString(), threadUrl, body: composeBody.slice(0, 100), ok: false }, ...prev].slice(0, 50));
-    }
-  };
-
-  const handleUploadFiles = async (files: FileList) => {
-    if (!isTauriRuntime()) return;
-    const fileArray = Array.from(files).slice(0, 4);
-    if (fileArray.length === 0) return;
-    setUploadResults([]);
-    setUploadingFiles(fileArray.map((f) => f.name));
-    const results: { fileName: string; sourceUrl?: string; thumbnail?: string; error?: string }[] = [];
-    const newHistoryEntries: typeof uploadHistory = [];
-    for (const file of fileArray) {
-      try {
-        const buf = await file.arrayBuffer();
-        const bytes = new Uint8Array(buf);
-        let binary = "";
-        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-        const fileData = btoa(binary);
-        const r = await invoke<{ success: boolean; sourceUrl: string; thumbnail: string; pageUrl: string }>("upload_image", { fileData, fileName: file.name });
-        results.push({ fileName: file.name, sourceUrl: r.sourceUrl, thumbnail: r.thumbnail });
-        newHistoryEntries.push({
-          sourceUrl: r.sourceUrl,
-          thumbnail: r.thumbnail,
-          pageUrl: r.pageUrl,
-          fileName: file.name,
-          uploadedAt: new Date().toISOString(),
-        });
-      } catch (e) {
-        results.push({ fileName: file.name, error: String(e) });
-      }
-    }
-    setUploadResults(results);
-    setUploadingFiles([]);
-    if (newHistoryEntries.length > 0) {
-      const updated = [...newHistoryEntries, ...uploadHistory].slice(0, 100);
-      setUploadHistory(updated);
-      invoke("save_upload_history", { history: { entries: updated } }).catch((e) => console.warn("save upload history:", e));
-    }
-  };
-
-  const insertUploadUrl = (url: string) => {
-    setComposeBody((prev) => prev ? prev + "\n" + url : url);
-  };
-
-  const deleteHistoryEntry = (index: number) => {
-    const updated = uploadHistory.filter((_, i) => i !== index);
-    setUploadHistory(updated);
-    if (isTauriRuntime()) {
-      invoke("save_upload_history", { history: { entries: updated } }).catch((e) => console.warn("save upload history:", e));
-    }
-  };
-
   const postSuccessCleanup = async (postedBody: string) => {
     setComposeBody("");
     if (composeName.trim()) {
@@ -2227,8 +2051,6 @@ export default function App() {
         return next;
       });
     }
-    setUploadPanelOpen(false);
-    setUploadResults([]);
     const prevCount = tabCacheRef.current.get(threadUrl.trim())?.responses.length ?? 0;
     pendingMyPostRef.current = { threadUrl: threadUrl.trim(), body: postedBody, prevCount };
     await fetchResponsesFromCurrent(threadUrl.trim());
@@ -2247,7 +2069,6 @@ export default function App() {
   const probePostFlowTraceFromCompose = async () => {
     if (composeSubmitting) return;
     setComposeSubmitting(true);
-    setPostFlowTraceProbe("running...");
     setComposeResult(null);
     // Always post to the currently active tab, not the URL bar state
     const postTargetUrl = threadTabs[activeTabIndex]?.threadUrl ?? threadUrl;
@@ -2258,13 +2079,11 @@ export default function App() {
         mail: composeMailValue || null,
         message: composeBody || "",
       });
-      setPostFlowTraceProbe(result);
       setComposeResult({ ok: true, message: `Post submitted: ${result}` });
       setPostHistory((prev) => [{ time: new Date().toLocaleTimeString(), threadUrl: postTargetUrl, body: composeBody.slice(0, 100), ok: true }, ...prev].slice(0, 50));
       await postSuccessCleanup(composeBody);
     } catch (error) {
       const msg = String(error);
-      setPostFlowTraceProbe(`error: ${msg}`);
       setComposeResult({ ok: false, message: `NG: ${msg}` });
       setPostHistory((prev) => [{ time: new Date().toLocaleTimeString(), threadUrl: postTargetUrl, body: composeBody.slice(0, 100), ok: false }, ...prev].slice(0, 50));
     } finally {
@@ -2652,7 +2471,7 @@ export default function App() {
         })
       : [
           { id: 1, name: "名無しさん", mail: "", nameWithoutWatchoi: "名無しさん", time: "2026/03/07 10:00", text: ">>1 投稿フロートレース準備完了", beNumber: null, watchoi: null },
-          { id: 2, name: "名無しさん", mail: "", nameWithoutWatchoi: "名無しさん", time: "2026/03/07 10:02", text: "BE/UPLIFT/どんぐりログイン確認済み", beNumber: null, watchoi: null },
+          { id: 2, name: "名無しさん", mail: "", nameWithoutWatchoi: "名無しさん", time: "2026/03/07 10:02", text: "ブラウザモードで表示中", beNumber: null, watchoi: null },
           { id: 3, name: "名無しさん", mail: "", nameWithoutWatchoi: "名無しさん", time: "2026/03/07 10:04", text: "次: subject/dat取得連携", beNumber: null, watchoi: null },
           { id: 4, name: "名無しさん", mail: "", nameWithoutWatchoi: "名無しさん", time: "2026/03/07 10:06", text: "参考 https://example.com/page を参照", beNumber: null, watchoi: null },
           { id: 5, name: "名無しさん", mail: "", nameWithoutWatchoi: "名無しさん", time: "2026/03/07 10:08", text: "テスト完了", beNumber: null, watchoi: null },
@@ -3628,10 +3447,6 @@ export default function App() {
         .catch(() => {});
     }
     if (isTauriRuntime()) {
-      // Load upload history
-      invoke<{ entries: { sourceUrl: string; thumbnail: string; pageUrl: string; fileName: string; uploadedAt: string }[] }>("load_upload_history").then((data) => {
-        setUploadHistory(data.entries);
-      }).catch((e) => console.warn("upload history load failed:", e));
       // Load proxy settings
       invoke<{ enabled: boolean; proxyType: string; host: string; port: string; username: string; password: string }>("load_proxy_settings").then((s) => {
         setProxyEnabled(s.enabled);
@@ -3911,6 +3726,30 @@ export default function App() {
     };
   }, []);
 
+  // Load user custom CSS (custom.css in the portable data dir) and inject it
+  // after built-in styles so user rules win at equal specificity.
+  const applyUserCss = async (): Promise<boolean> => {
+    if (!isTauriRuntime()) return false;
+    try {
+      const css = await invoke<string>("load_user_css");
+      let el = document.getElementById("user-custom-css") as HTMLStyleElement | null;
+      if (!el) {
+        el = document.createElement("style");
+        el.id = "user-custom-css";
+        document.head.appendChild(el);
+      }
+      el.textContent = css;
+      return true;
+    } catch (e) {
+      console.warn("user css load error:", e);
+      return false;
+    }
+  };
+
+  useEffect(() => {
+    void applyUserCss();
+  }, []);
+
   // Load app settings from settings.ini on startup
   useEffect(() => {
     if (!isTauriRuntime()) return;
@@ -3953,6 +3792,14 @@ export default function App() {
     invoke<TtsDictEntry[]>("load_tts_dict").then((entries) => {
       setTtsDictEntries(entries);
     }).catch(() => {});
+  }, []);
+
+  // Probe/diagnostic UI is only shown in dev builds (or LIVEFAKE_DIAG=1)
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    invoke<boolean>("diagnostics_enabled").then(setDiagnosticsEnabled).catch((e) => {
+      console.warn("diagnostics_enabled failed", e);
+    });
   }, []);
 
   // Save TTS dictionary when entries change
@@ -4090,6 +3937,10 @@ export default function App() {
   }, [selectedThread]);
 
   useEffect(() => {
+    if (suppressResponseSelScrollRef.current) {
+      suppressResponseSelScrollRef.current = false;
+      return;
+    }
     if (!responseScrollRef.current) return;
     const block = responseScrollRef.current.querySelector<HTMLDivElement>(".response-block.selected");
     block?.scrollIntoView({ block: "nearest", behavior: smoothScrollRef.current ? "smooth" : "instant" });
@@ -4187,6 +4038,7 @@ export default function App() {
           ]},
           { label: "設定", items: [
             { text: "設定を開く", action: () => setSettingsOpen(true) },
+            { text: "ユーザーCSSを再読み込み", action: () => { void applyUserCss().then((ok) => setStatus(ok ? "ユーザーCSS (custom.css) を再読み込みしました" : "ユーザーCSSの読み込みに失敗しました")); } },
           ]},
           { label: "ヘルプ", items: [
             { text: "バージョン情報", action: () => requestAnimationFrame(() => { setAboutOpen(true); void checkForUpdates(); }) },
@@ -5506,74 +5358,18 @@ export default function App() {
             )}
             <div className="compose-actions">
               <button onClick={composeNewThread ? handleCreateThread : probePostFlowTraceFromCompose} disabled={composeSubmitting}>{composeSubmitting ? "送信中..." : composeNewThread ? "スレッド作成" : `送信 (${composeSubmitKey === "shift" ? "Shift" : "Ctrl"}+Enter)`}</button>
-              <button onClick={() => setUploadPanelOpen((v) => { if (v) setUploadResults([]); return !v; })} title="画像アップロード" style={{ marginLeft: 4 }}><Upload size={14} /></button>
-              <button onClick={async () => {
-                setComposeResult({ ok: false, message: "診断中..." });
-                try {
-                  const r = await invoke<string>("debug_post_connectivity", { threadUrl });
-                  setComposeResult({ ok: true, message: r });
-                } catch (e) {
-                  setComposeResult({ ok: false, message: `診断エラー: ${String(e)}` });
-                }
-              }} style={{ marginLeft: "auto", fontSize: "0.85em" }}>接続診断</button>
+              {diagnosticsEnabled && (
+                <button onClick={async () => {
+                  setComposeResult({ ok: false, message: "診断中..." });
+                  try {
+                    const r = await invoke<string>("debug_post_connectivity", { threadUrl });
+                    setComposeResult({ ok: true, message: r });
+                  } catch (e) {
+                    setComposeResult({ ok: false, message: `診断エラー: ${String(e)}` });
+                  }
+                }} style={{ marginLeft: "auto", fontSize: "0.85em" }}>接続診断</button>
+              )}
             </div>
-            {uploadPanelOpen && (
-              <div className="upload-panel">
-                <div className="upload-panel-tabs">
-                  <button className={uploadPanelTab === "upload" ? "active" : ""} onClick={() => setUploadPanelTab("upload")}><Upload size={12} /> アップロード</button>
-                  <button className={uploadPanelTab === "history" ? "active" : ""} onClick={() => setUploadPanelTab("history")}><History size={12} /> 履歴 ({uploadHistory.length})</button>
-                </div>
-                {uploadPanelTab === "upload" && (
-                  <div className="upload-tab-content">
-                    <input ref={uploadFileRef} type="file" multiple accept="image/*,video/mp4,video/webm" style={{ display: "none" }} onChange={(e) => { if (e.target.files) handleUploadFiles(e.target.files); e.target.value = ""; }} />
-                    <button className="upload-select-btn" onClick={() => uploadFileRef.current?.click()} disabled={uploadingFiles.length > 0}>
-                      {uploadingFiles.length > 0 ? `アップロード中... (${uploadingFiles.length}件)` : "ファイルを選択 (最大4枚)"}
-                    </button>
-                    {uploadingFiles.length > 0 && (
-                      <div className="upload-progress">
-                        {uploadingFiles.map((f, i) => <div key={i} className="upload-progress-item">⏳ {f}</div>)}
-                      </div>
-                    )}
-                    {uploadResults.length > 0 && (
-                      <div className="upload-results">
-                        {uploadResults.map((r, i) => (
-                          <div key={i} className={`upload-result-item ${r.error ? "upload-err" : "upload-ok"}`}>
-                            {r.thumbnail && <img src={r.thumbnail} alt="" className="upload-result-thumb" />}
-                            <span className="upload-result-name">{r.fileName}</span>
-                            {r.sourceUrl ? (
-                              <span className="upload-result-actions">
-                                <button onClick={() => insertUploadUrl(r.sourceUrl!)} title="本文に挿入"><Copy size={12} /> 挿入</button>
-                                <span className="upload-result-link" onClick={() => { void invoke("open_external_url", { url: r.sourceUrl }).catch(() => window.open(r.sourceUrl, "_blank")); }} title="ブラウザで開く">{r.sourceUrl}</span>
-                              </span>
-                            ) : (
-                              <span className="upload-result-error">{r.error}</span>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-                {uploadPanelTab === "history" && (
-                  <div className="upload-tab-content upload-history-list">
-                    {uploadHistory.length === 0 && <div className="upload-empty">アップロード履歴はありません</div>}
-                    {uploadHistory.map((entry, i) => (
-                      <div key={i} className="upload-history-item">
-                        {entry.thumbnail && <img src={entry.thumbnail} alt="" className="upload-history-thumb" loading="lazy" />}
-                        <div className="upload-history-info">
-                          <span className="upload-history-name">{entry.fileName}</span>
-                          <span className="upload-history-date">{new Date(entry.uploadedAt).toLocaleString()}</span>
-                        </div>
-                        <div className="upload-history-actions">
-                          <button onClick={() => insertUploadUrl(entry.sourceUrl)} title="本文に挿入"><Copy size={12} /></button>
-                          <button onClick={() => deleteHistoryEntry(i)} title="削除"><Trash2 size={12} /></button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
             {composeResult && (
               <div className={`compose-result ${composeResult.ok ? "compose-result-ok" : "compose-result-err"}`}>
                 {composeResult.ok ? "OK" : "NG"}: {composeResult.message}
@@ -6164,7 +5960,8 @@ export default function App() {
         const hStyle = hDir === "right"
           ? { left: idPopup.anchorRight + GAP }
           : { right: window.innerWidth - idPopup.anchorLeft + GAP };
-        // 推定高さでtop:0（大）かカーソル近く（小）かを切り替え
+        // 推定高さで初期位置を決め、マウント後に実測高さで補正する
+        // （推定のみだと短いレスで過大評価され、小さいポップアップが最上部に飛ぶ）
         const estimatedItemH = Math.round(popupFontSize * 2.5 + 16);
         const estimatedH = Math.min(32 + idResponses.length * estimatedItemH, popupMaxHeight);
         const useLargeAnchor = estimatedH > window.innerHeight * 0.5;
@@ -6172,9 +5969,17 @@ export default function App() {
           ? 0
           : clamp(idPopup.anchorY - 4, 4, Math.max(4, window.innerHeight - estimatedH - 4));
         const idPosStyle = { ...hStyle, top: nearTop };
+        const positionByMeasuredHeight = (el: HTMLDivElement | null) => {
+          if (!el) return;
+          const h = el.offsetHeight;
+          el.style.top = h > window.innerHeight * 0.5
+            ? "0px"
+            : `${clamp(idPopup.anchorY - 4, 4, Math.max(4, window.innerHeight - h - 4))}px`;
+        };
         return (
           <div
             className="id-popup"
+            ref={positionByMeasuredHeight}
             style={{ ...idPosStyle, '--fs-delta': `${popupFontSize - 12}px`, '--popup-max-width': `${popupMaxWidth}px`, '--popup-max-height': `${popupMaxHeight}px` } as unknown as React.CSSProperties}
             onMouseEnter={() => { if (idPopupCloseTimer.current) { clearTimeout(idPopupCloseTimer.current); idPopupCloseTimer.current = null; } }}
             onMouseLeave={(ev) => {

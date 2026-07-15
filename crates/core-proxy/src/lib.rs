@@ -132,16 +132,129 @@ fn percent_encode(s: &str) -> String {
     result
 }
 
-// ===== Password storage (plaintext) =====
+// ===== Password storage (DPAPI on Windows) =====
 
-/// Store a password as-is (no encryption).
+const DPAPI_PREFIX: &str = "dpapi:";
+
+/// Encrypt a password for persistence. On Windows this uses DPAPI
+/// (current-user scope) and returns `dpapi:<base64>`. On other platforms,
+/// or if encryption fails, the plaintext is stored as-is.
 pub fn protect_password(plain: &str) -> String {
+    if plain.is_empty() {
+        return String::new();
+    }
+    #[cfg(windows)]
+    if let Some(cipher) = dpapi::protect(plain.as_bytes()) {
+        use base64::Engine as _;
+        return format!(
+            "{}{}",
+            DPAPI_PREFIX,
+            base64::engine::general_purpose::STANDARD.encode(cipher)
+        );
+    }
     plain.to_string()
 }
 
-/// Retrieve a stored password as-is.
+/// Decrypt a stored password. Values without the `dpapi:` prefix are
+/// treated as legacy plaintext (backward compat with existing settings.ini).
 pub fn unprotect_password(stored: &str) -> String {
-    stored.to_string()
+    let Some(b64) = stored.strip_prefix(DPAPI_PREFIX) else {
+        return stored.to_string();
+    };
+    #[cfg(windows)]
+    {
+        use base64::Engine as _;
+        if let Ok(cipher) = base64::engine::general_purpose::STANDARD.decode(b64) {
+            if let Some(plain) = dpapi::unprotect(&cipher) {
+                if let Ok(s) = String::from_utf8(plain) {
+                    return s;
+                }
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = b64;
+    String::new()
+}
+
+#[cfg(windows)]
+mod dpapi {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{LocalFree, HLOCAL};
+    use windows::Win32::Security::Cryptography::{
+        CryptProtectData, CryptUnprotectData, CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN,
+    };
+
+    fn take_blob(blob: CRYPT_INTEGER_BLOB) -> Vec<u8> {
+        // SAFETY: on success DPAPI fills pbData with cbData bytes allocated
+        // via LocalAlloc; we copy them out and free the buffer.
+        let out = unsafe { std::slice::from_raw_parts(blob.pbData, blob.cbData as usize) }.to_vec();
+        unsafe {
+            let _ = LocalFree(HLOCAL(blob.pbData as _));
+        }
+        out
+    }
+
+    pub fn protect(data: &[u8]) -> Option<Vec<u8>> {
+        let input = CRYPT_INTEGER_BLOB {
+            cbData: data.len() as u32,
+            pbData: data.as_ptr() as *mut u8,
+        };
+        let mut output = CRYPT_INTEGER_BLOB::default();
+        unsafe {
+            CryptProtectData(
+                &input,
+                PCWSTR::null(),
+                None,
+                None,
+                None,
+                CRYPTPROTECT_UI_FORBIDDEN,
+                &mut output,
+            )
+            .ok()?;
+        }
+        Some(take_blob(output))
+    }
+
+    pub fn unprotect(data: &[u8]) -> Option<Vec<u8>> {
+        let input = CRYPT_INTEGER_BLOB {
+            cbData: data.len() as u32,
+            pbData: data.as_ptr() as *mut u8,
+        };
+        let mut output = CRYPT_INTEGER_BLOB::default();
+        unsafe {
+            CryptUnprotectData(
+                &input,
+                None,
+                None,
+                None,
+                None,
+                CRYPTPROTECT_UI_FORBIDDEN,
+                &mut output,
+            )
+            .ok()?;
+        }
+        Some(take_blob(output))
+    }
+}
+
+#[cfg(all(test, windows))]
+mod password_tests {
+    use super::*;
+
+    #[test]
+    fn dpapi_roundtrip_works() {
+        let stored = protect_password("s3cret-パスワード");
+        assert!(stored.starts_with(DPAPI_PREFIX));
+        assert_eq!(unprotect_password(&stored), "s3cret-パスワード");
+    }
+
+    #[test]
+    fn legacy_plaintext_passthrough() {
+        assert_eq!(unprotect_password("plain-legacy"), "plain-legacy");
+        assert_eq!(protect_password(""), "");
+        assert_eq!(unprotect_password(""), "");
+    }
 }
 
 // ===== ImageViewURLReplace rule type =====
@@ -180,107 +293,3 @@ pub fn parse_url_replace_rules(content: &str) -> Vec<UrlReplaceRule> {
     rules
 }
 
-// ===== Cookie entry type =====
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CookieEntry {
-    pub name: String,
-    pub value: String,
-    pub domain: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expires_unix: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub issued_user_agent: Option<String>,
-}
-
-#[derive(Debug, Default, Serialize, Deserialize)]
-pub struct CookiesFile {
-    pub version: u32,
-    pub cookies: Vec<CookieEntry>,
-}
-
-/// Parse a `Set-Cookie` header value into a `CookieEntry`.
-/// Returns `None` if `name=value` cannot be extracted.
-pub fn parse_set_cookie(header: &str, domain: &str, user_agent: &str) -> Option<CookieEntry> {
-    let mut parts = header.splitn(2, ';');
-    let name_value = parts.next()?.trim();
-    let (name, value) = name_value.split_once('=')?;
-    let name = name.trim().to_string();
-    let value = value.trim().to_string();
-    if name.is_empty() {
-        return None;
-    }
-
-    let rest = parts.next().unwrap_or("").to_lowercase();
-
-    // Parse expires or max-age
-    let now_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
-
-    let expires_unix = if let Some(ma) = rest
-        .split(';')
-        .find(|p| p.trim_start().starts_with("max-age="))
-    {
-        ma.trim_start().trim_start_matches("max-age=").trim().parse::<i64>().ok().map(|s| now_secs + s)
-    } else if let Some(exp_part) = rest
-        .split(';')
-        .find(|p| p.trim_start().starts_with("expires="))
-    {
-        // Best-effort RFC 2616 date parse (not required to be perfect)
-        let date_str = exp_part.trim_start().trim_start_matches("expires=").trim();
-        parse_http_date(date_str)
-    } else {
-        None
-    };
-
-    Some(CookieEntry {
-        name,
-        value,
-        domain: domain.to_string(),
-        expires_unix,
-        issued_user_agent: if user_agent.is_empty() {
-            None
-        } else {
-            Some(user_agent.to_string())
-        },
-    })
-}
-
-/// Remove expired cookies from a list. Pass current unix timestamp.
-pub fn filter_valid_cookies(cookies: Vec<CookieEntry>, now_secs: i64) -> Vec<CookieEntry> {
-    cookies
-        .into_iter()
-        .filter(|c| c.expires_unix.map_or(true, |exp| exp > now_secs))
-        .collect()
-}
-
-/// Best-effort HTTP date parser.  Returns `None` if parsing fails.
-fn parse_http_date(s: &str) -> Option<i64> {
-    // Try common format: "Fri, 01 Jan 2100 00:00:00 GMT"
-    // We extract year, month, day, H, M, S and convert to approximate unix ts.
-    let months = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"];
-    let parts: Vec<&str> = s.split_whitespace().collect();
-    if parts.len() < 4 { return None; }
-    // Skip weekday prefix
-    let offset = if parts[0].ends_with(',') { 1 } else { 0 };
-    let day: i64 = parts.get(offset)?.parse().ok()?;
-    let mon_str = parts.get(offset + 1)?.to_lowercase();
-    let month = months.iter().position(|&m| m == mon_str)? as i64 + 1;
-    let year: i64 = parts.get(offset + 2)?.parse().ok()?;
-    let time_str = parts.get(offset + 3)?;
-    let mut t = time_str.split(':');
-    let h: i64 = t.next()?.parse().ok()?;
-    let m: i64 = t.next()?.parse().ok()?;
-    let s: i64 = t.next()?.parse().ok()?;
-
-    // Days from epoch (1970-01-01) to year/month/day  (approx, ignores leap seconds)
-    let y = year - 1970;
-    let leap_days = y / 4 - y / 100 + y / 400;
-    let month_days: [i64; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    let yday: i64 = month_days[..(month - 1) as usize].iter().sum::<i64>() + day - 1;
-    let days = y * 365 + leap_days + yday;
-    Some(days * 86400 + h * 3600 + m * 60 + s)
-}

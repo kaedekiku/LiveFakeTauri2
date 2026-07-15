@@ -56,3 +56,7 @@ _temp_*
 
 # Lock file
 apps/desktop/pnpm-lock.yaml
+
+# Session/test artifacts
+.claude/scheduled_tasks.lock
+apps/desktop/test-results/

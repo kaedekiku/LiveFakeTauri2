@@ -36,8 +36,11 @@ globs: "**/*.tsx,**/*.ts"
 
 ### セキュリティ
 - `dangerouslySetInnerHTML` の値は `renderResponseBody()` でサニタイズ
-- HTML属性内のURLは `escapeAttr()` でエスケープ
-- `normalizeExternalUrl()` は `javascript:`, `data:`, `blob:` スキームをブロック
+  (処理順: タグ除去 → HTMLエンティティデコード → `&<>"` エスケープ → リンク化。
+   エスケープ後にリンク化するため属性値へのブレイクアウト不可)
+- `normalizeExternalUrl()` は許可リスト方式 — `http(s)://` またはベアドメイン形式のみ通し、
+  それ以外 (`javascript:` / `data:` / `blob:` 等) は `null` を返す
+- ユーザー設定由来の値 (ハイライト色・URL置換ルール) も属性へ挿入する際はエスケープする
 
 ### テスト
 - Playwrightスモークテストは静的 `dist/index.html` を検証 (Tauri不要)

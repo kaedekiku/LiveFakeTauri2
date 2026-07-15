@@ -104,15 +104,7 @@ try {
   assert(typeof firstResp.dateAndId === "string", "response should have dateAndId");
   console.log(`e2e: [PASS] response structure: No.${firstResp.responseNo} by "${firstResp.name}" (${firstResp.body.length} chars)`);
 
-  // --- 6. IPC: check_auth_env_status ---
-  const authStatus = await page.evaluate(() =>
-    window.__TAURI_INTERNALS__.invoke("check_auth_env_status", {})
-  );
-  assert(typeof authStatus.beEmailSet === "boolean", "auth status should have beEmailSet");
-  assert(typeof authStatus.upliftEmailSet === "boolean", "auth status should have upliftEmailSet");
-  console.log(`e2e: [PASS] auth env: BE(${authStatus.beEmailSet}/${authStatus.bePasswordSet}) UPLIFT(${authStatus.upliftEmailSet}/${authStatus.upliftPasswordSet})`);
-
-  // --- 7. IPC: probe_thread_post_form ---
+  // --- 6. IPC: probe_thread_post_form ---
   const postForm = await page.evaluate(async (url) => {
     return window.__TAURI_INTERNALS__.invoke("probe_thread_post_form", { threadUrl: url });
   }, firstThread.threadUrl);
@@ -122,7 +114,7 @@ try {
   assert(postForm.postUrl.includes("bbs.cgi"), `post url should contain bbs.cgi, got: ${postForm.postUrl}`);
   console.log(`e2e: [PASS] post form: bbs=${postForm.bbs} key=${postForm.key} time=${postForm.time}`);
 
-  // --- 8. React DOM interactions ---
+  // --- 7. React DOM interactions ---
   // Click thread row and verify selection change
   const threadRows = await page.$$eval(".threads tbody tr", (rows) => rows.length);
   if (threadRows >= 2) {
@@ -152,7 +144,7 @@ try {
     console.log("e2e: [SKIP] compose window did not open via CDP click");
   }
 
-  // --- 9. IPC: favorites CRUD ---
+  // --- 8. IPC: favorites CRUD ---
   // Save a favorite board
   const testFavBoard = { boardName: "e2e-test-board", url: "https://mao.5ch.io/e2etest/" };
   const favData = { boards: [testFavBoard], threads: [{ threadUrl: firstThread.threadUrl, title: firstThread.title, boardUrl: testBoardUrl }] };
@@ -182,7 +174,7 @@ try {
   assert(cleanedFavs.threads.length === 0, "fav threads should be empty after cleanup");
   console.log("e2e: [PASS] favorites cleanup verified");
 
-  // --- 10. IPC: NG filters CRUD ---
+  // --- 9. IPC: NG filters CRUD ---
   const testNg = { words: ["e2e-ng-word"], ids: ["e2e-ng-id"], names: ["e2e-ng-name"] };
   await page.evaluate(async (data) => {
     return window.__TAURI_INTERNALS__.invoke("save_ng_filters", { filters: data });
@@ -203,7 +195,7 @@ try {
   });
   console.log("e2e: [PASS] ng filters cleanup done");
 
-  // --- 11. IPC: read status CRUD ---
+  // --- 10. IPC: read status CRUD ---
   const testReadStatus = { [testBoardUrl]: { [firstThread.threadKey]: firstThread.responseCount } };
   await page.evaluate(async (data) => {
     return window.__TAURI_INTERNALS__.invoke("save_read_status", { status: data });
@@ -225,7 +217,7 @@ try {
   });
   console.log("e2e: [PASS] read status cleanup done");
 
-  // --- 12. DOM: thread search filter ---
+  // --- 11. DOM: thread search filter ---
   const threadSearchInput = await page.$(".thread-search");
   assert(threadSearchInput, "thread search input should exist");
   // Type a nonsense query to filter all threads out
@@ -256,7 +248,7 @@ try {
   assert(restoredRowCount > 0, `clearing search should restore rows, got ${restoredRowCount}`);
   console.log(`e2e: [PASS] thread search clear restores ${restoredRowCount} rows`);
 
-  // --- 13. DOM: board pane tabs ---
+  // --- 12. DOM: board pane tabs ---
   const boardTabs = await page.$$(".board-tab");
   assert(boardTabs.length === 2, `expected 2 board tabs, got ${boardTabs.length}`);
 
@@ -283,7 +275,7 @@ try {
   assert(!favThreadsListGone, "fav-threads-list should not be visible on Boards tab");
   console.log("e2e: [PASS] board Boards tab shows board content");
 
-  // --- 14. DOM: NG filter panel ---
+  // --- 13. DOM: NG filter panel ---
   // Open NG panel via toolbar button
   await page.evaluate(() => {
     document.querySelectorAll(".tool-bar button").forEach((b) => {
@@ -333,14 +325,14 @@ try {
   assert(!ngPanelAfter, "NG panel should be hidden after close");
   console.log("e2e: [PASS] NG panel closes");
 
-  // --- 15. DOM: auto-refresh toggle ---
+  // --- 14. DOM: auto-refresh toggle ---
   const autoRefreshToggle = await page.$(".auto-refresh-toggle input");
   assert(autoRefreshToggle, "auto-refresh toggle should exist");
   const autoRefreshChecked = await page.$eval(".auto-refresh-toggle input", (el) => el.checked);
   assert(autoRefreshChecked === false, "auto-refresh should be off by default");
   console.log("e2e: [PASS] auto-refresh toggle present and off by default");
 
-  // --- 16. DOM: compose result feedback area ---
+  // --- 15. DOM: compose result feedback area ---
   // Open compose window
   await page.evaluate(() => {
     document.querySelectorAll(".tool-bar button").forEach((b) => {
@@ -363,7 +355,7 @@ try {
   });
   await new Promise((r) => setTimeout(r, 200));
 
-  // --- 17. DOM: dark mode toggle ---
+  // --- 16. DOM: dark mode toggle ---
   const shellClassesBefore = await page.$eval(".shell", (el) => el.className);
   assert(!shellClassesBefore.includes("dark"), "should start in light mode");
   // Toggle dark via menu
@@ -396,7 +388,7 @@ try {
   assert(!shellClassesBack.includes("dark"), "shell should not have dark class after light toggle");
   console.log("e2e: [PASS] light mode restored");
 
-  // --- 18. DOM: response blocks in continuous scroll view ---
+  // --- 17. DOM: response blocks in continuous scroll view ---
   // Click first thread to ensure responses are loaded
   await page.evaluate(() => {
     const row = document.querySelector(".threads tbody tr:first-child");
@@ -413,7 +405,7 @@ try {
     console.log(`e2e: [PASS] response continuous view (${responseBlocks.length} blocks, no IDs in this thread)`);
   }
 
-  // --- 19. DOM: response ID cell with occurrence count ---
+  // --- 18. DOM: response ID cell with occurrence count ---
   const idCells = await page.$$eval(".response-id-cell", (els) => els.map((el) => el.textContent?.trim()).filter(Boolean));
   if (idCells.length > 0) {
     const hasCount = idCells.some((t) => t.includes("("));
@@ -423,20 +415,20 @@ try {
     console.log("e2e: [SKIP] no ID cells found (thread may not have IDs)");
   }
 
-  // --- 20. DOM: speed bar visualization ---
+  // --- 19. DOM: speed bar visualization ---
   const speedBars = await page.$$(".speed-cell .speed-bar");
   assert(speedBars.length > 0, "speed bars should exist in thread list");
   const speedBarStyle = await speedBars[0].evaluate((el) => el.getAttribute("style"));
   assert(speedBarStyle?.includes("width") && speedBarStyle?.includes("background"), `speed bar should have width and background, got: ${speedBarStyle}`);
   console.log("e2e: [PASS] speed bar with gradient color");
 
-  // --- 21. DOM: bookmark button in nav bar ---
+  // --- 20. DOM: bookmark button in nav bar ---
   const bookmarkBtn = await page.$('.response-nav-bar button');
   const navButtons = await page.$$eval(".response-nav-bar button", (els) => els.map((el) => el.textContent?.trim()));
   assert(navButtons.includes("栞"), `nav bar should have 栞 button, got: ${navButtons}`);
   console.log("e2e: [PASS] bookmark button in response nav");
 
-  // --- 22. DOM: settings panel ---
+  // --- 21. DOM: settings panel ---
   await page.evaluate(() => {
     const menuItem = [...document.querySelectorAll(".menu-item")].find((el) => el.textContent?.trim() === "ファイル");
     if (menuItem) menuItem.click();
@@ -460,7 +452,7 @@ try {
   await new Promise((r) => setTimeout(r, 200));
   console.log("e2e: [PASS] settings panel with all sections");
 
-  // --- 23. DOM: post history panel ---
+  // --- 22. DOM: post history panel ---
   await page.evaluate(() => {
     const menuItem = [...document.querySelectorAll(".menu-item")].find((el) => el.textContent?.trim() === "ファイル");
     if (menuItem) menuItem.click();
@@ -483,7 +475,7 @@ try {
   await new Promise((r) => setTimeout(r, 200));
   console.log("e2e: [PASS] post history panel (empty state)");
 
-  // --- 24. DOM: back-refs CSS ---
+  // --- 23. DOM: back-refs CSS ---
   const hasBackRefsCss = await page.evaluate(() => {
     for (const sheet of document.styleSheets) {
       try {
@@ -497,7 +489,7 @@ try {
   assert(hasBackRefsCss, "back-refs CSS should exist");
   console.log("e2e: [PASS] back-refs CSS present");
 
-  // --- 25. DOM: thread row striping ---
+  // --- 24. DOM: thread row striping ---
   const threadRowsBg = await page.evaluate(() => {
     const rows = document.querySelectorAll(".threads tbody tr");
     if (rows.length < 2) return { even: "", odd: "" };
@@ -513,7 +505,7 @@ try {
     console.log("e2e: [SKIP] not enough thread rows for striping test");
   }
 
-  // --- 26. DOM: body link rendering ---
+  // --- 25. DOM: body link rendering ---
   // Check if body-link CSS class exists (actual links depend on response content)
   const hasBodyLinkCss = await page.evaluate(() => {
     for (const sheet of document.styleSheets) {
@@ -528,7 +520,7 @@ try {
   assert(hasBodyLinkCss, "body-link CSS should exist");
   console.log("e2e: [PASS] body-link CSS present");
 
-  // --- 27. localStorage: bookmark persistence ---
+  // --- 26. localStorage: bookmark persistence ---
   await page.evaluate(() => {
     localStorage.setItem("desktop.bookmarks.v1", JSON.stringify({ "https://test.5ch.io/test/read.cgi/test/1/": 42 }));
   });
@@ -541,7 +533,7 @@ try {
   await page.evaluate(() => localStorage.removeItem("desktop.bookmarks.v1"));
   console.log("e2e: [PASS] bookmark localStorage persistence");
 
-  // --- 28. localStorage: compose prefs persistence ---
+  // --- 27. localStorage: compose prefs persistence ---
   await page.evaluate(() => {
     localStorage.setItem("desktop.composePrefs.v1", JSON.stringify({ name: "e2e-name", mail: "sage", sage: true }));
   });

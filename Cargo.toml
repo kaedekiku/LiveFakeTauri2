@@ -1,6 +1,5 @@
 ﻿[workspace]
 members = [
-  "crates/core-auth",
   "crates/core-fetch",
   "crates/core-parse",
   "crates/core-store",

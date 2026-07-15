@@ -1,17 +1,17 @@
 ﻿use core_proxy::{
     protect_password, unprotect_password, update_proxy_settings,
-    CookiesFile, ProxySettings, ProxyType, UrlReplaceRule,
+    ProxySettings, ProxyType, UrlReplaceRule,
     parse_url_replace_rules,
 };
 use core_fetch::{
-    build_cookie_client, create_thread, create_shitaraba_thread, create_jpnkn_thread,
+    create_thread, create_shitaraba_thread, create_jpnkn_thread,
     detect_site_type, is_allowed_url, fetch_bbsmenu_json, fetch_post_form_tokens,
     fetch_subject_threads, fetch_thread_responses,
     fetch_shitaraba_thread_list, fetch_shitaraba_responses, post_shitaraba_reply,
     fetch_jpnkn_thread_list, fetch_jpnkn_responses, post_jpnkn_reply, post_5ch_reply,
-    normalize_5ch_url, parse_confirm_submit_form, probe_post_cookie_scope, seed_cookie,
+    normalize_5ch_url, parse_confirm_submit_form,
     submit_post_confirm, submit_post_confirm_with_html, submit_post_finalize_from_confirm,
-    CreateThreadResult, PostConfirmResult, PostCookieReport, PostFinalizePreview, PostFormTokens,
+    CreateThreadResult, PostConfirmResult, PostFinalizePreview, PostFormTokens,
     PostSubmitResult, SiteType,
 };
 use serde::{Deserialize, Serialize};
@@ -35,33 +35,6 @@ struct ImagePopupState(Mutex<Vec<PopupImageEntry>>);
 
 /// Saved subtitle window position before moving off-screen
 static SUBTITLE_SAVED_POS: Mutex<Option<(i32, i32)>> = Mutex::new(None);
-
-/// (cookie_name, cookie_value, provider)
-static LOGIN_COOKIES: Mutex<Vec<(String, String, String)>> = Mutex::new(Vec::new());
-
-fn get_login_cookie_header() -> Option<String> {
-    get_login_cookie_header_filtered2(true, true)
-}
-
-fn get_login_cookie_header_filtered2(include_be: bool, include_uplift: bool) -> Option<String> {
-    let cookies = LOGIN_COOKIES.lock().ok()?;
-    if cookies.is_empty() {
-        return None;
-    }
-    let header = cookies
-        .iter()
-        .filter(|(_, _, provider)| {
-            match provider.as_str() {
-                "be" => include_be,
-                "uplift" | "donguri" => include_uplift,
-                _ => true,
-            }
-        })
-        .map(|(k, v, _)| format!("{}={}", k, v))
-        .collect::<Vec<_>>()
-        .join("; ");
-    if header.is_empty() { None } else { Some(header) }
-}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -119,18 +92,6 @@ struct BoardCategory {
 struct BoardEntry {
     board_name: String,
     url: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct PostFlowTrace {
-    thread_url: String,
-    allow_real_submit: bool,
-    token_summary: Option<String>,
-    confirm_summary: Option<String>,
-    finalize_summary: Option<String>,
-    submit_summary: Option<String>,
-    blocked: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -195,32 +156,22 @@ async fn fetch_bbsmenu_summary() -> Result<MenuSummary, String> {
     })
 }
 
+/// Probe/debug commands are restricted to dev builds, or release builds
+/// explicitly opted in via the LIVEFAKE_DIAG=1 environment variable.
+fn diagnostics_allowed() -> bool {
+    cfg!(debug_assertions) || std::env::var("LIVEFAKE_DIAG").map(|v| v == "1").unwrap_or(false)
+}
+
 #[tauri::command]
-fn probe_post_cookie_scope_simulation() -> Result<PostCookieReport, String> {
-    let (_, jar) = build_cookie_client("LiveFake/0.1").map_err(|e| e.to_string())?;
-
-    seed_cookie(&jar, "https://5ch.io/", "Be3M=dummy-be3m; Domain=.5ch.io; Path=/")
-        .map_err(|e| e.to_string())?;
-    seed_cookie(&jar, "https://5ch.io/", "Be3D=dummy-be3d; Domain=.5ch.io; Path=/")
-        .map_err(|e| e.to_string())?;
-    seed_cookie(
-        &jar,
-        "https://uplift.5ch.io/",
-        "sid=dummy-sid; Domain=.5ch.io; Path=/",
-    )
-    .map_err(|e| e.to_string())?;
-    seed_cookie(
-        &jar,
-        "https://uplift.5ch.io/",
-        "eid=dummy-eid; Domain=.uplift.5ch.io; Path=/",
-    )
-    .map_err(|e| e.to_string())?;
-
-    probe_post_cookie_scope(&jar, "https://mao.5ch.io/test/bbs.cgi").map_err(|e| e.to_string())
+fn diagnostics_enabled() -> bool {
+    diagnostics_allowed()
 }
 
 #[tauri::command]
 async fn probe_thread_post_form(thread_url: String) -> Result<PostFormTokens, String> {
+    if !diagnostics_allowed() {
+        return Err("diagnostics disabled".to_string());
+    }
     let client = reqwest::Client::builder()
         .user_agent("Monazilla/1.00 LiveFake/0.1")
         .timeout(std::time::Duration::from_secs(10))
@@ -319,6 +270,9 @@ async fn fetch_thread_responses_command(
 
 #[tauri::command]
 async fn debug_post_connectivity(thread_url: String) -> Result<String, String> {
+    if !diagnostics_allowed() {
+        return Err("diagnostics disabled".to_string());
+    }
     let mut report = String::new();
 
     let c = reqwest::Client::builder()
@@ -400,6 +354,9 @@ async fn debug_post_connectivity(thread_url: String) -> Result<String, String> {
 
 #[tauri::command]
 async fn probe_post_confirm_empty(thread_url: String) -> Result<PostConfirmResult, String> {
+    if !diagnostics_allowed() {
+        return Err("diagnostics disabled".to_string());
+    }
     let client = reqwest::Client::builder()
         .user_agent("Monazilla/1.00 LiveFake/0.1")
         .timeout(std::time::Duration::from_secs(30))
@@ -408,7 +365,7 @@ async fn probe_post_confirm_empty(thread_url: String) -> Result<PostConfirmResul
     let tokens = fetch_post_form_tokens(&client, &thread_url)
         .await
         .map_err(|e| e.to_string())?;
-    let ch = get_login_cookie_header();
+    let ch: Option<String> = None;
     submit_post_confirm(&client, &tokens, "", "", "", ch.as_deref())
         .await
         .map_err(|e| e.to_string())
@@ -421,6 +378,9 @@ async fn probe_post_confirm(
     mail: Option<String>,
     message: Option<String>,
 ) -> Result<PostConfirmResult, String> {
+    if !diagnostics_allowed() {
+        return Err("diagnostics disabled".to_string());
+    }
     let client = reqwest::Client::builder()
         .user_agent("Monazilla/1.00 LiveFake/0.1")
         .timeout(std::time::Duration::from_secs(30))
@@ -429,7 +389,7 @@ async fn probe_post_confirm(
     let tokens = fetch_post_form_tokens(&client, &thread_url)
         .await
         .map_err(|e| e.to_string())?;
-    let ch = get_login_cookie_header();
+    let ch: Option<String> = None;
     submit_post_confirm(
         &client,
         &tokens,
@@ -444,6 +404,9 @@ async fn probe_post_confirm(
 
 #[tauri::command]
 async fn probe_post_finalize_preview(thread_url: String) -> Result<PostFinalizePreview, String> {
+    if !diagnostics_allowed() {
+        return Err("diagnostics disabled".to_string());
+    }
     let client = reqwest::Client::builder()
         .user_agent("Monazilla/1.00 LiveFake/0.1")
         .timeout(std::time::Duration::from_secs(30))
@@ -452,7 +415,7 @@ async fn probe_post_finalize_preview(thread_url: String) -> Result<PostFinalizeP
     let tokens = fetch_post_form_tokens(&client, &thread_url)
         .await
         .map_err(|e| e.to_string())?;
-    let ch = get_login_cookie_header();
+    let ch: Option<String> = None;
     let (_, confirm_html) = submit_post_confirm_with_html(&client, &tokens, "", "", "", ch.as_deref())
         .await
         .map_err(|e| e.to_string())?;
@@ -466,6 +429,9 @@ async fn probe_post_finalize_preview_from_input(
     mail: Option<String>,
     message: Option<String>,
 ) -> Result<PostFinalizePreview, String> {
+    if !diagnostics_allowed() {
+        return Err("diagnostics disabled".to_string());
+    }
     let client = reqwest::Client::builder()
         .user_agent("Monazilla/1.00 LiveFake/0.1")
         .timeout(std::time::Duration::from_secs(30))
@@ -474,7 +440,7 @@ async fn probe_post_finalize_preview_from_input(
     let tokens = fetch_post_form_tokens(&client, &thread_url)
         .await
         .map_err(|e| e.to_string())?;
-    let ch = get_login_cookie_header();
+    let ch: Option<String> = None;
     let (_, confirm_html) = submit_post_confirm_with_html(
         &client,
         &tokens,
@@ -493,6 +459,9 @@ async fn probe_post_finalize_submit_empty(
     thread_url: String,
     allow_real_submit: bool,
 ) -> Result<PostSubmitResult, String> {
+    if !diagnostics_allowed() {
+        return Err("diagnostics disabled".to_string());
+    }
     if !allow_real_submit {
         return Err("blocked: set allow_real_submit=true to execute final submit".to_string());
     }
@@ -504,7 +473,7 @@ async fn probe_post_finalize_submit_empty(
     let tokens = fetch_post_form_tokens(&client, &thread_url)
         .await
         .map_err(|e| e.to_string())?;
-    let ch = get_login_cookie_header();
+    let ch: Option<String> = None;
     let (_, confirm_html) = submit_post_confirm_with_html(&client, &tokens, "", "", "", ch.as_deref())
         .await
         .map_err(|e| e.to_string())?;
@@ -521,6 +490,9 @@ async fn probe_post_finalize_submit_from_input(
     message: Option<String>,
     allow_real_submit: bool,
 ) -> Result<PostSubmitResult, String> {
+    if !diagnostics_allowed() {
+        return Err("diagnostics disabled".to_string());
+    }
     if !allow_real_submit {
         return Err("blocked: set allow_real_submit=true to execute final submit".to_string());
     }
@@ -532,7 +504,7 @@ async fn probe_post_finalize_submit_from_input(
     let tokens = fetch_post_form_tokens(&client, &thread_url)
         .await
         .map_err(|e| e.to_string())?;
-    let ch = get_login_cookie_header();
+    let ch: Option<String> = None;
     let (_, confirm_html) = submit_post_confirm_with_html(
         &client,
         &tokens,
@@ -596,7 +568,7 @@ async fn post_reply_multisite(
         }
         _ => {
             // 5ch: reqwest+rustls based post (avoids Windows Schannel SSL issues)
-            let ch = get_login_cookie_header();
+            let ch: Option<String> = None;
             let result = post_5ch_reply(
                 &thread_url,
                 from.as_deref().unwrap_or(""),
@@ -607,7 +579,7 @@ async fn post_reply_multisite(
             .await
             .map_err(|e| format!("{:?}", e))?;
             if result.contains_error {
-                Err(format!("Post failed: status={} body={}", result.status, &result.body_preview[..result.body_preview.len().min(300)]))
+                Err(format!("Post failed: status={} body={}", result.status, result.body_preview.chars().take(300).collect::<String>()))
             } else {
                 Ok(format!("status={}", result.status))
             }
@@ -649,7 +621,7 @@ async fn create_thread_command(
                 .map_err(|e| format!("{:?}", e))
         }
         _ => {
-            let cookie_header = get_login_cookie_header();
+            let cookie_header: Option<String> = None;
             create_thread(
                 &board_url,
                 &subject,
@@ -662,121 +634,6 @@ async fn create_thread_command(
             .map_err(|e| format!("{:?}", e))
         }
     }
-}
-
-#[tauri::command]
-async fn probe_post_flow_trace(
-    thread_url: String,
-    from: Option<String>,
-    mail: Option<String>,
-    message: Option<String>,
-    allow_real_submit: bool,
-    include_be: Option<bool>,
-    include_uplift: Option<bool>,
-) -> Result<PostFlowTrace, String> {
-    let client = reqwest::Client::builder()
-        .user_agent("Monazilla/1.00 LiveFake/0.1")
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    let _ = core_store::append_log(&format!("post_flow: start thread_url={}", thread_url));
-
-    let tokens = fetch_post_form_tokens(&client, &thread_url)
-        .await
-        .map_err(|e| e.to_string())?;
-    let token_summary = Some(format!(
-        "post_url={} bbs={} key={} time={}",
-        tokens.post_url, tokens.bbs, tokens.key, tokens.time
-    ));
-    let _ = core_store::append_log(&format!(
-        "post_flow: tokens post_url={} bbs={} key={} time={}",
-        tokens.post_url, tokens.bbs, tokens.key, tokens.time
-    ));
-
-    let cookie_header = get_login_cookie_header_filtered2(include_be.unwrap_or(true), include_uplift.unwrap_or(true));
-    let _ = core_store::append_log(&format!("post_flow: include_be={} include_uplift={} cookie_header={}", include_be.unwrap_or(true), include_uplift.unwrap_or(true), cookie_header.as_deref().unwrap_or("(none)")));
-    let (confirm, confirm_html) = submit_post_confirm_with_html(
-        &client,
-        &tokens,
-        from.as_deref().unwrap_or(""),
-        mail.as_deref().unwrap_or(""),
-        message.as_deref().unwrap_or(""),
-        cookie_header.as_deref(),
-    )
-    .await
-    .map_err(|e| format!("{:?}", e))?;
-
-    // curl_post_5ch already handles confirm form auto-submit and consent pages internally.
-    // Check if the final response indicates success.
-    let is_ok = |html: &str| -> bool {
-        html.contains("書きこみが終わりました")
-            || html.contains("書き込みが終わりました")
-            || html.contains("投稿が完了")
-    };
-    let mut contains_ok = is_ok(&confirm_html);
-
-    let confirm_summary = Some(format!(
-        "status={} ok={} type={} body={}",
-        confirm.status,
-        contains_ok,
-        confirm.content_type.unwrap_or_else(|| "-".to_string()),
-        confirm.body_preview.chars().take(300).collect::<String>()
-    ));
-    let _ = core_store::append_log(&format!(
-        "post_flow: confirm status={} ok={} body_len={} body_preview={}",
-        confirm.status, contains_ok, confirm_html.len(),
-        confirm_html.chars().take(500).collect::<String>()
-    ));
-
-    // If not successful, retry once — the first attempt may have been a cookie/consent
-    // page that curl_post_5ch handled internally, setting cookies for the next attempt.
-    let mut retry_summary: Option<String> = None;
-    if !contains_ok {
-        let _ = core_store::append_log("post_flow: first attempt failed, retrying...");
-        let (retry_confirm, retry_html) = submit_post_confirm_with_html(
-            &client,
-            &tokens,
-            from.as_deref().unwrap_or(""),
-            mail.as_deref().unwrap_or(""),
-            message.as_deref().unwrap_or(""),
-            cookie_header.as_deref(),
-        )
-        .await
-        .map_err(|e| format!("{:?}", e))?;
-
-        contains_ok = is_ok(&retry_html);
-        retry_summary = Some(format!(
-            "retry: status={} ok={} body={}",
-            retry_confirm.status,
-            contains_ok,
-            retry_confirm.body_preview.chars().take(300).collect::<String>()
-        ));
-        let _ = core_store::append_log(&format!(
-            "post_flow: retry status={} ok={} body_len={} body_preview={}",
-            retry_confirm.status, contains_ok, retry_html.len(),
-            retry_html.chars().take(500).collect::<String>()
-        ));
-    }
-
-    let error_flag = !contains_ok;
-    let submit_summary = Some(format!(
-        "status={} error={} retried={}",
-        confirm.status, error_flag, retry_summary.is_some()
-    ));
-    let _ = core_store::append_log(&format!(
-        "post_flow: done error={} retried={}", error_flag, retry_summary.is_some()
-    ));
-
-    Ok(PostFlowTrace {
-        thread_url,
-        allow_real_submit,
-        token_summary,
-        confirm_summary,
-        finalize_summary: retry_summary,
-        submit_summary,
-        blocked: false,
-    })
 }
 
 fn parse_version_numbers(version: &str) -> Vec<u64> {
@@ -1002,6 +859,7 @@ fn open_folder_dialog() -> Result<Option<String>, String> {
 /// Returns the full path of the saved file.
 #[tauri::command]
 async fn save_image_to_folder(url: String, folder: String) -> Result<String, String> {
+    validate_public_http_url(&url)?;
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
@@ -1052,6 +910,13 @@ fn get_data_dir() -> Result<String, String> {
 
 #[tauri::command]
 fn open_external_url(url: String) -> Result<(), String> {
+    // Only allow http(s). Without this, the Windows FileProtocolHandler below would
+    // happily open file:// paths, UNC shares, or local executables.
+    let parsed = reqwest::Url::parse(&url).map_err(|e| format!("invalid url: {}", e))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(format!("blocked url scheme: {}", parsed.scheme()));
+    }
+
     #[cfg(target_os = "windows")]
     {
         Command::new("rundll32")
@@ -1397,6 +1262,57 @@ fn load_app_settings() -> Result<HashMap<String, String>, String> {
     core_store::load_settings_ini().map_err(|e| e.to_string())
 }
 
+/// Template written to `custom.css` on first launch (all comments, no effect until edited).
+const USER_CSS_TEMPLATE: &str = r#"/* LiveFake ユーザーカスタムCSS (custom.css)
+ *
+ * このファイルに書いたCSSはアプリ起動時に標準スタイルの後から適用されます。
+ * 編集後はメニュー「設定 > ユーザーCSSを再読み込み」で即座に反映できます。
+ *
+ * ── 基本色 (CSS変数) ─────────────────────────────
+ * :root {
+ *   --bg: #f0f0f0;      背景色
+ *   --panel: #ffffff;   パネル背景色
+ *   --line: #c0c0c0;    罫線色
+ *   --ink: #1b1b1b;     文字色
+ *   --sub: #555555;     補助文字色
+ *   --accent: #0066cc;  アクセント色
+ * }
+ * ダークモード時の色は .dark { --bg: #1e1e1e; ... } で上書きします。
+ *
+ * ── 主なUI要素のクラス名 ─────────────────────────
+ *   .menu-bar / .tool-bar        メニューバー / ツールバー
+ *   .pane.boards                 板一覧ペイン
+ *   .pane.threads                スレッド一覧ペイン
+ *   .pane.responses              レスポンスペイン
+ *   .response-block              レス1件のブロック
+ *   .response-header / .response-body   レスのヘッダー / 本文
+ *   .response-name / .response-id-cell  投稿者名 / ID
+ *   .new-arrival-pane / .new-arrival-item   新着ペイン / 新着1件
+ *   .thread-tab / .board-tab     スレッドタブ / 板タブ
+ *   .thread-menu                 右クリックメニュー
+ *   .anchor-popup / .id-popup    アンカー / IDポップアップ
+ *   .compose-window              書き込みウィンドウ
+ *   .status-bar                  ステータスバー
+ *
+ * ── 例: 全体をセピア調にする ─────────────────────
+ * :root { --bg: #f4ecd8; --panel: #fbf5e6; --ink: #4a3f2a; }
+ *
+ * ── 例: レス本文の行間を広げる ───────────────────
+ * .response-body { line-height: 1.8; }
+ */
+"#;
+
+#[tauri::command]
+fn load_user_css() -> Result<String, String> {
+    let dir = core_store::portable_data_dir().map_err(|e| e.to_string())?;
+    let path = dir.join("custom.css");
+    if !path.exists() {
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        std::fs::write(&path, USER_CSS_TEMPLATE).map_err(|e| e.to_string())?;
+    }
+    std::fs::read_to_string(&path).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn save_app_settings(settings: HashMap<String, String>) -> Result<(), String> {
     core_store::save_settings_ini(&settings).map_err(|e| e.to_string())
@@ -1564,99 +1480,6 @@ fn set_window_theme(window: tauri::WebviewWindow, dark: bool) -> Result<(), Stri
         .map_err(|e| format!("{}", e))
 }
 
-// --- Image upload (tadaup.jp) ---
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ImageUploadResult {
-    success: bool,
-    source_url: String,
-    thumbnail: String,
-    page_url: String,
-}
-
-#[tauri::command]
-async fn upload_image(file_data: String, file_name: String) -> Result<ImageUploadResult, String> {
-    use reqwest::multipart;
-    use base64::Engine;
-
-    let file_bytes = base64::engine::general_purpose::STANDARD
-        .decode(&file_data)
-        .map_err(|e| format!("Base64デコードエラー: {}", e))?;
-    let mime = if file_name.ends_with(".png") { "image/png" }
-        else if file_name.ends_with(".gif") { "image/gif" }
-        else if file_name.ends_with(".webp") { "image/webp" }
-        else if file_name.ends_with(".mp4") { "video/mp4" }
-        else if file_name.ends_with(".webm") { "video/webm" }
-        else { "image/jpeg" };
-    let part = multipart::Part::bytes(file_bytes)
-        .file_name(file_name)
-        .mime_str(mime)
-        .map_err(|e| format!("MIME設定エラー: {}", e))?;
-    let form = multipart::Form::new()
-        .text("title", "うｐろだ")
-        .text("comment", "")
-        .text("r18", "no")
-        .part("file[]", part);
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
-        .build()
-        .map_err(|e| format!("HTTPクライアント作成エラー: {}", e))?;
-    let resp = client
-        .post("https://tadaup.jp/wp-json/custom/v1/upload")
-        .basic_auth("API", Some("AoLU ets7 2zh3 gvqc cTEe BHfp"))
-        .multipart(form)
-        .send()
-        .await
-        .map_err(|e| format!("アップロードエラー: {}", e))?;
-    let status = resp.status();
-    let body = resp.text().await.map_err(|e| format!("レスポンス読み取りエラー: {}", e))?;
-    if !status.is_success() {
-        return Err(format!("HTTP {}: {}", status, body));
-    }
-    let json: serde_json::Value = serde_json::from_str(&body)
-        .map_err(|e| format!("JSONパースエラー: {}", e))?;
-    let success = json.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
-    if !success {
-        let msg = json.get("message").and_then(|v| v.as_str()).unwrap_or("unknown error");
-        return Err(format!("アップロード失敗: {}", msg));
-    }
-    Ok(ImageUploadResult {
-        success: true,
-        source_url: json.get("source_url").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-        thumbnail: json.get("thumbnail").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-        page_url: json.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-    })
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct UploadHistoryEntry {
-    source_url: String,
-    thumbnail: String,
-    page_url: String,
-    file_name: String,
-    uploaded_at: String,
-}
-
-#[derive(Debug, Default, Serialize, Deserialize)]
-struct UploadHistory {
-    entries: Vec<UploadHistoryEntry>,
-}
-
-#[tauri::command]
-fn load_upload_history() -> Result<UploadHistory, String> {
-    match core_store::load_json::<UploadHistory>("upload_history.json") {
-        Ok(data) => Ok(data),
-        Err(_) => Ok(UploadHistory::default()),
-    }
-}
-
-#[tauri::command]
-fn save_upload_history(history: UploadHistory) -> Result<(), String> {
-    core_store::save_json("upload_history.json", &history).map_err(|e| e.to_string())
-}
-
 // ===== Highlight Commands =====
 
 #[tauri::command]
@@ -1775,21 +1598,6 @@ fn reset_image_url_replace() -> Result<Vec<UrlReplaceRule>, String> {
     Ok(parse_url_replace_rules(DEFAULT_IMAGE_URL_RULES))
 }
 
-// ===== Cookie Persistence Commands =====
-
-#[tauri::command]
-fn load_cookies() -> Result<CookiesFile, String> {
-    match core_store::load_json::<CookiesFile>("cookies.json") {
-        Ok(data) => Ok(data),
-        Err(_) => Ok(CookiesFile { version: 1, cookies: Vec::new() }),
-    }
-}
-
-#[tauri::command]
-fn save_cookies(data: CookiesFile) -> Result<(), String> {
-    core_store::save_json("cookies.json", &data).map_err(|e| e.to_string())
-}
-
 // ===== TTS Commands =====
 
 #[tauri::command]
@@ -1880,9 +1688,47 @@ async fn tts_stop() -> Result<(), String> {
 
 // ===== Image Popup Commands =====
 
+/// Reject non-http(s) URLs and URLs pointing at loopback / private / link-local
+/// hosts, to keep attacker-supplied image URLs from being used for SSRF against
+/// localhost or the LAN. Note: this checks the literal host only; a public
+/// hostname that resolves to a private IP is not caught here (DNS rebinding).
+fn validate_public_http_url(raw: &str) -> Result<(), String> {
+    let parsed = reqwest::Url::parse(raw).map_err(|e| format!("invalid url: {}", e))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(format!("blocked url scheme: {}", parsed.scheme()));
+    }
+    let host = parsed.host_str().ok_or_else(|| "missing host".to_string())?;
+    let host_l = host.to_ascii_lowercase();
+    let host_trim = host_l.trim_start_matches('[').trim_end_matches(']');
+    if let Ok(ip) = host_trim.parse::<std::net::IpAddr>() {
+        let blocked = match ip {
+            std::net::IpAddr::V4(v4) => {
+                v4.is_loopback() || v4.is_private() || v4.is_link_local()
+                    || v4.is_unspecified() || v4.is_broadcast()
+            }
+            std::net::IpAddr::V6(v6) => {
+                v6.is_loopback() || v6.is_unspecified()
+                    || v6.to_ipv4_mapped().map(|m| {
+                        m.is_loopback() || m.is_private() || m.is_link_local()
+                    }).unwrap_or(false)
+            }
+        };
+        if blocked {
+            return Err("blocked private/loopback address".to_string());
+        }
+    } else if host_l == "localhost"
+        || host_l.ends_with(".local")
+        || host_l.ends_with(".localhost")
+    {
+        return Err("blocked local hostname".to_string());
+    }
+    Ok(())
+}
+
 /// Fetch an image URL and return a base64 data URL.
 #[tauri::command]
 async fn fetch_image(url: String) -> Result<String, String> {
+    validate_public_http_url(&url)?;
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
         .build()
@@ -1917,7 +1763,11 @@ async fn open_image_popup(
         .and_then(|s| s.split('?').next())
         .unwrap_or("image")
         .to_string();
-    let label = if label.len() > 30 { format!("{}…", &label[..27]) } else { label };
+    let label = if label.chars().count() > 30 {
+        format!("{}…", label.chars().take(27).collect::<String>())
+    } else {
+        label
+    };
 
     let entry = PopupImageEntry {
         id: format!("{}", std::time::SystemTime::now()
@@ -2225,7 +2075,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             fetch_bbsmenu_summary,
             fetch_board_categories,
-            probe_post_cookie_scope_simulation,
+            diagnostics_enabled,
             probe_thread_post_form,
             fetch_thread_list,
             fetch_thread_responses_command,
@@ -2236,7 +2086,6 @@ pub fn run() {
             probe_post_finalize_preview_from_input,
             probe_post_finalize_submit_empty,
             probe_post_finalize_submit_from_input,
-            probe_post_flow_trace,
             check_for_updates,
             get_data_dir,
             open_file_dialog,
@@ -2256,6 +2105,7 @@ pub fn run() {
             save_read_status,
             load_app_settings,
             save_app_settings,
+            load_user_css,
             write_event_log,
             save_layout_prefs,
             load_layout_prefs,
@@ -2273,9 +2123,6 @@ pub fn run() {
             save_window_size,
             load_window_size,
             quit_app,
-            upload_image,
-            load_upload_history,
-            save_upload_history,
             load_id_highlights,
             save_id_highlights,
             load_text_highlights,
@@ -2288,8 +2135,6 @@ pub fn run() {
             save_proxy_settings,
             load_image_url_replace,
             reset_image_url_replace,
-            load_cookies,
-            save_cookies,
             sapi_list_voices,
             sapi_speak_text,
             sapi_stop_speech,

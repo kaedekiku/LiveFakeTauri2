@@ -11,6 +11,6 @@
 5. **Tauriとの接続** — このクレートの関数が `apps/desktop/src-tauri/src/lib.rs` のどのTauriコマンドから呼ばれているか  
 6. **テスト** — `#[cfg(test)]` や `#[test]` の有無とテスト内容の概要  
 
-クレート名の例: `core-fetch`, `core-parse`, `core-auth`, `core-store`, `src-tauri`  
+クレート名の例: `core-fetch`, `core-parse`, `core-store`, `src-tauri`  
 
 引数が空の場合は全クレートの一覧と各1行の概要を表示すること。  

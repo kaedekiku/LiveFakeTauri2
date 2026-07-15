@@ -11,7 +11,6 @@
 2. **ライブラリcrate** — 実際のロジックが実装されている箇所  
    - `crates/core-fetch/src/lib.rs`
    - `crates/core-parse/src/lib.rs`
-   - `crates/core-auth/src/lib.rs`
    - `crates/core-store/src/lib.rs`
 
 3. **フロントエンド** — `apps/desktop/src/App.tsx` 内の:  

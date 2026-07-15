@@ -11,11 +11,10 @@
 │   │   └── src-tauri/    # Rustバックエンド (Tauriコマンド定義)
 │   └── landing/          # 公式サイト (Cloudflare Pages)
 ├── crates/
-│   ├── core-auth/        # BE / UPLIFT / どんぐり認証
 │   ├── core-fetch/       # HTTP取得・投稿フロー (core-parseに依存)
 │   ├── core-parse/       # dat / subject.txt / bbsmenuパーサ (依存なし)
 │   └── core-store/       # JSON永続化 / SQLiteキャッシュ
-├── docs/                 # DEVELOPER_GUIDE / DEPLOYMENT_RUNBOOK / PROGRESS_TRACKER
+├── docs/                 # USER_MANUAL / CSS_CUSTOMIZE
 └── scripts/              # ビルド・リリース・プローブ用スクリプト
 ```
 
@@ -23,7 +22,6 @@
 
 ```
 Tauri App (livefake)
-├── core-auth   (認証: reqwest, thiserror)
 ├── core-fetch  (HTTP取得: reqwest, encoding_rs) → core-parse
 ├── core-store  (永続化: rusqlite, dirs)
 └── core-parse  (パーサ: 外部依存なし)
@@ -105,7 +103,7 @@ cd apps/desktop && npx tsc --noEmit      # TypeScript型チェック
 - `unwrap()` 禁止 (ネットワーク応答・ファイルI/O)
 - `.catch(() => {})` 禁止 — エラーは `console.warn` でログ
 - 新規npm依存の無断追加禁止
-- Cookie値 (`Be3M`, `Be3D`, `sid`) のDEBUG以上でのログ記録禁止
+- Cookie値のログ記録禁止 (MonaTicket等のセッションCookie含む)
 - `App.tsx` の分割禁止 (明示的指示がない限り)
 - リリースビルドで `cargo build --release -p livefake` を直接使用禁止 — 必ず `npx tauri build` を通すこと (フロントエンドが埋め込まれず白画面になる)
 
@@ -113,13 +111,13 @@ cd apps/desktop && npx tsc --noEmit      # TypeScript型チェック
 
 | ファイル | 内容 |
 |---------|------|
-| `docs/DEVELOPER_GUIDE.md` | 技術仕様・アーキテクチャ・開発手順 |
-| `docs/DEPLOYMENT_RUNBOOK.md` | リリース・デプロイ手順 |
-| `docs/PROGRESS_TRACKER.md` | 実装進捗・未実装タスク |
+| `README.md` | プロジェクト概要 (GitHubトップページ) |
+| `SPEC.md` | 技術仕様書 |
+| `REQUIREMENTS.md` | 機能要件定義書 |
+| `docs/USER_MANUAL.md` | ユーザー向け説明書 |
+| `docs/CSS_CUSTOMIZE.md` | CSSカスタマイズガイド (custom.css) |
 
 ## リリース
-
-リリースフローの詳細は `docs/DEPLOYMENT_RUNBOOK.md` を参照。
 
 - `/release` スキル — バージョン更新・検証・差分確認（コミットやビルドは行わない）
 - タグ push (`git push origin v<バージョン>`) で GitHub Actions が Windows ビルド・Release 作成を自動実行

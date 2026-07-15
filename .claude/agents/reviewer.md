@@ -16,7 +16,6 @@ Tauri 2 デスクトップアプリ (Rust ワークスペースバックエン�
 - Cookie/認証データは、INFOレベル以上でログ出力しないこと
 - URLは `normalize_5ch_url()` を通してから使用すること
 - Shift_JISエンコーディングは `encoding_rs` で処理 — 5ch データにはUTF-8を前提としない
-- `LOGIN_COOKIES` 静的Mutex: デッドロックパターンの確認、poison 時は `into_inner()` を使用
 - 新規Tauriコマンドは `.invoke_handler(tauri::generate_handler![...])` への登録を確認
 - 全 `reqwest::Client::builder()` に `.timeout()` が設定されていること
 

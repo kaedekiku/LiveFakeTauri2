@@ -14,7 +14,6 @@
 3. **コード調査** — 関連するRustコードを確認:  
    - `crates/core-fetch/src/lib.rs` — フェッチロジック
    - `crates/core-parse/src/lib.rs` — パースロジック
-   - `crates/core-auth/src/lib.rs` — 認証フロー
    - `apps/desktop/src-tauri/src/lib.rs` — Tauriコマンド
 
 4. **よくある原因**:  

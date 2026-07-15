@@ -1,17 +1,19 @@
 # LiveFake 仕様書 (SPEC)
 
+本書は LiveFake の技術仕様書です。実装コード (v0.0.98 時点) に基づいて記述しています。
+
+---
+
 ## 1. プロジェクト概要
 
 | 項目 | 内容 |
 |------|------|
-| アプリ名 | LiveFake |
-| リポジトリ | LiveFakeTauri2 |
-| 識別子 | `io.livefake.browser` |
-| 目的 | 実況向け日本語掲示板専用ブラウザ |
-| 対応サイト | 5ch.io / したらば / JPNKN |
-| 対象プラットフォーム | Windows 10/11 (64bit) |
-| ライセンス | MIT |
-| 現バージョン | 0.0.76 |
+| 製品名 | LiveFake |
+| 識別子 | io.livefake.browser |
+| 種別 | デスクトップ掲示板ブラウザ (実況向け) |
+| 対応サイト | 5ch.io / したらば (jbbs.shitaraba.net) / JPNKN (bbs.jpnkn.com) |
+| 対応 OS | Windows 10/11 x64 (配布対象) |
+| ライセンス | MIT (GPL 系ライブラリ不使用) |
 
 ---
 
@@ -19,30 +21,26 @@
 
 ### 2.1 配布形式
 
-- GitHub Releases で ZIP ファイルのみ配布（インストーラーなし）
-- Portable 形式: 展開してそのまま実行可能
+- GitHub Releases に `livefake-win-x64.zip` (単一 EXE) を添付
+- タグ `v*` の push で GitHub Actions (`.github/workflows/release.yml`) が自動ビルド・添付
+- Portable 形式: インストーラ不要。データはすべて実行フォルダ配下 `data/` に保存
 
-### 2.2 ZIP 内ファイル構成
+### 2.2 必須ランタイム
 
-- `LiveFake.exe` — メイン実行ファイル
-- `WebView2Loader.dll` — WebView2 ランタイムローダー
-- 設定ファイル群（初回起動時に自動生成）
+- WebView2 Runtime (Windows 10/11 は通常プリインストール)
 
-### 2.3 必須ランタイム
-
-| プラットフォーム | ランタイム | 備考 |
-|----------------|-----------|------|
-| Windows | WebView2 Runtime | Windows 10/11 には通常プリインストール済み |
-
-### 2.4 ビルド方法
+### 2.3 ビルド方法
 
 ```bash
-cd apps/desktop
-npm install
-npx tauri build
+cd apps/desktop && npm install        # 初回のみ
+npx tauri dev                         # 開発
+npx tauri build                       # 本番ビルド (必ずこちらを使用)
+cargo check --workspace               # Rust 型チェック
+cargo test --workspace                # Rust テスト
 ```
 
-> **注意:** `cargo build --release` を直接使用しないこと。フロントエンドが埋め込まれず白画面になる。
+> リリースビルドで `cargo build --release -p livefake` を直接使うとフロントエンドが
+> 埋め込まれず白画面になるため、必ず `npx tauri build` を使用する。
 
 ---
 
@@ -50,495 +48,243 @@ npx tauri build
 
 ### 3.1 技術スタック
 
-| レイヤー | 技術 |
-|---------|------|
+| レイヤ | 技術 |
+|--------|------|
 | フレームワーク | Tauri v2 |
-| フロントエンド | React 19 + TypeScript |
-| バックエンド | Rust (2021 edition) |
-| HTTP クライアント | reqwest (rustls-tls) |
-| データベース | SQLite (rusqlite, bundled) |
-| ビルド | Vite + tauri-cli |
+| フロントエンド | React + TypeScript (Vite)。`App.tsx` 単一ファイル + `styles.css` 単一ファイル |
+| ランタイム npm 依存 | react / react-dom / @tauri-apps/api / lucide-react の4つのみ |
+| バックエンド | Rust (ワークスペース crates) |
+| HTTP | reqwest (タイムアウト30秒) |
+| 永続化 | INI + JSON ファイル + SQLite (rusqlite) |
 
-### 3.2 フロントエンド構成
-
-- `App.tsx` — 単一ファイルモノリス（意図的設計）
-- `styles.css` — 全スタイル定義
-- 状態管理: `useState` / `useEffect` のみ（Redux, Context Provider 不使用）
-- ランタイム依存: react, react-dom, @tauri-apps/api, lucide-react
-
-### 3.3 Rust バックエンド (crates)
+### 3.2 Rust crate 構成
 
 ```
-livefake (Tauri App)
-├── core-auth    — BE / UPLIFT / どんぐり認証
-├── core-fetch   — HTTP 取得・投稿フロー → core-parse に依存
-├── core-parse   — dat / subject.txt / bbsmenu パーサ（外部依存なし）
-├── core-store   — JSON 永続化 / SQLite キャッシュ
-├── core-proxy   — プロキシ設定 / DPAPI / Cookie 管理 / ImageViewURLReplace
-└── core-tts     — 音声読み上げ (SAPI / 棒読みちゃん / VOICEVOX)
+Tauri App (livefake)
+├── core-fetch  HTTP取得・投稿フロー全般 → core-parse に依存
+├── core-parse  subject.txt / dat / read.cgi HTML / したらば / JPNKN パーサ (外部依存: encoding_rs のみ)
+├── core-proxy  プロキシクライアント生成・ImageViewURLReplace パーサ
+├── core-store  Portable 永続化 (INI/JSON/SQLite/イベントログ)
+└── core-tts    SAPI / 棒読みちゃん / VOICEVOX 読み上げ
 ```
 
-### 3.4 WebView2 依存
+- 各 crate は単一 `lib.rs` 構成
+- エラー処理: ライブラリ crate は `thiserror` カスタム型、Tauri コマンドは `Result<T, String>`
 
-- Microsoft Edge WebView2 Runtime に依存
-- Windows 10/11 には通常プリインストール済み
+### 3.3 IPC 通信
 
-### 3.5 IPC 通信
-
-- フロントエンド → バックエンド: `invoke()` (Tauri IPC)
-- `isTauriRuntime()` チェックで Tauri 環境でのみ呼び出し
-- コマンド名: snake_case / パラメータ: camelCase (Tauri が自動変換)
+- フロントは `@tauri-apps/api/core` の `invoke()` で Rust コマンドを呼び出す
+- コマンド名は snake_case、パラメータは camelCase (Tauri が自動変換)
+- 返却型は `#[serde(rename_all = "camelCase")]`
+- `invoke()` は必ず `isTauriRuntime()` チェックで囲む (ブラウザプレビュー対応)
 
 ---
 
 ## 4. 機能仕様
 
-### 4.1 対応掲示板プラットフォーム
+### 4.1 対応サイトとサイト判別
 
-| サイト | ドメイン | エンコーディング | データ形式 |
-|--------|---------|-----------------|-----------|
-| 5ch.io | `*.5ch.io`, `*.5ch.net`, `*.2ch.net` | Shift_JIS | dat 形式 |
-| したらば | `jbbs.shitaraba.net` | EUC-JP | HTML (DT/DD タグ) |
-| JPNKN | `bbs.jpnkn.com` | Shift_JIS | dat 形式 |
+`core_fetch::detect_site_type()` が URL のホストで判別する。
 
-- マルチエンコーディング自動検出: UTF-8 / Shift_JIS / EUC-JP をスコアリング
-- `5ch.net` → `5ch.io` 自動正規化
-- HTTP → HTTPS 自動アップグレード
+| サイト | 判別ホスト | 一覧取得 | レス取得 | エンコーディング |
+|--------|-----------|---------|---------|----------------|
+| 5ch | `.5ch.io` / `.5ch.net` / `.2ch.net` | subject.txt | dat (read.cgi HTML フォールバック) | Shift_JIS |
+| したらば | `jbbs.shitaraba.net` | subject.txt | rawmode.cgi (DT/DD HTML パーサも保持) | EUC-JP |
+| JPNKN | `bbs.jpnkn.com` | subject.txt | dat (5ch と同形式) | Shift_JIS |
 
-### 4.2 BBS Menu
+- `normalize_5ch_url()`: `*.5ch.net` → `*.5ch.io` へホスト正規化
+- `is_allowed_url()`: 通信先を対応ドメインに限定
+- `core_parse::detect_encoding()`: UTF-8 / Shift_JIS / EUC-JP のスコアリング自動判定
+- User-Agent: `Monazilla/1.00 LiveFake/0.1`
 
-- URL: `https://menu.5ch.io/bbsmenu.json`
-- カテゴリツリー表示（展開/折畳み）
-- ダブルクリックでボード読み込み
-- ローカルキャッシュ (`bbs-menu.json`)
+### 4.2 投稿 (サイト別)
 
-### 4.3 スレッド一覧
+| サイト | 投稿先 | 特記 |
+|--------|--------|------|
+| 5ch | `bbs.cgi` | 確認画面・UPLIFT 同意フォームの hidden fields を自動処理して再送信 |
+| したらば | `jbbs.shitaraba.net/bbs/write.cgi` | 書き込み・スレ立て対応 (EUC-JP エンコード) |
+| JPNKN | `bbs.jpnkn.com/test/bbs.cgi` | 書き込み・スレ立て対応 |
 
-- `subject.txt` からスレッド一覧取得
-- 表示カラム: スレタイ / レス数 / 未読数 / 新着数 / 最終取得 / Since (作成日) / 勢い
-- 全カラムソート対応
-- 検索フィルタ
-- 勢いバー表示
-- dat 落ちスレッドのキャッシュ表示
-- スレタイ NG ワードフィルタ
+- `post_reply_multisite` コマンドがサイト判別して分岐
+- 投稿レスポンス HTML から成功/エラー/確認画面を判定
+- Cookie jar クライアントで MonaTicket 等をセッション中のみ維持 (ファイル永続化なし)
 
-### 4.4 レス表示
+### 4.3 タブ
 
-- ブロック表示形式
-- ヘッダー: レス番号 / 名前 / メール / ワッチョイ / 日付 / ID / 書き込み回数
-- ID 色分け: 基本色は黒 (ライト) / 白 (ダーク)
-- 書き込み回数表示: 1回=デフォルト色、2-4回=青、5回以上=赤
-- 被参照表示 (▼N)
-- 新着マーカー ("ここから新着" / "New!")
-- 自分の投稿ラベル [自分] / 自分宛ラベル [自分宛]
-- アンカーポップアップ (`>>N`, `>>N-M`, `>>N,M` 形式対応)
-- ASCII アート自動検出・等幅表示切替
-- sage 表示 ([sage] をブルー系表示)
-- HTMLエンティティデコード
+- 板タブ・スレタブの2段。ドラッグ並べ替え、右クリックメニュー、中クリックで閉じる
+- スレタブごとにレス内容・選択レス・スクロール位置・新着開始位置をメモリキャッシュ (`tabCacheRef`)
+- タブ復帰時: 最下部で離れた場合は最下部へ、それ以外は表示していたレス位置へ復元
+- 最大タブ数 1〜50 (既定20)
+- セッション: `session_tabs.json` / `session_board_tabs.json` に保存し起動時復元 (設定で ON/OFF)
 
-### 4.5 タブ
+### 4.4 自動更新
 
-- 複数スレッド同時閲覧（デフォルト最大 20 タブ、設定で変更可）
-- 板タブ・スレタブともに **マウスドラッグ** で順序変更 (移動量 6px 以上で発火)
-- スレタブ右クリックメニュー: 閉じる / 他を閉じる / 全て閉じる / コピー / キャッシュ削除
-- 板タブ右クリックメニュー: 板情報、お気に入り操作
-- レス数バッジ表示
-- タブ閉じるボタン (×) は mousedown 伝播停止で誤ドラッグを防止
+- 間隔 10〜300 秒 (既定15秒)
+- アクティブタブ: 全件再取得して UI 更新 (新着があればスクロール・新着ペイン・字幕・TTS へ)
+- バックグラウンドタブ: 差分取得 (sinceResNo) してキャッシュ更新・新着ペインへ
+- スレ一覧もサイレント更新
 
-### 4.6 書き込み (投稿)
+### 4.5 NG フィルタ
 
-- 名前 / メール / 本文入力
-- sage 自動設定
-- 引用 (ダブルクリックでレス番引用)
-- 書き込みプレビュー
-- 名前・メール永続化
-- 書き込み履歴 (最大 50 件)
-- 新スレ立て機能 (タイトル + 本文)
-- 確認画面の hidden fields 自動処理
-- MonaTicket 自動取得・管理
+- タイプ: words / ids / names / thread_words
+- `/pattern/` 形式は正規表現 (case-insensitive)
+- モード: hide (非表示) / hide-images (画像のみ非表示)
+- スコープ: global / board (板URL) / thread (スレURL)
+- hide 対象は新着ペイン・字幕・TTS からも除外
+- 永続化: `ng-settings.json`
 
-#### 4.6.1 サイト別投稿仕様
+### 4.6 ハイライト
 
-| サイト | エンドポイント | エンコーディング |
-|--------|-------------|----------------|
-| 5ch | `https://{server}.5ch.io/test/bbs.cgi` | Shift_JIS |
-| したらば | `https://jbbs.shitaraba.net/bbs/write.cgi` | EUC-JP |
-| JPNKN | `https://bbs.jpnkn.com/test/bbs.cgi` | Shift_JIS |
+- 15色パレット
+- ID ハイライト: ID→色マップ。保存時に日付を付与し、日付が変わると無効 (`id-highlights.json`)
+- テキストハイライト: type=word (本文) / name (名前欄) (`text-highlights.json`)
+- 字幕ウィンドウへ色情報を同期
 
-### 4.7 自動リロード
+### 4.7 画像
 
-- インターバル: 15 〜 300 秒 (デフォルト 15 秒)
-- ON/OFF トグル (ツールバー + コンテキストメニュー)
-- ON/OFF 状態は `App.autoReload` として永続化（再起動後も維持）
-- 差分取得 (前回最終レス番号以降)
-- スレッド一覧のサイレントリフレッシュ
+- 本文中の画像 URL を検出しサムネイル化 (サイズ 50〜600px 設定可)
+- サイズ制限: HEAD リクエストの Content-Length で判定、超過は「クリックで表示」
+- 画像ポップアップ: Tauri 別ウィンドウ。画像は `fetch_image` で取得し data URL 化
+- ホバープレビュー: 遅延設定 (0〜2000ms) / Ctrl+ホバー即時 / Ctrl+ホイールズーム (10〜500%)
+- 保存: `save_image_to_folder` で設定フォルダへ
+- ImageViewURLReplace: `data/ImageViewURLReplace.txt` (TSV: pattern⇥replacement[⇥referer])
 
-### 4.8 自動スクロール
+### 4.8 新着レスペイン
 
-- 新着レス受信時に自動で最下端にスクロール
-- ON/OFF トグル (ツールバー + コンテキストメニュー)
-- スムーススクロール設定
+- 新着レスをキューに積み、1件ずつ表示 (5秒表示 → 次へ)
+- 本文がペインに収まらない場合: 2秒静止 → 約8ms/px でスクロール → 5秒 → 次へ
+- クリックで該当スレ・レスへジャンプ。高さ 80〜420px でリサイズ可
 
-### 4.9 NG フィルター
+### 4.9 字幕ウィンドウ
 
-- フィルタータイプ: ワード / ID / 名前 / スレタイ
-- NG モード: 非表示 / 画像 NG
-- 正規表現対応 (`/パターン/` 形式)
-- 右クリックメニューから NG ID / NG 名前 / NG ワード (選択テキスト) を追加可能
-- 設定パネルで一覧管理 (追加・削除)
+- Tauri の "subtitle" ウィンドウ (半透明・ドラッグ移動可)
+- メインから `subtitle_update` でスレタイ・レス番・名前・ID (ハイライト色付き)・日付・本文 HTML を送信
+- コマンド: `subtitle_show / hide / reset_position / update / opacity / topmost / font_size / meta_font_size / id_font_size / id_font_family`
 
-### 4.10 ハイライト
+### 4.10 音声読み上げ (TTS)
 
-- 15色パレット: 赤/橙/金/黄緑/緑/水色/空色/青/紫/ピンク/桃/茶/灰/黒/白
-- ハイライト種別:
-  - **テキストハイライト**: 本文中のキーワードを背景色で強調
-  - **名前ハイライト**: 投稿者名を背景色で強調
-  - **ID ハイライト**: ID 文字色を変更 (当日分のみ)
-- 右クリックメニューから追加 / 解除
-- 設定パネル「ハイライト」タブで管理 (追加・削除・全削除)
-- 字幕ウィンドウにも同期
-
-### 4.11 画像機能
-
-#### 4.11.1 プレビュー・表示
-- レス内の画像 URL を自動検出しサムネイル表示
-- Ctrl+ホバーで等倍プレビュー
-- クリックでライトボックス (別ウィンドウポップアップ)
-- ポップアップウィンドウサイズ自動調整
-
-#### 4.11.2 画像保存
-- ファイルダイアログで保存先選択 (キャッシュ)
-- MIME タイプ自動判定 (jpg/png/gif/webp/bmp)
-- ファイル名自動抽出
-
-#### 4.11.3 画像アップロード
-- tadaup.jp への画像アップロード対応
-- アップロード履歴管理
-
-#### 4.11.4 画像 URL 置換 (ImageViewURLReplace.txt)
-- TSV 形式: `検索正規表現<TAB>置換文字列<TAB>リファラ`
-- デフォルトルール: Twitter/X (pbs.twimg.com)、ニコニコ動画サムネイル
-- カスタムルール追記可能
-- 設定パネルからリセット可能
-
-### 4.12 字幕ウィンドウ
-
-- 半透明オーバーレイウィンドウ（装飾なし・透明背景）
-- **開閉**: ボタン押下で open/close。メインウィンドウを閉じると自動クローズ
-- **初期位置**: プライマリモニタ中央。前回位置を保存・次回 open 時に復元
-- **位置リセット**: 設定「中央に戻す」でプライマリモニタ中央に移動
-- **ドラッグ移動**: ウィンドウ全体をドラッグして任意位置に移動
-- Always on Top トグル
-- 背景透明度: 0.1 〜 1.0 (リアルタイム変更)
-- 表示要素 (メタ行): スレタイ / レス番号 / 投稿者名 / ID (ID ハイライト色対応) / 日付
-- 表示要素 (本文行): 本文 (テキストハイライト同期)
-- フォントサイズ個別設定 (本文: 10〜96px / メタ情報: 8〜48px)
-
-#### 4.12.1 Tauri コマンド
-
-| コマンド | 説明 |
+| エンジン | 実装 |
 |---------|------|
-| `subtitle_show` | ウィンドウを生成・表示（前回位置復元 or 中央配置） |
-| `subtitle_hide` | 位置を保存してウィンドウをクローズ |
-| `subtitle_reset_position` | プライマリモニタ中央に移動 |
-| `subtitle_update` | レス内容を字幕に反映 |
-| `subtitle_opacity` | 背景透明度をリアルタイム変更 |
-| `subtitle_font_size` | 本文フォントサイズ変更 |
-| `subtitle_meta_font_size` | メタ情報フォントサイズ変更 |
-| `subtitle_topmost` | Always on Top ON/OFF |
+| SAPI | Windows COM (STA スレッド)。レジストリからボイス列挙、SetRate (-10〜10) / SetVolume (0〜100) |
+| 棒読みちゃん | RemoteTalk.exe をコマンド起動。ヌルバイト除去・2000文字制限のインジェクション対策 |
+| VOICEVOX | HTTP API (speakers → audio_query → synthesis)、PlaySoundW で WAV 再生 |
 
-### 4.13 音声読み上げ (TTS)
+- 逐次キュー処理。前処理: HTML タグ/エンティティ除去、URL 除去 (YouTube→「ユーチューブ」)、最大文字数超過は「長文のため以下省略」
+- レス番プレフィックスはサイト別 (レス/したらば/ジャパンくん N番さん)
+- 読み上げ辞書: キーワード→読みの置換。「全置換」でレス全体を置換 (`tts-dict.json`)
 
-#### 4.13.1 対応エンジン
+### 4.11 プロキシ (未動作)
 
-| エンジン | プラットフォーム | 接続方式 |
-|---------|----------------|---------|
-| SAPI | Windows | COM (STA スレッド) |
-| 棒読みちゃん | Windows | RemoteTalk.exe (外部プロセス) |
-| VOICEVOX | Windows | HTTP API (`http://127.0.0.1:50021`) |
+- 設定 UI と保存 (`settings.ini` [Proxy]) 、`core-proxy` のクライアント生成 (HTTP/SOCKS5/SOCKS4) は実装済み
+- **ただし `core-fetch` の HTTP クライアントがプロキシ設定を参照していないため、現バージョンでは通信に適用されない** (既知の制限・対応予定)
+- プロキシパスワードは Windows では DPAPI (ユーザースコープ) で暗号化して settings.ini に保存 (`dpapi:<base64>` 形式)。旧形式の平文値も読み込み時に後方互換で受理
 
-#### 4.13.2 読み上げ仕様
-- 新着レス取得時に自動読み上げ
-- 読み上げフォーマット:
-  - 5ch: 「レス{番号}番さん {本文}」
-  - したらば: 「したらば{番号}番さん {本文}」
-  - JPNKN: 「ジャパンくん{番号}番さん {本文}」
-- レス番号右クリックから「このレスから読み上げ」
-- 文字数制限設定 (10〜300文字、無制限可)
-- レス 1001/1002 はスキップ (システムメッセージ)
-- 逐次再生キュー管理
+### 4.12 アップデートチェック
 
-#### 4.13.3 VOICEVOX 設定
-- スピーカー ID 選択
-- 速度スケール: 0.5 〜 2.0
-- ピッチスケール: -0.15 〜 +0.15
-- イントネーション: 0.0 〜 2.0
-- 音量スケール: 0.0 〜 2.0
+- `latest.json` (GitHub raw: `apps/landing/public/latest.json`) を取得し semver 比較
+- プラットフォームキー (windows-x64 等) 別のアセット情報 (filename / sha256 / size) に対応
+- バージョン情報ダイアログで自動チェック、更新があればダウンロードページを開くボタンを表示
 
-### 4.14 認証
+### 4.13 ユーザー CSS
 
-- BE ログイン (`https://5ch.io/_login`)
-- UPLIFT ログイン
-- どんぐりログイン
-- Cookie 永続管理 (`cookies.json`)
-  - Set-Cookie ヘッダ自動解析 (expires / max-age)
-  - 有効期限切れ自動フィルタ
-  - UA 不一致フィルタ (5ch 系)
-- 投稿 Cookie: `Be3M`, `Be3D`, `sid`
-
-### 4.15 プロキシ
-
-- 対応タイプ: HTTP / SOCKS5 / SOCKS4
-- 認証: ユーザー名 / パスワード
-- パスワードは DPAPI 暗号化 (Windows)
-- 設定変更時にクライアント自動再構築
-
-### 4.16 お気に入り
-
-- 板お気に入り / スレお気に入り
-- JSON 永続化 (core-store 経由)
-- 未読カウント自動更新
-
-### 4.17 セッション復元
-
-- アプリ終了時にタブ・スクロール位置を自動保存
-- 次回起動時に復元 (設定で ON/OFF)
-
-### 4.18 検索
-
-#### 4.18.1 板/スレッド一覧の検索
-- 板ツリー検索 (左ペイン)
-- スレッド一覧検索 (タイトル絞り込み、リアルタイム)
-- 検索履歴 (Enter で保存、最大 20 件)、ドロップダウンから再利用、右クリックで削除
-
-#### 4.18.2 レス検索 (2 モード)
-レス画面の **🔍 ボタン** (書き込みボタン横) を押すとプルダウンで 2 択:
-
-| モード | 挙動 |
-|-------|------|
-| **レス抽出** | 検索ワードを含むレスのみ表示 (フィルタ)。残ったレスでハイライト |
-| **スレ内検索** | フィルタせず、ヒットレスをハイライトのみ。`N/M` 件数表示 + ↑/↓ でジャンプ。Enter で次へ。クエリ変更時に最初のヒットへ自動スクロール |
-
-- どちらも検索バーを閉じるとハイライト解除 (一時ハイライト)
-- 検索対象: レス本文 + 投稿者名
-- 状態: `responseSearchMode: "extract" | "in-thread" | null`
-
-#### 4.18.3 リンクフィルタ
-- レス画面下部のナビバーで画像/動画/外部リンクを含むレスのみ抽出
-
-### 4.19 コンテキストメニュー (レス領域)
-
-```
-┌──────────────────────────────┐
-│ 「テキスト」をハイライト    ▶ │ → 15色サブメニュー (テキスト選択時)
-│ ID:xxx をハイライト         ▶ │ → 15色サブメニュー (ID 検出時)
-│ 名前「xxx」をハイライト    ▶ │ → 15色サブメニュー (名前検出時)
-│ ハイライト解除               │ (ハイライト済み時)
-│ ───────────────────────────── │
-│ ここにレス                   │
-│ 名前付き引用                 │
-│ 本文をコピー                 │
-│ レスURLをコピー              │
-│ IDをコピー                   │
-│ スレ全体をコピー             │
-│ 「テキスト」をNGワードに追加 │ (テキスト選択時)
-│ NGIDに追加                   │
-│ NG名前に追加                 │
-│ AA表示: ON/OFF               │
-│ ───────────────────────────── │
-│ このレスから読み上げ         │ (レス番号上のみ)
-│ ───────────────────────────── │
-│ ✓ オートリロード             │
-│   オートスクロール           │
-│ ✓ 読み上げ                   │
-└──────────────────────────────┘
-```
-
-### 4.20 キーボード操作
-
-#### 4.20.1 グローバル
-| キー | 動作 |
-|------|------|
-| `Escape` | ホバープレビュー → メニュー → ポップアップを順に閉じる |
-| `Ctrl+F` | (ブラウザ標準のページ内検索を抑止) |
-
-#### 4.20.2 レス領域フォーカス時
-| キー | 動作 |
-|------|------|
-| `↑` / `↓` | 60px ずつスクロール |
-| `PageUp` / `PageDown` | 1 ページ分スクロール |
-| `Home` / `End` | 先頭 / 末尾へ |
-
-#### 4.20.3 入力欄
-| キー | 動作 |
-|------|------|
-| `Enter` (URL欄) | URL 読み込み |
-| `Enter` (検索欄) | 検索履歴に保存 / スレ内検索モードでは次のヒットへ |
-| `Escape` (検索欄) | 検索バーを閉じる |
-| `Ctrl+Enter` / `Shift+Enter` (書き込み欄) | 投稿送信 (設定で切替) |
-
-> Ctrl+Tab / Ctrl+W などのアプリ全体ショートカットは現在実装されていない。
-
-### 4.21 テキスト表示設定
-
-- フォント: MS UI Gothic, Meiryo, Segoe UI Emoji, Noto Color Emoji (カスタム可)
-- フォントサイズ: 10 〜 28px (デフォルト 14px)
-- レス間隔: 0 〜 40px (デフォルト 10px)
-- スムーススクロール: ON/OFF
-
-### 4.22 テーマ
-
-- ライトモード / ダークモード
-- タイトルバー連動
-- `.dark` クラスで CSS 切替
-
-### 4.23 新着ペイン
-
-- スレッド一覧エリア下部に配置
-- 最新レスをリアルタイム表示
-- リサイザーで高さ調整 (80 〜 420px)
-
-### 4.24 更新チェック
-
-- `latest.json` 経由でバージョン比較
-- バージョン情報ダイアログ内で自動チェック
-
-### 4.25 イベントログ
-
-- 保存先: `eventlog/{YYYY-MM-DD}.log`
-- レベル: INFO / WARN / ERROR
-- 保有期間: 1 〜 365 日 (デフォルト 7 日)
-- 古いログの自動削除
+- `data/custom.css` を起動時に読み込み、`<style id="user-custom-css">` として組み込みスタイルの後に注入
+- ファイルが無い場合はコメントテンプレートを自動生成 (`load_user_css` コマンド)
+- メニュー「設定 > ユーザーCSSを再読み込み」で再注入 (再起動不要)
+- 詳細: `docs/CSS_CUSTOMIZE.md`
 
 ---
 
-## 5. データ・設定ファイル仕様
+## 5. Tauri コマンド一覧 (84個)
 
-### 5.1 保存場所
+### 板・スレ取得
+`fetch_bbsmenu_summary` `fetch_board_categories` `fetch_thread_list` `fetch_thread_responses_command`
 
-全設定ファイルは EXE 同梱フォルダ (Portable 形式) に保存。
-`core-store` の `get_data_dir()` でパスを取得。
+### 投稿
+`post_reply_multisite` `create_thread_command` `debug_post_connectivity`
+プローブ系: `probe_thread_post_form` `probe_post_confirm(_empty)` `probe_post_finalize_preview(_from_input)` `probe_post_finalize_submit_(empty|from_input)`
+※ `debug_post_connectivity` とプローブ系は開発ビルド限定 (リリースビルドでは環境変数 `LIVEFAKE_DIAG=1` を設定した場合のみ有効)。`diagnostics_enabled` コマンドでフロントが表示制御
 
-### 5.2 ファイル一覧
+### 永続化
+`load/save_favorites` `load/save_ng_filters` `load/save_tts_dict` `load/save_read_status` `load/save_thread_history` `set_thread_custom_title` `load/save_app_settings` (INI) `load_user_css` `save/load_layout_prefs` `save/load_session_tabs` `save/load_session_board_tabs` `save/load_generic_json` (ファイル名ホワイトリスト制) `load/save_external_boards` `load/save_id_highlights` `load/save_text_highlights` `load/save_proxy_settings` `load/reset_image_url_replace` `write_event_log`
 
-全ファイルは EXE 同梱フォルダ (Portable) に保存される。`core_store::portable_data_dir()` がパスを返す。
+### SQLite キャッシュ
+`save/load/delete_thread_cache` `load_all_cached_threads`
 
-#### 5.2.1 設定 (App / Speech / Posting)
-| ファイル名 | 形式 | 内容 |
-|-----------|------|------|
-| `settings.ini` | INI | App / Speech / Proxy / Posting / Window セクション |
+### TTS
+`sapi_list_voices` `sapi_speak_text` `sapi_stop_speech` `bouyomi_speak_text` `voicevox_get_speakers` `voicevox_speak_text` `tts_stop`
 
-#### 5.2.2 ユーザーデータ (Tauri IPC 経由 JSON)
-| ファイル名 | 内容 | 主な IPC |
-|-----------|------|---------|
-| `favorites.json` | お気に入り (板 / スレ) | `load_favorites` / `save_favorites` |
-| `external-boards.json` | 外部板 (したらば / JPNKN 等) | `load_external_boards` / `save_external_boards` |
-| `ng-settings.json` | NG フィルタ設定 | `load_ng_filters` / `save_ng_filters` |
-| `read-status.json` | 既読状態 | `load_read_status` / `save_read_status` |
-| `thread-history.json` | スレ訪問履歴 (最終既読 / 閲覧日時 / カスタムタイトル) | `load_thread_history` / `save_thread_history` |
-| `id-highlights.json` | ID ハイライト (当日分のみ、日付不一致時に自動リセット) | `load_id_highlights` / `save_id_highlights` |
-| `text-highlights.json` | テキスト / 名前ハイライト | `load_text_highlights` / `save_text_highlights` |
-| `cookies.json` | 認証 Cookie (Set-Cookie 解析、UA フィルタ付き) | `load_cookies` / `save_cookies` |
-| `proxy-settings.json` | プロキシ設定 (パスワードは DPAPI 暗号化) | `load_proxy_settings` / `save_proxy_settings` |
-| `upload-history.json` | 画像アップロード履歴 (tadaup.jp) | `load_upload_history` / `save_upload_history` |
-| `layout-prefs.json` | ペイン幅、ダークモード、タブ上限等 UI 状態 | `load_layout_prefs` / `save_layout_prefs` |
-| `session-tabs.json` | スレタブ復元データ | `load_session_tabs` / `save_session_tabs` |
-| `session-board-tabs.json` | 板タブ復元データ | `load_session_board_tabs` / `save_session_board_tabs` |
+### 画像
+`fetch_image` `open_image_popup` `get_image_popup_data` `remove_popup_image` `clear_popup_images` `save_image_to_folder`
 
-#### 5.2.3 ユーザーデータ (汎用 JSON: `save_generic_json` / `load_generic_json` 経由)
-| ファイル名 | 内容 |
-|-----------|------|
-| `bookmarks.json` | スレごとのしおり位置 |
-| `scroll-positions.json` | スレごとのスクロール位置 (レス番号) |
-| `name-history.json` | 投稿者名の履歴 (最大 20 件) |
-| `my-posts.json` | 自分の投稿レス番号 (スレ別) |
-| `search-history.json` | 板検索 / レス検索の履歴 |
-| `thread-fetch-times.json` | スレごとの最終取得時刻 |
-| `expanded-categories.json` | 板ツリーの展開状態 |
-| `board-categories.json` | BBS Menu のキャッシュ |
-| `board-tree-scroll.json` | 板ツリーのスクロール位置 |
-| `new-thread-dialog-size.json` | スレ立てダイアログのサイズ |
+### 字幕
+`subtitle_show` `subtitle_hide` `subtitle_reset_position` `subtitle_update` `subtitle_opacity` `subtitle_topmost` `subtitle_font_size` `subtitle_meta_font_size` `subtitle_id_font_size` `subtitle_id_font_family`
 
-#### 5.2.4 その他
-| ファイル名 | 形式 | 内容 |
-|-----------|------|------|
-| `bbs-menu.json` | JSON | BBS Menu の生キャッシュ (core-fetch 経由) |
-| `ImageViewURLReplace.txt` | TSV | 画像 URL 置換ルール (`load_image_url_replace`) |
-| `thread-cache.db` | SQLite | スレッドレスキャッシュ (rusqlite, bundled) |
-| `eventlog/{YYYY-MM-DD}.log` | テキスト | イベントログ (既定 7 日保持、自動ローテーション) |
-
-> アプリ内の `localStorage` 参照は廃止済み (v0.0.76)。永続化はすべて IPC 経由のファイル保存。
-
-### 5.3 NG フィルター形式
-
-```json
-{
-  "words": [
-    { "value": "NGワード", "mode": "hide" },
-    { "value": "/正規表現/", "mode": "hide" },
-    { "value": "画像NGワード", "mode": "hide-images" }
-  ],
-  "ids": [
-    { "value": "ABC123", "mode": "hide" }
-  ],
-  "names": [
-    { "value": "名前", "mode": "hide" }
-  ],
-  "thread_words": ["スレタイNGワード"]
-}
-```
-
-- `mode`: `"hide"` = レス非表示、`"hide-images"` = 画像のみ非表示
-- 正規表現: `/パターン/` 形式 (大文字小文字区別なし)
-
-### 5.4 ハイライト設定形式
-
-**ID ハイライト (`id-highlights.json`):**
-```json
-{
-  "2026-04-16": {
-    "ABC123": "#FF0000",
-    "XYZ789": "#0000FF"
-  }
-}
-```
-- 日付キーで管理、前日以前は自動削除
-
-**テキスト/名前ハイライト (`text-highlights.json`):**
-```json
-[
-  { "pattern": "キーワード", "color": "#FF0000", "type": "word" },
-  { "pattern": "投稿者名", "color": "#00FF00", "type": "name" }
-]
-```
-
-### 5.5 Cookie 形式
-
-```json
-{
-  "cookies": [
-    {
-      "name": "cookie名",
-      "value": "値",
-      "domain": ".5ch.io",
-      "expires": 1700000000,
-      "user_agent": "Mozilla/5.0..."
-    }
-  ]
-}
-```
+### ウィンドウ・アプリ
+`set_window_theme` `save/load_window_size` `quit_app` `open_external_url` `open_file_dialog` `open_folder_dialog` `get_data_dir` `list_system_fonts` `check_for_updates`
 
 ---
 
-## 6. セキュリティ仕様
+## 6. データ永続化仕様
 
-### 6.1 eval() 廃止・IPC 通信
+### 6.1 保存先
 
-- 画像ポップアップは `eval()` 不使用
-- AppHandle の State に data URL を事前保存し、IPC (`get_image_popup_data`) で取得
-- ワンタイム利用 (取得後メモリから即時削除)
+- Windows: 実行時カレントディレクトリ直下の `data/` (環境変数 `EMBER_DATA_DIR` で上書き可)
+- macOS / Linux: `dirs::data_dir()/LiveFake`
 
-### 6.2 CSP (Content Security Policy)
+### 6.2 settings.ini
+
+| セクション | キー (既定値) |
+|-----------|--------------|
+| [App] | maxOpenTabs=20, fontSize=14, responseGap=10, autoReloadIntervalSec=15, autoScroll=true, smoothScroll=true, logRetentionDays=7 (実行時に autoReload, imageSaveFolder 等を追記) |
+| [Speech] | mode=off, enabled=false, maxReadLength=0, sapiVoiceIndex=0, sapiRate=0, sapiVolume=100, bouyomiPath=, voicevoxEndpoint=http://127.0.0.1:50021, voicevoxSpeakerId=0, voicevoxSpeedScale=1.0, voicevoxPitchScale=0.0, voicevoxIntonationScale=1.0, voicevoxVolumeScale=1.0 |
+| [Posting] | name=, mail=, sage=false, fontSize=13 (実行時に composeOpen を追記) |
+| [Proxy] | (実行時追記) ProxyEnabled / ProxyType / ProxyHost / ProxyPort / ProxyUsername / ProxyPassword (DPAPI 暗号化、旧平文値も後方互換で読込可) |
+
+### 6.3 JSON ファイル
+
+bbs-menu.json / board-catalog.json (お気に入り) / board-categories.json / external-boards.json /
+ng-settings.json / tts-dict.json / read_status.json / thread-history.json (既読数・訪問時刻・カスタムタイトル) /
+layout_prefs.json / session_tabs.json / session_board_tabs.json / window_size.json /
+id-highlights.json / text-highlights.json /
+bookmarks.json (栞) / scroll-positions.json / name-history.json / my-posts.json /
+search-history.json / thread-fetch-times.json / expanded-categories.json / board-tree-scroll.json /
+new-thread-dialog-size.json
+
+汎用 JSON (`save/load_generic_json`) はファイル名ホワイトリストで制限。
+
+### 6.4 SQLite (`data/cache.db`)
+
+```sql
+CREATE TABLE thread_cache (
+  thread_url TEXT PRIMARY KEY,
+  title TEXT,
+  responses_json TEXT,   -- レス配列を JSON で丸ごと保存
+  updated_at INTEGER
+);
+```
+
+dat 落ちスレの閲覧 (「dat落ちキャッシュ」機能) に利用。
+
+### 6.5 その他
+
+- `custom.css`: ユーザー CSS (無ければテンプレート自動生成)
+- `ImageViewURLReplace.txt`: 画像 URL 置換 TSV
+- `eventlog/YYYY-MM-DD.log`: `[時刻] [INFO|WARN|ERROR] メッセージ` 形式。保持日数設定で起動時 purge
+
+### 6.6 localStorage
+
+フロント側の一部 UI 状態は `desktop.*` プレフィックスの localStorage も併用する。
+
+---
+
+## 7. セキュリティ仕様
+
+### 7.1 通信先の限定
+
+- `is_allowed_url()` で対応ドメイン (5ch.io / 5ch.net / 2ch.net / jbbs.shitaraba.net / bbs.jpnkn.com) に限定
+- 投稿 URL は 5ch ドメインを限定検証
+
+### 7.2 CSP
 
 ```
 default-src 'self' 'unsafe-inline' 'unsafe-eval';
@@ -548,101 +294,43 @@ script-src 'self' 'unsafe-inline' 'unsafe-eval';
 connect-src 'self' https: http: ws: wss:
 ```
 
-### 6.3 HTML サニタイズ
+### 7.3 HTML サニタイズ
 
-- `dangerouslySetInnerHTML` の値は `renderResponseBody()` でサニタイズ
+- レス本文は `renderResponseBody()` でサニタイズしてから `dangerouslySetInnerHTML` に渡す
 - HTML 属性内 URL は `escapeAttr()` でエスケープ
-- `normalizeExternalUrl()` で `javascript:`, `data:`, `blob:` スキームをブロック
+- `normalizeExternalUrl()` が `javascript:` / `data:` / `blob:` スキームをブロック
 
-### 6.4 パスワード暗号化 (DPAPI)
+### 7.4 Cookie・認証情報
 
-- Windows DPAPI (`CryptProtectData` / `CryptUnprotectData`)
-- Base64 エンコード保存
-- プレフィックス `DPAPI:` で暗号化済みを識別
-- 平文 (プレフィックスなし) は旧バージョン互換
+- Cookie 値 (Be3M / Be3D / sid) は DEBUG 以上のログに記録しない
+- プロキシパスワードは settings.ini に平文保存 (現状の制限)
 
-### 6.5 Cookie セキュリティ
+### 7.5 外部プロセス連携
 
-- Cookie 値 (`Be3M`, `Be3D`, `sid`) は DEBUG 以上でログ記録禁止
-- 投稿 URL は 5ch ドメインに限定検証
-- 発行元 UA 不一致の Cookie を自動フィルタ
+- 棒読みちゃん (RemoteTalk.exe): 引数のヌルバイト除去・2000文字制限によるコマンドインジェクション対策
 
-### 6.6 外部 URL
+### 7.6 その他
 
-- `tauri-plugin-shell` でデフォルトブラウザに委譲
-- アプリ内でのスクリプト実行なし
-
-### 6.7 棒読みちゃん連携
-
-- コマンドインジェクション対策: ヌルバイト除去 + 2000 文字制限
+- 二重起動防止 (single instance)
+- メインウィンドウ破棄時に字幕・画像ポップアップウィンドウも閉じる
 
 ---
 
-## 7. UI レイアウト
+## 8. UI レイアウト
 
-### 7.1 メイン画面構成
-
-```
-┌─────────────────────────────────────────────────┐
-│ ツールバー (URL / 検索 / 設定 / 字幕トグル)       │
-├──────────┬──────────────────────────────────────┤
-│ 板ペイン  │ タブバー                              │
-│ (ツリー)  ├──────────────────────────────────────┤
-│          │ レス表示エリア                         │
-│          │                                      │
-│ ─────── │                                      │
-│ 新着ペイン│                                      │
-│          ├──────────────────────────────────────┤
-│          │ 書き込みフォーム                       │
-├──────────┴──────────────────────────────────────┤
-│ ステータスバー                                    │
-└─────────────────────────────────────────────────┘
-```
-
-### 7.2 リサイザー
-
-- 左パネル: 左右ドラッグ (160 〜 700px)
-- 新着ペイン: 上下ドラッグ (80 〜 420px)
-- スレ一覧 / レス表示: 上下比率ドラッグ
-- サイズは自動保存・次回起動時復元
+- メインウィンドウ初期サイズ 1400×900 (リサイズ可、終了時サイズ保存)
+- 3ペイン構成 (板一覧 / スレ一覧 / レス表示) + 新着ペイン + 書き込みウィンドウ
+- 全スプリッターはドラッグリサイズ+永続化。「レイアウトリセット」あり
+- ダークモード: ルート要素 `.shell` に `.dark` クラス + OS ウィンドウテーマ連動 (`set_window_theme`)
+- スタイルは `styles.css` 単一ファイル + ユーザー CSS (`custom.css`)
 
 ---
 
-## 8. 設定パネル
-
-| タブ | 内容 |
-|------|------|
-| 表示 | テーマ / フォント / サイズ / 間隔 / タブ上限 / スムーススクロール |
-| 書き込み | 投稿設定 / 送信キー |
-| 読み上げ | エンジン選択 / SAPI / 棒読みちゃん / VOICEVOX 設定 |
-| 字幕 | 字幕ウィンドウ設定 / フォントサイズ / 透明度 |
-| プロキシ | タイプ / ホスト / ポート / 認証 |
-| NG | NG フィルター管理 (ワード/ID/名前) + 正規表現対応 |
-| 認証 | BE / UPLIFT / どんぐりログイン設定 |
-| ハイライト | ワード/名前/ID ハイライト管理 |
-| 情報 | バージョン / 更新チェック |
-
----
-
-## 9. TODO (未実装・将来対応)
-
-- [x] ウィンドウ位置・サイズ復元 (Windows専用)
-- [x] 書き込み後のスレ一覧自動更新
-- [x] 外部板の手動追加 UI
-- [x] settings.ini への完全移行 (v0.0.76 で localStorage 完全撤廃)
-- [x] レス抽出 / スレ内検索の 2 モード分離 (v0.0.76)
-- [x] 板タブ / スレタブのドラッグ並び替え修正 (v0.0.76)
-- [ ] おーぷん2ch 対応
-- [ ] SOCKS4 プロキシ対応 (型定義のみ実装、UI 未対応)
-
----
-
-## 10. 関連ドキュメント
+## 9. 関連ドキュメント
 
 | ファイル | 内容 |
 |---------|------|
-| [USER_MANUAL.md](docs/USER_MANUAL.md) | エンドユーザー向け説明書 |
-| [REQUIREMENTS.md](REQUIREMENTS.md) | 機能要件定義書 |
-| [docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md) | 開発者向け技術ガイド |
-| [docs/DEPLOYMENT_RUNBOOK.md](docs/DEPLOYMENT_RUNBOOK.md) | リリース手順書 |
-| [docs/PROGRESS_TRACKER.md](docs/PROGRESS_TRACKER.md) | 実装進捗トラッカー |
+| `README.md` | プロジェクト概要 |
+| `REQUIREMENTS.md` | 機能要件定義書 |
+| `docs/USER_MANUAL.md` | ユーザー向け説明書 |
+| `docs/CSS_CUSTOMIZE.md` | CSS カスタマイズガイド |
