@@ -94,8 +94,10 @@ LiveFake は UI 全体をユーザーの CSS で上書きできます。
 ```
 
 配色は 6 つの CSS 変数で一括変更でき、レス 1 件の内部構造までクラス指定で個別カスタマイズできます。
+また、汎用掲示板ブラウザ **SIKI と互換のセレクタ・テーマ変数・ファイル構成** (`data/theme/`) に対応しており、
+SIKI のカスタム CSS レシピの多くをそのまま流用できます。
 詳細は **[docs/CSS_CUSTOMIZE.md](docs/CSS_CUSTOMIZE.md)** を参照してください
-(変数一覧・全 UI 要素のクラスリファレンス・レシピ集を収録)。
+(変数一覧・全 UI 要素のクラスリファレンス・SIKI 互換対応表・レシピ集を収録)。
 
 ---
 
@@ -106,7 +108,7 @@ LiveFake は UI 全体をユーザーの CSS で上書きできます。
 | ファイル | 内容 |
 |---------|------|
 | `settings.ini` | アプリ全般設定 (表示・自動更新・読み上げ・書き込み・プロキシ) |
-| `custom.css` | ユーザーカスタム CSS |
+| `custom.css` / `theme/` | ユーザーカスタム CSS (SIKI 互換構成) |
 | `ng-settings.json` | NG フィルター |
 | `text-highlights.json` / `id-highlights.json` | ハイライト設定 (ID は当日分) |
 | `board-catalog.json` / `external-boards.json` | お気に入り板 / 外部板 |

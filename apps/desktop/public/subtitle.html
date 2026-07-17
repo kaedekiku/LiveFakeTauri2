@@ -146,6 +146,26 @@
       window.__TAURI_INTERNALS__.invoke("plugin:window|start_dragging").catch(function(){});
     }
   });
+
+  // ユーザーカスタムCSS (data/theme/floating.css) — Rust側でサニタイズ済みの内容を
+  // textContent で注入する (innerHTML は使わない)
+  window.__setUserCss = function(css) {
+    var el = document.getElementById("user-theme-css");
+    if (!el) {
+      el = document.createElement("style");
+      el.id = "user-theme-css";
+      document.head.appendChild(el);
+    }
+    el.textContent = String(css || "");
+  };
+  (function loadUserCss() {
+    if (!window.__TAURI_INTERNALS__) { setTimeout(loadUserCss, 100); return; }
+    window.__TAURI_INTERNALS__.invoke("load_theme_css").then(function(files) {
+      for (var i = 0; i < files.length; i++) {
+        if (files[i].name === "floating.css") window.__setUserCss(files[i].content);
+      }
+    }).catch(function(e) { console.warn("theme css load error", e); });
+  })();
 </script>
 </body>
 </html>

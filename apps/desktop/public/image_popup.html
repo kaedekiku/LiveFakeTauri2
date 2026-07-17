@@ -252,6 +252,26 @@
     return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   }
 
+  // ユーザーカスタムCSS (data/theme/mediaviewer.css) — Rust側でサニタイズ済みの内容を
+  // textContent で注入する (innerHTML は使わない)
+  window.__setUserCss = function(css) {
+    let el = document.getElementById("user-theme-css");
+    if (!el) {
+      el = document.createElement("style");
+      el.id = "user-theme-css";
+      document.head.appendChild(el);
+    }
+    el.textContent = String(css || "");
+  };
+  (function loadUserCss() {
+    if (!window.__TAURI_INTERNALS__) { setTimeout(loadUserCss, 100); return; }
+    window.__TAURI_INTERNALS__.invoke("load_theme_css").then((files) => {
+      for (const f of files) {
+        if (f.name === "mediaviewer.css") window.__setUserCss(f.content);
+      }
+    }).catch((e) => { console.warn("theme css load error", e); });
+  })();
+
   waitForTauri();
 </script>
 </body>

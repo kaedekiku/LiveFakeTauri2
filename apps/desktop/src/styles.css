@@ -11,6 +11,16 @@
   --ink: #1b1b1b;
   --sub: #555555;
   --accent: #0066cc;
+  /* SIKI互換テーマ変数 (custom.css / data/theme/*.css から上書き可能) */
+  --color-boardTab-activeBackground: var(--panel);
+  --color-boardTab-inactiveBackground: #e8e8e8;
+  --color-threadTab-activeBackground: var(--panel);
+  --color-threadTab-inactiveBackground: #e0e0e0;
+  --color-thread-searchHighlightBackground: #fff39a;
+  --color-thread-resMyselfBackground: transparent;
+  --color-board-background: #ffffff;
+  --color-board-cursorBackground: #cde8ff;
+  --color-board-highlightBackground: #f8f8f8;
   font-family: "Emoji", "Meiryo", "Yu Gothic UI", "Segoe UI", "Noto Sans JP", sans-serif;
 }
 
@@ -241,11 +251,11 @@ li.fav-drag-over {
   min-width: 60px;
   max-width: 160px;
   height: 26px;
-  background: #d0d0d0;
+  background: var(--color-boardTab-inactiveBackground);
 }
 
 .board-tab.active {
-  background: var(--panel);
+  background: var(--color-boardTab-activeBackground);
   font-weight: 600;
   border-bottom: 1px solid var(--panel);
 }
@@ -358,12 +368,12 @@ li.fav-drag-over {
   font-family: inherit;
   font-size: calc(11px + var(--fs-delta, 0px));
   border: 1px solid var(--line);
-  background: #e8e8e8;
+  background: var(--color-boardTab-inactiveBackground);
   cursor: pointer;
 }
 
 .board-tab.active {
-  background: var(--panel);
+  background: var(--color-boardTab-activeBackground);
   font-weight: 600;
   border-bottom-color: var(--panel);
 }
@@ -564,7 +574,7 @@ li.fav-drag-over {
 .threads table {
   width: 100%;
   border-collapse: collapse;
-  background: #ffffff;
+  background: var(--color-board-background);
   table-layout: fixed;
 }
 
@@ -716,6 +726,11 @@ li.fav-drag-over {
 @keyframes response-loading-pulse {
   0%, 100% { opacity: 0.5; }
   50% { opacity: 1; }
+}
+
+/* SIKI互換: 自分のレスの背景 (.mark-myself { --color-thread-resMyselfBackground: yellow; } で変更可) */
+.response-block.mark-myself {
+  background: var(--color-thread-resMyselfBackground);
 }
 
 .response-block {
@@ -1325,7 +1340,7 @@ li.fav-drag-over {
   font-size: calc(11px + var(--fs-delta, 0px));
 }
 .search-hit {
-  background: #fff39a;
+  background: var(--color-thread-searchHighlightBackground);
   color: #111111;
   padding: 0 1px;
   border-radius: 2px;
@@ -1357,19 +1372,19 @@ li.fav-drag-over {
 }
 
 .selected-row td {
-  background: #cde8ff;
+  background: var(--color-board-cursorBackground);
 }
 .threads tbody tr:nth-child(even) td {
-  background: #f8f8f8;
+  background: var(--color-board-highlightBackground);
 }
 .threads tbody tr:nth-child(even).selected-row td {
-  background: #cde8ff;
+  background: var(--color-board-cursorBackground);
 }
 .response-layout tbody tr:nth-child(even) td {
-  background: #f8f8f8;
+  background: var(--color-board-highlightBackground);
 }
 .response-layout tbody tr:nth-child(even).selected-row td {
-  background: #cde8ff;
+  background: var(--color-board-cursorBackground);
 }
 
 .unread-row td {
@@ -2086,7 +2101,7 @@ button.search-history-btn:hover {
   font-size: 11px;
   border: 1px solid var(--line);
   border-bottom: none;
-  background: #e0e0e0;
+  background: var(--color-threadTab-inactiveBackground);
   cursor: pointer;
   max-width: 200px;
   min-width: 60px;
@@ -2094,7 +2109,7 @@ button.search-history-btn:hover {
 }
 
 .thread-tab.active {
-  background: var(--panel);
+  background: var(--color-threadTab-activeBackground);
   border-bottom: 1px solid var(--panel);
   font-weight: 600;
 }
@@ -2455,6 +2470,14 @@ button.search-history-btn:hover {
   --sub: #9e9e9e;
   --accent: #4da6ff;
   --bg-light: #2d2d30;
+  /* SIKI互換テーマ変数 (ダーク時の既定値) */
+  --color-boardTab-activeBackground: var(--panel);
+  --color-boardTab-inactiveBackground: #333;
+  --color-threadTab-activeBackground: #1e1e1e;
+  --color-threadTab-inactiveBackground: #333;
+  --color-board-background: #252526;
+  --color-board-cursorBackground: #37373d;
+  --color-board-highlightBackground: #2a2a2e;
   color: var(--ink);
   background: var(--bg);
   color-scheme: dark;
@@ -2558,7 +2581,7 @@ button.search-history-btn:hover {
   background: #3c3c3c;
 }
 .dark .threads table {
-  background: #252526;
+  background: var(--color-board-background);
 }
 .dark .threads th,
 .dark .threads td {
@@ -2579,13 +2602,13 @@ button.search-history-btn:hover {
   color: var(--ink);
 }
 .dark .selected-row td {
-  background: #37373d;
+  background: var(--color-board-cursorBackground);
 }
 .dark .threads tbody tr:nth-child(even) td {
-  background: #2a2a2e;
+  background: var(--color-board-highlightBackground);
 }
 .dark .threads tbody tr:nth-child(even).selected-row td {
-  background: #37373d;
+  background: var(--color-board-cursorBackground);
 }
 .dark .response-layout tbody tr:nth-child(even) td {
   background: #2a2a2e;
@@ -2647,12 +2670,12 @@ button.search-history-btn:hover {
   border-color: var(--line);
 }
 .dark .board-tab {
-  background: #2a2a2d;
+  background: var(--color-boardTab-inactiveBackground);
   border-color: #3c3c3c;
   color: #aaa;
 }
 .dark .board-tab.active {
-  background: var(--panel);
+  background: var(--color-boardTab-activeBackground);
   color: var(--fg);
 }
 .dark .board-tab:not(.active):hover {
@@ -2679,12 +2702,12 @@ button.search-history-btn:hover {
   background: #4a4a4e;
 }
 .dark .thread-tab {
-  background: #333;
+  background: var(--color-threadTab-inactiveBackground);
   border-color: #3c3c3c;
   color: var(--sub);
 }
 .dark .thread-tab.active {
-  background: #1e1e1e;
+  background: var(--color-threadTab-activeBackground);
   color: var(--ink);
 }
 .dark .compose-window {
@@ -2862,12 +2885,12 @@ button.search-history-btn:hover {
   background: #4a4a4a;
 }
 .dark .board-tab {
-  background: #333;
+  background: var(--color-boardTab-inactiveBackground);
   color: var(--sub);
   border-color: #3c3c3c;
 }
 .dark .board-tab.active {
-  background: #252526;
+  background: var(--color-boardTab-activeBackground);
   color: var(--ink);
 }
 .dark .board-item {

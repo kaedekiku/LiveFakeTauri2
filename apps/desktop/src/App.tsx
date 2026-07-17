@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 
 type MenuInfo = { topLevelKeys: number; normalizedSample: string };
+type ThemeCssFile = { name: string; content: string; strippedHosts: string[]; oversized: boolean };
 type UpdateCheckResult = {
   metadataUrl: string;
   currentVersion: string;
@@ -515,6 +516,7 @@ export default function App() {
   const [threadUrl, setThreadUrl] = useState("https://mao.5ch.io/test/read.cgi/ngt/9240230711/");
   const [locationInput, setLocationInput] = useState("https://mao.5ch.io/test/read.cgi/ngt/9240230711/");
   const [diagnosticsEnabled, setDiagnosticsEnabled] = useState(false);
+  const [cssAllowExternalUrls, setCssAllowExternalUrls] = useState(false);
   const [metadataUrl, setMetadataUrl] = useState("https://raw.githubusercontent.com/kaedekiku/LiveFakeTauri2/main/apps/landing/public/latest.json");
   const [currentVersion, setCurrentVersion] = useState(typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "0.0.0");
   const [updateResult, setUpdateResult] = useState<UpdateCheckResult | null>(null);
@@ -2506,6 +2508,17 @@ export default function App() {
 
   const activeThreadUrl = activeTabIndex >= 0 && activeTabIndex < threadTabs.length ? threadTabs[activeTabIndex].threadUrl : threadUrl.trim();
   const myPostNos = useMemo(() => new Set(myPosts[activeThreadUrl] ?? []), [myPosts, activeThreadUrl]);
+  // SIKI互換のサイト別セレクタ用クラス (例: sv__jbbs_shitaraba_net)。
+  // ホスト名は英数以外を _ に正規化してから付与する
+  const svClass = useMemo(() => {
+    try {
+      const host = new URL(activeThreadUrl).host.toLowerCase();
+      const norm = host.replace(/[^a-z0-9]/g, "_").replace(/^_+|_+$/g, "");
+      return norm ? `sv__${norm}` : "";
+    } catch {
+      return "";
+    }
+  }, [activeThreadUrl]);
   const replyToMeNos = useMemo(() => {
     if (myPostNos.size === 0) return new Set<number>();
     const set = new Set<number>();
@@ -3726,19 +3739,39 @@ export default function App() {
     };
   }, []);
 
-  // Load user custom CSS (custom.css in the portable data dir) and inject it
+  // Load user custom CSS (custom.css + SIKI互換の data/theme/ 一式) and inject it
   // after built-in styles so user rules win at equal specificity.
-  const applyUserCss = async (): Promise<boolean> => {
+  // Rust側でサニタイズ済み (外部url()除去は設定に従う)。注入は必ず textContent 経由。
+  const themeModeCssRef = useRef<{ light: string; dark: string }>({ light: "", dark: "" });
+  const setStyleEl = (id: string, css: string) => {
+    let el = document.getElementById(id) as HTMLStyleElement | null;
+    if (!el) {
+      el = document.createElement("style");
+      el.id = id;
+      document.head.appendChild(el);
+    }
+    el.textContent = css;
+  };
+  const applyUserCss = async (allowExternalOverride?: boolean): Promise<boolean> => {
     if (!isTauriRuntime()) return false;
     try {
-      const css = await invoke<string>("load_user_css");
-      let el = document.getElementById("user-custom-css") as HTMLStyleElement | null;
-      if (!el) {
-        el = document.createElement("style");
-        el.id = "user-custom-css";
-        document.head.appendChild(el);
+      const files = await invoke<ThemeCssFile[]>("load_theme_css", { allowExternal: allowExternalOverride ?? null });
+      const get = (n: string) => files.find((f) => f.name === n)?.content ?? "";
+      // 適用順 = 挿入順: custom → main → mode → postform → setting (後勝ち)
+      setStyleEl("user-custom-css", get("custom.css"));
+      setStyleEl("theme-main-css", get("main.css"));
+      themeModeCssRef.current = { light: get("light.css"), dark: get("dark.css") };
+      setStyleEl("theme-mode-css", darkMode ? themeModeCssRef.current.dark : themeModeCssRef.current.light);
+      setStyleEl("theme-postform-css", get("postform.css") ? `@scope (.compose-window) {\n${get("postform.css")}\n}` : "");
+      setStyleEl("theme-setting-css", get("setting.css") ? `@scope (.settings-panel) {\n${get("setting.css")}\n}` : "");
+      const blockedHosts = [...new Set(files.flatMap((f) => f.strippedHosts))];
+      const oversized = files.filter((f) => f.oversized).map((f) => f.name);
+      if (blockedHosts.length > 0) {
+        setStatus(`カスタムCSS: 外部URL参照をブロックしました (${blockedHosts.join(", ")}) — 許可する場合は設定を変更してください`);
       }
-      el.textContent = css;
+      if (oversized.length > 0) {
+        setStatus(`カスタムCSS: サイズ上限(512KB)超過のため読み込みをスキップ: ${oversized.join(", ")}`);
+      }
       return true;
     } catch (e) {
       console.warn("user css load error:", e);
@@ -3749,6 +3782,11 @@ export default function App() {
   useEffect(() => {
     void applyUserCss();
   }, []);
+
+  // ライト/ダーク切替時に light.css / dark.css を差し替える
+  useEffect(() => {
+    setStyleEl("theme-mode-css", darkMode ? themeModeCssRef.current.dark : themeModeCssRef.current.light);
+  }, [darkMode]);
 
   // Load app settings from settings.ini on startup
   useEffect(() => {
@@ -3763,6 +3801,7 @@ export default function App() {
       if (map["App.maxOpenTabs"]) { const n = parseInt(map["App.maxOpenTabs"], 10); if (!isNaN(n) && n >= 1) setMaxOpenTabs(n); }
       if (map["App.logRetentionDays"]) { const n = parseInt(map["App.logRetentionDays"], 10); if (!isNaN(n) && n >= 0) setLogRetentionDays(n); }
       if (map["App.imageSaveFolder"]) setImageSaveFolder(map["App.imageSaveFolder"]);
+      if (map["App.cssAllowExternalUrls"]) setCssAllowExternalUrls(map["App.cssAllowExternalUrls"] === "true");
       // Speech settings
       if (map["Speech.mode"]) setTtsMode(map["Speech.mode"] as TtsMode);
       if (map["Speech.enabled"]) setTtsEnabled(map["Speech.enabled"] === "true");
@@ -3821,6 +3860,7 @@ export default function App() {
       "App.maxOpenTabs": String(maxOpenTabs),
       "App.logRetentionDays": String(logRetentionDays),
       "App.imageSaveFolder": imageSaveFolder,
+      "App.cssAllowExternalUrls": String(cssAllowExternalUrls),
       "Speech.mode": ttsMode,
       "Speech.enabled": String(ttsEnabled),
       "Speech.maxReadLength": String(ttsMaxReadLength),
@@ -3840,7 +3880,7 @@ export default function App() {
       "Posting.fontSize": String(composeFontSize),
       "Posting.composeOpen": String(composeOpen),
     } }).catch(() => {});
-  }, [responsesFontSize, responseGap, autoRefreshInterval, autoRefreshEnabled, autoScrollEnabled, smoothScroll, maxOpenTabs, logRetentionDays, imageSaveFolder,
+  }, [responsesFontSize, responseGap, autoRefreshInterval, autoRefreshEnabled, autoScrollEnabled, smoothScroll, maxOpenTabs, logRetentionDays, imageSaveFolder, cssAllowExternalUrls,
       ttsMode, ttsEnabled, ttsMaxReadLength, sapiVoiceIndex, sapiRate, sapiVolume, bouyomiPath,
       voicevoxEndpoint, voicevoxSpeakerId, voicevoxSpeedScale, voicevoxPitchScale, voicevoxIntonationScale, voicevoxVolumeScale,
       composeName, composeMail, composeSage, composeFontSize, composeOpen]);
@@ -4038,7 +4078,13 @@ export default function App() {
           ]},
           { label: "設定", items: [
             { text: "設定を開く", action: () => setSettingsOpen(true) },
-            { text: "ユーザーCSSを再読み込み", action: () => { void applyUserCss().then((ok) => setStatus(ok ? "ユーザーCSS (custom.css) を再読み込みしました" : "ユーザーCSSの読み込みに失敗しました")); } },
+            { text: "ユーザーCSSを再読み込み", action: () => {
+              void applyUserCss().then((ok) => {
+                if (ok) setStatus("ユーザーCSS (custom.css / theme) を再読み込みしました");
+                else setStatus("ユーザーCSSの読み込みに失敗しました");
+              });
+              void invoke("refresh_window_css").catch((e) => console.warn("refresh_window_css failed", e));
+            } },
           ]},
           { label: "ヘルプ", items: [
             { text: "バージョン情報", action: () => requestAnimationFrame(() => { setAboutOpen(true); void checkForUpdates(); }) },
@@ -4419,7 +4465,7 @@ export default function App() {
         >
         {/* Board tab bar (upper) */}
         <div className="board-tab-bar-wrap">
-          <div className="board-tab-bar" ref={boardTabBarRef}>
+          <div className="board-tab-bar board-tabs" ref={boardTabBarRef}>
             {boardTabs.length === 0 && (
               <div className="board-tab placeholder">
                 <span className="board-tab-title">板未選択</span>
@@ -4428,7 +4474,7 @@ export default function App() {
             {boardTabs.map((tab, i) => (
               <div
                 key={tab.boardUrl}
-                className={`board-tab ${i === activeBoardTabIndex ? "active" : ""} ${boardTabDragIndex !== null && boardTabDragIndex !== i ? "drag-target" : ""}`}
+                className={`board-tab tab ${i === activeBoardTabIndex ? "active" : ""} ${boardTabDragIndex !== null && boardTabDragIndex !== i ? "drag-target" : ""}`}
                 onClick={() => {
                   if (boardTabDragSuppressClickRef.current) return;
                   setActiveBoardTabIndex(i);
@@ -4516,16 +4562,16 @@ export default function App() {
         </div>
         {/* Thread tab bar (lower) */}
         <div className="thread-tab-bar-wrap">
-          <div className="thread-tab-bar" ref={tabBarRef}>
+          <div className="thread-tab-bar thread-tabs" ref={tabBarRef}>
             {threadTabs.length === 0 && (
               <div className="thread-tab placeholder active">
-                <span className="thread-tab-title">未取得</span>
+                <span className="thread-tab-title title">未取得</span>
               </div>
             )}
             {threadTabs.map((tab, i) => (
               <div
                 key={tab.threadUrl}
-                className={`thread-tab ${i === activeTabIndex ? "active" : ""} ${tabDragIndex !== null && tabDragIndex !== i ? "drag-target" : ""}`}
+                className={`thread-tab tab ${i === activeTabIndex ? "active" : ""} ${tabDragIndex !== null && tabDragIndex !== i ? "drag-target" : ""}`}
                 onClick={() => { if (tabDragSuppressClickRef.current) return; onTabClick(i); }}
                 onDoubleClick={() => { void fetchResponsesFromCurrent(tab.threadUrl, { keepSelection: true }); }}
                 onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); closeTab(i); } }}
@@ -4587,7 +4633,7 @@ export default function App() {
                   document.addEventListener("mouseup", onUp);
                 }}
               >
-                <span className="thread-tab-title">{tab.title}</span>
+                <span className="thread-tab-title title">{tab.title}</span>
                 {tabCacheRef.current.has(tab.threadUrl) && (
                   <span className="tab-res-count">({tabCacheRef.current.get(tab.threadUrl)!.responses.length})</span>
                 )}
@@ -4603,7 +4649,7 @@ export default function App() {
           </div>
         </div>
         {activePaneView === "threads" ? (
-        <section className="pane threads" onMouseDown={() => setFocusedPane("threads")} style={{ '--fs-delta': `${threadsFontSize - 12}px` } as React.CSSProperties}>
+        <section id="boardPane" className="pane threads" onMouseDown={() => setFocusedPane("threads")} style={{ '--fs-delta': `${threadsFontSize - 12}px` } as React.CSSProperties}>
           <div className="threads-toolbar">
             <div className="search-with-history" style={{ flex: 1 }}>
               <input
@@ -4780,7 +4826,7 @@ export default function App() {
                 return (
                   <tr
                     key={t.id}
-                    className={`${selectedThread === t.id ? "selected-row" : ""} ${isUnread ? "unread-row" : ""} ${hasUnread ? "has-unread-row" : ""} ${"datOchi" in t && t.datOchi ? "dat-ochi-row" : ""}`}
+                    className={`bcon${t.id % 2 === 0 ? " odd" : ""} ${selectedThread === t.id ? "selected-row cursor" : ""} ${isUnread ? "unread-row" : ""} ${hasUnread ? "has-unread-row" : ""} ${"datOchi" in t && t.datOchi ? "dat-ochi-row" : ""}`}
                     onClick={() => {
                       setSelectedThread(t.id);
                       setSelectedResponse(1);
@@ -4848,7 +4894,7 @@ export default function App() {
           </div>
         </section>
         ) : (
-        <section className="pane responses" onMouseDown={() => setFocusedPane("responses")} style={{ '--fs-delta': `${responsesFontSize - 12}px`, '--fs-header-delta': `${responsesHeaderFontSize - 11}px` } as React.CSSProperties}>
+        <section id="threadPane" className={`pane responses${svClass ? ` ${svClass}` : ""}`} onMouseDown={() => setFocusedPane("responses")} style={{ '--fs-delta': `${responsesFontSize - 12}px`, '--fs-header-delta': `${responsesHeaderFontSize - 11}px` } as React.CSSProperties}>
           {activeTabIndex >= 0 && activeTabIndex < threadTabs.length && (
             <div className="thread-title-bar">
               <span className="thread-title-text" title={threadTabs[activeTabIndex].title}>
@@ -5003,7 +5049,7 @@ export default function App() {
             className="response-layout"
           >
             <div
-              className="response-scroll"
+              className="response-scroll th-container"
               ref={responseScrollRef}
               style={{ '--response-gap': `${responseGap}px` } as React.CSSProperties}
               onScroll={onResponseScroll}
@@ -5128,6 +5174,7 @@ export default function App() {
                 const count = id ? (idCountMap.get(id) ?? 0) : 0;
                 const isNew = newResponseStart !== null && r.id >= newResponseStart;
                 const isFirstNew = isNew && r.id === newResponseStart;
+                const isAa = aaOverrides.has(r.id) ? aaOverrides.get(r.id) : isAsciiArt(r.text);
                 return (
                   <Fragment key={r.id}>
                   {isFirstNew && (
@@ -5137,18 +5184,18 @@ export default function App() {
                   )}
                   <div
                     data-response-no={r.id}
-                    className={`response-block ${selectedResponse === r.id ? "selected" : ""}${myPostNos.has(r.id) ? " my-post" : ""}${replyToMeNos.has(r.id) ? " reply-to-me" : ""}`}
+                    className={`response-block rcon ${selectedResponse === r.id ? "selected" : ""}${myPostNos.has(r.id) ? " my-post mark-myself" : ""}${replyToMeNos.has(r.id) ? " reply-to-me mark-anchor" : ""}${isNew ? " newly" : ""}${isAa ? " aa" : ""}`}
                     onClick={() => setSelectedResponse(r.id)}
                     onDoubleClick={() => appendComposeQuote(`>>${r.id}`)}
                   >
-                    <div className="response-header">
-                      <span className="response-no" onClick={(e) => onResponseNoClick(e, r.id)}>
+                    <div className="response-header rh">
+                      <span className="response-no res-num" onClick={(e) => onResponseNoClick(e, r.id)}>
                         {r.id}
                       </span>
                       {myPostNos.has(r.id) && <span className="my-post-label">[自分]</span>}
                       {replyToMeNos.has(r.id) && <span className="reply-to-me-label">[自分宛]</span>}
                       <span
-                        className="response-name"
+                        className="response-name res-name mname"
                         style={(() => {
                           const hl = textHighlights.find((h) => h.type === "name" && h.pattern === r.nameWithoutWatchoi);
                           return hl ? { background: hl.color } : undefined;
@@ -5156,7 +5203,7 @@ export default function App() {
                         dangerouslySetInnerHTML={renderHighlightedPlainText(r.nameWithoutWatchoi, responseSearchQuery)}
                       />
                       {r.mail && (
-                        <span className={`response-mail${r.mail === "sage" ? " response-mail-sage" : ""}`}>[{r.mail}]</span>
+                        <span className={`response-mail res-mail${r.mail === "sage" ? " response-mail-sage sage" : ""}`}>[{r.mail}]</span>
                       )}
                       {r.watchoi && (
                         <span
@@ -5184,13 +5231,13 @@ export default function App() {
                       <span className="response-header-right">
                         {isNew && <span className="response-new-marker">New!</span>}
                         <span
-                          className="response-date"
+                          className="response-date res-date"
                           dangerouslySetInnerHTML={renderHighlightedPlainText(formatResponseDate(r.time), responseSearchQuery)}
                         />
                         {id && (
                           <>
                             <span
-                              className="response-id-cell"
+                              className="response-id-cell rc-id"
                               style={{ color: idHighlights[id] ?? undefined, ...(resIdFontSize !== 0 ? { fontSize: `${Math.max(6, responsesFontSize + resIdFontSize)}px` } : {}), ...(resIdFontFamily ? { fontFamily: `"${resIdFontFamily}", sans-serif` } : {}) }}
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -5232,7 +5279,7 @@ export default function App() {
                         )}
                       </span>
                     </div>
-                    <div className={`response-body${(aaOverrides.has(r.id) ? aaOverrides.get(r.id) : isAsciiArt(r.text)) ? " aa" : ""}`} dangerouslySetInnerHTML={renderResponseBodyHighlighted(r.text, responseSearchQuery, { hideImages: !showImagePreview || ngResultMap.get(r.id) === "hide-images", imageSizeLimitKb: imageSizeLimit, urlRules: imageUrlRules }, textHighlights.filter((h) => h.type === "word"))} />
+                    <div className={`response-body rb${isAa ? " aa" : ""}`} dangerouslySetInnerHTML={renderResponseBodyHighlighted(r.text, responseSearchQuery, { hideImages: !showImagePreview || ngResultMap.get(r.id) === "hide-images", imageSizeLimitKb: imageSizeLimit, urlRules: imageUrlRules }, textHighlights.filter((h) => h.type === "word"))} />
                   </div>
                   </Fragment>
                 );
@@ -5285,7 +5332,7 @@ export default function App() {
         </div>{/* /right-body */}
       </main>
       <section
-        className={`compose-window${composeOpen ? " compose-window--open" : ""}`}
+        className={`compose-window postform${composeOpen ? " compose-window--open" : ""}`}
         aria-label="書き込み"
         style={composeOpen ? { height: composePanelPx } : undefined}
       >
@@ -5356,8 +5403,8 @@ export default function App() {
             {composePreview && (
               <div className="compose-preview" dangerouslySetInnerHTML={renderResponseBody(composeBody || "(空)")} />
             )}
-            <div className="compose-actions">
-              <button onClick={composeNewThread ? handleCreateThread : probePostFlowTraceFromCompose} disabled={composeSubmitting}>{composeSubmitting ? "送信中..." : composeNewThread ? "スレッド作成" : `送信 (${composeSubmitKey === "shift" ? "Shift" : "Ctrl"}+Enter)`}</button>
+            <div className="compose-actions postform-foot">
+              <button className="postform-write" onClick={composeNewThread ? handleCreateThread : probePostFlowTraceFromCompose} disabled={composeSubmitting}>{composeSubmitting ? "送信中..." : composeNewThread ? "スレッド作成" : `送信 (${composeSubmitKey === "shift" ? "Shift" : "Ctrl"}+Enter)`}</button>
               {diagnosticsEnabled && (
                 <button onClick={async () => {
                   setComposeResult({ ok: false, message: "診断中..." });
@@ -5788,7 +5835,7 @@ export default function App() {
           : { left: anchorPopup.x, top: anchorPopup.y };
         return (
           <div
-            className="anchor-popup"
+            className="anchor-popup popupfield"
             style={{ ...posStyle, '--fs-delta': `${popupFontSize - 12}px`, '--popup-max-height': `${popupMaxHeight}px` } as unknown as React.CSSProperties}
             onMouseEnter={() => {
               if (anchorPopupCloseTimer.current) {
@@ -5832,7 +5879,7 @@ export default function App() {
                   <span className="response-viewer-no">{popupResp.id}</span> {popupResp.name}
                   <time>{popupResp.time}</time>
                 </div>
-                <div className="anchor-popup-body" dangerouslySetInnerHTML={renderResponseBody(popupResp.text)} />
+                <div className="anchor-popup-body popup-main rb" dangerouslySetInnerHTML={renderResponseBody(popupResp.text)} />
               </div>
             ))}
           </div>
@@ -5842,7 +5889,7 @@ export default function App() {
         const refs = backRefPopup.responseIds;
         return (
           <div
-            className="anchor-popup back-ref-popup"
+            className="anchor-popup back-ref-popup popupfield"
             style={{ left: backRefPopup.x, bottom: window.innerHeight - backRefPopup.y, '--fs-delta': `${popupFontSize - 12}px`, '--popup-max-height': `${popupMaxHeight}px` } as React.CSSProperties}
             onMouseLeave={(ev) => {
               const next = ev.relatedTarget as HTMLElement | null;
@@ -5878,7 +5925,7 @@ export default function App() {
                     <span className="response-viewer-no">{refResp.id}</span> {refResp.name}
                     <time>{refResp.time}</time>
                   </div>
-                  <div className="anchor-popup-body" dangerouslySetInnerHTML={renderResponseBody(refResp.text)} />
+                  <div className="anchor-popup-body popup-main rb" dangerouslySetInnerHTML={renderResponseBody(refResp.text)} />
                 </div>
               );
             })}
@@ -5897,7 +5944,7 @@ export default function App() {
         return (
           <div
             key={`${np.responseIds[0]}-${i}`}
-            className="anchor-popup nested-popup"
+            className="anchor-popup nested-popup popupfield"
             style={{ ...nPosStyle, '--fs-delta': `${popupFontSize - 12}px`, '--popup-max-height': `${popupMaxHeight}px` } as unknown as React.CSSProperties}
             onMouseEnter={() => {
               if (anchorPopupCloseTimer.current) {
@@ -5946,7 +5993,7 @@ export default function App() {
                   <span className="response-viewer-no">{nestedResp.id}</span> {nestedResp.name}
                   <time>{nestedResp.time}</time>
                 </div>
-                <div className="anchor-popup-body" dangerouslySetInnerHTML={renderResponseBody(nestedResp.text)} />
+                <div className="anchor-popup-body popup-main rb" dangerouslySetInnerHTML={renderResponseBody(nestedResp.text)} />
               </div>
             ))}
           </div>
@@ -5978,7 +6025,7 @@ export default function App() {
         };
         return (
           <div
-            className="id-popup"
+            className="id-popup popupfield"
             ref={positionByMeasuredHeight}
             style={{ ...idPosStyle, '--fs-delta': `${popupFontSize - 12}px`, '--popup-max-width': `${popupMaxWidth}px`, '--popup-max-height': `${popupMaxHeight}px` } as unknown as React.CSSProperties}
             onMouseEnter={() => { if (idPopupCloseTimer.current) { clearTimeout(idPopupCloseTimer.current); idPopupCloseTimer.current = null; } }}
@@ -6018,7 +6065,7 @@ export default function App() {
             <div className="id-popup-header">
               ID:{idPopup.id} ({idResponses.length}件)
             </div>
-            <div className="id-popup-list">
+            <div className="id-popup-list popup-main">
               {idResponses.map((r) => (
                 <div
                   key={r.id}
@@ -6179,6 +6226,19 @@ export default function App() {
                 <label className="settings-row">
                   <span>最大高さ (ポップアップ) px</span>
                   <input type="number" value={popupMaxHeight} min={200} max={1800} step={20} onChange={(e) => setPopupMaxHeight(Number(e.target.value))} />
+                </label>
+                <label className="settings-row" title="カスタムCSS内の url(http…) による外部サーバーへの画像参照を許可します。信頼できないCSSを貼り付ける場合はオフのままを推奨">
+                  <span>カスタムCSSの外部URL参照を許可 (非推奨)</span>
+                  <input
+                    type="checkbox"
+                    checked={cssAllowExternalUrls}
+                    onChange={(e) => {
+                      const allow = e.target.checked;
+                      setCssAllowExternalUrls(allow);
+                      void applyUserCss(allow);
+                      void invoke("refresh_window_css", { allowExternal: allow }).catch((err) => console.warn("refresh_window_css failed", err));
+                    }}
+                  />
                 </label>
                 <label className="settings-row">
                   <span>レスID 文字サイズ補正 (0=同じ、±px)</span>

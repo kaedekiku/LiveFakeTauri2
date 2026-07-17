@@ -185,16 +185,20 @@ Tauri App (livefake)
 - プラットフォームキー (windows-x64 等) 別のアセット情報 (filename / sha256 / size) に対応
 - バージョン情報ダイアログで自動チェック、更新があればダウンロードページを開くボタンを表示
 
-### 4.13 ユーザー CSS
+### 4.13 ユーザー CSS (SIKI互換)
 
-- `data/custom.css` を起動時に読み込み、`<style id="user-custom-css">` として組み込みスタイルの後に注入
-- ファイルが無い場合はコメントテンプレートを自動生成 (`load_user_css` コマンド)
+- `data/custom.css` + SIKI互換の `data/theme/` 一式 (main / light / dark / floating / mediaviewer / postform / setting.css) を起動時に読み込み、組み込みスタイルの後に `<style>` textContent として注入 (`load_theme_css` コマンド)
+- floating.css は字幕ウィンドウ、mediaviewer.css は画像ポップアップに適用 (各ウィンドウが起動時に自己読み込み + `refresh_window_css` で再適用)
+- postform.css / setting.css は `@scope` で書き込みパネル / 設定パネルに限定適用
+- SIKI互換のクラス (`.rcon` `.rb` `.res-name` `.mark-myself` `.newly` `.bcon` `.sv__<host>` 等) と `--color-*` テーマ変数を DOM / styles.css に付与済み
+- セキュリティ: ファイル名は固定ホワイトリスト、512KB/ファイル上限、`</style` 断片除去、外部 `url(http…)` は既定でブロックし `none` に置換 (設定 `App.cssAllowExternalUrls=true` で許可、ブロック時はステータスバーにホスト名を警告表示)
+- ファイルが無い場合はコメントテンプレートを自動生成
 - メニュー「設定 > ユーザーCSSを再読み込み」で再注入 (再起動不要)
 - 詳細: `docs/CSS_CUSTOMIZE.md`
 
 ---
 
-## 5. Tauri コマンド一覧 (84個)
+## 5. Tauri コマンド一覧 (86個)
 
 ### 板・スレ取得
 `fetch_bbsmenu_summary` `fetch_board_categories` `fetch_thread_list` `fetch_thread_responses_command`
@@ -205,7 +209,7 @@ Tauri App (livefake)
 ※ `debug_post_connectivity` とプローブ系は開発ビルド限定 (リリースビルドでは環境変数 `LIVEFAKE_DIAG=1` を設定した場合のみ有効)。`diagnostics_enabled` コマンドでフロントが表示制御
 
 ### 永続化
-`load/save_favorites` `load/save_ng_filters` `load/save_tts_dict` `load/save_read_status` `load/save_thread_history` `set_thread_custom_title` `load/save_app_settings` (INI) `load_user_css` `save/load_layout_prefs` `save/load_session_tabs` `save/load_session_board_tabs` `save/load_generic_json` (ファイル名ホワイトリスト制) `load/save_external_boards` `load/save_id_highlights` `load/save_text_highlights` `load/save_proxy_settings` `load/reset_image_url_replace` `write_event_log`
+`load/save_favorites` `load/save_ng_filters` `load/save_tts_dict` `load/save_read_status` `load/save_thread_history` `set_thread_custom_title` `load/save_app_settings` (INI) `load_theme_css` `refresh_window_css` `save/load_layout_prefs` `save/load_session_tabs` `save/load_session_board_tabs` `save/load_generic_json` (ファイル名ホワイトリスト制) `load/save_external_boards` `load/save_id_highlights` `load/save_text_highlights` `load/save_proxy_settings` `load/reset_image_url_replace` `write_event_log`
 
 ### SQLite キャッシュ
 `save/load/delete_thread_cache` `load_all_cached_threads`
@@ -235,7 +239,7 @@ Tauri App (livefake)
 
 | セクション | キー (既定値) |
 |-----------|--------------|
-| [App] | maxOpenTabs=20, fontSize=14, responseGap=10, autoReloadIntervalSec=15, autoScroll=true, smoothScroll=true, logRetentionDays=7 (実行時に autoReload, imageSaveFolder 等を追記) |
+| [App] | maxOpenTabs=20, fontSize=14, responseGap=10, autoReloadIntervalSec=15, autoScroll=true, smoothScroll=true, logRetentionDays=7, cssAllowExternalUrls=false (実行時に autoReload, imageSaveFolder 等を追記) |
 | [Speech] | mode=off, enabled=false, maxReadLength=0, sapiVoiceIndex=0, sapiRate=0, sapiVolume=100, bouyomiPath=, voicevoxEndpoint=http://127.0.0.1:50021, voicevoxSpeakerId=0, voicevoxSpeedScale=1.0, voicevoxPitchScale=0.0, voicevoxIntonationScale=1.0, voicevoxVolumeScale=1.0 |
 | [Posting] | name=, mail=, sage=false, fontSize=13 (実行時に composeOpen を追記) |
 | [Proxy] | (実行時追記) ProxyEnabled / ProxyType / ProxyHost / ProxyPort / ProxyUsername / ProxyPassword (DPAPI 暗号化、旧平文値も後方互換で読込可) |
@@ -267,7 +271,7 @@ dat 落ちスレの閲覧 (「dat落ちキャッシュ」機能) に利用。
 
 ### 6.5 その他
 
-- `custom.css`: ユーザー CSS (無ければテンプレート自動生成)
+- `custom.css` / `theme/*.css`: ユーザー CSS (SIKI互換構成、無ければテンプレート自動生成)
 - `ImageViewURLReplace.txt`: 画像 URL 置換 TSV
 - `eventlog/YYYY-MM-DD.log`: `[時刻] [INFO|WARN|ERROR] メッセージ` 形式。保持日数設定で起動時 purge
 

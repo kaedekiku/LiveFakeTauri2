@@ -1302,15 +1302,238 @@ const USER_CSS_TEMPLATE: &str = r#"/* LiveFake ユーザーカスタムCSS (cust
  */
 "#;
 
-#[tauri::command]
-fn load_user_css() -> Result<String, String> {
-    let dir = core_store::portable_data_dir().map_err(|e| e.to_string())?;
-    let path = dir.join("custom.css");
-    if !path.exists() {
-        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        std::fs::write(&path, USER_CSS_TEMPLATE).map_err(|e| e.to_string())?;
+// ===== Theme CSS (SIKI互換カスタムCSS) =====
+
+/// data/theme/ 配下のファイル名ホワイトリスト (SIKIのファイル構成に準拠)
+const THEME_CSS_FILES: &[(&str, &str)] = &[
+    ("main.css", "全テーマ共通"),
+    ("light.css", "ライトモード時のみ適用"),
+    ("dark.css", "ダークモード時のみ適用"),
+    ("floating.css", "字幕ウィンドウ用"),
+    ("mediaviewer.css", "画像ポップアップウィンドウ用"),
+    ("postform.css", "書き込み欄用 (書き込みパネル内に限定適用)"),
+    ("setting.css", "設定画面用 (設定パネル内に限定適用)"),
+];
+const MAX_THEME_CSS_BYTES: u64 = 512 * 1024;
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ThemeCssFile {
+    name: String,
+    content: String,
+    stripped_hosts: Vec<String>,
+    oversized: bool,
+}
+
+fn css_external_urls_allowed() -> bool {
+    core_store::load_settings_ini()
+        .ok()
+        .and_then(|m| m.get("App.cssAllowExternalUrls").cloned())
+        .map(|v| v == "true")
+        .unwrap_or(false)
+}
+
+/// `</style` 断片を除去する (style要素経由の注入でHTMLへ脱出できないようにする多層防御)
+fn remove_style_close(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let bytes = raw.as_bytes();
+    let mut i = 0;
+    while i < raw.len() {
+        if raw.len() - i >= 7
+            && bytes[i] == b'<'
+            && bytes[i + 1] == b'/'
+            && bytes[i + 2..i + 7].eq_ignore_ascii_case(b"style")
+        {
+            i += 7;
+            continue;
+        }
+        let ch_len = raw[i..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+        out.push_str(&raw[i..i + ch_len]);
+        i += ch_len;
     }
-    std::fs::read_to_string(&path).map_err(|e| e.to_string())
+    out
+}
+
+/// `url(...)` の閉じ括弧位置を探す (引用符内の `)` は無視)
+fn find_url_close(s: &str) -> Option<usize> {
+    let mut quote: Option<char> = None;
+    for (idx, c) in s.char_indices() {
+        match quote {
+            Some(q) => {
+                if c == q {
+                    quote = None;
+                }
+            }
+            None => {
+                if c == '"' || c == '\'' {
+                    quote = Some(c);
+                } else if c == ')' {
+                    return Some(idx);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn extract_css_url_host(url: &str) -> Option<String> {
+    let after_scheme = url
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .trim_start_matches("//");
+    let host: String = after_scheme
+        .chars()
+        .take_while(|c| !matches!(c, '/' | ':' | '?' | '#'))
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+        .collect();
+    if host.is_empty() { None } else { Some(host) }
+}
+
+/// 外部 http(s) を参照する url(...) を `none` に置換する (CSSによる外部送信対策)。
+/// data: URI・相対パスは通す。除去したホスト名の一覧を返す。
+fn strip_external_urls(css: &str) -> (String, Vec<String>) {
+    let mut out = String::with_capacity(css.len());
+    let mut hosts: Vec<String> = Vec::new();
+    let bytes = css.as_bytes();
+    let mut i = 0;
+    while i < css.len() {
+        if css.len() - i >= 4 && bytes[i..i + 4].eq_ignore_ascii_case(b"url(") {
+            if let Some(close_rel) = find_url_close(&css[i + 4..]) {
+                let inner = css[i + 4..i + 4 + close_rel]
+                    .trim()
+                    .trim_matches(|c| c == '"' || c == '\'')
+                    .trim();
+                let lower = inner.to_ascii_lowercase();
+                if lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("//") {
+                    if let Some(h) = extract_css_url_host(inner) {
+                        if !hosts.contains(&h) {
+                            hosts.push(h);
+                        }
+                    }
+                    out.push_str("none");
+                    i = i + 4 + close_rel + 1;
+                    continue;
+                }
+            }
+        }
+        let ch_len = css[i..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+        out.push_str(&css[i..i + ch_len]);
+        i += ch_len;
+    }
+    (out, hosts)
+}
+
+fn read_theme_css_file(name: &str, path: &std::path::Path, allow_external: bool) -> ThemeCssFile {
+    let len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    if len > MAX_THEME_CSS_BYTES {
+        return ThemeCssFile {
+            name: name.to_string(),
+            content: String::new(),
+            stripped_hosts: Vec::new(),
+            oversized: true,
+        };
+    }
+    let raw = std::fs::read_to_string(path).unwrap_or_default();
+    let no_close = remove_style_close(&raw);
+    let (content, stripped_hosts) = if allow_external {
+        (no_close, Vec::new())
+    } else {
+        strip_external_urls(&no_close)
+    };
+    ThemeCssFile {
+        name: name.to_string(),
+        content,
+        stripped_hosts,
+        oversized: false,
+    }
+}
+
+#[cfg(test)]
+mod theme_css_tests {
+    use super::*;
+
+    #[test]
+    fn strip_external_urls_blocks_http_and_keeps_data_uri() {
+        let css = r#".a { background: url(https://evil.example.com/x.png); }
+.b { background: url("data:image/png;base64,AAAA"); }
+.c { background: URL( 'http://track.jp/p?q=1' ); }"#;
+        let (out, hosts) = strip_external_urls(css);
+        assert!(!out.contains("evil.example.com"));
+        assert!(!out.contains("track.jp"));
+        assert!(out.contains("data:image/png"));
+        assert!(out.contains(".a { background: none; }"));
+        assert_eq!(hosts, vec!["evil.example.com".to_string(), "track.jp".to_string()]);
+    }
+
+    #[test]
+    fn strip_external_urls_blocks_protocol_relative() {
+        let (out, hosts) = strip_external_urls(".x { background: url(//cdn.example.net/a.gif); }");
+        assert!(out.contains("background: none"));
+        assert_eq!(hosts, vec!["cdn.example.net".to_string()]);
+    }
+
+    #[test]
+    fn remove_style_close_strips_breakout() {
+        let out = remove_style_close(".a{}</StYlE><script>alert(1)</script>");
+        assert!(!out.to_lowercase().contains("</style"));
+        assert!(out.contains("<script>")); // scriptタグ自体はtextContent注入なので無害
+    }
+
+    #[test]
+    fn multibyte_css_survives_sanitize() {
+        let css = "/* 日本語コメント */ .rb { color: red; }";
+        let (out, hosts) = strip_external_urls(&remove_style_close(css));
+        assert_eq!(out, css);
+        assert!(hosts.is_empty());
+    }
+}
+
+/// custom.css (従来) + data/theme/ 配下のSIKI互換CSS群をサニタイズ済みで返す。
+/// ファイルが無ければ説明コメント入りテンプレートを生成する。
+#[tauri::command]
+fn load_theme_css(allow_external: Option<bool>) -> Result<Vec<ThemeCssFile>, String> {
+    let dir = core_store::portable_data_dir().map_err(|e| e.to_string())?;
+    let theme_dir = dir.join("theme");
+    std::fs::create_dir_all(&theme_dir).map_err(|e| e.to_string())?;
+    let allow = allow_external.unwrap_or_else(css_external_urls_allowed);
+
+    let mut files = Vec::new();
+    let custom_path = dir.join("custom.css");
+    if !custom_path.exists() {
+        std::fs::write(&custom_path, USER_CSS_TEMPLATE).map_err(|e| e.to_string())?;
+    }
+    files.push(read_theme_css_file("custom.css", &custom_path, allow));
+
+    for (name, desc) in THEME_CSS_FILES {
+        let path = theme_dir.join(name);
+        if !path.exists() {
+            let template = format!(
+                "/* LiveFake カスタムCSS: {desc}\n   SIKI互換のクラス・CSS変数が使えます。詳細は docs/CSS_CUSTOMIZE.md を参照。\n   反映: メニュー「設定 > ユーザーCSSを再読み込み」(再起動不要) */\n"
+            );
+            std::fs::write(&path, template).map_err(|e| e.to_string())?;
+        }
+        files.push(read_theme_css_file(name, &path, allow));
+    }
+    Ok(files)
+}
+
+/// 字幕・画像ウィンドウが開いていれば floating.css / mediaviewer.css を再適用する
+#[tauri::command]
+fn refresh_window_css(app: AppHandle, allow_external: Option<bool>) -> Result<(), String> {
+    let dir = core_store::portable_data_dir().map_err(|e| e.to_string())?;
+    let theme_dir = dir.join("theme");
+    let allow = allow_external.unwrap_or_else(css_external_urls_allowed);
+    for (label, file) in [("subtitle", "floating.css"), ("image_popup", "mediaviewer.css")] {
+        if let Some(win) = app.get_webview_window(label) {
+            let f = read_theme_css_file(file, &theme_dir.join(file), allow);
+            let js = format!(
+                "if(window.__setUserCss)window.__setUserCss({})",
+                serde_json::to_string(&f.content).unwrap_or_else(|_| "\"\"".to_string())
+            );
+            let _ = win.eval(&js);
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -2105,7 +2328,8 @@ pub fn run() {
             save_read_status,
             load_app_settings,
             save_app_settings,
-            load_user_css,
+            load_theme_css,
+            refresh_window_css,
             write_event_log,
             save_layout_prefs,
             load_layout_prefs,

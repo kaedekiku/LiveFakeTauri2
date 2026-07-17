@@ -331,6 +331,8 @@ UI の見た目は `data/custom.css` に CSS を書くことで自由に変更�
 
 - 初回起動時に説明コメント付きのテンプレートが自動生成されます
 - 編集後はメニュー **「設定 > ユーザーCSSを再読み込み」** で再起動せずに反映
+- 汎用掲示板ブラウザ **SIKI と互換**のセレクタ・テーマ変数・ファイル構成 (`data/theme/` の main / light / dark / floating / mediaviewer / postform / setting.css) に対応。SIKI のカスタム CSS レシピの多くをそのまま流用できます
+- 安全対策として、CSS 内の `url(http…)` による外部サーバー参照は既定で無効化されます (設定で許可可能。ネット上で配布されている CSS を貼る際は内容にご注意ください)
 
 詳しくは **[CSS カスタマイズガイド (CSS_CUSTOMIZE.md)](CSS_CUSTOMIZE.md)** を参照してください。
 
@@ -375,7 +377,7 @@ UI の見た目は `data/custom.css` に CSS を書くことで自由に変更�
 | ファイル | 内容 |
 |---------|------|
 | `settings.ini` | アプリ全般設定 ([App] [Speech] [Posting] [Proxy] セクション) |
-| `custom.css` | ユーザーカスタム CSS |
+| `custom.css` / `theme/` | ユーザーカスタム CSS (SIKI 互換構成) |
 | `ng-settings.json` | NG フィルタ |
 | `text-highlights.json` / `id-highlights.json` | ハイライト |
 | `board-catalog.json` / `external-boards.json` | お気に入り板 / 外部板 |

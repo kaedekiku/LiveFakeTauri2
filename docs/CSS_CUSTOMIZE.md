@@ -7,12 +7,27 @@ LiveFake は UI の見た目をユーザー自身が CSS で自由にカスタ�
 
 ## 1. 仕組み
 
-### 1.1 custom.css とは
+### 1.1 カスタム CSS ファイル一覧
 
-- EXE と同じフォルダの **`data/custom.css`** がカスタム CSS ファイルです
+- EXE と同じフォルダの **`data/custom.css`** がメインのカスタム CSS ファイルです
 - アプリ起動時に自動で読み込まれ、**標準スタイルの後**に適用されます
   （同じ詳細度のセレクタならユーザー CSS が優先されます）
 - 初回起動時、コメントで書き方の説明が入ったテンプレートが自動生成されます
+
+さらに、汎用掲示板ブラウザ **SIKI と同じファイル構成**の `data/theme/` フォルダにも対応しています。
+SIKI のカスタム CSS の知識・レシピをほぼそのまま流用できます（→ [6. SIKI 互換カスタマイズ](#6-siki-互換カスタマイズ)）。
+
+| ファイル (`data/theme/`) | 適用先 | SIKI での対応ファイル |
+|---|---|---|
+| `main.css` | メインウィンドウ全体（全テーマ共通） | `theme\main.css` |
+| `light.css` | ライトモード時のみ | `_default_.theme\user.css` 相当 |
+| `dark.css` | ダークモード時のみ | ダーク系テーマの `user.css` 相当 |
+| `floating.css` | 字幕ウィンドウ | `floating.css`（実況ウィンドウ） |
+| `mediaviewer.css` | 画像ポップアップウィンドウ | `mediaviewer.css` |
+| `postform.css` | 書き込みパネル（`@scope` で書き込み欄に限定適用） | `postform.css` |
+| `setting.css` | 設定パネル（同上） | `setting.css` |
+
+適用順（後勝ち）: 標準スタイル → `custom.css` → `main.css` → `light.css`/`dark.css` → `postform.css`/`setting.css`
 
 ### 1.2 反映方法
 
@@ -23,11 +38,22 @@ LiveFake は UI の見た目をユーザー自身が CSS で自由にカスタ�
 
 再読み込みの成否はステータスバーに表示されます。
 
-### 1.3 制約
+### 1.3 制約とセキュリティ
 
 - `@import url(...)` や外部 CSS・外部フォントの読み込みは CSP により**ブロックされます**
-  （`background-image: url(https://...)` の画像参照は可能です）
+- **`url(http://…)` / `url(https://…)` による外部サーバーへの画像参照は、既定で無効化されます**
+  （該当の `url(...)` は `none` に置換され、ブロックしたホスト名がステータスバーに表示されます）。
+  どうしても必要な場合は設定「カスタムCSSの外部URL参照を許可」をオンにできますが、**非推奨**です
+- `url(data:image/png;base64,…)` 形式（画像データの直接埋め込み）は通信が発生しないため**常に使えます**。
+  手元の画像を使いたい場合は data: URI に変換して埋め込んでください
+- 1 ファイルあたりのサイズ上限は 512KB です（超過したファイルは読み込まれません）
 - CSS の文法エラーがあっても起動は失敗しません（エラー行以降のルールが無視されるだけです）
+
+> ⚠️ **ネット上で配布されている CSS を貼り付ける際の注意**
+> CSS には JavaScript を使わずに、外部サーバーへの画像読み込みを利用して
+> 「誰が・いつ・何を表示しているか」を送信させる既知の手法があります。
+> 外部 URL ブロックが既定で有効なのはこの対策です。出所の分からない CSS に
+> `url(http…)` が含まれていた場合は、その部分を削除して使ってください。
 
 ---
 
@@ -305,6 +331,98 @@ LiveFake の配色は 6 つの CSS 変数で構成されており、これを上
 
 ### 5.3 元に戻したいとき
 
-`data/custom.css` の中身をすべて削除（またはファイル自体を削除）して
-「設定 > ユーザーCSSを再読み込み」を実行すれば標準の見た目に戻ります。
-ファイルを削除した場合は次回起動時にテンプレートが再生成されます。
+`data/custom.css`（および `data/theme/` 内の各ファイル）の中身をすべて削除
+（またはファイル自体を削除）して「設定 > ユーザーCSSを再読み込み」を実行すれば
+標準の見た目に戻ります。ファイルを削除した場合は次回起動時にテンプレートが再生成されます。
+
+---
+
+## 6. SIKI 互換カスタマイズ
+
+汎用掲示板ブラウザ [SIKI](https://wikiwiki.jp/siki-app/カスタムCSS) のカスタム CSS と
+**同じセレクタ・変数名**を使えるようにしています。SIKI の wiki のレシピの多くが
+そのまま、または少しの修正で動きます。
+
+### 6.1 SIKI 互換セレクタ対応表
+
+| SIKI のセレクタ | 意味 | LiveFake での付与先 |
+|---|---|---|
+| `.rcon` | レス全体 | `.response-block` と同じ要素 |
+| `.rh` | レスヘッダー行 | `.response-header` と同じ要素 |
+| `.rb` | レス本文 | `.response-body` と同じ要素 |
+| `.res-num` | レス番号 | `.response-no` と同じ要素 |
+| `.res-name` / `.mname` | 名前欄 | `.response-name` と同じ要素 |
+| `.res-mail` | メール欄 | `.response-mail` と同じ要素 |
+| `.sage` | sage のメール欄 | メール欄が sage のとき付与 |
+| `.res-date` | 日時 | `.response-date` と同じ要素 |
+| `.rc-id` | ID 表示 | `.response-id-cell` と同じ要素 |
+| `.mark-myself` | 自分のレス | `.my-post` と同時に付与 |
+| `.mark-anchor` | 自分への返信 | `.reply-to-me` と同時に付与 |
+| `.newly` | 新着レス | 新着範囲のレスに付与 |
+| `.aa` | AA 判定されたレス | レス全体と本文の両方に付与（`.aa .rb` が使える） |
+| `.th-container` | レス表示のスクロールコンテナ | `.response-scroll` と同じ要素 |
+| `#threadPane` | スレ表示ペイン | レスペイン（`.pane.responses`） |
+| `#boardPane` | スレ一覧ペイン | スレ一覧ペイン（`.pane.threads`） |
+| `.bcon` / `.bcon.odd` / `.bcon.cursor` | スレ一覧の行 / 偶数行 / 選択行 | スレ一覧テーブルの `<tr>` |
+| `.thread-tabs .tab` / `.tab.active` | スレタブ | `.thread-tab` と同じ要素 |
+| `.thread-tabs .title` | スレタブのタイトル | `.thread-tab-title` と同じ要素 |
+| `.board-tabs .tab` | 板タブ | `.board-tab` と同じ要素 |
+| `.popupfield` | ポップアップコンテナ | ID・アンカー・逆参照ポップアップの根本 |
+| `.popup-main` | ポップアップ本体 | ポップアップ内のレス表示部 |
+| `.postform` | 書き込み欄 | `.compose-window` と同じ要素 |
+| `.postform-foot` / `.postform-write` | 書き込み欄のフッター / 書き込みボタン | 送信ボタン行 / 送信ボタン |
+| `.sv__<ホスト名>` | サイト・板別の条件スタイル | レスペインに付与（例: `.sv__jbbs_shitaraba_net`。ホスト名の記号は `_` に変換） |
+
+SIKI と DOM 構造そのものは異なるため、`order` による並べ替えなど構造依存のレシピは
+調整が必要な場合があります。要素の実際の構造は本ガイドの 3 章を参照してください。
+
+### 6.2 SIKI 互換 CSS 変数
+
+SIKI 0.27.0 以降と同名のテーマ変数を定義しており、上書きするとアプリ側の該当箇所に反映されます。
+
+```
+--color-boardTab-activeBackground      板タブ (アクティブ) の背景
+--color-boardTab-inactiveBackground    板タブ (非アクティブ) の背景
+--color-threadTab-activeBackground     スレタブ (アクティブ) の背景
+--color-threadTab-inactiveBackground   スレタブ (非アクティブ) の背景
+--color-thread-searchHighlightBackground  スレ内検索ヒットの背景
+--color-thread-resMyselfBackground     自分のレスの背景
+--color-board-background               スレ一覧の背景
+--color-board-cursorBackground         スレ一覧の選択行の背景
+--color-board-highlightBackground      スレ一覧の縞模様 (偶数行) の背景
+```
+
+使用例（SIKI wiki のレシピがそのまま動きます）:
+
+```css
+/* 自分のレスの背景色 */
+.mark-myself {
+  --color-thread-resMyselfBackground: yellow;
+}
+
+/* アクティブなスレタブの背景 */
+#threadPane .tab {
+  background-color: var(--color-threadTab-activeBackground);
+}
+```
+
+ダークモード側だけ変えたい場合は `dark.css` に書くか、`.dark { --color-…: …; }` で上書きします。
+
+### 6.3 使えるモダン CSS
+
+WebView2 (Chromium) ベースのため、SIKI の高度なレシピで使われる以下がすべて動作します:
+
+- `:has()` / `:not()` — 条件付きスタイル（例: `#threadPane .rh:has(.res-mail:not(:empty)) .res-name { color: blue; }`）
+- `color-mix()` / `linear-gradient()`
+- CSS ネスト（`& span { … }` 記法）
+- `@scope`
+
+### 6.4 SIKI との違い
+
+| 項目 | SIKI | LiveFake |
+|---|---|---|
+| 反映方法 | 再起動が必要 | メニュー「設定 > ユーザーCSSを再読み込み」で**再起動不要** |
+| テーマ別 CSS | `.theme` フォルダごと | `light.css` / `dark.css` の 2 ファイル |
+| ダークモードの起点 | テーマによる | `.shell` 要素の `.dark` クラス |
+| 外部 URL 画像 | 制限なし | **既定でブロック**（設定で許可可、1.3 参照） |
+| 開発者ツール (Ctrl+Shift+I) | 常時使用可 | 開発ビルドのみ（本ガイドのクラスリファレンスを参照してください） |
