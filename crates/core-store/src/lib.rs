@@ -56,13 +56,29 @@ pub fn init_portable_layout() -> Result<PathBuf, StoreError> {
     Ok(data_dir)
 }
 
+/// JSONをクラッシュに強い方式で保存する。
+/// 一時ファイルへ書き込み→fsyncで物理ディスクへの反映を強制→アトミックにリネームして本体に反映する。
+/// これにより (1) 強制終了直後でも直近の書き込みが失われにくく、(2) 書き込み途中でクラッシュしても
+/// 本体ファイルは「更新前」か「更新後」のどちらかの完全な内容のまま保たれ、壊れた中途半端な
+/// JSONになって復元不能になることがない。一時ファイルはアプリ専用データフォルダ内に作成するため
+/// (共有の一時フォルダを使わない)、シンボリックリンク攻撃等の心配もない。
 pub fn save_json<T: Serialize>(relative_path: &str, value: &T) -> Result<(), StoreError> {
     let path = portable_data_dir()?.join(relative_path);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
 
-    fs::write(path, serde_json::to_vec_pretty(value)?)?;
+    let bytes = serde_json::to_vec_pretty(value)?;
+    let mut tmp_name = path.as_os_str().to_os_string();
+    tmp_name.push(".tmp");
+    let tmp_path = PathBuf::from(tmp_name);
+
+    {
+        let mut file = fs::File::create(&tmp_path)?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+    }
+    fs::rename(&tmp_path, &path)?;
     Ok(())
 }
 
@@ -398,5 +414,40 @@ mod tests {
         ini.apply_flat_map(&updates);
         assert_eq!(ini.get("App", "autoReloadIntervalSec"), Some("30"));
         assert_eq!(ini.get("Speech", "enabled"), Some("false"));
+    }
+
+    // EMBER_DATA_DIR はプロセス全体の環境変数なので、この crate 内で他にそれを触るテストが
+    // 増えた場合は並列実行の競合に注意すること(現状はこのテストのみが使用)
+    #[test]
+    fn save_json_roundtrip_via_tmp_rename() {
+        let dir = std::env::temp_dir().join(format!(
+            "livefake_core_store_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("EMBER_DATA_DIR", &dir);
+
+        let value = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        save_json("roundtrip.json", &value).unwrap();
+        let loaded: Vec<String> = load_json("roundtrip.json").unwrap();
+        assert_eq!(loaded, value);
+
+        // 本体ファイルのみが残り、一時ファイルは残らないこと
+        assert!(dir.join("roundtrip.json").exists());
+        assert!(!dir.join("roundtrip.json.tmp").exists());
+
+        // 前回クラッシュ等で .tmp が残っていても、次の保存で問題なく上書きされること
+        fs::write(dir.join("roundtrip.json.tmp"), b"stale").unwrap();
+        let value2 = vec!["x".to_string()];
+        save_json("roundtrip.json", &value2).unwrap();
+        let loaded2: Vec<String> = load_json("roundtrip.json").unwrap();
+        assert_eq!(loaded2, value2);
+
+        std::env::remove_var("EMBER_DATA_DIR");
+        let _ = fs::remove_dir_all(&dir);
     }
 }
