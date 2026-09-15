@@ -776,7 +776,8 @@ li.fav-drag-over {
 }
 
 .response-header-right {
-  margin-left: auto;
+  /* 5ch と同じく「番号 名前 [メール] 投稿日 ID (n/回数)」を左から並べる (右寄せしない) */
+  margin-left: 0;
   display: flex;
   gap: 4px;
   align-items: baseline;
@@ -3641,4 +3642,28 @@ button.search-history-btn:hover {
   margin: 4px 0;
   border-radius: 8px;
   background: #000000;
+}
+
+/* 【試験】新着レスペイン内のカード (arrivalCardsEnabled ON 時のみ生成される) */
+.new-arrival-body .ogp-cards {
+  white-space: normal;
+  font-size: 12px;
+}
+.new-arrival-body .body-link {
+  color: #1a5fb4;
+  text-decoration: none;
+}
+.dark .new-arrival-body .body-link {
+  color: #6cb6ff;
+}
+
+/* レスヘッダの見出しラベル (名前： / 投稿日：)。項目を非表示にするとラベルごと消える */
+.response-label {
+  color: var(--sub);
+}
+.new-arrival-mail {
+  color: #888;
+}
+.new-arrival-id-count {
+  font-size: 0.9em;
 }

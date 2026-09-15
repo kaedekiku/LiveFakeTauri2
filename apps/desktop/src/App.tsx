@@ -11,6 +11,7 @@ import {
   type UIEventHandler,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import {
   ClipboardList, RefreshCw, Pencil, FilePenLine, Save,
   Star, X, ChevronLeft, ChevronRight, ChevronDown, Ban,
@@ -933,6 +934,132 @@ export default function App() {
   const ogpInflightRef = useRef<Map<string, Promise<OgpCardData | null>>>(new Map());
   const tweetCacheRef = useRef<Map<string, TweetCardData | null>>(new Map());
   const tweetInflightRef = useRef<Map<string, Promise<TweetCardData | null>>>(new Map());
+  // 【試験・採否未定】新着レスペインと字幕ウィンドウにもカードを出す (診断モードの設定からのみ ON にできる)。
+  // OFF なら従来どおりの表示 (本文プレーンテキスト / 字幕は画像なし)。不採用なら arrivalCardsEnabled 関連を丸ごと削除すればよい。
+  const [arrivalCardsEnabled, setArrivalCardsEnabled] = useState(false);
+  const arrivalCardsEnabledRef = useRef(false);
+  arrivalCardsEnabledRef.current = arrivalCardsEnabled;
+  // 新着アイテム用の本文 (タグ除去)。従来は 200 文字で切るが、カード試験中は URL が途中で切れないよう長めに取る
+  // 字幕ウィンドウにもカードを表示 (新着ペインとは独立に選択できる)
+  const [subtitleCardsEnabled, setSubtitleCardsEnabled] = useState(false);
+  const subtitleCardsEnabledRef = useRef(false);
+  subtitleCardsEnabledRef.current = subtitleCardsEnabled;
+  // ヘッダ項目の表示/非表示 (レス表示欄 / 新着レスペイン / 字幕)。非表示の項目は詰めて左寄せ
+  type HeaderVis = { threadTitle: boolean; resNo: boolean; name: boolean; mail: boolean; watchoi: boolean; date: boolean; id: boolean; count: boolean };
+  const DEFAULT_HEADER_VIS: HeaderVis = { threadTitle: true, resNo: true, name: true, mail: true, watchoi: true, date: true, id: true, count: true };
+  const sanitizeHeaderVis = (v: unknown): HeaderVis => {
+    const o = (v && typeof v === "object" ? v : {}) as Partial<Record<keyof HeaderVis, unknown>>;
+    const b = (x: unknown) => (typeof x === "boolean" ? x : true);
+    return { threadTitle: b(o.threadTitle), resNo: b(o.resNo), name: b(o.name), mail: b(o.mail), watchoi: b(o.watchoi), date: b(o.date), id: b(o.id), count: b(o.count) };
+  };
+  const [mainHeaderVis, setMainHeaderVis] = useState<HeaderVis>(DEFAULT_HEADER_VIS);
+  const [arrivalHeaderVis, setArrivalHeaderVis] = useState<HeaderVis>(DEFAULT_HEADER_VIS);
+  const [subtitleHeaderVis, setSubtitleHeaderVis] = useState<HeaderVis>(DEFAULT_HEADER_VIS);
+  const subtitleHeaderVisRef = useRef<HeaderVis>(DEFAULT_HEADER_VIS);
+  subtitleHeaderVisRef.current = subtitleHeaderVis;
+  const headerVisRows = (vis: HeaderVis, set: (next: HeaderVis) => void, opts: { threadTitle?: boolean; watchoi?: boolean }) => {
+    const items: Array<[keyof HeaderVis, string]> = [
+      ...(opts.threadTitle ? ([["threadTitle", "スレ名"]] as Array<[keyof HeaderVis, string]>) : []),
+      ["resNo", "レス番号"], ["name", "名前"], ["mail", "メール欄"],
+      ...(opts.watchoi ? ([["watchoi", "ワッチョイ"]] as Array<[keyof HeaderVis, string]>) : []),
+      ["date", "投稿日時"], ["id", "ID"], ["count", "書き込み回数"],
+    ];
+    return (
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "2px 10px", fontSize: 11 }}>
+        {items.map(([key, label]) => (
+          <label key={key} style={{ display: "flex", alignItems: "center", gap: 2 }}>
+            <input type="checkbox" checked={vis[key]} onChange={(e) => set({ ...vis, [key]: e.target.checked })} />
+            {label}
+          </label>
+        ))}
+      </div>
+    );
+  };
+  // 新着送りの一時停止 (字幕の手動スクロールで停止、▶ で再開)
+  const [arrivalPaused, setArrivalPaused] = useState(false);
+  const arrivalPausedRef = useRef(false);
+  const advanceToNextArrivalRef = useRef<() => void>(() => {});
+  // スレ内でのその ID の書き込み順と総数 (レス表示欄の (n/回数) と同じ数え方)。取得済みレスのキャッシュから数える
+  const idStatsFor = (threadUrlForStats: string, responseNo: number, id: string): { seq: number; count: number } => {
+    if (!id) return { seq: 0, count: 0 };
+    const rows = tabCacheRef.current.get(threadUrlForStats)?.responses ?? [];
+    let seq = 0;
+    let count = 0;
+    for (const r of rows) {
+      const m = r.dateAndId.match(/ID:(\S+)/);
+      if (m && m[1] === id) {
+        count++;
+        if (r.responseNo <= responseNo) seq++;
+      }
+    }
+    return { seq: Math.max(1, seq), count: Math.max(1, count) };
+  };
+  // 新着レスペイン / 字幕に流す 1 件を作る (ヘッダはレス表示欄と同じ情報を持つ)
+  const makeArrival = (r: { responseNo: number; name: string; mail: string; dateAndId: string; body: string }, threadTitle: string, threadUrlForItem: string): ArrivalItem => {
+    const idMatch = r.dateAndId.match(/ID:(\S+)/);
+    const id = idMatch ? idMatch[1] : "";
+    const stats = idStatsFor(threadUrlForItem, r.responseNo, id);
+    return {
+      threadTitle,
+      responseNo: r.responseNo,
+      name: r.name.replace(/<[^>]+>/g, ""),
+      mail: r.mail || "",
+      id,
+      time: r.dateAndId.replace(/\s+ID:\S+/g, "").replace(/\s+BE[:：]\d+[^\s]*/gi, "").trim(),
+      text: arrivalBodyText(r.body),
+      threadUrl: threadUrlForItem,
+      idSeq: stats.seq,
+      idCount: stats.count,
+    };
+  };
+  const arrivalBodyText = (body: string): string => body.replace(/<[^>]*>/g, "").slice(0, (arrivalCardsEnabledRef.current || subtitleCardsEnabledRef.current) ? 2000 : 200);
+  // 新着ペイン / 字幕の自動スクロール設定 (既定は従来の固定値: 収まる=5秒, 待ち=2秒, 8ms/px, 到達後=5秒)
+  type ScrollTiming = { fitSec: number; waitSec: number; msPerPx: number; holdSec: number };
+  const DEFAULT_SCROLL_TIMING: ScrollTiming = { fitSec: 5, waitSec: 2, msPerPx: 8, holdSec: 5 };
+  const sanitizeScrollTiming = (v: unknown): ScrollTiming => {
+    const o = (v && typeof v === "object" ? v : {}) as Partial<Record<keyof ScrollTiming, unknown>>;
+    const num = (x: unknown, def: number, min: number, max: number) =>
+      typeof x === "number" && Number.isFinite(x) ? Math.min(max, Math.max(min, x)) : def;
+    return { fitSec: num(o.fitSec, 5, 0, 60), waitSec: num(o.waitSec, 2, 0, 10), msPerPx: num(o.msPerPx, 8, 1, 50), holdSec: num(o.holdSec, 5, 0, 60) };
+  };
+  const [arrivalTiming, setArrivalTiming] = useState<ScrollTiming>(DEFAULT_SCROLL_TIMING);
+  const arrivalTimingRef = useRef<ScrollTiming>(DEFAULT_SCROLL_TIMING);
+  arrivalTimingRef.current = arrivalTiming;
+  const [subtitleTiming, setSubtitleTiming] = useState<ScrollTiming>(DEFAULT_SCROLL_TIMING);
+  const subtitleTimingRef = useRef<ScrollTiming>(DEFAULT_SCROLL_TIMING);
+  subtitleTimingRef.current = subtitleTiming;
+  // 字幕の表示が終わるまで次のレスを待つ (同期)。字幕ウィンドウが閉じている・報告が無いときは新着ペインの時間だけで進む
+  const [subtitleSyncEnabled, setSubtitleSyncEnabled] = useState(true);
+  const subtitleSyncEnabledRef = useRef(true);
+  subtitleSyncEnabledRef.current = subtitleSyncEnabled;
+  // 字幕へ送ったレスの通し番号と、字幕から報告された表示終了予定時刻 (performance.now() 基準)
+  const subtitleSeqRef = useRef(0);
+  const subtitleEndAtRef = useRef<{ seq: number; endAt: number } | null>(null);
+  // 新着ペインの「次へ進む」最終タイマーの予定時刻と発火処理 (字幕の報告で延長するため保持)
+  const arrivalFinalDeadlineRef = useRef<number | null>(null);
+  const arrivalFinalFireRef = useRef<(() => void) | null>(null);
+  // 現在表示中の新着アイテムの実行トークン (古いスクロールループを止める)
+  const arrivalRunIdRef = useRef(0);
+  const scrollTimingRows = (t: ScrollTiming, set: (next: ScrollTiming) => void) => (
+    <>
+      <label className="settings-row">
+        <span>短いレスの表示時間 (秒・スクロール不要時)</span>
+        <input type="number" min={0} max={60} step={0.1} value={t.fitSec} onChange={(e) => set(sanitizeScrollTiming({ ...t, fitSec: Number(e.target.value) }))} style={{ width: 70 }} />
+      </label>
+      <label className="settings-row">
+        <span>スクロール開始までの待ち時間 (秒)</span>
+        <input type="number" min={0} max={10} step={0.1} value={t.waitSec} onChange={(e) => set(sanitizeScrollTiming({ ...t, waitSec: Number(e.target.value) }))} style={{ width: 70 }} />
+      </label>
+      <label className="settings-row">
+        <span>スクロール速度 (1px あたり ms)</span>
+        <input type="number" min={1} max={50} step={1} value={t.msPerPx} onChange={(e) => set(sanitizeScrollTiming({ ...t, msPerPx: Number(e.target.value) }))} style={{ width: 70 }} />
+      </label>
+      <label className="settings-row">
+        <span>スクロール後の表示時間 (秒)</span>
+        <input type="number" min={0} max={60} step={0.1} value={t.holdSec} onChange={(e) => set(sanitizeScrollTiming({ ...t, holdSec: Number(e.target.value) }))} style={{ width: 70 }} />
+      </label>
+    </>
+  );
   const [hlWordInput, setHlWordInput] = useState("");
   const [hlWordColor, setHlWordColor] = useState<string>(HIGHLIGHT_COLORS[0].color);
   const [hlNameInput, setHlNameInput] = useState("");
@@ -1112,7 +1239,7 @@ export default function App() {
   const [newArrivalPaneHeight, setNewArrivalPaneHeight] = useState(DEFAULT_NEW_ARRIVAL_PX);
   const [newArrivalFontSize, setNewArrivalFontSize] = useState(13);
   const newArrivalScrollRef = useRef<HTMLDivElement | null>(null);
-  type ArrivalItem = { threadTitle: string; responseNo: number; name: string; id: string; time: string; text: string; threadUrl: string };
+  type ArrivalItem = { threadTitle: string; responseNo: number; name: string; mail: string; id: string; time: string; text: string; threadUrl: string; idSeq: number; idCount: number };
   const arrivalQueueRef = useRef<ArrivalItem[]>([]);
   const [currentArrivalItem, setCurrentArrivalItem] = useState<ArrivalItem | null>(null);
   const currentArrivalItemRef = useRef<ArrivalItem | null>(null);
@@ -2042,24 +2169,12 @@ export default function App() {
         threadFetchTimesRef.current[tabUrl] = timeStr;
         const arrivals = newRows
           .filter((r) => getNgResult({ name: r.name, time: r.dateAndId, text: r.body.replace(/<[^>]*>/g, "") }, tabUrl) !== "hide")
-          .map((r) => {
-            const idMatch = r.dateAndId.match(/ID:([^\s]+)/);
-            const timeMatch = r.dateAndId.match(/^[\d/]+\s+[\d:]+/);
-            return {
-              threadTitle: tabTitle,
-              responseNo: r.responseNo,
-              name: r.name,
-              id: idMatch ? idMatch[1] : "",
-              time: timeMatch ? timeMatch[0] : r.dateAndId.slice(0, 20),
-              text: r.body.replace(/<[^>]*>/g, "").slice(0, 200),
-              threadUrl: tabUrl,
-            };
-          });
+          .map((r) => makeArrival(r, tabTitle, tabUrl));
         if (autoRefreshEnabled && arrivals.length > 0) {
           const queueWasEmpty = arrivalQueueRef.current.length === 0;
           arrivalQueueRef.current.push(...arrivals);
           setArrivalQueueCount(arrivalQueueRef.current.length);
-          if (!arrivalTimerRef.current && (currentArrivalItemRef.current === null || queueWasEmpty)) {
+          if (!arrivalPausedRef.current && !arrivalTimerRef.current && (currentArrivalItemRef.current === null || queueWasEmpty)) {
             advanceToNextArrival();
           }
         }
@@ -2253,32 +2368,20 @@ export default function App() {
         const newRows = rows.slice(prevCount);
         const arrivals = newRows
           .filter((r) => getNgResult({ name: r.name, time: r.dateAndId, text: r.body.replace(/<[^>]*>/g, "") }, url) !== "hide")
-          .map((r) => {
-            const idMatch = r.dateAndId.match(/ID:([^\s]+)/);
-            const timeMatch = r.dateAndId.match(/^[\d/]+\s+[\d:]+/);
-            return {
-              threadTitle: arrivalTitle,
-              responseNo: r.responseNo,
-              name: r.name,
-              id: idMatch ? idMatch[1] : "",
-              time: timeMatch ? timeMatch[0] : r.dateAndId.slice(0, 20),
-              text: r.body.replace(/<[^>]*>/g, "").slice(0, 200),
-              threadUrl: url,
-            };
-          });
+          .map((r) => makeArrival(r, arrivalTitle, url));
         // Add to new arrivals pane when autoReload is ON
         if (autoRefreshEnabled && arrivals.length > 0) {
           const queueWasEmpty = arrivalQueueRef.current.length === 0;
           arrivalQueueRef.current.push(...arrivals);
           setArrivalQueueCount(arrivalQueueRef.current.length);
-          if (!arrivalTimerRef.current && (currentArrivalItemRef.current === null || queueWasEmpty)) {
+          if (!arrivalPausedRef.current && !arrivalTimerRef.current && (currentArrivalItemRef.current === null || queueWasEmpty)) {
             advanceToNextArrival();
           }
         }
         // Update subtitle directly only on manual refresh (auto-refresh uses queue via advanceToNextArrival)
         if (arrivals.length > 0 && !autoRefreshEnabled) {
           const latest = arrivals[arrivals.length - 1];
-          subtitleUpdate({ threadTitle: latest.threadTitle, responseNo: latest.responseNo, name: latest.name, id: latest.id, date: latest.time, body: latest.text });
+          subtitleUpdate({ threadTitle: latest.threadTitle, responseNo: latest.responseNo, name: latest.name, mail: latest.mail, id: latest.id, date: latest.time, body: latest.text, idSeq: latest.idSeq, idCount: latest.idCount });
         }
         // TTS: read new responses (skip 1001/1002)
         if (ttsEnabled && ttsMode !== "off") {
@@ -2525,16 +2628,45 @@ export default function App() {
   };
 
   // Subtitle: send update to subtitle window
-  const subtitleUpdate = (data: { threadTitle?: string; name?: string; id?: string; date?: string; body?: string; responseNo?: number }) => {
+  const subtitleUpdate = (data: { threadTitle?: string; name?: string; mail?: string; id?: string; date?: string; body?: string; responseNo?: number; idSeq?: number; idCount?: number }) => {
     if (!isTauriRuntime() || !subtitleVisible) return;
-    const bodyHtml = data.body
-      ? renderResponseBodyHighlighted(data.body, "", { hideImages: true }, textHighlights.filter((h) => h.type === "word")).__html
-      : undefined;
+    // 通し番号: 字幕からの表示終了報告を現在のレスと突き合わせるために使う
+    const seq = ++subtitleSeqRef.current;
+    subtitleEndAtRef.current = null;
+    const scroll = subtitleTimingRef.current;
+    const show = subtitleHeaderVisRef.current;
     const idColor = data.id ? (idHighlights[data.id] ?? undefined) : undefined;
-    invoke("subtitle_update", { data: { ...data, bodyHtml, idColor } }).catch((e) => console.warn("subtitle_update:", e));
+    const wordHighlights = textHighlights.filter((h) => h.type === "word");
+    // 字幕にもカードを出す: 字幕ウィンドウは別 WebView で IPC を持たないため、
+    // メイン側でカードを解決してから HTML に埋め込んで送る (最長 2.5 秒待ち、取れなければカード無しで送る)
+    if (subtitleCardsEnabledRef.current && (ogpCardsEnabled || tweetCardsEnabled) && data.body) {
+      const raw = renderResponseBodyHighlighted(data.body, "", { hideImages: true, ogpCards: ogpCardsEnabled, tweetCards: tweetCardsEnabled, ogpAllow: ogpDomainFilters.allow, ogpBlock: ogpDomainFilters.block }, wordHighlights).__html;
+      const slotRe = /<div class="ogp-card-slot(?: tweet-card-slot)?" data-ogp-url="([^"]+)"(?: data-tweet-id="(\d+)")?><\/div>/g;
+      const slots: { full: string; url: string; tweetId?: string }[] = [];
+      let sm: RegExpExecArray | null;
+      while ((sm = slotRe.exec(raw)) !== null) slots.push({ full: sm[0], url: sm[1], tweetId: sm[2] });
+      const withTimeout = <T,>(p: Promise<T>, fallback: T): Promise<T> =>
+        Promise.race([p, new Promise<T>((resolve) => setTimeout(() => resolve(fallback), 2500))]);
+      void Promise.all(slots.map((s) => withTimeout(resolveCardHtml(s.url, s.tweetId, ogpCardsEnabled), "")))
+        .then((htmls) => {
+          let bodyHtml = raw;
+          // 置換文字列に $ が含まれても特殊解釈されないよう関数形式で置換する
+          slots.forEach((s, i) => { bodyHtml = bodyHtml.replace(s.full, () => htmls[i] ?? ""); });
+          return invoke("subtitle_update", { data: { ...data, seq, scroll, show, bodyHtml, idColor } });
+        })
+        .catch((e) => console.warn("subtitle_update:", e));
+      return;
+    }
+    const bodyHtml = data.body
+      ? renderResponseBodyHighlighted(data.body, "", { hideImages: true }, wordHighlights).__html
+      : undefined;
+    invoke("subtitle_update", { data: { ...data, seq, scroll, show, bodyHtml, idColor } }).catch((e) => console.warn("subtitle_update:", e));
   };
 
   const advanceToNextArrival = () => {
+    arrivalRunIdRef.current++;
+    arrivalFinalDeadlineRef.current = null;
+    arrivalFinalFireRef.current = null;
     if (arrivalTimerRef.current) {
       clearTimeout(arrivalTimerRef.current);
       arrivalTimerRef.current = null;
@@ -2551,44 +2683,73 @@ export default function App() {
       currentArrivalItemRef.current = next;
       setCurrentArrivalItem(next);
       if (next === null) return;
-      subtitleUpdate({ threadTitle: next.threadTitle, responseNo: next.responseNo, name: next.name, id: next.id, date: next.time, body: next.text });
+      subtitleUpdate({ threadTitle: next.threadTitle, responseNo: next.responseNo, name: next.name, mail: next.mail, id: next.id, date: next.time, body: next.text, idSeq: next.idSeq, idCount: next.idCount });
       _startArrivalTimer();
     }, 200);
   };
 
+  advanceToNextArrivalRef.current = advanceToNextArrival;
+
+  // 新着ペインの「次へ進む」を予約する。新着ペイン側の残り時間 baseMs と、同期 ON なら字幕から報告された
+  // 表示終了予定の長い方まで待つ。字幕ウィンドウが閉じている・報告が無いときは baseMs だけで進む。
+  // onBeforeAdvance が true を返したら別処理 (遅延読み込みで溢れた場合のスクロール) に切り替えたとみなし進まない。
+  const scheduleArrivalAdvance = (baseMs: number, onBeforeAdvance?: () => boolean) => {
+    const now = performance.now();
+    let endAt = now + baseMs;
+    const sub = subtitleEndAtRef.current;
+    if (subtitleSyncEnabledRef.current && sub && sub.seq === subtitleSeqRef.current && sub.endAt > endAt) endAt = sub.endAt;
+    const fire = () => {
+      arrivalTimerRef.current = null;
+      arrivalFinalDeadlineRef.current = null;
+      arrivalFinalFireRef.current = null;
+      if (onBeforeAdvance && onBeforeAdvance()) return;
+      advanceToNextArrival();
+    };
+    arrivalFinalDeadlineRef.current = endAt;
+    arrivalFinalFireRef.current = fire;
+    arrivalTimerRef.current = setTimeout(fire, Math.max(0, endAt - now));
+  };
+
   const _startArrivalTimer = () => {
+    const runId = ++arrivalRunIdRef.current;
+    arrivalFinalDeadlineRef.current = null;
+    arrivalFinalFireRef.current = null;
+    const t = arrivalTimingRef.current;
     // After display settles, check for overflow and schedule advance
     arrivalTimerRef.current = setTimeout(() => {
+      arrivalTimerRef.current = null;
       const bodyEl = newArrivalBodyRef.current;
       if (bodyEl) bodyEl.scrollTop = 0;
       const isOverflow = bodyEl ? bodyEl.scrollHeight > bodyEl.clientHeight + 2 : false;
-      if (isOverflow) {
-        // 2sec then slow scroll to bottom
+      const startScroll = () => {
+        // 待ち時間の後、設定速度で最下行までゆっくりスクロールし、到達後の表示時間が過ぎたら次へ
         arrivalTimerRef.current = setTimeout(() => {
+          arrivalTimerRef.current = null;
           const el = newArrivalBodyRef.current;
-          if (el) {
-            const dist = el.scrollHeight - el.clientHeight;
-            const duration = Math.max(1000, dist * 8); // ~8ms per px
-            const start = performance.now();
-            const startScrollTop = el.scrollTop;
-            const step = (now: number) => {
-              const progress = Math.min((now - start) / duration, 1);
-              el.scrollTop = startScrollTop + dist * progress;
-              if (progress < 1) {
-                requestAnimationFrame(step);
-              } else {
-                // 5sec after reaching bottom
-                arrivalTimerRef.current = setTimeout(() => advanceToNextArrival(), 5000);
-              }
-            };
-            requestAnimationFrame(step);
-          } else {
-            arrivalTimerRef.current = setTimeout(() => advanceToNextArrival(), 5000);
-          }
-        }, 2000);
+          if (!el) { scheduleArrivalAdvance(t.holdSec * 1000); return; }
+          const dist = Math.max(0, el.scrollHeight - el.clientHeight);
+          const duration = Math.max(1000, dist * t.msPerPx);
+          const start = performance.now();
+          const startScrollTop = el.scrollTop;
+          const step = (now: number) => {
+            if (arrivalRunIdRef.current !== runId) return; // 別のアイテムに切り替わった
+            const progress = Math.min((now - start) / duration, 1);
+            el.scrollTop = startScrollTop + dist * progress;
+            if (progress < 1) requestAnimationFrame(step);
+            else scheduleArrivalAdvance(t.holdSec * 1000);
+          };
+          requestAnimationFrame(step);
+        }, t.waitSec * 1000);
+      };
+      if (isOverflow) {
+        startScroll();
       } else {
-        // No overflow: 5sec total display time
-        arrivalTimerRef.current = setTimeout(() => advanceToNextArrival(), 5000);
+        // 収まる場合: 表示時間の後に次へ。カード等の遅延読み込みで溢れていたらスクロールに切り替える
+        scheduleArrivalAdvance(t.fitSec * 1000, () => {
+          const el = newArrivalBodyRef.current;
+          if (el && el.scrollHeight > el.clientHeight + 2) { startScroll(); return true; }
+          return false;
+        });
       }
     }, 100);
   };
@@ -3565,6 +3726,14 @@ export default function App() {
           hoverPreviewEnabled?: boolean;
           ogpCardsEnabled?: boolean;
           tweetCardsEnabled?: boolean;
+          arrivalCardsEnabled?: boolean;
+          subtitleCardsEnabled?: boolean;
+          arrivalTiming?: unknown;
+          subtitleTiming?: unknown;
+          subtitleSyncEnabled?: boolean;
+          mainHeaderVis?: unknown;
+          arrivalHeaderVis?: unknown;
+          subtitleHeaderVis?: unknown;
           lastBoard?: { boardName: string; url: string };
           hoverPreviewDelay?: number;
           thumbSize?: number;
@@ -3629,6 +3798,14 @@ export default function App() {
         if (typeof parsed.hoverPreviewEnabled === "boolean") setHoverPreviewEnabled(parsed.hoverPreviewEnabled);
         if (typeof parsed.ogpCardsEnabled === "boolean") setOgpCardsEnabled(parsed.ogpCardsEnabled);
         if (typeof parsed.tweetCardsEnabled === "boolean") setTweetCardsEnabled(parsed.tweetCardsEnabled);
+        if (typeof parsed.arrivalCardsEnabled === "boolean") setArrivalCardsEnabled(parsed.arrivalCardsEnabled);
+        if (typeof parsed.subtitleCardsEnabled === "boolean") setSubtitleCardsEnabled(parsed.subtitleCardsEnabled);
+        if (parsed.arrivalTiming !== undefined) setArrivalTiming(sanitizeScrollTiming(parsed.arrivalTiming));
+        if (parsed.subtitleTiming !== undefined) setSubtitleTiming(sanitizeScrollTiming(parsed.subtitleTiming));
+        if (typeof parsed.subtitleSyncEnabled === "boolean") setSubtitleSyncEnabled(parsed.subtitleSyncEnabled);
+        if (parsed.mainHeaderVis !== undefined) setMainHeaderVis(sanitizeHeaderVis(parsed.mainHeaderVis));
+        if (parsed.arrivalHeaderVis !== undefined) setArrivalHeaderVis(sanitizeHeaderVis(parsed.arrivalHeaderVis));
+        if (parsed.subtitleHeaderVis !== undefined) setSubtitleHeaderVis(sanitizeHeaderVis(parsed.subtitleHeaderVis));
         if (parsed.lastBoard && typeof parsed.lastBoard.boardName === "string" && typeof parsed.lastBoard.url === "string") {
           pendingLastBoardRef.current = parsed.lastBoard;
         }
@@ -4252,63 +4429,61 @@ export default function App() {
     void invoke("save_tts_mute_dict", { dict: ttsMuteDict }).catch((e) => { console.warn("save_tts_mute_dict failed", e); });
   }, [ttsMuteDict]);
 
-  // OGP / X ポストカードの非同期取得 & 埋め込み。トグル ON 時のみ、IntersectionObserver で
-  // 画面に入ったスロットだけ取得する (スレ内の全 URL へ一斉に通信しない)。
-  // 取得結果は ogpCacheRef / tweetCacheRef にキャッシュし、再レンダーで作り直されたスロットは即座に再充填する。
-  useEffect(() => {
-    if (!ogpCardsEnabled && !tweetCardsEnabled) return;
-    const container = responseScrollRef.current;
-    if (!container) return;
-
-    const fetchTweet = (url: string): Promise<TweetCardData | null> => {
-      const cache = tweetCacheRef.current;
-      if (cache.has(url)) return Promise.resolve(cache.get(url) ?? null);
-      const inflight = tweetInflightRef.current;
-      const existing = inflight.get(url);
-      if (existing) return existing;
-      if (!isTauriRuntime()) return Promise.resolve(null);
-      const p = invoke<TweetCardData>("fetch_tweet_card", { url })
-        .then((card) => { cache.set(url, card); return card; })
-        .catch((err) => {
-          // 削除済み・非公開ポストはここに来る (素リンク表示のままにする)
-          console.warn("fetch_tweet_card failed", url, err);
-          cache.set(url, null);
-          return null;
-        })
-        .finally(() => { inflight.delete(url); });
-      inflight.set(url, p);
-      return p;
-    };
-
-    const fetchCard = (url: string): Promise<OgpCardData | null> => {
-      const cache = ogpCacheRef.current;
-      if (cache.has(url)) return Promise.resolve(cache.get(url) ?? null);
-      const inflight = ogpInflightRef.current;
-      const existing = inflight.get(url);
-      if (existing) return existing;
-      if (!isTauriRuntime()) return Promise.resolve(null);
-      const p = invoke<OgpCardData>("fetch_ogp_card", { url })
-        .then((card) => { cache.set(url, card); return card; })
-        .catch((err) => {
-          console.warn("fetch_ogp_card failed", url, err);
-          cache.set(url, null);
-          return null;
-        })
-        .finally(() => { inflight.delete(url); });
-      inflight.set(url, p);
-      return p;
-    };
-
-    const fillSlot = (slot: HTMLElement, card: OgpCardData | null) => {
-      const htmlText = card && ogpCardHasContent(card) ? buildOgpCardHtml(card) : "";
-      if (htmlText) {
-        slot.innerHTML = htmlText;
-        slot.dataset.ogpState = "done";
-      } else {
-        slot.dataset.ogpState = "empty";
-      }
-    };
-
+  // --- OGP / X ポストカードの取得 (キャッシュ・同時要求の共有つき) ---
+  const fetchTweetCardCached = (url: string): Promise<TweetCardData | null> => {
+    const cache = tweetCacheRef.current;
+    if (cache.has(url)) return Promise.resolve(cache.get(url) ?? null);
+    const inflight = tweetInflightRef.current;
+    const existing = inflight.get(url);
+    if (existing) return existing;
+    if (!isTauriRuntime()) return Promise.resolve(null);
+    const p = invoke<TweetCardData>("fetch_tweet_card", { url })
+      .then((card) => { cache.set(url, card); return card; })
+      .catch((err) => {
+        // 削除済み・非公開ポストはここに来る (素リンク表示のままにする)
+        console.warn("fetch_tweet_card failed", url, err);
+        cache.set(url, null);
+        return null;
+      })
+      .finally(() => { inflight.delete(url); });
+    inflight.set(url, p);
+    return p;
+  };
+  const fetchOgpCardCached = (url: string): Promise<OgpCardData | null> => {
+    const cache = ogpCacheRef.current;
+    if (cache.has(url)) return Promise.resolve(cache.get(url) ?? null);
+    const inflight = ogpInflightRef.current;
+    const existing = inflight.get(url);
+    if (existing) return existing;
+    if (!isTauriRuntime()) return Promise.resolve(null);
+    const p = invoke<OgpCardData>("fetch_ogp_card", { url })
+      .then((card) => { cache.set(url, card); return card; })
+      .catch((err) => {
+        console.warn("fetch_ogp_card failed", url, err);
+        cache.set(url, null);
+        return null;
+      })
+      .finally(() => { inflight.delete(url); });
+    inflight.set(url, p);
+    return p;
+  };
+  // スロット 1 個分のカード HTML を解決する (取れなければ空文字)。
+  // X ポストは削除済み・非公開・取得失敗時に通常の OGP カードへフォールバックする (OGP カード ON のときのみ)。
+  const resolveCardHtml = async (url: string, tweetId: string | undefined, ogpFallback: boolean): Promise<string> => {
+    if (!/^https?:\/\//i.test(url)) return "";
+    if (tweetId) {
+      const tweet = await fetchTweetCardCached(url);
+      const htmlText = tweet ? buildTweetCardHtml(tweet) : "";
+      if (htmlText) return htmlText;
+      if (!ogpFallback) return "";
+    }
+    const card = await fetchOgpCardCached(url);
+    return card && ogpCardHasContent(card) ? buildOgpCardHtml(card) : "";
+  };
+  // コンテナ内の .ogp-card-slot を IntersectionObserver で監視し、画面に入ったものだけ取得して埋める
+  // (スレ内の全 URL へ一斉に通信しない)。React が innerHTML を差し替えるたびにスロットは白紙で
+  // 作り直されるため、MutationObserver で未処理スロットを拾い直す。戻り値は解除関数。
+  const setupOgpFill = (container: HTMLElement, ogpFallback: boolean): (() => void) => {
     const io = new IntersectionObserver(
       (entries, obs) => {
         for (const entry of entries) {
@@ -4317,40 +4492,95 @@ export default function App() {
           obs.unobserve(slot);
           if (slot.dataset.ogpState) continue;
           const url = slot.dataset.ogpUrl;
-          if (!url || !/^https?:\/\//i.test(url)) { slot.dataset.ogpState = "empty"; continue; }
+          if (!url) { slot.dataset.ogpState = "empty"; continue; }
           slot.dataset.ogpState = "loading";
-          if (slot.dataset.tweetId) {
-            void fetchTweet(url).then((card) => {
-              if (!slot.isConnected) return;
-              const htmlText = card ? buildTweetCardHtml(card) : "";
-              if (htmlText) {
-                slot.innerHTML = htmlText;
-                slot.dataset.ogpState = "done";
-                return;
-              }
-              // 削除済み・非公開・取得失敗時は通常の OGP カードにフォールバックする。
-              if (!ogpCardsEnabled) { slot.dataset.ogpState = "empty"; return; }
-              void fetchCard(url).then((ogp) => { if (slot.isConnected) fillSlot(slot, ogp); });
-            });
-            continue;
-          }
-          void fetchCard(url).then((card) => { if (slot.isConnected) fillSlot(slot, card); });
+          void resolveCardHtml(url, slot.dataset.tweetId, ogpFallback).then((htmlText) => {
+            if (!slot.isConnected) return; // 再レンダーでノードが差し替わっている可能性があるので生存確認
+            if (htmlText) {
+              slot.innerHTML = htmlText;
+              slot.dataset.ogpState = "done";
+            } else {
+              slot.dataset.ogpState = "empty";
+            }
+          });
         }
       },
       { root: container, rootMargin: "200px" }
     );
-
     const observeNewSlots = () => {
       container.querySelectorAll<HTMLElement>(".ogp-card-slot:not([data-ogp-state])").forEach((slot) => io.observe(slot));
     };
     observeNewSlots();
-    // React が innerHTML を差し替える (再レンダー・ハイライト変更・新着など) たびにスロットは白紙で作り直されるため、
-    // DOM の変化を監視して未処理スロットを拾い直す (依存配列で全ての描画入力を追いかけなくて済む)。
     const mo = new MutationObserver(observeNewSlots);
     mo.observe(container, { childList: true, subtree: true });
-
     return () => { mo.disconnect(); io.disconnect(); };
-  }, [ogpCardsEnabled, tweetCardsEnabled]);
+  };
+  // 字幕ウィンドウからの「表示終了までの残り時間」報告を受け取り、同期 ON なら新着ペインの「次へ進む」を延長する
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void listen<{ seq?: unknown; totalMs?: unknown }>("subtitle-timing", (ev) => {
+      const payload = ev.payload ?? {};
+      const seq = typeof payload.seq === "number" ? payload.seq : -1;
+      const totalMs = typeof payload.totalMs === "number" && Number.isFinite(payload.totalMs) ? Math.min(600000, Math.max(0, payload.totalMs)) : 0;
+      if (seq !== subtitleSeqRef.current) return; // 古いレスの報告は無視
+      const endAt = performance.now() + totalMs;
+      subtitleEndAtRef.current = { seq, endAt };
+      if (!subtitleSyncEnabledRef.current) return;
+      const deadline = arrivalFinalDeadlineRef.current;
+      const fire = arrivalFinalFireRef.current;
+      if (deadline !== null && fire && endAt > deadline && arrivalTimerRef.current) {
+        clearTimeout(arrivalTimerRef.current);
+        arrivalFinalDeadlineRef.current = endAt;
+        arrivalTimerRef.current = setTimeout(fire, Math.max(0, endAt - performance.now()));
+      }
+    }).then((fn) => { if (disposed) fn(); else unlisten = fn; }).catch((e) => console.warn("subtitle-timing listen failed", e));
+    return () => { disposed = true; if (unlisten) unlisten(); };
+  }, []);
+  // 字幕ウィンドウからの操作: 手動スクロール → 一時停止 / ▶ → 次のレスへ (以降は通常のタイマー制御)
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void listen<{ action?: unknown }>("subtitle-control", (ev) => {
+      const action = ev.payload?.action;
+      if (action === "pause") {
+        arrivalPausedRef.current = true;
+        setArrivalPaused(true);
+        arrivalRunIdRef.current++; // 進行中のスクロールを止める
+        if (arrivalTimerRef.current) { clearTimeout(arrivalTimerRef.current); arrivalTimerRef.current = null; }
+        arrivalFinalDeadlineRef.current = null;
+        arrivalFinalFireRef.current = null;
+      } else if (action === "next") {
+        arrivalPausedRef.current = false;
+        setArrivalPaused(false);
+        advanceToNextArrivalRef.current();
+      }
+    }).then((fn) => { if (disposed) fn(); else unlisten = fn; }).catch((e) => console.warn("subtitle-control listen failed", e));
+    return () => { disposed = true; if (unlisten) unlisten(); };
+  }, []);
+  // 字幕ヘッダに一時停止状態と残りキュー数を表示
+  useEffect(() => {
+    if (!isTauriRuntime() || !subtitleVisible) return;
+    void invoke("subtitle_status", { paused: arrivalPaused, remaining: arrivalQueueCount }).catch((e) => console.warn("subtitle_status:", e));
+  }, [arrivalPaused, arrivalQueueCount, subtitleVisible]);
+  // メインのスレ表示。レス表示欄はスレ一覧表示 (activePaneView === "threads") のあいだ DOM から外れ、
+  // スレを開くと別の要素として作り直されるため、表示切り替えのたびに監視を付け直す。
+  useEffect(() => {
+    if (!ogpCardsEnabled && !tweetCardsEnabled) return;
+    if (activePaneView !== "responses") return;
+    const container = responseScrollRef.current;
+    if (!container) return;
+    return setupOgpFill(container, ogpCardsEnabled);
+  }, [ogpCardsEnabled, tweetCardsEnabled, activePaneView]);
+  // 【試験】新着レスペイン (arrivalCardsEnabled が ON のときのみ)
+  useEffect(() => {
+    if (!arrivalCardsEnabled || (!ogpCardsEnabled && !tweetCardsEnabled)) return;
+    const container = newArrivalScrollRef.current;
+    if (!container) return;
+    return setupOgpFill(container, ogpCardsEnabled);
+  }, [arrivalCardsEnabled, ogpCardsEnabled, tweetCardsEnabled, newArrivalPaneOpen]);
 
   // Save app settings to settings.ini when relevant values change
   useEffect(() => {
@@ -4414,6 +4644,14 @@ export default function App() {
       hoverPreviewEnabled,
       ogpCardsEnabled,
       tweetCardsEnabled,
+      arrivalCardsEnabled,
+      subtitleCardsEnabled,
+      arrivalTiming,
+      subtitleTiming,
+      subtitleSyncEnabled,
+      mainHeaderVis,
+      arrivalHeaderVis,
+      subtitleHeaderVis,
       lastBoard: lastBoardUrlRef.current ? { boardName: selectedBoard, url: lastBoardUrlRef.current } : undefined,
       hoverPreviewDelay,
       thumbSize,
@@ -4437,7 +4675,7 @@ export default function App() {
     if (isTauriRuntime()) {
       void invoke("save_layout_prefs", { prefs: payload }).catch(() => {});
     }
-  }, [boardPaneVisible, boardPanePx, threadPanePx, responseTopRatio, boardsFontSize, threadsFontSize, responsesFontSize, responsesHeaderFontSize, darkMode, fontFamily, fontBold, threadColWidths, showBoardButtons, keepSortOnRefresh, composeSubmitKey, typingConfettiEnabled, imageSizeLimit, showImagePreview, hoverPreviewEnabled, ogpCardsEnabled, tweetCardsEnabled, selectedBoard, hoverPreviewDelay, thumbSize, restoreSession, autoRefreshInterval, autoScrollEnabled, newArrivalPaneOpen, newArrivalPaneHeight, newArrivalFontSize, resIdFontSize, resIdFontFamily, newArrivalIdFontSize, newArrivalIdFontFamily, subtitleIdFontSize, subtitleIdFontFamily, popupFontSize, popupMaxWidth, popupMaxHeight, composePanelPx]);
+  }, [boardPaneVisible, boardPanePx, threadPanePx, responseTopRatio, boardsFontSize, threadsFontSize, responsesFontSize, responsesHeaderFontSize, darkMode, fontFamily, fontBold, threadColWidths, showBoardButtons, keepSortOnRefresh, composeSubmitKey, typingConfettiEnabled, imageSizeLimit, showImagePreview, hoverPreviewEnabled, ogpCardsEnabled, tweetCardsEnabled, arrivalCardsEnabled, subtitleCardsEnabled, arrivalTiming, subtitleTiming, subtitleSyncEnabled, mainHeaderVis, arrivalHeaderVis, subtitleHeaderVis, selectedBoard, hoverPreviewDelay, thumbSize, restoreSession, autoRefreshInterval, autoScrollEnabled, newArrivalPaneOpen, newArrivalPaneHeight, newArrivalFontSize, resIdFontSize, resIdFontFamily, newArrivalIdFontSize, newArrivalIdFontFamily, subtitleIdFontSize, subtitleIdFontFamily, popupFontSize, popupMaxWidth, popupMaxHeight, composePanelPx]);
 
 
 
@@ -4906,7 +5144,12 @@ export default function App() {
             <>
               <div className="new-arrival-pane" style={{ height: newArrivalPaneHeight }}>
                 <div className="new-arrival-header">
-                  <span className="new-arrival-title">新着レス {arrivalQueueCount > 0 ? `(残 ${arrivalQueueCount})` : ""}</span>
+                  <span className="new-arrival-title">新着レス {arrivalQueueCount > 0 ? `(残 ${arrivalQueueCount})` : ""}{arrivalPaused ? " ⏸停止中" : ""}</span>
+                  <button className="title-action-btn" title="次のレスを表示" onClick={() => {
+                    arrivalPausedRef.current = false;
+                    setArrivalPaused(false);
+                    advanceToNextArrival();
+                  }}>▶</button>
                   <button
                     className={`title-action-btn${subtitleVisible ? " active" : ""}`}
                     title="字幕"
@@ -4932,6 +5175,8 @@ export default function App() {
                   <button className="title-action-btn" onClick={() => {
                     arrivalQueueRef.current = [];
                     setArrivalQueueCount(0);
+                    arrivalPausedRef.current = false;
+                    setArrivalPaused(false);
                     if (arrivalTimerRef.current) { clearTimeout(arrivalTimerRef.current); arrivalTimerRef.current = null; }
                     currentArrivalItemRef.current = null;
                     setCurrentArrivalItem(null);
@@ -4943,7 +5188,18 @@ export default function App() {
                   {currentArrivalItem !== null && (
                     <div
                       className="new-arrival-item"
-                      onClick={() => {
+                      onClick={(e) => {
+                        // カード内リンクのクリックは外部ブラウザで開き、レスへのジャンプはしない
+                        const cardLink = (e.target as HTMLElement).closest<HTMLAnchorElement>("a.body-link");
+                        if (cardLink) {
+                          e.preventDefault();
+                          const url = cardLink.getAttribute("href");
+                          if (url && /^https?:\/\//i.test(url)) {
+                            if (isTauriRuntime()) void invoke("open_external_url", { url }).catch((err) => console.warn("open_external_url failed", err));
+                            else window.open(url, "_blank");
+                          }
+                          return;
+                        }
                         const tab = threadTabs.find((t) => t.threadUrl === currentArrivalItem.threadUrl);
                         if (tab) {
                           onTabClick(threadTabs.indexOf(tab));
@@ -4952,13 +5208,18 @@ export default function App() {
                       }}
                     >
                       <div className="new-arrival-meta">
-                        <span className="new-arrival-thread-title">{currentArrivalItem.threadTitle}</span>
-                        <span className="new-arrival-res-no">{currentArrivalItem.responseNo}</span>
-                        <span className="new-arrival-name">{currentArrivalItem.name}</span>
-                        {currentArrivalItem.id && <span className="new-arrival-id" style={{ ...(newArrivalIdFontSize !== 0 ? { fontSize: `${Math.max(6, newArrivalFontSize + newArrivalIdFontSize)}px` } : {}), ...(newArrivalIdFontFamily ? { fontFamily: `"${newArrivalIdFontFamily}", sans-serif` } : {}) }}>ID:{currentArrivalItem.id}</span>}
-                        <span className="new-arrival-time">{currentArrivalItem.time}</span>
+                        {arrivalHeaderVis.threadTitle && <span className="new-arrival-thread-title">{currentArrivalItem.threadTitle}</span>}
+                        {arrivalHeaderVis.resNo && <span className="new-arrival-res-no">{currentArrivalItem.responseNo}</span>}
+                        {arrivalHeaderVis.name && <span className="new-arrival-name"><span className="response-label">名前：</span>{currentArrivalItem.name}</span>}
+                        {arrivalHeaderVis.mail && currentArrivalItem.mail && <span className="new-arrival-mail">[{currentArrivalItem.mail}]</span>}
+                        {arrivalHeaderVis.date && <span className="new-arrival-time"><span className="response-label">投稿日：</span>{currentArrivalItem.time}</span>}
+                        {arrivalHeaderVis.id && currentArrivalItem.id && <span className="new-arrival-id" style={{ color: idHighlights[currentArrivalItem.id] ?? undefined, ...(newArrivalIdFontSize !== 0 ? { fontSize: `${Math.max(6, newArrivalFontSize + newArrivalIdFontSize)}px` } : {}), ...(newArrivalIdFontFamily ? { fontFamily: `"${newArrivalIdFontFamily}", sans-serif` } : {}) }}>ID:{currentArrivalItem.id}</span>}
+                        {arrivalHeaderVis.count && currentArrivalItem.idCount > 0 && <span className="new-arrival-id-count" style={{ color: currentArrivalItem.idCount >= 5 ? "#cc3333" : currentArrivalItem.idCount >= 2 ? "#3366ff" : undefined }}>({currentArrivalItem.idSeq}/{currentArrivalItem.idCount})</span>}
                       </div>
-                      <div className="new-arrival-body" ref={newArrivalBodyRef} style={{ fontSize: `${newArrivalFontSize}px` }}>{currentArrivalItem.text}</div>
+                      {arrivalCardsEnabled && (ogpCardsEnabled || tweetCardsEnabled)
+                        ? /* カード付き描画: 本文は renderResponseBody でサニタイズ済み (画像は非表示のまま) */
+                          <div className="new-arrival-body" ref={newArrivalBodyRef} style={{ fontSize: `${newArrivalFontSize}px` }} dangerouslySetInnerHTML={renderResponseBody(currentArrivalItem.text, { hideImages: true, ogpCards: ogpCardsEnabled, tweetCards: tweetCardsEnabled, ogpAllow: ogpDomainFilters.allow, ogpBlock: ogpDomainFilters.block })} />
+                        : <div className="new-arrival-body" ref={newArrivalBodyRef} style={{ fontSize: `${newArrivalFontSize}px` }}>{currentArrivalItem.text}</div>}
                     </div>
                   )}
                 </div>
@@ -5696,23 +5957,30 @@ export default function App() {
                     onDoubleClick={() => appendComposeQuote(`>>${r.id}`)}
                   >
                     <div className="response-header rh">
-                      <span className="response-no res-num" onClick={(e) => onResponseNoClick(e, r.id)}>
-                        {r.id}
-                      </span>
+                      {mainHeaderVis.resNo && (
+                        <span className="response-no res-num" onClick={(e) => onResponseNoClick(e, r.id)}>
+                          {r.id}
+                        </span>
+                      )}
                       {myPostNos.has(r.id) && <span className="my-post-label">[自分]</span>}
                       {replyToMeNos.has(r.id) && <span className="reply-to-me-label">[自分宛]</span>}
-                      <span
-                        className="response-name res-name mname"
-                        style={(() => {
-                          const hl = textHighlights.find((h) => h.type === "name" && h.pattern === r.nameWithoutWatchoi);
-                          return hl ? { background: hl.color } : undefined;
-                        })()}
-                        dangerouslySetInnerHTML={renderHighlightedPlainText(r.nameWithoutWatchoi, responseSearchQuery)}
-                      />
-                      {r.mail && (
+                      {mainHeaderVis.name && (
+                        <>
+                          <span className="response-label">名前：</span>
+                          <span
+                            className="response-name res-name mname"
+                            style={(() => {
+                              const hl = textHighlights.find((h) => h.type === "name" && h.pattern === r.nameWithoutWatchoi);
+                              return hl ? { background: hl.color } : undefined;
+                            })()}
+                            dangerouslySetInnerHTML={renderHighlightedPlainText(r.nameWithoutWatchoi, responseSearchQuery)}
+                          />
+                        </>
+                      )}
+                      {mainHeaderVis.mail && r.mail && (
                         <span className={`response-mail res-mail${r.mail === "sage" ? " response-mail-sage sage" : ""}`}>[{r.mail}]</span>
                       )}
-                      {r.watchoi && (
+                      {mainHeaderVis.watchoi && r.watchoi && (
                         <span
                           className="response-watchoi"
                           onClick={(e) => {
@@ -5737,12 +6005,18 @@ export default function App() {
                       )}
                       <span className="response-header-right">
                         {isNew && <span className="response-new-marker">New!</span>}
-                        <span
-                          className="response-date res-date"
-                          dangerouslySetInnerHTML={renderHighlightedPlainText(formatResponseDate(r.time), responseSearchQuery)}
-                        />
-                        {id && (
+                        {mainHeaderVis.date && (
                           <>
+                            <span className="response-label">投稿日：</span>
+                            <span
+                              className="response-date res-date"
+                              dangerouslySetInnerHTML={renderHighlightedPlainText(formatResponseDate(r.time), responseSearchQuery)}
+                            />
+                          </>
+                        )}
+                        {id && (mainHeaderVis.id || mainHeaderVis.count) && (
+                          <>
+                            {mainHeaderVis.id && (
                             <span
                               className="response-id-cell rc-id"
                               style={{ color: idHighlights[id] ?? undefined, ...(resIdFontSize !== 0 ? { fontSize: `${Math.max(6, responsesFontSize + resIdFontSize)}px` } : {}), ...(resIdFontFamily ? { fontFamily: `"${resIdFontFamily}", sans-serif` } : {}) }}
@@ -5763,12 +6037,15 @@ export default function App() {
                             >
                               ID:{id}
                             </span>
+                            )}
+                            {mainHeaderVis.count && (
                             <span
                               className="response-id-count"
                               style={{ color: count >= 5 ? '#cc3333' : count >= 2 ? '#3366ff' : undefined }}
                             >
                               ({idSeqMap.get(r.id) ?? 1}/{count})
                             </span>
+                            )}
                           </>
                         )}
                         {r.beNumber && (
@@ -6206,13 +6483,32 @@ export default function App() {
           {/* ----- セパレーター ----- */}
           <hr className="menu-sep" />
           {/* このレスから読み上げ（レス番号上のみ） */}
-          {responseMenu.isOnResNo && responseMenu.responseId > 0 && ttsMode !== "off" && (
+          {responseMenu.isOnResNo && responseMenu.responseId > 0 && (ttsMode !== "off" || diagnosticsEnabled) && (
             <button onClick={() => {
               const startNo = responseMenu.responseId;
               const items = visibleResponseItems.filter((r) => r.id >= startNo);
-              const site = detectSiteType(threadTabs[activeTabIndex]?.threadUrl ?? threadUrl);
+              const curThreadUrl = threadTabs[activeTabIndex]?.threadUrl ?? threadUrl;
+              const site = detectSiteType(curThreadUrl);
               setResponseMenu(null);
               setStatus(`レス ${startNo} から読み上げ開始 (${items.length}件)`);
+              // テスト機能 (診断モード: debug ビルドまたは LIVEFAKE_DIAG=1 のときのみ):
+              // 該当レスを「新着レス」として扱い、自動更新時と同じ経路で新着レスペイン・字幕ウィンドウへ流す。
+              // 新着ペイン・字幕でのカード表示などの見え方を、実際の新着を待たずに検証するためのもの。
+              if (diagnosticsEnabled) {
+                const tabTitle = threadTabs[activeTabIndex]?.title ?? "";
+                const arrivals: ArrivalItem[] = items
+                  .filter((item) => item.id < 1001)
+                  .map((item) => makeArrival({ responseNo: item.id, name: item.name, mail: item.mail, dateAndId: item.time, body: item.text }, tabTitle, curThreadUrl));
+                if (arrivals.length > 0) {
+                  const queueWasEmpty = arrivalQueueRef.current.length === 0;
+                  arrivalQueueRef.current.push(...arrivals);
+                  setArrivalQueueCount(arrivalQueueRef.current.length);
+                  if (!arrivalPausedRef.current && !arrivalTimerRef.current && (currentArrivalItemRef.current === null || queueWasEmpty)) {
+                    advanceToNextArrival();
+                  }
+                }
+              }
+              if (ttsMode === "off") return;
               void (async () => {
                 await ttsStop();
                 for (const item of items) {
@@ -6224,7 +6520,7 @@ export default function App() {
                   ttsSpeak(item.text, prefix, undefined, { name: item.name, id: idMatch ? idMatch[1] : "" });
                 }
               })();
-            }}>このレスから読み上げ</button>
+            }}>{diagnosticsEnabled ? "このレスから読み上げ（テスト: 新着として流す）" : "このレスから読み上げ"}</button>
           )}
           {/* ----- セパレーター ----- */}
           <hr className="menu-sep" />
@@ -6719,10 +7015,28 @@ export default function App() {
                   <span>文字サイズ (レスヘッダ)</span>
                   <input type="number" value={responsesHeaderFontSize} min={8} max={20} onChange={(e) => setResponsesHeaderFontSize(Number(e.target.value))} />
                 </label>
+                <div className="settings-row" style={{ flexDirection: "column", alignItems: "stretch", gap: 4 }}>
+                  <span>レスヘッダに表示する項目（非表示の項目は詰めて表示）</span>
+                  {headerVisRows(mainHeaderVis, setMainHeaderVis, { watchoi: true })}
+                </div>
                 <label className="settings-row">
                   <span>文字サイズ (新着レス)</span>
                   <input type="number" value={newArrivalFontSize} min={8} max={24} onChange={(e) => setNewArrivalFontSize(Number(e.target.value))} />
                 </label>
+                <label className="settings-row">
+                  <input type="checkbox" checked={arrivalCardsEnabled} onChange={(e) => setArrivalCardsEnabled(e.target.checked)} />
+                  <span>新着レスペインにもカードを表示（OGP / X カードが ON のとき有効）</span>
+                </label>
+                <div className="settings-row" style={{ flexDirection: "column", alignItems: "stretch", gap: 4 }}>
+                  <div style={{ fontSize: 11, color: "var(--text-secondary, #888)" }}>
+                    新着レスペインの自動スクロール: 収まらない長文は「待ち時間」の後、最下行まで「スクロール速度」でゆっくり流し、到達後の表示時間が過ぎたら次のレスへ進みます。
+                  </div>
+                  {scrollTimingRows(arrivalTiming, setArrivalTiming)}
+                </div>
+                <div className="settings-row" style={{ flexDirection: "column", alignItems: "stretch", gap: 4 }}>
+                  <span>新着レスペインのヘッダに表示する項目（非表示の項目は詰めて表示）</span>
+                  {headerVisRows(arrivalHeaderVis, setArrivalHeaderVis, { threadTitle: true })}
+                </div>
                 <label className="settings-row">
                   <span>文字サイズ (ポップアップ)</span>
                   <input type="number" value={popupFontSize} min={8} max={40} onChange={(e) => setPopupFontSize(Number(e.target.value))} />
@@ -7000,6 +7314,24 @@ export default function App() {
                     setSubtitleAlwaysOnTop(e.target.checked);
                     if (isTauriRuntime()) invoke("subtitle_topmost", { enabled: e.target.checked }).catch(() => {});
                   }} />
+                </div>
+                <label className="settings-row">
+                  <input type="checkbox" checked={subtitleCardsEnabled} onChange={(e) => setSubtitleCardsEnabled(e.target.checked)} />
+                  <span>字幕ウィンドウにもカードを表示（OGP / X カードが ON のとき有効）</span>
+                </label>
+                <label className="settings-row">
+                  <input type="checkbox" checked={subtitleSyncEnabled} onChange={(e) => setSubtitleSyncEnabled(e.target.checked)} />
+                  <span>字幕の表示が終わるまで次の新着レスを待つ（字幕を閉じているときは新着ペインの時間で進む）</span>
+                </label>
+                <div className="settings-row" style={{ flexDirection: "column", alignItems: "stretch", gap: 4 }}>
+                  <div style={{ fontSize: 11, color: "var(--text-secondary, #888)" }}>
+                    字幕の自動スクロール（新着ペインとは別に設定。字幕は文字が大きい分、同じ速度でも時間がかかります）
+                  </div>
+                  {scrollTimingRows(subtitleTiming, setSubtitleTiming)}
+                </div>
+                <div className="settings-row" style={{ flexDirection: "column", alignItems: "stretch", gap: 4 }}>
+                  <span>字幕のヘッダに表示する項目（非表示の項目は詰めて表示）</span>
+                  {headerVisRows(subtitleHeaderVis, setSubtitleHeaderVis, { threadTitle: true })}
                 </div>
                 <div className="settings-row">
                   <span>ID 文字サイズ補正 (0=メタと同じ、±px)</span>

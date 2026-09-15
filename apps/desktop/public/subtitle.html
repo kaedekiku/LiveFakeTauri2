@@ -43,8 +43,28 @@
     word-break: break-word;
     margin-bottom: 4px;
     flex-shrink: 0;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
     text-shadow: 0 0 2px rgba(0,0,0,0.9), 1px 1px 2px rgba(0,0,0,0.9);
   }
+  #subtitleMetaText { flex: 1 1 auto; min-width: 0; }
+  #subtitleStatus { flex: none; color: #ffcc66; white-space: nowrap; }
+  /* ▶ 次のレス: 手動スクロールで一時停止したあと、次のレスを表示して通常のタイマー制御に戻す */
+  #subtitleNextBtn {
+    flex: none;
+    pointer-events: auto;
+    cursor: pointer;
+    font: inherit;
+    line-height: 1.2;
+    color: #ffffff;
+    background: rgba(255,255,255,0.15);
+    border: 1px solid rgba(255,255,255,0.45);
+    border-radius: 4px;
+    padding: 0 7px;
+    text-shadow: none;
+  }
+  #subtitleNextBtn:hover { background: rgba(255,255,255,0.3); }
   #subtitleBody {
     font-size: 28px;
     line-height: 1.4;
@@ -57,18 +77,63 @@
   }
   .hl-text { border-radius: 2px; padding: 0 1px; }
   .hl-id { font-weight: bold; display: inline-block; white-space: nowrap; }
+  /* 本文はマウス操作を受け付ける (スクロールバーで読み返せる)。手動スクロールで自動送りを一時停止する */
+  #subtitleBody { pointer-events: auto; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.4) transparent; }
+  #subtitleBody::-webkit-scrollbar { width: 9px; }
+  #subtitleBody::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.4); border-radius: 5px; }
+  #subtitleBody::-webkit-scrollbar-track { background: transparent; }
+
+  /* --- OGP / X ポストカード (メイン側で解決済みの HTML が bodyHtml に埋め込まれてくる) ---
+     半透明の暗い背景に載せるためダーク配色。 */
+  #subtitleBody .body-link { color: #9fd0ff; text-decoration: none; }
+  .ogp-cards { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; font-size: 14px; line-height: 1.35; text-shadow: none; white-space: normal; }
+  .ogp-card { position: relative; display: flex; align-items: stretch; max-width: 460px; border: 1px solid #55555c; border-radius: 8px; overflow: hidden; background: rgba(43, 43, 48, 0.9); color: inherit; text-decoration: none; }
+  .ogp-card-hover { display: none; }
+  .ogp-card-thumb { flex: none; width: 96px; display: flex; background: #222226; }
+  .ogp-card-thumb img { width: 96px; height: 100%; max-height: 108px; object-fit: cover; display: block; }
+  .ogp-card-main { min-width: 0; flex: 1 1 auto; padding: 8px 10px; display: flex; flex-direction: column; gap: 3px; }
+  .ogp-card-title { font-size: 14px; font-weight: 600; color: #e8e8ea; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .ogp-card-desc { font-size: 12px; color: #b5b5ba; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .ogp-card-site { font-size: 11px; color: #8a8a90; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tweet-card { display: flex; flex-direction: column; gap: 4px; max-width: 400px; padding: 7px 9px; border: 1px solid #4a4a4a; border-radius: 10px; background: rgba(22, 24, 28, 0.9); }
+  .tweet-card-main { display: flex; flex-direction: column; gap: 4px; text-decoration: none; color: inherit; }
+  .tweet-card-video-el { width: 100%; max-height: 260px; border-radius: 10px; background: #000; display: block; }
+  .tweet-card-head { display: flex; align-items: center; gap: 6px; }
+  .tweet-card-avatar { width: 26px; height: 26px; border-radius: 50%; object-fit: cover; flex-shrink: 0; }
+  .tweet-card-avatar-blank { display: inline-block; background: #33363b; }
+  .tweet-card-names { display: flex; align-items: baseline; gap: 4px; min-width: 0; line-height: 1.2; overflow: hidden; }
+  .tweet-card-name { font-weight: 700; font-size: 13px; color: #e7e9ea; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; max-width: 55%; }
+  .tweet-card-badge { color: #1d9bf0; margin-left: 2px; font-size: 11px; }
+  .tweet-card-handle { font-size: 12px; color: #8b98a5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .tweet-card-logo { margin-left: auto; font-size: 14px; color: #8b98a5; flex-shrink: 0; }
+  .tweet-card-text { font-size: 14px; line-height: 1.4; color: #e7e9ea; white-space: pre-wrap; word-break: break-word; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+  .tweet-card-link { color: #1d9bf0; }
+  .tweet-card-quote { display: flex; flex-direction: column; gap: 1px; padding: 4px 6px; border: 1px solid #333; border-radius: 6px; font-size: 12px; }
+  .tweet-card-quote-author { font-weight: 700; color: #e7e9ea; }
+  .tweet-card-quote-text { color: #8b98a5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .tweet-card-photos { display: grid; gap: 2px; border-radius: 10px; overflow: hidden; }
+  .tweet-card-photos-1 { grid-template-columns: 1fr; }
+  .tweet-card-photos-2, .tweet-card-photos-3, .tweet-card-photos-4 { grid-template-columns: 1fr 1fr; }
+  .tweet-card-photo { width: 100%; height: auto; max-height: 200px; object-fit: cover; display: block; background: #22252a; }
+  .tweet-card-photos-2 .tweet-card-photo, .tweet-card-photos-3 .tweet-card-photo, .tweet-card-photos-4 .tweet-card-photo { max-height: 100px; }
+  .tweet-card-video { font-size: 12px; color: #8b98a5; padding: 2px 6px; border-radius: 5px; background: #22252a; align-self: flex-start; }
+  .tweet-card-meta { display: flex; align-items: center; gap: 5px; font-size: 12px; color: #8b98a5; }
+  .tweet-card-dot { color: #a0a8ae; }
 </style>
 </head>
 <body>
 <div id="subtitleRoot">
   <div id="subtitleContent">
-    <div id="subtitleMeta"></div>
+    <div id="subtitleMeta"><span id="subtitleMetaText"></span><span id="subtitleStatus"></span><button id="subtitleNextBtn" type="button" title="次のレスを表示">▶</button></div>
     <div id="subtitleBody">字幕待機中</div>
   </div>
 </div>
 <script>
   var rootEl = document.getElementById("subtitleRoot");
-  var metaEl = document.getElementById("subtitleMeta");
+  var metaBarEl = document.getElementById("subtitleMeta");
+  var metaEl = document.getElementById("subtitleMetaText");
+  var statusEl = document.getElementById("subtitleStatus");
+  var nextBtn = document.getElementById("subtitleNextBtn");
   var bodyEl = document.getElementById("subtitleBody");
 
   var metaFontSizeVal = 12;
@@ -94,25 +159,112 @@
     }
   }
 
+  // --- 自動スクロール (新着レスペインと同じ動き) ---
+  // 収まらない長文は waitSec 待ってから 1px あたり msPerPx でゆっくり最下行まで流す。
+  // 表示終了までの残り時間をメインへ報告し、「字幕の表示が終わるまで次を待つ」設定の判断材料にしてもらう。
+  var scrollCfg = { fitSec: 5, waitSec: 2, msPerPx: 8, holdSec: 5 };
+  var scrollTimer = null;
+  var scrollRaf = null;
+  var scrollRun = 0;
+  function clampNum(x, def, min, max) {
+    x = Number(x);
+    if (!isFinite(x)) return def;
+    return Math.min(max, Math.max(min, x));
+  }
+  window.__setScrollConfig = function(cfg) {
+    cfg = cfg || {};
+    scrollCfg = {
+      fitSec: clampNum(cfg.fitSec, 5, 0, 60),
+      waitSec: clampNum(cfg.waitSec, 2, 0, 10),
+      msPerPx: clampNum(cfg.msPerPx, 8, 1, 50),
+      holdSec: clampNum(cfg.holdSec, 5, 0, 60)
+    };
+  };
+  function reportTiming(seq, totalMs) {
+    if (typeof seq !== "number" || !window.__TAURI_INTERNALS__) return;
+    window.__TAURI_INTERNALS__.invoke("subtitle_timing_report", { seq: seq, totalMs: Math.round(totalMs) }).catch(function(){});
+  }
+  function cancelScroll() {
+    if (scrollTimer) { clearTimeout(scrollTimer); scrollTimer = null; }
+    if (scrollRaf) { cancelAnimationFrame(scrollRaf); scrollRaf = null; }
+    scrollRun++;
+  }
+  function startScroll(run, seq) {
+    scrollTimer = setTimeout(function() {
+      scrollTimer = null;
+      if (run !== scrollRun) return;
+      var dist = Math.max(0, bodyEl.scrollHeight - bodyEl.clientHeight);
+      var dur = Math.max(1000, dist * scrollCfg.msPerPx);
+      // 画像・カードの読み込みで距離が伸びていたら残り時間を報告し直す (メイン側は長い方を採用する)
+      reportTiming(seq, dur + scrollCfg.holdSec * 1000);
+      var start = performance.now();
+      var from = bodyEl.scrollTop;
+      var step = function(now) {
+        if (run !== scrollRun) return;
+        var p = Math.min((now - start) / dur, 1);
+        bodyEl.scrollTop = from + dist * p;
+        if (p < 1) scrollRaf = requestAnimationFrame(step);
+        else scrollRaf = null;
+      };
+      scrollRaf = requestAnimationFrame(step);
+    }, scrollCfg.waitSec * 1000);
+  }
+  function planScroll(seq) {
+    cancelScroll();
+    var run = scrollRun;
+    bodyEl.scrollTop = 0;
+    scrollTimer = setTimeout(function() {
+      scrollTimer = null;
+      if (run !== scrollRun) return;
+      var dist = Math.max(0, bodyEl.scrollHeight - bodyEl.clientHeight);
+      if (dist > 2) {
+        reportTiming(seq, scrollCfg.waitSec * 1000 + Math.max(1000, dist * scrollCfg.msPerPx) + scrollCfg.holdSec * 1000);
+        startScroll(run, seq);
+        return;
+      }
+      // 収まる場合。カード等の遅延読み込みで溢れたら表示時間の終わり際にスクロールへ切り替える
+      reportTiming(seq, scrollCfg.fitSec * 1000);
+      scrollTimer = setTimeout(function() {
+        scrollTimer = null;
+        if (run !== scrollRun) return;
+        if (bodyEl.scrollHeight > bodyEl.clientHeight + 2) startScroll(run, seq);
+      }, Math.max(0, scrollCfg.fitSec * 1000 - 100));
+    }, 100);
+  }
+
   window.__subtitleEntry = function(entry) {
     var e = entry || {};
+    if (e.scroll) window.__setScrollConfig(e.scroll);
+    // ヘッダ: [スレ名] 番号 名前：名前 [メール] 投稿日：日付 ID (n/回数)。show で項目ごとに非表示 (非表示分は詰める)
+    var show = e.show || {};
+    function on(k) { return show[k] !== false; }
     var parts = [];
-    if (e.threadTitle) parts.push('<span style="color:#88aaff">' + escapeHtml(e.threadTitle) + '</span>');
-    if (e.responseNo != null) parts.push('<span style="color:#aaaaaa">' + escapeHtml(e.responseNo) + '番</span>');
-    if (e.name)        parts.push('<span style="color:#88ff88">' + escapeHtml(e.name) + '</span>');
-    if (e.date) parts.push('<span style="color:#999999">' + escapeHtml(e.date) + '</span>');
-    if (e.id) {
+    if (on("threadTitle") && e.threadTitle) parts.push('<span style="color:#88aaff">' + escapeHtml(e.threadTitle) + '</span>');
+    if (on("resNo") && e.responseNo != null) parts.push('<span style="color:#aaaaaa">' + escapeHtml(e.responseNo) + '</span>');
+    if (on("name") && e.name) parts.push('<span style="color:#88ff88"><span style="color:#999999">名前：</span>' + escapeHtml(e.name) + '</span>');
+    if (on("mail") && e.mail) parts.push('<span style="color:#aaaaaa">[' + escapeHtml(e.mail) + ']</span>');
+    if (on("date") && e.date) parts.push('<span style="color:#999999">投稿日：' + escapeHtml(e.date) + '</span>');
+    if (on("id") && e.id) {
       var idColor = (e.idColor || "#cc8800").replace(/[^#a-zA-Z0-9]/g, "");
       parts.push('<span class="hl-id" style="color:' + idColor + '">ID:' + escapeHtml(e.id) + '</span>');
     }
+    var idCount = Number(e.idCount) || 0;
+    if (on("count") && idCount > 0) {
+      // レス表示欄と同じ規則: 2〜4回=青, 5回以上=赤 (暗い背景向けに明るめの色)
+      var countColor = idCount >= 5 ? "#ff6666" : idCount >= 2 ? "#7fa8ff" : "#aaaaaa";
+      parts.push('<span style="color:' + countColor + '">(' + escapeHtml(Number(e.idSeq) || 1) + '/' + escapeHtml(idCount) + ')</span>');
+    }
     metaEl.innerHTML = parts.join("&nbsp;&nbsp;");
     applyIdStyle();
+    paused = false;
+    renderStatus();
 
     if (e.bodyHtml) {
       bodyEl.innerHTML = e.bodyHtml;
     } else {
       bodyEl.textContent = e.body || "";
     }
+    planScroll(typeof e.seq === "number" ? e.seq : null);
   };
 
   window.__setOpacity = function(value) {
@@ -127,9 +279,50 @@
 
   window.__setMetaFontSize = function(size) {
     metaFontSizeVal = Math.max(8, Math.min(48, Number(size) || 12));
-    metaEl.style.fontSize = metaFontSizeVal + "px";
+    metaBarEl.style.fontSize = metaFontSizeVal + "px";
     applyIdStyle();
   };
+
+  // --- 一時停止 / 次のレス ---
+  // 本文をホイールやスクロールバーで手動スクロールしたら自動送りを止める (読み切れなかった所を読むため)。
+  // ▶ ボタンで次のレスを表示し、そこからは通常のタイマー制御に戻る。
+  var paused = false;
+  var remainingCount = 0;
+  function renderStatus() {
+    var rem = remainingCount > 0 ? " (残 " + remainingCount + ")" : "";
+    statusEl.textContent = paused ? "⏸ 停止中" + rem : (remainingCount > 0 ? rem.trim() : "");
+  }
+  window.__setStatus = function(s) {
+    s = s || {};
+    paused = !!s.paused;
+    remainingCount = Number(s.remaining) || 0;
+    renderStatus();
+  };
+  function control(action) {
+    if (!window.__TAURI_INTERNALS__) return;
+    window.__TAURI_INTERNALS__.invoke("subtitle_control", { action: action }).catch(function(){});
+  }
+  function pauseByUser() {
+    if (paused) return;
+    paused = true;
+    cancelScroll();
+    renderStatus();
+    control("pause");
+  }
+  function isOnScrollbar(ev) {
+    return ev.target === bodyEl && ev.offsetX >= bodyEl.clientWidth;
+  }
+  bodyEl.addEventListener("wheel", function() {
+    if (bodyEl.scrollHeight > bodyEl.clientHeight + 2) pauseByUser();
+  }, { passive: true });
+  bodyEl.addEventListener("mousedown", function(ev) {
+    if (isOnScrollbar(ev)) pauseByUser();
+  });
+  nextBtn.addEventListener("mousedown", function(ev) { ev.stopPropagation(); });
+  nextBtn.addEventListener("click", function(ev) {
+    ev.stopPropagation();
+    control("next");
+  });
 
   window.__setIdFontSize = function(delta) {
     idFontDelta = Number(delta) || 0;
@@ -142,6 +335,8 @@
   };
 
   rootEl.addEventListener("mousedown", function(e) {
+    // スクロールバー・▶ボタン上ではウィンドウ移動を始めない
+    if (e.target === nextBtn || isOnScrollbar(e)) return;
     if (e.button === 0 && window.__TAURI_INTERNALS__) {
       window.__TAURI_INTERNALS__.invoke("plugin:window|start_dragging").catch(function(){});
     }

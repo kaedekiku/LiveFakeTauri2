@@ -238,7 +238,8 @@ async fn fetch_thread_responses_command(
     let site = detect_site_type(&thread_url);
     let (rows, title) = match site {
         Some(SiteType::Shitaraba) => {
-            fetch_shitaraba_responses(&client, &thread_url, limit).await
+            // 差分取得時は範囲指定 (since+1 以降) で通信量を抑える
+            fetch_shitaraba_responses(&client, &thread_url, limit, since_res_no.map(|n| n + 1)).await
         }
         Some(SiteType::Jpnkn) => {
             fetch_jpnkn_responses(&client, &thread_url, limit).await
@@ -1177,9 +1178,14 @@ async fn fetch_ogp_card(url: String) -> Result<OgpCard, String> {
             }
         }
     }
-    let card = core_fetch::fetch_ogp(OGP_USER_AGENT, &url)
-        .await
-        .map_err(|e| e.to_string())?;
+    // YouTube の動画リンクは HTML が巨大で OGP が先頭 512KB に無いため oEmbed から取る
+    let card = match core_fetch::fetch_youtube_card(OGP_USER_AGENT, &url).await {
+        Ok(Some(card)) => card,
+        Ok(None) => core_fetch::fetch_ogp(OGP_USER_AGENT, &url)
+            .await
+            .map_err(|e| e.to_string())?,
+        Err(e) => return Err(e.to_string()),
+    };
     if let Ok(json) = serde_json::to_string(&card) {
         let _ = core_store::save_ogp_cache(&url, &json);
     }
@@ -2377,6 +2383,42 @@ fn subtitle_topmost(app: AppHandle, enabled: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// 字幕ウィンドウからの「表示終了までの残り時間 (ms)」報告をメインウィンドウへイベントで中継する。
+/// メイン側は「字幕の表示が終わるまで次の新着レスを待つ」設定の判断に使う。
+/// 値は上限 10 分でクランプする (不具合で巨大な値が来ても新着キューが止まらないように)。
+#[tauri::command]
+fn subtitle_timing_report(app: AppHandle, seq: u64, total_ms: u64) -> Result<(), String> {
+    let total_ms = total_ms.min(600_000);
+    let _ = app.emit_to(
+        "main",
+        "subtitle-timing",
+        serde_json::json!({ "seq": seq, "totalMs": total_ms }),
+    );
+    Ok(())
+}
+
+/// 字幕ウィンドウからの操作 (手動スクロールによる一時停止 / ▶ 次のレス) をメインウィンドウへ中継する。
+#[tauri::command]
+fn subtitle_control(app: AppHandle, action: String) -> Result<(), String> {
+    if action != "pause" && action != "next" {
+        return Err("unknown action".to_string());
+    }
+    let _ = app.emit_to("main", "subtitle-control", serde_json::json!({ "action": action }));
+    Ok(())
+}
+
+/// 字幕ウィンドウのヘッダに一時停止状態と残りキュー数を表示させる。
+#[tauri::command]
+fn subtitle_status(app: AppHandle, paused: bool, remaining: u32) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("subtitle") {
+        let _ = win.eval(&format!(
+            "if(window.__setStatus)window.__setStatus({})",
+            serde_json::json!({ "paused": paused, "remaining": remaining })
+        ));
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn subtitle_font_size(app: AppHandle, size: u32) -> Result<(), String> {
     if let Some(win) = app.get_webview_window("subtitle") {
@@ -2589,6 +2631,9 @@ pub fn run() {
             subtitle_hide,
             subtitle_reset_position,
             subtitle_update,
+            subtitle_timing_report,
+            subtitle_control,
+            subtitle_status,
             subtitle_opacity,
             subtitle_topmost,
             subtitle_font_size,

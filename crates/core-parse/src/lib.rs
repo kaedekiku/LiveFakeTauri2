@@ -506,6 +506,32 @@ mod tests {
     }
 
     #[test]
+    fn parse_shitaraba_html_responses_extracts_id_mail_and_body() {
+        // read.cgi の実際の出力形式 (2026-09 時点)。rawmode.cgi と違い ID を含む
+        let html = r##"<html><head><title>テストスレ - 123 - したらば掲示板</title></head><body><dl>
+<dt id="comment_1"> <a href="https://jbbs.shitaraba.net/bbs/read.cgi/internet/4073/123/1" rel="nofollow">1</a>：<!-- --><font color="#008800"><!-- --><b>以下、名無しに代わりましてVIPが実況します</b><!-- --></font><!-- -->：2026/01/24(土) 05:17:41 ID:VQVfaKNc0 </dt>
+<dd>本文1行目<br>2行目<br></dd>
+<dt id="comment_3"> <a href="https://jbbs.shitaraba.net/bbs/read.cgi/internet/4073/123/3" rel="nofollow">3</a>：<!-- --><a href="mailto:sage"><!-- --><b>名前：付き</b><!-- --></a><!-- -->：2026/01/24(土) 05:44:53 ID:AD8Oclf.0 </dt>
+<dd>sage本文<br></dd>
+</dl></body></html>"##;
+        let (bytes, _, _) = encoding_rs::EUC_JP.encode(html);
+        let (entries, title) = parse_shitaraba_html_responses(&bytes);
+        assert_eq!(title.as_deref(), Some("テストスレ - 123 - したらば掲示板"));
+        assert_eq!(entries.len(), 2);
+        let (no, e) = &entries[0];
+        assert_eq!(*no, 1);
+        assert_eq!(e.name, "以下、名無しに代わりましてVIPが実況します");
+        assert_eq!(e.mail, "");
+        assert_eq!(e.date_and_id, "2026/01/24(土) 05:17:41 ID:VQVfaKNc0");
+        assert!(e.body.starts_with("本文1行目"), "{}", e.body);
+        let (no, e) = &entries[1];
+        assert_eq!(*no, 3);
+        assert_eq!(e.name, "名前：付き");
+        assert_eq!(e.mail, "sage");
+        assert_eq!(e.date_and_id, "2026/01/24(土) 05:44:53 ID:AD8Oclf.0");
+    }
+
+    #[test]
     fn parse_shitaraba_rawmode_line_works() {
         let line = "1<>名無し<>sage<>2026/04/01(火) 12:00:00 ID:abc<>本文テスト<>スレタイトル<>";
         let (entry, title) = parse_shitaraba_rawmode_line(line).expect("rawmode");

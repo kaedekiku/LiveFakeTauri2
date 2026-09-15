@@ -713,6 +713,84 @@ pub async fn fetch_ogp(user_agent: &str, url: &str) -> Result<OgpCard, FetchErro
 }
 
 // --------------------------------------------------------------------------
+// YouTube カード取得 (oEmbed)
+// --------------------------------------------------------------------------
+
+/// YouTube の動画 URL から video ID (11文字) を取り出す。
+/// 対応: `youtube.com/watch?v=ID`, `youtu.be/ID`, `youtube.com/shorts|live|embed|v/ID` (`www.` `m.` 付き可)。
+pub fn extract_youtube_video_id(url: &str) -> Option<String> {
+    let parsed = Url::parse(url).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return None;
+    }
+    let host_owned = parsed.host_str()?.to_ascii_lowercase();
+    let host: &str = host_owned
+        .strip_prefix("www.")
+        .or_else(|| host_owned.strip_prefix("m."))
+        .unwrap_or(host_owned.as_str());
+    let segs: Vec<&str> = parsed.path_segments()?.filter(|s| !s.is_empty()).collect();
+    let id: Option<String> = if host == "youtu.be" {
+        segs.first().map(|s| s.to_string())
+    } else if host == "youtube.com" || host == "youtube-nocookie.com" {
+        match segs.first().copied() {
+            Some("watch") => parsed
+                .query_pairs()
+                .find(|(k, _)| k == "v")
+                .map(|(_, v)| v.into_owned()),
+            Some("shorts") | Some("live") | Some("embed") | Some("v") => segs.get(1).map(|s| s.to_string()),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    id.filter(|s| s.len() == 11 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'))
+}
+
+/// YouTube の動画リンクは視聴ページの HTML が 1MB 超で `<title>`/og タグが先頭 512KB に収まらないため、
+/// 公式 oEmbed API (数百バイトの JSON) からタイトル・チャンネル名・サムネイルを取ってカードにする。
+/// YouTube の動画 URL でなければ `Ok(None)` (呼び出し側で通常の OGP 取得へフォールバック)。
+/// 接続先は固定の `www.youtube.com/oembed` のみ (本文由来 URL からは video ID しか使わない)。
+pub async fn fetch_youtube_card(user_agent: &str, url: &str) -> Result<Option<OgpCard>, FetchError> {
+    let Some(id) = extract_youtube_video_id(url) else {
+        return Ok(None);
+    };
+    let watch = format!("https://www.youtube.com/watch?v={id}");
+    let endpoint = Url::parse_with_params(
+        "https://www.youtube.com/oembed",
+        &[("url", watch.as_str()), ("format", "json")],
+    )?;
+    let client = Client::builder()
+        .user_agent(user_agent)
+        .redirect(Policy::limited(3))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?;
+    let resp = client.get(endpoint).send().await?;
+    if !resp.status().is_success() {
+        return Err(FetchError::HttpStatus(resp.status()));
+    }
+    let json: Value = resp.json().await?;
+    let text_field = |key: &str| {
+        json.get(key)
+            .and_then(Value::as_str)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    let title = text_field("title");
+    let author = text_field("author_name");
+    let image = text_field("thumbnail_url")
+        .filter(|u| is_http_url(u))
+        .or_else(|| Some(format!("https://i.ytimg.com/vi/{id}/hqdefault.jpg")));
+    Ok(Some(OgpCard {
+        url: url.to_string(),
+        title,
+        description: author,
+        image,
+        site_name: Some("YouTube".to_string()),
+    }))
+}
+
+// --------------------------------------------------------------------------
 // X (Twitter) ポストカード取得
 // --------------------------------------------------------------------------
 
@@ -1279,23 +1357,41 @@ pub async fn fetch_shitaraba_thread_list(
 }
 
 /// Fetch shitaraba thread responses via read.cgi HTML (DT/DD format).
+/// read.cgi の `<title>` は「スレ名 - スレキー - したらば掲示板」なので、スレ名だけにする。
+fn strip_shitaraba_title_suffix(title: &str, thread_key: &str) -> String {
+    let t = title.trim();
+    let with_key = format!(" - {} - したらば掲示板", thread_key);
+    if let Some(s) = t.strip_suffix(with_key.as_str()) {
+        return s.trim().to_string();
+    }
+    if let Some(s) = t.strip_suffix(" - したらば掲示板") {
+        return s.trim().to_string();
+    }
+    t.to_string()
+}
+
+/// したらばのレスを取得する。
+/// `rawmode.cgi` は軽量だが **ID を含まない** ため、ID・書き込み回数を表示できるよう `read.cgi` の HTML を使う。
+/// `from_no` を渡すと `read.cgi/.../{from_no}-` の範囲指定で差分だけ取得し通信量を抑える
+/// (範囲指定でもレス 1 は常に含まれるので、呼び出し側で `since` による絞り込みを行う)。
 pub async fn fetch_shitaraba_responses(
     client: &Client,
     url: &str,
     limit: usize,
+    from_no: Option<u32>,
 ) -> Result<(Vec<ThreadResponse>, Option<String>), FetchError> {
     let (category, board_id, thread_key) = parse_shitaraba_thread(url)?;
-    let raw_url = format!(
-        "https://jbbs.shitaraba.net/bbs/rawmode.cgi/{}/{}/{}/",
-        category, board_id, thread_key
-    );
-    let referer = format!(
+    let base_url = format!(
         "https://jbbs.shitaraba.net/bbs/read.cgi/{}/{}/{}/",
         category, board_id, thread_key
     );
+    let page_url = match from_no {
+        Some(n) if n > 1 => format!("{}{}-", base_url, n),
+        _ => base_url.clone(),
+    };
     let resp = client
-        .get(&raw_url)
-        .header("Referer", &referer)
+        .get(&page_url)
+        .header("Referer", &base_url)
         .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         .send()
         .await?;
@@ -1303,7 +1399,8 @@ pub async fn fetch_shitaraba_responses(
         return Err(FetchError::HttpStatus(resp.status()));
     }
     let bytes = resp.bytes().await?;
-    let (entries, title) = core_parse::parse_shitaraba_responses(&bytes);
+    let (entries, title) = core_parse::parse_shitaraba_html_responses(&bytes);
+    let title = title.map(|t| strip_shitaraba_title_suffix(&t, &thread_key));
     Ok((entries.into_iter().take(limit).map(|(no, e)| ThreadResponse {
         response_no: no,
         name: e.name,
@@ -2518,6 +2615,41 @@ mod tests {
     }
 
     #[test]
+    fn strip_shitaraba_title_suffix_works() {
+        use super::strip_shitaraba_title_suffix;
+        assert_eq!(strip_shitaraba_title_suffix("なんでも実況フリーダム＠避難所 - 1769199461 - したらば掲示板", "1769199461"), "なんでも実況フリーダム＠避難所");
+        assert_eq!(strip_shitaraba_title_suffix("スレ名 - したらば掲示板", "1"), "スレ名");
+        assert_eq!(strip_shitaraba_title_suffix("そのまま", "1"), "そのまま");
+    }
+
+    #[test]
+    fn extract_youtube_video_id_handles_common_forms() {
+        use super::extract_youtube_video_id;
+        for url in [
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            "https://youtube.com/watch?feature=share&v=dQw4w9WgXcQ",
+            "https://m.youtube.com/watch?v=dQw4w9WgXcQ&t=10s",
+            "https://youtu.be/dQw4w9WgXcQ",
+            "https://youtu.be/dQw4w9WgXcQ?si=abc",
+            "https://www.youtube.com/shorts/dQw4w9WgXcQ",
+            "https://www.youtube.com/live/dQw4w9WgXcQ?feature=share",
+            "https://www.youtube.com/embed/dQw4w9WgXcQ",
+        ] {
+            assert_eq!(extract_youtube_video_id(url).as_deref(), Some("dQw4w9WgXcQ"), "failed for {url}");
+        }
+        for url in [
+            "https://www.youtube.com/live",
+            "https://www.youtube.com/@channel/live",
+            "https://www.youtube.com/watch?v=short",
+            "https://example.com/watch?v=dQw4w9WgXcQ",
+            "https://notyoutube.com/watch?v=dQw4w9WgXcQ",
+            "javascript:alert(1)",
+        ] {
+            assert!(extract_youtube_video_id(url).is_none(), "should reject {url}");
+        }
+    }
+
+    #[test]
     fn extract_tweet_id_accepts_x_and_twitter_hosts() {
         for url in [
             "https://x.com/votepurchase/status/2079056030047338990",
@@ -2650,6 +2782,22 @@ mod tests {
         // 私有アドレスは接続前に拒否される
         assert!(fetch_ogp("ua", "http://127.0.0.1:1/").await.is_err());
         assert!(fetch_ogp("ua", "http://localhost:1/").await.is_err());
+    }
+
+    /// 実サーバー接続テスト: `cargo test -p core-fetch -- --ignored fetch_youtube_card_live`
+    #[tokio::test]
+    #[ignore]
+    async fn fetch_youtube_card_live_uses_oembed() {
+        use super::fetch_youtube_card;
+        let ua = "Mozilla/5.0 (compatible; LiveFake/0.1)";
+        let card = fetch_youtube_card(ua, "https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+            .await
+            .expect("oembed reachable")
+            .expect("youtube url recognised");
+        assert!(card.title.as_deref().is_some_and(|t| !t.is_empty()), "{card:?}");
+        assert!(card.image.as_deref().is_some_and(|i| i.starts_with("https://")));
+        assert_eq!(card.site_name.as_deref(), Some("YouTube"));
+        assert!(fetch_youtube_card(ua, "https://example.com/").await.expect("not youtube").is_none());
     }
 
     #[tokio::test]
