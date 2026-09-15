@@ -11,7 +11,7 @@
   },
   "app": {
     "security": {
-      "csp": "default-src 'self' 'unsafe-inline'; img-src 'self' https: http: data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self' https: http: ws: wss:"
+      "csp": "default-src 'self' 'unsafe-inline'; img-src 'self' https: http: data: blob:; media-src 'self' https://video.twimg.com; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self' https: http: ws: wss:"
     },
     "windows": [
       {

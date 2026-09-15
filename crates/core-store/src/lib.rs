@@ -21,6 +21,15 @@ pub enum StoreError {
 
 static DB: Mutex<Option<Connection>> = Mutex::new(None);
 
+/// `save_json` の直列化ロック。Tauri コマンドは並行実行されるため、同じファイルへの
+/// 書き込みが重なると (1) 一時ファイル → 本体のリネーム順序が入れ替わって古い内容で
+/// 上書きされる、(2) 片方がリネーム済みの一時ファイルを掴んで失敗する、といった競合が
+/// 起こりうる。プロセス全体で書き込みを直列化して防ぐ (書き込みは短時間なので十分)。
+static SAVE_LOCK: Mutex<()> = Mutex::new(());
+
+/// 一時ファイル名を一意化するためのカウンタ (同名 `.tmp` の衝突防止)。
+static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 fn default_data_dir() -> Result<PathBuf, StoreError> {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
@@ -69,17 +78,43 @@ pub fn save_json<T: Serialize>(relative_path: &str, value: &T) -> Result<(), Sto
     }
 
     let bytes = serde_json::to_vec_pretty(value)?;
+
+    // 同一ファイルへの並行書き込みを直列化する (Poison してもデータ自体は壊れないので続行)。
+    let _guard = SAVE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    let seq = TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut tmp_name = path.as_os_str().to_os_string();
-    tmp_name.push(".tmp");
+    tmp_name.push(format!(".{}.{}.tmp", std::process::id(), seq));
     let tmp_path = PathBuf::from(tmp_name);
 
-    {
-        let mut file = fs::File::create(&tmp_path)?;
-        file.write_all(&bytes)?;
-        file.sync_all()?;
+    let write_result = (|| -> Result<(), StoreError> {
+        {
+            let mut file = fs::File::create(&tmp_path)?;
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+        }
+        // Windows ではウイルス対策ソフトやクラウド同期が一瞬だけ本体ファイルを掴んでいて
+        // リネームが失敗することがあるため、短い間隔で数回だけ再試行する。
+        let mut last_err: Option<std::io::Error> = None;
+        for attempt in 0..4u32 {
+            match fs::rename(&tmp_path, &path) {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    last_err = Some(e);
+                    if attempt < 3 {
+                        std::thread::sleep(std::time::Duration::from_millis(20 * (attempt as u64 + 1)));
+                    }
+                }
+            }
+        }
+        Err(StoreError::Io(last_err.unwrap_or_else(|| std::io::Error::other("rename failed"))))
+    })();
+
+    if write_result.is_err() {
+        // 失敗した一時ファイルを残さない (削除失敗は無視してよい)。
+        let _ = fs::remove_file(&tmp_path);
     }
-    fs::rename(&tmp_path, &path)?;
-    Ok(())
+    write_result
 }
 
 pub fn load_json<T: DeserializeOwned>(relative_path: &str) -> Result<T, StoreError> {
@@ -149,11 +184,57 @@ fn get_db() -> Result<std::sync::MutexGuard<'static, Option<Connection>>, StoreE
                 title TEXT NOT NULL DEFAULT '',
                 responses_json TEXT NOT NULL,
                 updated_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS ogp_cache (
+                url TEXT PRIMARY KEY,
+                json TEXT NOT NULL,
+                fetched_at INTEGER NOT NULL
             );"
         )?;
         *guard = Some(conn);
     }
     Ok(guard)
+}
+
+/// OGP / X ポストカードのキャッシュ有効期間 (7日)。
+pub const OGP_CACHE_TTL_SECS: i64 = 7 * 24 * 60 * 60;
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+}
+
+/// OGP キャッシュを読む。TTL 切れのものは `None` を返す (削除は次回保存時に上書き)。
+pub fn load_ogp_cache(url: &str) -> Result<Option<String>, StoreError> {
+    let guard = get_db()?;
+    let conn = guard.as_ref().ok_or_else(|| StoreError::Other("no db".into()))?;
+    let mut stmt = conn.prepare("SELECT json, fetched_at FROM ogp_cache WHERE url = ?1")?;
+    let result = stmt.query_row(rusqlite::params![url], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    });
+    match result {
+        Ok((json, fetched_at)) => {
+            if unix_now() - fetched_at > OGP_CACHE_TTL_SECS {
+                Ok(None)
+            } else {
+                Ok(Some(json))
+            }
+        }
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+pub fn save_ogp_cache(url: &str, json: &str) -> Result<(), StoreError> {
+    let guard = get_db()?;
+    let conn = guard.as_ref().ok_or_else(|| StoreError::Other("no db".into()))?;
+    conn.execute(
+        "INSERT OR REPLACE INTO ogp_cache (url, json, fetched_at) VALUES (?1, ?2, ?3)",
+        rusqlite::params![url, json, unix_now()],
+    )?;
+    Ok(())
 }
 
 pub fn save_thread_cache(thread_url: &str, title: &str, responses_json: &str) -> Result<(), StoreError> {

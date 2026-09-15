@@ -12,3 +12,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 url = { workspace = true }
+# OGP カード取得で DNS 解決結果を検証するため (SSRF 対策)。reqwest 経由で既に依存している。
+tokio = { version = "1", default-features = false, features = ["net", "rt"] }
+
+[dev-dependencies]
+tokio = { version = "1", default-features = false, features = ["net", "rt", "macros"] }

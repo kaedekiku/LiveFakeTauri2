@@ -374,7 +374,205 @@ const applyUrlRules = (url: string, rules: UrlReplaceRuleOpts[]): string => {
   return url;
 };
 
-const renderResponseBody = (html: string, opts?: { hideImages?: boolean; imageSizeLimitKb?: number; urlRules?: UrlReplaceRuleOpts[] }): { __html: string } => {
+// ---------------------------------------------------------------------------
+// OGP リンクカード / X ポストカード
+// ---------------------------------------------------------------------------
+
+// OGP ドメイン許可/ブロック判定。ホスト名のサフィックス一致・大小無視。
+const ogpHostOfUrl = (url: string): string => {
+  try { return new URL(url).hostname.toLowerCase().replace(/^www\./, ""); } catch { return ""; }
+};
+const ogpHostMatchesList = (host: string, list: string[]): boolean => {
+  if (!host) return false;
+  return list.some((d) => {
+    const dom = d.trim().toLowerCase().replace(/^www\./, "");
+    if (!dom) return false;
+    return host === dom || host.endsWith("." + dom);
+  });
+};
+// block は常に除外、allow は空なら全許可・登録ありならそのドメインのみ許可。
+const ogpDomainAllowed = (url: string, allow: string[], block: string[]): boolean => {
+  const host = ogpHostOfUrl(url);
+  if (!host) return false;
+  if (ogpHostMatchesList(host, block)) return false;
+  if (allow.length > 0 && !ogpHostMatchesList(host, allow)) return false;
+  return true;
+};
+// X のポスト URL から status ID を取り出す (Rust 側 extract_tweet_id と同じ判定)。
+const extractTweetId = (url: string): string | null => {
+  let parsed: URL;
+  try { parsed = new URL(url); } catch { return null; }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+  const host = parsed.hostname.toLowerCase().replace(/^www\./, "").replace(/^mobile\./, "");
+  if (host !== "x.com" && host !== "twitter.com") return null;
+  const segs = parsed.pathname.split("/").filter((s) => s.length > 0);
+  const idx = segs.findIndex((s) => s === "status" || s === "statuses");
+  if (idx < 0) return null;
+  const id = segs[idx + 1];
+  if (!id || !/^\d+$/.test(id)) return null;
+  return id;
+};
+
+// OGP カード (fetch_ogp_card コマンドの返却型)
+type OgpCardData = {
+  url: string;
+  title?: string | null;
+  description?: string | null;
+  image?: string | null;
+  siteName?: string | null;
+};
+// OGP ドメイン許可/ブロックリスト (ogp_domain_filters.json)
+type OgpDomainFilters = { allow: string[]; block: string[] };
+const escapeOgpText = (s: string): string =>
+  s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+const isHttpUrl = (s: string | null | undefined): s is string => typeof s === "string" && /^https?:\/\//i.test(s);
+// OGP カードを描画すべきか (タイトルか画像が無ければ素っ気ないカードになるので出さない)
+const ogpCardHasContent = (card: OgpCardData): boolean =>
+  Boolean((card.title && card.title.trim()) || isHttpUrl(card.image));
+// カードの innerHTML を生成。全ての動的値は escapeOgpText を通し、画像 URL は http(s) のみ許可する。
+// クリックは既存の a.body-link 委譲で外部ブラウザに開く。
+const buildOgpCardHtml = (card: OgpCardData): string => {
+  if (!isHttpUrl(card.url)) return "";
+  const title = card.title ? escapeOgpText(card.title.trim()) : "";
+  const desc = card.description ? escapeOgpText(card.description.trim()) : "";
+  let host = "";
+  try { host = new URL(card.url).hostname.replace(/^www\./, ""); } catch { host = ""; }
+  const site = card.siteName ? escapeOgpText(card.siteName.trim()) : escapeOgpText(host);
+  const img = isHttpUrl(card.image)
+    ? `<span class="ogp-card-thumb"><img src="${escapeOgpText(card.image)}" loading="lazy" referrerpolicy="no-referrer" alt="" /></span>`
+    : "";
+  const url = escapeOgpText(card.url);
+  const hover = `<span class="ogp-card-hover" aria-hidden="true">`
+    + (desc ? `<span class="ogp-card-hover-desc">${desc}</span>` : "")
+    + `<span class="ogp-card-hover-url">${url}</span>`
+    + `</span>`;
+  return `<a class="body-link ogp-card" href="${url}" target="_blank" rel="noopener">`
+    + img
+    + `<span class="ogp-card-main">`
+    + (title ? `<span class="ogp-card-title">${title}</span>` : "")
+    + (desc ? `<span class="ogp-card-desc">${desc}</span>` : "")
+    + (site ? `<span class="ogp-card-site">${site}</span>` : "")
+    + `</span>`
+    + hover
+    + `</a>`;
+};
+
+// X ポストカード (fetch_tweet_card コマンドの返却型)
+type TweetPhotoData = { url: string; width: number; height: number };
+type TweetCardData = {
+  url: string;
+  id: string;
+  text: string;
+  authorName: string;
+  authorHandle: string;
+  authorAvatar?: string | null;
+  isVerified: boolean;
+  createdAt?: string | null;
+  favoriteCount?: number | null;
+  replyCount?: number | null;
+  photos: TweetPhotoData[];
+  hasVideo: boolean;
+  videoUrl?: string | null;
+  videoPoster?: string | null;
+  isGif?: boolean;
+  quotedAuthor?: string | null;
+  quotedText?: string | null;
+};
+const formatTweetCount = (n: number): string => {
+  if (n >= 100000000) return `${(n / 100000000).toFixed(1).replace(/\.0$/, "")}億`;
+  if (n >= 10000) return `${(n / 10000).toFixed(1).replace(/\.0$/, "")}万`;
+  return String(n);
+};
+const formatTweetDate = (iso: string): string => {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`;
+};
+// 本文中の URL / @メンション / #ハッシュタグ をリンク風に装飾する (span のみ、a はネストしない)。
+const decorateTweetText = (text: string): string =>
+  escapeOgpText(text)
+    .replace(/(https?:\/\/[^\s<]+)/g, '<span class="tweet-card-link">$1</span>')
+    .replace(/(^|[\s(])@([A-Za-z0-9_]{1,15})/g, '$1<span class="tweet-card-link">@$2</span>')
+    .replace(/(^|[\s(])(#[^\s<#]+)/g, '$1<span class="tweet-card-link">$2</span>')
+    .replace(/\n/g, "<br />");
+// twimg の動画 URL のみインライン再生を許可する (CSP media-src と一致させる)
+const isTwimgVideoUrl = (s: string | null | undefined): s is string =>
+  typeof s === "string" && /^https:\/\/video\.twimg\.com\//i.test(s);
+// ポストカードの innerHTML を生成。<video> は a.body-link の外側 (兄弟) に置く。
+const buildTweetCardHtml = (card: TweetCardData): string => {
+  if (!isHttpUrl(card.url)) return "";
+  const url = escapeOgpText(card.url);
+  const avatar = isHttpUrl(card.authorAvatar)
+    ? `<img class="tweet-card-avatar" src="${escapeOgpText(card.authorAvatar)}" loading="lazy" referrerpolicy="no-referrer" alt="" />`
+    : `<span class="tweet-card-avatar tweet-card-avatar-blank" aria-hidden="true"></span>`;
+  const badge = card.isVerified ? `<span class="tweet-card-badge" title="認証済み">✓</span>` : "";
+  const head = `<span class="tweet-card-head">`
+    + avatar
+    + `<span class="tweet-card-names">`
+    + `<span class="tweet-card-name">${escapeOgpText(card.authorName ?? "")}${badge}</span>`
+    + `<span class="tweet-card-handle">@${escapeOgpText(card.authorHandle ?? "")}</span>`
+    + `</span>`
+    + `<span class="tweet-card-logo" aria-hidden="true">𝕏</span>`
+    + `</span>`;
+  const body = card.text ? `<span class="tweet-card-text">${decorateTweetText(card.text)}</span>` : "";
+  const quote = card.quotedText
+    ? `<span class="tweet-card-quote">`
+      + (card.quotedAuthor ? `<span class="tweet-card-quote-author">${escapeOgpText(card.quotedAuthor)}</span>` : "")
+      + `<span class="tweet-card-quote-text">${escapeOgpText(card.quotedText)}</span>`
+      + `</span>`
+    : "";
+  const photoList = (card.photos ?? []).filter((p) => isHttpUrl(p.url)).slice(0, 4);
+  const photos = photoList.length > 0
+    ? `<span class="tweet-card-photos tweet-card-photos-${photoList.length}">`
+      + photoList.map((p) => {
+        const w = Number.isFinite(p.width) ? Math.max(0, Math.floor(p.width)) : 0;
+        const h = Number.isFinite(p.height) ? Math.max(0, Math.floor(p.height)) : 0;
+        const ratio = w > 0 && h > 0 ? ` style="aspect-ratio:${w}/${h}"` : "";
+        const dim = w > 0 && h > 0 ? ` width="${w}" height="${h}"` : "";
+        return `<img class="tweet-card-photo" src="${escapeOgpText(p.url)}"${dim}${ratio} loading="lazy" referrerpolicy="no-referrer" alt="" />`;
+      }).join("")
+      + `</span>`
+    : "";
+  const videoSrc = card.hasVideo && isTwimgVideoUrl(card.videoUrl) ? card.videoUrl : null;
+  const playable = videoSrc !== null;
+  const videoLabel = card.hasVideo && !playable
+    ? `<span class="tweet-card-video">▶ 動画つきポスト（クリックで X を開く）</span>`
+    : "";
+  const metaParts: string[] = [];
+  if (typeof card.replyCount === "number" && card.replyCount > 0) metaParts.push(`💬 ${formatTweetCount(card.replyCount)}`);
+  if (typeof card.favoriteCount === "number" && card.favoriteCount > 0) metaParts.push(`♡ ${formatTweetCount(card.favoriteCount)}`);
+  if (card.createdAt) {
+    const d = formatTweetDate(card.createdAt);
+    if (d) metaParts.push(d);
+  }
+  const meta = metaParts.length > 0
+    ? `<span class="tweet-card-meta">${metaParts.map(escapeOgpText).join("<span class=\"tweet-card-dot\">·</span>")}</span>`
+    : "";
+  let videoEl = "";
+  if (videoSrc !== null) {
+    const src = escapeOgpText(videoSrc);
+    const poster = isHttpUrl(card.videoPoster) ? ` poster="${escapeOgpText(card.videoPoster)}"` : "";
+    videoEl = card.isGif
+      ? `<video class="tweet-card-video-el" src="${src}"${poster} autoplay loop muted playsinline preload="metadata"></video>`
+      : `<video class="tweet-card-video-el" src="${src}"${poster} controls playsinline preload="none"></video>`;
+  }
+  const main = `<a class="body-link tweet-card-main" href="${url}" target="_blank" rel="noopener">`
+    + head + body + quote + photos + videoLabel + meta
+    + `</a>`;
+  return `<span class="tweet-card">${main}${videoEl}</span>`;
+};
+
+type RenderBodyOpts = {
+  hideImages?: boolean;
+  imageSizeLimitKb?: number;
+  urlRules?: UrlReplaceRuleOpts[];
+  ogpCards?: boolean;
+  tweetCards?: boolean;
+  ogpAllow?: string[];
+  ogpBlock?: string[];
+};
+
+const renderResponseBody = (html: string, opts?: RenderBodyOpts): { __html: string } => {
   let safe = html
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<a\s[^>]*>(.*?)<\/a>/gi, "$1")
@@ -402,8 +600,21 @@ const renderResponseBody = (html: string, opts?: { hideImages?: boolean; imageSi
         if (sizeGated) {
           collectedThumbs.push(`<span class="thumb-link thumb-size-gate" data-lightbox-src="${href}" data-gate-src="${href}" data-size-limit="${opts.imageSizeLimitKb}"><span class="thumb-gate-loading">画像を確認中…</span></span>`);
         } else {
-          collectedThumbs.push(`<span class="thumb-link" data-lightbox-src="${href}"><img class="response-thumb" src="${href}" loading="eager" alt="" /></span>`);
+          collectedThumbs.push(`<span class="thumb-link" data-lightbox-src="${href}"><img class="response-thumb" src="${href}" loading="eager" referrerpolicy="no-referrer" alt="" /></span>`);
         }
+        return `<a class="body-link" href="${href}" target="_blank" rel="noopener">${match}</a>`;
+      }
+    );
+  }
+  // twimg の動画直リンク (video.twimg.com/....mp4) は X ポストカードが ON のときインライン再生する。
+  // URL 自体はリンクとして残し、プレイヤーはサムネ行に追加する (CSP media-src は video.twimg.com のみ許可)。
+  if (!opts?.hideImages && opts?.tweetCards) {
+    safe = safe.replace(
+      /(?:(?:https?:\/\/|ttps?:\/\/|ps:\/\/|s:\/\/|(?<![a-zA-Z]):\/\/)video\.twimg\.com|(?<!\S)video\.twimg\.com)\/[^\s<>&"]+\.mp4(?:\?[^\s<>&"]*(?:&amp;[^\s<>&"]*)*)?/gi,
+      (match) => {
+        const href = normalizeExternalUrl(match);
+        if (!href || !/^https:\/\/video\.twimg\.com\//i.test(href)) return match;
+        collectedThumbs.push(`<video class="inline-video" src="${href}#t=0.1" controls preload="metadata" playsinline></video>`);
         return `<a class="body-link" href="${href}" target="_blank" rel="noopener">${match}</a>`;
       }
     );
@@ -414,6 +625,8 @@ const renderResponseBody = (html: string, opts?: { hideImages?: boolean; imageSi
     (match) => {
       // Skip if already inside a thumb-link or img tag
       if (match.match(/\.(jpg|jpeg|png|gif|webp)(\?|$)/i)) return match;
+      // Skip twimg 動画: 上で <video src="..."> に変換済みなので二重リンク化しない
+      if (!opts?.hideImages && opts?.tweetCards && /video\.twimg\.com\/[^\s"'<>]+\.mp4/i.test(match)) return match;
       const href = normalizeExternalUrl(match);
       if (!href) return match;
       return `<a class="body-link" href="${href}" target="_blank" rel="noopener">${match}</a>`;
@@ -463,6 +676,37 @@ const renderResponseBody = (html: string, opts?: { hideImages?: boolean; imageSi
   if (collectedThumbs.length > 0) {
     safe += `<div class="response-thumbs-row">${collectedThumbs.join("")}</div>`;
   }
+  // OGP / X ポストカード用プレースホルダ。実データは非同期取得後に IntersectionObserver で
+  // 埋め込む (App 内の ogp fill エフェクト)。5ch 内部リンク・画像リンクは対象外。
+  if (opts?.ogpCards || opts?.tweetCards) {
+    const ogpSlots: string[] = [];
+    const seenUrls = new Set<string>();
+    const linkRe = /<a class="body-link" href="([^"]+)"/g;
+    let om: RegExpExecArray | null;
+    while ((om = linkRe.exec(safe)) !== null) {
+      const href = om[1];
+      if (seenUrls.has(href)) continue;
+      if (!/^https?:\/\//i.test(href)) continue;
+      if (/^https?:\/\/[^/]*\.5ch\.(net|io)\//i.test(href)) continue;
+      if (/\.(jpe?g|png|gif|webp|bmp)(\?|$)/i.test(href)) continue;
+      if (!ogpDomainAllowed(href, opts.ogpAllow ?? [], opts.ogpBlock ?? [])) continue;
+      // X のポストは syndication API から取れるので専用のポストカードにする。
+      // ポストカードが OFF のときは通常の OGP カードのスロットとして扱う (フォールバック)。
+      const tweetId = opts.tweetCards ? extractTweetId(href) : null;
+      if (tweetId) {
+        seenUrls.add(href);
+        ogpSlots.push(`<div class="ogp-card-slot tweet-card-slot" data-ogp-url="${href}" data-tweet-id="${tweetId}"></div>`);
+      } else {
+        if (!opts.ogpCards) continue;
+        seenUrls.add(href);
+        ogpSlots.push(`<div class="ogp-card-slot" data-ogp-url="${href}"></div>`);
+      }
+      if (ogpSlots.length >= 4) break;
+    }
+    if (ogpSlots.length > 0) {
+      safe += `<div class="ogp-cards">${ogpSlots.join("")}</div>`;
+    }
+  }
   return { __html: safe };
 };
 const applyWordHighlight = (html: string, pattern: string, color: string): string => {
@@ -473,7 +717,7 @@ const applyWordHighlight = (html: string, pattern: string, color: string): strin
     .map((part) => (part.startsWith("<") ? part : part.replace(re, (m) => `<span style="background:${color}">${m}</span>`)))
     .join("");
 };
-const renderResponseBodyHighlighted = (html: string, query: string, opts?: { hideImages?: boolean; imageSizeLimitKb?: number; urlRules?: UrlReplaceRuleOpts[] }, wordHighlights?: Array<{ pattern: string; color: string }>): { __html: string } => {
+const renderResponseBodyHighlighted = (html: string, query: string, opts?: RenderBodyOpts, wordHighlights?: Array<{ pattern: string; color: string }>): { __html: string } => {
   const rendered = renderResponseBody(html, opts).__html;
   let result = highlightHtmlPreservingTags(rendered, query);
   if (wordHighlights) {
@@ -680,6 +924,15 @@ export default function App() {
   const [aboutOpen, setAboutOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsCategory, setSettingsCategory] = useState<"display" | "posting" | "tts" | "tts-dict" | "proxy" | "ng" | "subtitle" | "highlights" | "info">("display");
+  // OGP リンクカード / X ポストカード (既定 OFF: 本文中の URL 先へ通信するため明示的に有効化してもらう)
+  const [ogpCardsEnabled, setOgpCardsEnabled] = useState(false);
+  const [tweetCardsEnabled, setTweetCardsEnabled] = useState(false);
+  const [ogpDomainFilters, setOgpDomainFilters] = useState<OgpDomainFilters>({ allow: [], block: [] });
+  const [ogpDomainInput, setOgpDomainInput] = useState("");
+  const ogpCacheRef = useRef<Map<string, OgpCardData | null>>(new Map());
+  const ogpInflightRef = useRef<Map<string, Promise<OgpCardData | null>>>(new Map());
+  const tweetCacheRef = useRef<Map<string, TweetCardData | null>>(new Map());
+  const tweetInflightRef = useRef<Map<string, Promise<TweetCardData | null>>>(new Map());
   const [hlWordInput, setHlWordInput] = useState("");
   const [hlWordColor, setHlWordColor] = useState<string>(HIGHLIGHT_COLORS[0].color);
   const [hlNameInput, setHlNameInput] = useState("");
@@ -716,13 +969,52 @@ export default function App() {
   const [voicevoxIntonationScale, setVoicevoxIntonationScale] = useState(1.0);
   const [voicevoxVolumeScale, setVoicevoxVolumeScale] = useState(1.0);
   const [voicevoxSpeakers, setVoicevoxSpeakers] = useState<{ name: string; styles: { name: string; id: number }[] }[]>([]);
-  const DEFAULT_TTS_DICT: TtsDictEntry[] = [{ from: "WebABC", to: "このレスは番組表です", fullReplace: true }];
+  // デフォルト辞書。Rust 側 default_tts_dict() (lib.rs) と同じ内容にすること。
+  // URL 系キーワードは読み上げ時に URL 単位で照合される (ttsSpeak 参照)。
+  const DEFAULT_TTS_DICT: TtsDictEntry[] = [
+    { from: "WebABC", to: "このレスは番組表です", fullReplace: true },
+    { from: "http://jbbs.shitaraba", to: "したらば掲示板" },
+    { from: "http://bbs.jpnkn.com/livevenus/", to: "ジャパンくん掲示板" },
+    { from: "http://mudai.duckdns.org:8000/", to: "無題鏡置き場様" },
+    { from: "http://mudai.duckdns.org:8100", to: "無題鏡様配信URL" },
+    { from: "http://mudai.duckdns.org:8200", to: "無題鏡様配信URL" },
+    { from: "http://mudai.duckdns.org:8300", to: "無題鏡様配信URL" },
+    { from: "http://mudai.duckdns.org:8400", to: "無題鏡様配信URL" },
+    { from: "http://mudai.duckdns.org:8500", to: "無題鏡様配信URL" },
+    { from: "http://mudai.duckdns.org:8600", to: "無題鏡様配信URL" },
+    { from: "http://mudai.duckdns.org/t", to: "ツイッチ配信URL" },
+    { from: "youtube", to: "ゆーちゅーぶ" },
+    { from: "youtu.be", to: "ゆーちゅーぶ" },
+  ];
   const [ttsDictEntries, setTtsDictEntries] = useState<TtsDictEntry[]>(DEFAULT_TTS_DICT);
   const ttsDictRef = useRef<TtsDictEntry[]>(DEFAULT_TTS_DICT);
   ttsDictRef.current = ttsDictEntries;
+  // 読み込み完了前に (初期値で) 保存してユーザー辞書を潰さないためのガード
+  const ttsDictLoadedRef = useRef(false);
   const [ttsDictNewFrom, setTtsDictNewFrom] = useState("");
   const [ttsDictNewTo, setTtsDictNewTo] = useState("");
   const [ttsDictNewFullReplace, setTtsDictNewFullReplace] = useState(false);
+  // 読み上げ許可リスト (IP アドレス配信 URL 専用): 登録された IP[:ポート] だけ `to` で読み、未登録 IP は読まない
+  type TtsIpAllowEntry = { host: string; to: string };
+  const DEFAULT_TTS_IP_ALLOW: TtsIpAllowEntry[] = [{ host: "27.91.102.168:8030", to: "ディオン軍鏡置き場様" }];
+  const [ttsIpAllow, setTtsIpAllow] = useState<TtsIpAllowEntry[]>(DEFAULT_TTS_IP_ALLOW);
+  const ttsIpAllowRef = useRef<TtsIpAllowEntry[]>(DEFAULT_TTS_IP_ALLOW);
+  ttsIpAllowRef.current = ttsIpAllow;
+  const ttsIpAllowLoadedRef = useRef(false);
+  const [ttsIpAllowNewHost, setTtsIpAllowNewHost] = useState("");
+  const [ttsIpAllowNewTo, setTtsIpAllowNewTo] = useState("");
+  // 読み上げない辞書: 表示・あぼーんには影響せず読み上げだけ抑制する
+  type TtsMuteEntry = { value: string; skipWhole: boolean };
+  type TtsMuteDict = { names: TtsMuteEntry[]; words: TtsMuteEntry[]; ids: TtsMuteEntry[] };
+  type TtsMuteKind = keyof TtsMuteDict;
+  const EMPTY_TTS_MUTE: TtsMuteDict = { names: [], words: [], ids: [] };
+  const [ttsMuteDict, setTtsMuteDict] = useState<TtsMuteDict>(EMPTY_TTS_MUTE);
+  const ttsMuteRef = useRef<TtsMuteDict>(EMPTY_TTS_MUTE);
+  ttsMuteRef.current = ttsMuteDict;
+  const ttsMuteLoadedRef = useRef(false);
+  const [ttsMuteNewKind, setTtsMuteNewKind] = useState<TtsMuteKind>("words");
+  const [ttsMuteNewValue, setTtsMuteNewValue] = useState("");
+  const [ttsMuteNewSkipWhole, setTtsMuteNewSkipWhole] = useState(false);
   const ttsIsSpeaking = useRef(false);
   const ttsQueueRef = useRef<string[]>([]);
   const ttsProcessingRef = useRef(false);
@@ -1778,7 +2070,7 @@ export default function App() {
             const prefix = site === "shitaraba" ? `したらば${a.responseNo}番さん`
               : site === "jpnkn" ? `ジャパンくん${a.responseNo}番さん`
               : `レス${a.responseNo}番さん`;
-            ttsSpeak(a.text, prefix);
+            ttsSpeak(a.text, prefix, undefined, { name: a.name, id: a.id });
           }
         }
       }
@@ -1996,7 +2288,7 @@ export default function App() {
             const prefix = site === "shitaraba" ? `したらば${a.responseNo}番さん`
               : site === "jpnkn" ? `ジャパンくん${a.responseNo}番さん`
               : `レス${a.responseNo}番さん`;
-            ttsSpeak(a.text, prefix);
+            ttsSpeak(a.text, prefix, undefined, { name: a.name, id: a.id });
           }
         }
       } else {
@@ -2119,31 +2411,101 @@ export default function App() {
     ttsProcessingRef.current = false;
   };
 
+  // 読み上げない辞書の照合 (NG フィルタと同じ規則: /.../ は正規表現、それ以外は大小無視の部分一致)
+  const ttsMuteMatches = (entries: TtsMuteEntry[], target: string): TtsMuteEntry | undefined =>
+    entries.find((e) => e.value.trim() !== "" && ngMatch(e.value.trim(), target));
+  // 一致した語句だけを本文から無音で除去する
+  const ttsRemoveMuteWord = (text: string, pattern: string): string => {
+    const p = pattern.trim();
+    if (p.startsWith("/") && p.endsWith("/") && p.length > 2) {
+      if (p.length > MAX_USER_REGEX_LEN) return text;
+      try { return text.replace(new RegExp(p.slice(1, -1), "gi"), ""); } catch { return text; }
+    }
+    return text.replace(new RegExp(escapeRegExp(p), "gi"), "");
+  };
+  // URL 1 個 (トークン) の読み方を決める。
+  //  1. 通常の読み上げ辞書: キーワードに "://" を含む項目は URL 文字列との部分一致 (先頭・途中・末尾いずれも可)、
+  //     含まない項目はホスト名との部分一致 (例: "youtube" → www.youtube.com) で照合し、一致したら URL 全体を読みに置き換える
+  //  2. ホストが生の IP アドレスなら読み上げ許可リストで照合し、登録があればその読み、無ければ読まない (無音)
+  //  3. どれにも当たらなければ URL は読まない
+  const ttsUrlReading = (token: string): string => {
+    const normalized = token.replace(/^ttp/i, "http");
+    let host = "";
+    let hostPort = "";
+    try {
+      const u = new URL(normalized);
+      host = u.hostname.toLowerCase();
+      hostPort = u.port ? `${host}:${u.port}` : host;
+    } catch { /* URL として解釈できない場合はホスト照合をスキップ */ }
+    const stripKey = (s: string) => s.trim().toLowerCase().replace(/^[a-z]+:\/\//, "").replace(/\/+$/, "");
+    const tokenKey = stripKey(normalized);
+    for (const e of ttsDictRef.current) {
+      if (e.fullReplace || !e.from) continue;
+      const from = e.from.trim().toLowerCase();
+      if (!from) continue;
+      if (from.includes("://")) {
+        const key = stripKey(from);
+        if (key && tokenKey.includes(key)) return e.to;
+      } else if (host && (from.length >= 4 || from.includes(".")) && host.includes(from)) {
+        // 短すぎる語 (com / www 等) が全 URL のホスト名に一致してしまうのを避ける
+        return e.to;
+      }
+    }
+    const isIpHost = /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host) || host.startsWith("[");
+    if (isIpHost) {
+      const entry = ttsIpAllowRef.current.find((a) => {
+        const key = a.host.trim().toLowerCase().replace(/^[a-z]+:\/\//, "").replace(/\/.*$/, "");
+        if (!key) return false;
+        return key === hostPort || key === host;
+      });
+      return entry ? entry.to : "";
+    }
+    return "";
+  };
+
   // TTS: enqueue text for sequential playback
   // maxReadLength applies to plain text body only (HTML tags + entities decoded); prefix is always read in full
-  // URLs (http/https/ttp) are removed, except YouTube URLs which are replaced with "ユーチューブ"
-  const ttsSpeak = (bodyText: string, prefix?: string, responseNo?: number) => {
+  // URL (http/https/ttp) は URL 単位で辞書・許可リストと照合して読みに置き換え、該当しなければ読まない
+  const ttsSpeak = (bodyText: string, prefix?: string, responseNo?: number, meta?: { name?: string; id?: string }) => {
     if (!isTauriRuntime() || ttsMode === "off") return;
     // Skip system messages (res 1001/1002)
     if (responseNo != null && responseNo >= 1001) return;
+    // 読み上げない辞書 (名前 / ID): 一致したらそのレスは読み上げない (表示・あぼーんには影響しない)
+    const mute = ttsMuteRef.current;
+    if (meta?.name && ttsMuteMatches(mute.names, meta.name)) return;
+    if (meta?.id && ttsMuteMatches(mute.ids, meta.id)) return;
     // Strip HTML tags, then decode HTML entities to get true character count
     let plain = bodyText.replace(/<[^>]*>/g, "");
     plain = plain.replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16))).replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)));
-    // Apply TTS dictionary: fullReplace entries first (if matched, skip all remaining preprocessing)
+    // 読み上げない辞書 (本文ワード): レス全体スキップ指定なら読まない、そうでなければ語句だけ除去
+    for (const e of mute.words) {
+      const v = e.value.trim();
+      if (!v || !ngMatch(v, plain)) continue;
+      if (e.skipWhole) return;
+      plain = ttsRemoveMuteWord(plain, v);
+    }
+    // Apply TTS dictionary: fullReplace (全文置換) entries first (if matched, skip all remaining preprocessing)
     const dict = ttsDictRef.current;
-    const fullReplaceEntry = dict.find((e) => e.fullReplace && plain.includes(e.from));
+    const fullReplaceEntry = dict.find((e) => e.fullReplace && e.from && plain.includes(e.from));
     if (fullReplaceEntry) {
       ttsQueueRef.current.push(prefix ? `${prefix} ${fullReplaceEntry.to}` : fullReplaceEntry.to);
       void processTtsQueue();
       return;
     }
-    for (const entry of dict) {
-      if (!entry.fullReplace && entry.from) plain = plain.split(entry.from).join(entry.to);
-    }
-    // Replace YouTube URLs with "ユーチューブ", then remove remaining URLs
-    plain = plain.replace(/(?:https?|ttp):\/\/[^\s]*youtube[^\s]*/gi, "ユーチューブ");
-    plain = plain.replace(/(?:https?|ttp):\/\/[^\s]+/g, "");
-    plain = plain.trim();
+    // URL はトークン単位で読みに置換し、URL 以外の部分にだけ通常の辞書置換をかける
+    // (辞書の語がホスト名を壊して URL 判定をすり抜けるのを防ぐ)
+    const applyDict = (text: string) => {
+      let out = text;
+      for (const entry of dict) {
+        if (!entry.fullReplace && entry.from) out = out.split(entry.from).join(entry.to);
+      }
+      return out;
+    };
+    plain = plain
+      .split(/((?:https?|ttps?):\/\/[^\s]+)/gi)
+      .map((part, i) => (i % 2 === 1 ? ttsUrlReading(part) : applyDict(part)))
+      .join("");
+    plain = plain.replace(/[ \t]{2,}/g, " ").trim();
     if (!plain) return;
     const maxLen = ttsMaxReadLengthRef.current;
     const truncatedBody = maxLen > 0 && plain.length > maxLen
@@ -3201,6 +3563,8 @@ export default function App() {
           typingConfettiEnabled?: boolean;
           imageSizeLimit?: number;
           hoverPreviewEnabled?: boolean;
+          ogpCardsEnabled?: boolean;
+          tweetCardsEnabled?: boolean;
           lastBoard?: { boardName: string; url: string };
           hoverPreviewDelay?: number;
           thumbSize?: number;
@@ -3263,6 +3627,8 @@ export default function App() {
         if (typeof parsed.imageSizeLimit === "number") setImageSizeLimit(parsed.imageSizeLimit);
         if (typeof parsed.showImagePreview === "boolean") setShowImagePreview(parsed.showImagePreview);
         if (typeof parsed.hoverPreviewEnabled === "boolean") setHoverPreviewEnabled(parsed.hoverPreviewEnabled);
+        if (typeof parsed.ogpCardsEnabled === "boolean") setOgpCardsEnabled(parsed.ogpCardsEnabled);
+        if (typeof parsed.tweetCardsEnabled === "boolean") setTweetCardsEnabled(parsed.tweetCardsEnabled);
         if (parsed.lastBoard && typeof parsed.lastBoard.boardName === "string" && typeof parsed.lastBoard.url === "string") {
           pendingLastBoardRef.current = parsed.lastBoard;
         }
@@ -3830,8 +4196,39 @@ export default function App() {
     if (!isTauriRuntime()) return;
     invoke<TtsDictEntry[]>("load_tts_dict").then((entries) => {
       setTtsDictEntries(entries);
-    }).catch(() => {});
+      ttsDictLoadedRef.current = true;
+    }).catch((e) => { console.warn("load_tts_dict failed", e); });
+    invoke<TtsIpAllowEntry[]>("load_tts_ip_allow").then((entries) => {
+      setTtsIpAllow(entries);
+      ttsIpAllowLoadedRef.current = true;
+    }).catch((e) => { console.warn("load_tts_ip_allow failed", e); });
+    invoke<Partial<TtsMuteDict>>("load_tts_mute_dict").then((d) => {
+      setTtsMuteDict({ names: d.names ?? [], words: d.words ?? [], ids: d.ids ?? [] });
+      ttsMuteLoadedRef.current = true;
+    }).catch((e) => { console.warn("load_tts_mute_dict failed", e); });
   }, []);
+
+  // Load OGP domain filters on startup
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    invoke<Partial<OgpDomainFilters>>("load_ogp_domain_filters").then((data) => {
+      setOgpDomainFilters({ allow: data.allow ?? [], block: data.block ?? [] });
+    }).catch((e) => { console.warn("load_ogp_domain_filters failed", e); });
+  }, []);
+
+  const persistOgpDomainFilters = (next: OgpDomainFilters) => {
+    setOgpDomainFilters(next);
+    if (!isTauriRuntime()) return;
+    void invoke("save_ogp_domain_filters", { filters: next }).catch((e) => { console.warn("save_ogp_domain_filters failed", e); });
+  };
+  const addOgpDomain = (kind: "allow" | "block", value: string) => {
+    const dom = value.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "").replace(/^www\./, "");
+    if (!dom || ogpDomainFilters[kind].includes(dom)) return;
+    persistOgpDomainFilters({ ...ogpDomainFilters, [kind]: [...ogpDomainFilters[kind], dom] });
+  };
+  const removeOgpDomain = (kind: "allow" | "block", value: string) => {
+    persistOgpDomainFilters({ ...ogpDomainFilters, [kind]: ogpDomainFilters[kind].filter((d) => d !== value) });
+  };
 
   // Probe/diagnostic UI is only shown in dev builds (or LIVEFAKE_DIAG=1)
   useEffect(() => {
@@ -3841,11 +4238,119 @@ export default function App() {
     });
   }, []);
 
-  // Save TTS dictionary when entries change
+  // Save TTS dictionary when entries change (読み込み完了後のみ: 初期値で上書きしない)
   useEffect(() => {
-    if (!isTauriRuntime()) return;
-    void invoke("save_tts_dict", { entries: ttsDictEntries }).catch(() => {});
+    if (!isTauriRuntime() || !ttsDictLoadedRef.current) return;
+    void invoke("save_tts_dict", { entries: ttsDictEntries }).catch((e) => { console.warn("save_tts_dict failed", e); });
   }, [ttsDictEntries]);
+  useEffect(() => {
+    if (!isTauriRuntime() || !ttsIpAllowLoadedRef.current) return;
+    void invoke("save_tts_ip_allow", { entries: ttsIpAllow }).catch((e) => { console.warn("save_tts_ip_allow failed", e); });
+  }, [ttsIpAllow]);
+  useEffect(() => {
+    if (!isTauriRuntime() || !ttsMuteLoadedRef.current) return;
+    void invoke("save_tts_mute_dict", { dict: ttsMuteDict }).catch((e) => { console.warn("save_tts_mute_dict failed", e); });
+  }, [ttsMuteDict]);
+
+  // OGP / X ポストカードの非同期取得 & 埋め込み。トグル ON 時のみ、IntersectionObserver で
+  // 画面に入ったスロットだけ取得する (スレ内の全 URL へ一斉に通信しない)。
+  // 取得結果は ogpCacheRef / tweetCacheRef にキャッシュし、再レンダーで作り直されたスロットは即座に再充填する。
+  useEffect(() => {
+    if (!ogpCardsEnabled && !tweetCardsEnabled) return;
+    const container = responseScrollRef.current;
+    if (!container) return;
+
+    const fetchTweet = (url: string): Promise<TweetCardData | null> => {
+      const cache = tweetCacheRef.current;
+      if (cache.has(url)) return Promise.resolve(cache.get(url) ?? null);
+      const inflight = tweetInflightRef.current;
+      const existing = inflight.get(url);
+      if (existing) return existing;
+      if (!isTauriRuntime()) return Promise.resolve(null);
+      const p = invoke<TweetCardData>("fetch_tweet_card", { url })
+        .then((card) => { cache.set(url, card); return card; })
+        .catch((err) => {
+          // 削除済み・非公開ポストはここに来る (素リンク表示のままにする)
+          console.warn("fetch_tweet_card failed", url, err);
+          cache.set(url, null);
+          return null;
+        })
+        .finally(() => { inflight.delete(url); });
+      inflight.set(url, p);
+      return p;
+    };
+
+    const fetchCard = (url: string): Promise<OgpCardData | null> => {
+      const cache = ogpCacheRef.current;
+      if (cache.has(url)) return Promise.resolve(cache.get(url) ?? null);
+      const inflight = ogpInflightRef.current;
+      const existing = inflight.get(url);
+      if (existing) return existing;
+      if (!isTauriRuntime()) return Promise.resolve(null);
+      const p = invoke<OgpCardData>("fetch_ogp_card", { url })
+        .then((card) => { cache.set(url, card); return card; })
+        .catch((err) => {
+          console.warn("fetch_ogp_card failed", url, err);
+          cache.set(url, null);
+          return null;
+        })
+        .finally(() => { inflight.delete(url); });
+      inflight.set(url, p);
+      return p;
+    };
+
+    const fillSlot = (slot: HTMLElement, card: OgpCardData | null) => {
+      const htmlText = card && ogpCardHasContent(card) ? buildOgpCardHtml(card) : "";
+      if (htmlText) {
+        slot.innerHTML = htmlText;
+        slot.dataset.ogpState = "done";
+      } else {
+        slot.dataset.ogpState = "empty";
+      }
+    };
+
+    const io = new IntersectionObserver(
+      (entries, obs) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          const slot = entry.target as HTMLElement;
+          obs.unobserve(slot);
+          if (slot.dataset.ogpState) continue;
+          const url = slot.dataset.ogpUrl;
+          if (!url || !/^https?:\/\//i.test(url)) { slot.dataset.ogpState = "empty"; continue; }
+          slot.dataset.ogpState = "loading";
+          if (slot.dataset.tweetId) {
+            void fetchTweet(url).then((card) => {
+              if (!slot.isConnected) return;
+              const htmlText = card ? buildTweetCardHtml(card) : "";
+              if (htmlText) {
+                slot.innerHTML = htmlText;
+                slot.dataset.ogpState = "done";
+                return;
+              }
+              // 削除済み・非公開・取得失敗時は通常の OGP カードにフォールバックする。
+              if (!ogpCardsEnabled) { slot.dataset.ogpState = "empty"; return; }
+              void fetchCard(url).then((ogp) => { if (slot.isConnected) fillSlot(slot, ogp); });
+            });
+            continue;
+          }
+          void fetchCard(url).then((card) => { if (slot.isConnected) fillSlot(slot, card); });
+        }
+      },
+      { root: container, rootMargin: "200px" }
+    );
+
+    const observeNewSlots = () => {
+      container.querySelectorAll<HTMLElement>(".ogp-card-slot:not([data-ogp-state])").forEach((slot) => io.observe(slot));
+    };
+    observeNewSlots();
+    // React が innerHTML を差し替える (再レンダー・ハイライト変更・新着など) たびにスロットは白紙で作り直されるため、
+    // DOM の変化を監視して未処理スロットを拾い直す (依存配列で全ての描画入力を追いかけなくて済む)。
+    const mo = new MutationObserver(observeNewSlots);
+    mo.observe(container, { childList: true, subtree: true });
+
+    return () => { mo.disconnect(); io.disconnect(); };
+  }, [ogpCardsEnabled, tweetCardsEnabled]);
 
   // Save app settings to settings.ini when relevant values change
   useEffect(() => {
@@ -3907,6 +4412,8 @@ export default function App() {
       imageSizeLimit,
       showImagePreview,
       hoverPreviewEnabled,
+      ogpCardsEnabled,
+      tweetCardsEnabled,
       lastBoard: lastBoardUrlRef.current ? { boardName: selectedBoard, url: lastBoardUrlRef.current } : undefined,
       hoverPreviewDelay,
       thumbSize,
@@ -3930,7 +4437,7 @@ export default function App() {
     if (isTauriRuntime()) {
       void invoke("save_layout_prefs", { prefs: payload }).catch(() => {});
     }
-  }, [boardPaneVisible, boardPanePx, threadPanePx, responseTopRatio, boardsFontSize, threadsFontSize, responsesFontSize, responsesHeaderFontSize, darkMode, fontFamily, fontBold, threadColWidths, showBoardButtons, keepSortOnRefresh, composeSubmitKey, typingConfettiEnabled, imageSizeLimit, showImagePreview, hoverPreviewEnabled, selectedBoard, hoverPreviewDelay, thumbSize, restoreSession, autoRefreshInterval, autoScrollEnabled, newArrivalPaneOpen, newArrivalPaneHeight, newArrivalFontSize, resIdFontSize, resIdFontFamily, newArrivalIdFontSize, newArrivalIdFontFamily, subtitleIdFontSize, subtitleIdFontFamily, popupFontSize, popupMaxWidth, popupMaxHeight, composePanelPx]);
+  }, [boardPaneVisible, boardPanePx, threadPanePx, responseTopRatio, boardsFontSize, threadsFontSize, responsesFontSize, responsesHeaderFontSize, darkMode, fontFamily, fontBold, threadColWidths, showBoardButtons, keepSortOnRefresh, composeSubmitKey, typingConfettiEnabled, imageSizeLimit, showImagePreview, hoverPreviewEnabled, ogpCardsEnabled, tweetCardsEnabled, selectedBoard, hoverPreviewDelay, thumbSize, restoreSession, autoRefreshInterval, autoScrollEnabled, newArrivalPaneOpen, newArrivalPaneHeight, newArrivalFontSize, resIdFontSize, resIdFontFamily, newArrivalIdFontSize, newArrivalIdFontFamily, subtitleIdFontSize, subtitleIdFontFamily, popupFontSize, popupMaxWidth, popupMaxHeight, composePanelPx]);
 
 
 
@@ -5279,7 +5786,7 @@ export default function App() {
                         )}
                       </span>
                     </div>
-                    <div className={`response-body rb${isAa ? " aa" : ""}`} dangerouslySetInnerHTML={renderResponseBodyHighlighted(r.text, responseSearchQuery, { hideImages: !showImagePreview || ngResultMap.get(r.id) === "hide-images", imageSizeLimitKb: imageSizeLimit, urlRules: imageUrlRules }, textHighlights.filter((h) => h.type === "word"))} />
+                    <div className={`response-body rb${isAa ? " aa" : ""}`} dangerouslySetInnerHTML={renderResponseBodyHighlighted(r.text, responseSearchQuery, { hideImages: !showImagePreview || ngResultMap.get(r.id) === "hide-images", imageSizeLimitKb: imageSizeLimit, urlRules: imageUrlRules, ogpCards: ogpCardsEnabled, tweetCards: tweetCardsEnabled, ogpAllow: ogpDomainFilters.allow, ogpBlock: ogpDomainFilters.block }, textHighlights.filter((h) => h.type === "word"))} />
                   </div>
                   </Fragment>
                 );
@@ -5713,7 +6220,8 @@ export default function App() {
                   const prefix = site === "shitaraba" ? `したらば${item.id}番さん`
                     : site === "jpnkn" ? `ジャパンくん${item.id}番さん`
                     : `レス${item.id}番さん`;
-                  ttsSpeak(item.text, prefix);
+                  const idMatch = item.time.match(/ID:([^\s]+)/);
+                  ttsSpeak(item.text, prefix, undefined, { name: item.name, id: idMatch ? idMatch[1] : "" });
                 }
               })();
             }}>このレスから読み上げ</button>
@@ -6360,6 +6868,45 @@ export default function App() {
                   <input type="number" value={hoverPreviewDelay} min={0} max={2000} step={50} onChange={(e) => setHoverPreviewDelay(Number(e.target.value))} />
                   <span className="settings-hint">0 = 即時</span>
                 </label>
+                <label className="settings-row">
+                  <input type="checkbox" checked={ogpCardsEnabled} onChange={(e) => setOgpCardsEnabled(e.target.checked)} />
+                  <span>リンクをOGPカード表示（本文中のURL先サイトへ通信します）</span>
+                </label>
+                <label className="settings-row">
+                  <input type="checkbox" checked={tweetCardsEnabled} onChange={(e) => setTweetCardsEnabled(e.target.checked)} />
+                  <span>X（Twitter）のポストをカード表示・動画をその場で再生（x.com / twimg.com へ通信します）</span>
+                </label>
+                {(ogpCardsEnabled || tweetCardsEnabled) && (
+                  <div className="settings-row" style={{ flexDirection: "column", alignItems: "stretch", gap: 4 }}>
+                    <div style={{ fontSize: 11, color: "var(--text-secondary, #888)" }}>
+                      カード表示の通信先ドメイン。ブロックは常に除外、許可は空なら全ドメイン・登録があればそのドメインのみ通信します。
+                      私有ネットワーク・ローカルアドレスへは設定に関わらず通信しません。
+                    </div>
+                    <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                      <input type="text" value={ogpDomainInput} onChange={(e) => setOgpDomainInput(e.target.value)} placeholder="example.com" style={{ width: 180 }} />
+                      <button onClick={() => { addOgpDomain("allow", ogpDomainInput); setOgpDomainInput(""); }}>許可に追加</button>
+                      <button onClick={() => { addOgpDomain("block", ogpDomainInput); setOgpDomainInput(""); }}>ブロックに追加</button>
+                    </div>
+                    {ogpDomainFilters.allow.length > 0 && (
+                      <div style={{ fontSize: 11 }}>
+                        許可: {ogpDomainFilters.allow.map((d) => (
+                          <span key={`a-${d}`} style={{ display: "inline-flex", alignItems: "center", gap: 2, marginRight: 6 }}>
+                            {d}<button style={{ fontSize: 10, padding: "0 4px" }} onClick={() => removeOgpDomain("allow", d)}>×</button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    {ogpDomainFilters.block.length > 0 && (
+                      <div style={{ fontSize: 11 }}>
+                        ブロック: {ogpDomainFilters.block.map((d) => (
+                          <span key={`b-${d}`} style={{ display: "inline-flex", alignItems: "center", gap: 2, marginRight: 6 }}>
+                            {d}<button style={{ fontSize: 10, padding: "0 4px" }} onClick={() => removeOgpDomain("block", d)}>×</button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
                 <div className="settings-row">
                   <span>画像保存先フォルダ</span>
                   <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11, color: "#888" }}>{imageSaveFolder || "(未設定 — 毎回選択)"}</span>
@@ -6603,14 +7150,16 @@ export default function App() {
               <fieldset>
                 <legend>読み上げ辞書</legend>
                 <div style={{ fontSize: 11, color: "var(--text-secondary, #888)", marginBottom: 6 }}>
-                  「全置換」: テキストにキーワードが含まれる場合、レス全体を「読み上げテキスト」で置換します。
+                  「全文置換」: テキストにキーワードが含まれる場合、レス全体を「読み上げテキスト」で置換します。<br />
+                  URL はキーワードに「://」を含む項目なら URL 文字列との部分一致、含まない項目ならホスト名との部分一致 (例: youtube) で照合し、
+                  一致した URL 全体を読み上げテキストに置き換えます。どの項目にも一致しない URL は読み上げません。
                 </div>
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, marginBottom: 6 }}>
                   <thead>
                     <tr style={{ borderBottom: "1px solid var(--border, #ccc)", textAlign: "left" }}>
                       <th style={{ padding: "2px 6px" }}>キーワード</th>
                       <th style={{ padding: "2px 6px" }}>読み上げテキスト</th>
-                      <th style={{ padding: "2px 6px", textAlign: "center" }}>全置換</th>
+                      <th style={{ padding: "2px 6px", textAlign: "center" }}>全文置換</th>
                       <th style={{ padding: "2px 6px" }}></th>
                     </tr>
                   </thead>
@@ -6639,12 +7188,111 @@ export default function App() {
                   <input type="text" value={ttsDictNewTo} onChange={(e) => setTtsDictNewTo(e.target.value)} placeholder="読み上げテキスト" style={{ width: 150 }} />
                   <label style={{ display: "flex", alignItems: "center", gap: 2, fontSize: 11 }}>
                     <input type="checkbox" checked={ttsDictNewFullReplace} onChange={(e) => setTtsDictNewFullReplace(e.target.checked)} />
-                    全置換
+                    全文置換
                   </label>
                   <button onClick={() => {
                     if (!ttsDictNewFrom) return;
                     setTtsDictEntries((prev) => [...prev, { from: ttsDictNewFrom, to: ttsDictNewTo, fullReplace: ttsDictNewFullReplace }]);
                     setTtsDictNewFrom(""); setTtsDictNewTo(""); setTtsDictNewFullReplace(false);
+                  }}>追加</button>
+                </div>
+              </fieldset>
+              <fieldset>
+                <legend>読み上げ許可リスト（IPアドレス配信URL）</legend>
+                <div style={{ fontSize: 11, color: "var(--text-secondary, #888)", marginBottom: 6 }}>
+                  ホスト部分が生の IP アドレス (例: 27.91.102.168:8030) の URL は、ここに登録されたものだけ「読み上げテキスト」で読み上げ、
+                  未登録の IP アドレスは読み上げません。ポートを省略するとその IP の全ポートに一致します。ドメイン名の URL は上の読み上げ辞書で扱います。
+                </div>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, marginBottom: 6 }}>
+                  <thead>
+                    <tr style={{ borderBottom: "1px solid var(--border, #ccc)", textAlign: "left" }}>
+                      <th style={{ padding: "2px 6px" }}>IPアドレス[:ポート]</th>
+                      <th style={{ padding: "2px 6px" }}>読み上げテキスト</th>
+                      <th style={{ padding: "2px 6px" }}></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ttsIpAllow.map((entry, i) => (
+                      <tr key={i} style={{ borderBottom: "1px solid var(--border-light, #eee)" }}>
+                        <td style={{ padding: "3px 6px" }}>
+                          <input type="text" value={entry.host} onChange={(e) => setTtsIpAllow((prev) => prev.map((x, j) => j === i ? { ...x, host: e.target.value } : x))} style={{ width: 150 }} />
+                        </td>
+                        <td style={{ padding: "3px 6px" }}>
+                          <input type="text" value={entry.to} onChange={(e) => setTtsIpAllow((prev) => prev.map((x, j) => j === i ? { ...x, to: e.target.value } : x))} style={{ width: 150 }} />
+                        </td>
+                        <td style={{ padding: "3px 6px" }}>
+                          <button onClick={() => setTtsIpAllow((prev) => prev.filter((_, j) => j !== i))}>削除</button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <div style={{ display: "flex", gap: 4, alignItems: "center", marginTop: 4 }}>
+                  <input type="text" value={ttsIpAllowNewHost} onChange={(e) => setTtsIpAllowNewHost(e.target.value)} placeholder="IPアドレス[:ポート]" style={{ width: 150 }} />
+                  <span>→</span>
+                  <input type="text" value={ttsIpAllowNewTo} onChange={(e) => setTtsIpAllowNewTo(e.target.value)} placeholder="読み上げテキスト" style={{ width: 150 }} />
+                  <button onClick={() => {
+                    const host = ttsIpAllowNewHost.trim();
+                    if (!host) return;
+                    setTtsIpAllow((prev) => [...prev, { host, to: ttsIpAllowNewTo }]);
+                    setTtsIpAllowNewHost(""); setTtsIpAllowNewTo("");
+                  }}>追加</button>
+                </div>
+              </fieldset>
+              <fieldset>
+                <legend>読み上げない辞書</legend>
+                <div style={{ fontSize: 11, color: "var(--text-secondary, #888)", marginBottom: 6 }}>
+                  表示やあぼーんには影響せず、読み上げだけを抑制します。「/.../」で囲むと正規表現、それ以外は大小無視の部分一致です。<br />
+                  レス本文ワード: 「レス全体を読まない」が OFF なら一致した語句だけを無音で除去、ON ならそのレス全体を読み上げません。<br />
+                  名前・ワッチョイ / ID: 読み上げ文に含まれないため、一致したレス全体を常に読み上げません。
+                </div>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, marginBottom: 6 }}>
+                  <thead>
+                    <tr style={{ borderBottom: "1px solid var(--border, #ccc)", textAlign: "left" }}>
+                      <th style={{ padding: "2px 6px" }}>種類</th>
+                      <th style={{ padding: "2px 6px" }}>ワード</th>
+                      <th style={{ padding: "2px 6px", textAlign: "center" }}>レス全体を読まない</th>
+                      <th style={{ padding: "2px 6px" }}></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(["names", "words", "ids"] as const).flatMap((kind) => ttsMuteDict[kind].map((entry, i) => (
+                      <tr key={`${kind}-${i}`} style={{ borderBottom: "1px solid var(--border-light, #eee)" }}>
+                        <td style={{ padding: "3px 6px", whiteSpace: "nowrap" }}>{kind === "names" ? "名前・ワッチョイ" : kind === "words" ? "レス本文ワード" : "ID"}</td>
+                        <td style={{ padding: "3px 6px" }}>
+                          <input type="text" value={entry.value} onChange={(e) => setTtsMuteDict((prev) => ({ ...prev, [kind]: prev[kind].map((x, j) => j === i ? { ...x, value: e.target.value } : x) }))} style={{ width: 180 }} />
+                        </td>
+                        <td style={{ padding: "3px 6px", textAlign: "center" }}>
+                          {kind === "words"
+                            ? <input type="checkbox" checked={!!entry.skipWhole} onChange={(e) => setTtsMuteDict((prev) => ({ ...prev, [kind]: prev[kind].map((x, j) => j === i ? { ...x, skipWhole: e.target.checked } : x) }))} />
+                            : <span style={{ fontSize: 11, color: "var(--text-secondary, #888)" }}>常に</span>}
+                        </td>
+                        <td style={{ padding: "3px 6px" }}>
+                          <button onClick={() => setTtsMuteDict((prev) => ({ ...prev, [kind]: prev[kind].filter((_, j) => j !== i) }))}>削除</button>
+                        </td>
+                      </tr>
+                    )))}
+                  </tbody>
+                </table>
+                <div style={{ display: "flex", gap: 4, alignItems: "center", marginTop: 4, flexWrap: "wrap" }}>
+                  <select value={ttsMuteNewKind} onChange={(e) => setTtsMuteNewKind(e.target.value as TtsMuteKind)}>
+                    <option value="words">レス本文ワード</option>
+                    <option value="names">名前・ワッチョイ</option>
+                    <option value="ids">ID</option>
+                  </select>
+                  <input type="text" value={ttsMuteNewValue} onChange={(e) => setTtsMuteNewValue(e.target.value)} placeholder="ワード または /正規表現/" style={{ width: 180 }} />
+                  {ttsMuteNewKind === "words" && (
+                    <label style={{ display: "flex", alignItems: "center", gap: 2, fontSize: 11 }}>
+                      <input type="checkbox" checked={ttsMuteNewSkipWhole} onChange={(e) => setTtsMuteNewSkipWhole(e.target.checked)} />
+                      レス全体を読まない
+                    </label>
+                  )}
+                  <button onClick={() => {
+                    const v = ttsMuteNewValue.trim();
+                    if (!v) return;
+                    const skipWhole = ttsMuteNewKind === "words" ? ttsMuteNewSkipWhole : true;
+                    setTtsMuteDict((prev) => ({ ...prev, [ttsMuteNewKind]: [...prev[ttsMuteNewKind], { value: v, skipWhole }] }));
+                    setTtsMuteNewValue(""); setTtsMuteNewSkipWhole(false);
                   }}>追加</button>
                 </div>
               </fieldset>

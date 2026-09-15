@@ -11,8 +11,8 @@ use core_fetch::{
     fetch_jpnkn_thread_list, fetch_jpnkn_responses, post_jpnkn_reply, post_5ch_reply,
     normalize_5ch_url, parse_confirm_submit_form,
     submit_post_confirm, submit_post_confirm_with_html, submit_post_finalize_from_confirm,
-    CreateThreadResult, PostConfirmResult, PostFinalizePreview, PostFormTokens,
-    PostSubmitResult, SiteType,
+    CreateThreadResult, OgpCard, PostConfirmResult, PostFinalizePreview, PostFormTokens,
+    PostSubmitResult, SiteType, TweetCard,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -1147,6 +1147,89 @@ fn save_ng_filters(filters: NgFilters) -> Result<(), String> {
     core_store::save_json("ng-settings.json", &filters).map_err(|e| e.to_string())
 }
 
+// --- OGP / X ポストカード取得 ---
+
+/// デコード失敗で置換文字 (U+FFFD) が混入した OGP は壊れているとみなし、キャッシュを使わず取り直す。
+fn ogp_card_looks_garbled(card: &OgpCard) -> bool {
+    let has_repl = |s: &Option<String>| s.as_deref().is_some_and(|t| t.contains('\u{FFFD}'));
+    has_repl(&card.title) || has_repl(&card.description) || has_repl(&card.site_name)
+}
+
+/// OGP カード取得時の User-Agent。掲示板用の Monazilla UA だと一般サイトに弾かれることがある。
+const OGP_USER_AGENT: &str = "Mozilla/5.0 (compatible; LiveFake/0.1)";
+
+/// 本文中の外部 URL の OGP 情報を取得してカード表示用に返す。
+/// キャッシュ (7日 TTL) を優先し、無ければ取得して保存する。
+/// 接続先の検証 (私有 IP 拒否・DNS 解決結果の検証・リダイレクト毎の再検証) は
+/// `core_fetch::fetch_ogp` 側で行う。
+#[tauri::command]
+async fn fetch_ogp_card(url: String) -> Result<OgpCard, String> {
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err("unsupported url scheme".to_string());
+    }
+    if url.len() > 2048 {
+        return Err("url too long".to_string());
+    }
+    if let Ok(Some(json)) = core_store::load_ogp_cache(&url) {
+        if let Ok(card) = serde_json::from_str::<OgpCard>(&json) {
+            if !ogp_card_looks_garbled(&card) {
+                return Ok(card);
+            }
+        }
+    }
+    let card = core_fetch::fetch_ogp(OGP_USER_AGENT, &url)
+        .await
+        .map_err(|e| e.to_string())?;
+    if let Ok(json) = serde_json::to_string(&card) {
+        let _ = core_store::save_ogp_cache(&url, &json);
+    }
+    Ok(card)
+}
+
+/// X (Twitter) のポストをカード表示用に取得する。
+/// 接続先は固定の syndication エンドポイントのみ (本文由来 URL からは ID しか使わない)。
+/// キャッシュは OGP と同じテーブルを `tweet:v2:<id>` キーで共用する (7日 TTL)。
+#[tauri::command]
+async fn fetch_tweet_card(url: String) -> Result<TweetCard, String> {
+    let id = core_fetch::extract_tweet_id(&url).ok_or_else(|| "not a tweet url".to_string())?;
+    let cache_key = format!("tweet:v2:{}", id);
+    if let Ok(Some(json)) = core_store::load_ogp_cache(&cache_key) {
+        if let Ok(card) = serde_json::from_str::<TweetCard>(&json) {
+            return Ok(card);
+        }
+    }
+    let card = core_fetch::fetch_tweet(OGP_USER_AGENT, &url)
+        .await
+        .map_err(|e| e.to_string())?;
+    if let Ok(json) = serde_json::to_string(&card) {
+        let _ = core_store::save_ogp_cache(&cache_key, &json);
+    }
+    Ok(card)
+}
+
+// --- OGP ドメインフィルタ (許可/ブロックリスト) ---
+// block は常に除外、allow は空なら全許可・登録ありならそのドメインのみ許可。
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+struct OgpDomainFilters {
+    #[serde(default)]
+    allow: Vec<String>,
+    #[serde(default)]
+    block: Vec<String>,
+}
+
+#[tauri::command]
+fn load_ogp_domain_filters() -> Result<OgpDomainFilters, String> {
+    match core_store::load_json::<OgpDomainFilters>("ogp_domain_filters.json") {
+        Ok(data) => Ok(data),
+        Err(_) => Ok(OgpDomainFilters::default()),
+    }
+}
+
+#[tauri::command]
+fn save_ogp_domain_filters(filters: OgpDomainFilters) -> Result<(), String> {
+    core_store::save_json("ogp_domain_filters.json", &filters).map_err(|e| e.to_string())
+}
+
 // --- TTS dictionary persistence ---
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1158,25 +1241,148 @@ struct TtsDictEntry {
     full_replace: bool,
 }
 
-fn default_tts_dict() -> Vec<TtsDictEntry> {
-    vec![TtsDictEntry {
-        from: "WebABC".to_string(),
-        to: "このレスは番組表です".to_string(),
-        full_replace: true,
-    }]
+/// デフォルト辞書のバージョン。項目を追加したら +1 する (既存ユーザーの辞書へ一度だけマージされる)。
+const TTS_DICT_DEFAULTS_VERSION: u32 = 2;
+
+fn dict(from: &str, to: &str) -> TtsDictEntry {
+    TtsDictEntry { from: from.to_string(), to: to.to_string(), full_replace: false }
 }
 
+/// デフォルト辞書。フロント側 `DEFAULT_TTS_DICT` (App.tsx) と同じ内容にすること。
+/// URL 系のキーワードは読み上げ時に URL 単位 (トークン) で照合される。
+fn default_tts_dict() -> Vec<TtsDictEntry> {
+    vec![
+        TtsDictEntry {
+            from: "WebABC".to_string(),
+            to: "このレスは番組表です".to_string(),
+            full_replace: true,
+        },
+        dict("http://jbbs.shitaraba", "したらば掲示板"),
+        dict("http://bbs.jpnkn.com/livevenus/", "ジャパンくん掲示板"),
+        dict("http://mudai.duckdns.org:8000/", "無題鏡置き場様"),
+        dict("http://mudai.duckdns.org:8100", "無題鏡様配信URL"),
+        dict("http://mudai.duckdns.org:8200", "無題鏡様配信URL"),
+        dict("http://mudai.duckdns.org:8300", "無題鏡様配信URL"),
+        dict("http://mudai.duckdns.org:8400", "無題鏡様配信URL"),
+        dict("http://mudai.duckdns.org:8500", "無題鏡様配信URL"),
+        dict("http://mudai.duckdns.org:8600", "無題鏡様配信URL"),
+        dict("http://mudai.duckdns.org/t", "ツイッチ配信URL"),
+        dict("youtube", "ゆーちゅーぶ"),
+        dict("youtu.be", "ゆーちゅーぶ"),
+    ]
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct TtsDictMeta {
+    #[serde(default)]
+    defaults_version: u32,
+}
+
+/// 辞書を読み込む。デフォルト辞書に新しい項目が追加された場合、既存ユーザーの辞書へ
+/// 「まだ無い `from` だけ」を一度だけ追記する (ユーザーが意図的に削除した項目を毎回復活させない)。
 #[tauri::command]
 fn load_tts_dict() -> Result<Vec<TtsDictEntry>, String> {
-    match core_store::load_json::<Vec<TtsDictEntry>>("tts-dict.json") {
-        Ok(data) => Ok(data),
-        Err(_) => Ok(default_tts_dict()),
+    let mut entries = match core_store::load_json::<Vec<TtsDictEntry>>("tts-dict.json") {
+        Ok(data) => data,
+        Err(_) => return Ok(default_tts_dict()),
+    };
+    let meta = core_store::load_json::<TtsDictMeta>("tts-dict-meta.json").unwrap_or_default();
+    if meta.defaults_version < TTS_DICT_DEFAULTS_VERSION {
+        let mut changed = false;
+        for d in default_tts_dict() {
+            if !entries.iter().any(|e| e.from.trim().eq_ignore_ascii_case(d.from.trim())) {
+                entries.push(d);
+                changed = true;
+            }
+        }
+        if changed {
+            if let Err(e) = core_store::save_json("tts-dict.json", &entries) {
+                eprintln!("tts dict merge save failed: {e}");
+            }
+        }
+        if let Err(e) = core_store::save_json(
+            "tts-dict-meta.json",
+            &TtsDictMeta { defaults_version: TTS_DICT_DEFAULTS_VERSION },
+        ) {
+            eprintln!("tts dict meta save failed: {e}");
+        }
     }
+    Ok(entries)
 }
 
 #[tauri::command]
 fn save_tts_dict(entries: Vec<TtsDictEntry>) -> Result<(), String> {
     core_store::save_json("tts-dict.json", &entries).map_err(|e| e.to_string())
+}
+
+// --- TTS 読み上げ許可リスト (IP アドレス配信 URL 専用) ---
+// ホスト部分が生の IP アドレスである URL は、このリストに登録されたものだけ `to` で読み上げ、
+// 未登録のものは読み上げない (無音)。ドメイン名の URL は通常の読み上げ辞書で扱う。
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct TtsIpAllowEntry {
+    /// `27.91.102.168:8030` のように `IP[:ポート]`。ポート省略時はその IP の全ポートに一致。
+    host: String,
+    to: String,
+}
+
+fn default_tts_ip_allow() -> Vec<TtsIpAllowEntry> {
+    vec![TtsIpAllowEntry {
+        host: "27.91.102.168:8030".to_string(),
+        to: "ディオン軍鏡置き場様".to_string(),
+    }]
+}
+
+#[tauri::command]
+fn load_tts_ip_allow() -> Result<Vec<TtsIpAllowEntry>, String> {
+    match core_store::load_json::<Vec<TtsIpAllowEntry>>("tts-ip-allow.json") {
+        Ok(data) => Ok(data),
+        Err(_) => Ok(default_tts_ip_allow()),
+    }
+}
+
+#[tauri::command]
+fn save_tts_ip_allow(entries: Vec<TtsIpAllowEntry>) -> Result<(), String> {
+    core_store::save_json("tts-ip-allow.json", &entries).map_err(|e| e.to_string())
+}
+
+// --- TTS 読み上げない辞書 ---
+// 表示やあぼーんには影響せず、読み上げだけを抑制する。
+// `skip_whole` = true: 一致したらそのレス全体を読み上げない / false: 一致した語句だけを無音で除去。
+// names / ids は読み上げ文に含まれないため常にレス全体スキップとして扱う。
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct TtsMuteEntry {
+    value: String,
+    #[serde(default)]
+    skip_whole: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct TtsMuteDict {
+    #[serde(default)]
+    names: Vec<TtsMuteEntry>,
+    #[serde(default)]
+    words: Vec<TtsMuteEntry>,
+    #[serde(default)]
+    ids: Vec<TtsMuteEntry>,
+}
+
+#[tauri::command]
+fn load_tts_mute_dict() -> Result<TtsMuteDict, String> {
+    match core_store::load_json::<TtsMuteDict>("tts-mute-dict.json") {
+        Ok(data) => Ok(data),
+        Err(_) => Ok(TtsMuteDict::default()),
+    }
+}
+
+#[tauri::command]
+fn save_tts_mute_dict(dict: TtsMuteDict) -> Result<(), String> {
+    core_store::save_json("tts-mute-dict.json", &dict).map_err(|e| e.to_string())
 }
 
 // --- Read status persistence ---
@@ -2321,6 +2527,14 @@ pub fn run() {
             save_ng_filters,
             load_tts_dict,
             save_tts_dict,
+            load_tts_ip_allow,
+            save_tts_ip_allow,
+            load_tts_mute_dict,
+            save_tts_mute_dict,
+            fetch_ogp_card,
+            fetch_tweet_card,
+            load_ogp_domain_filters,
+            save_ogp_domain_filters,
             load_read_status,
             load_thread_history,
             save_thread_history,
