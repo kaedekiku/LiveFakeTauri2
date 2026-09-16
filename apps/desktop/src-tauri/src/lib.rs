@@ -2031,31 +2031,24 @@ fn reset_image_url_replace() -> Result<Vec<UrlReplaceRule>, String> {
 
 // ===== TTS Commands =====
 
-#[tauri::command]
+// SAPI コマンドは `(async)` を付けて Tauri のブロッキング用スレッドプールで実行する。
+// 付けないとメインスレッド (画面の描画・入力を処理しているスレッド) 上でそのまま実行されてしまい、
+// 読み上げ中は画面が固まって一切の操作を受け付けなくなる (声の取得・読み上げ・停止のいずれも同様)。
+// 実際の COM 呼び出しは core_tts 側の専用常駐スレッドに一本化されているため、ここでは
+// 追加のスレッド生成は不要 (core_tts::sapi_speak/sapi_stop の中で完結する)。
+#[tauri::command(async)]
 fn sapi_list_voices() -> Result<Vec<core_tts::VoiceInfo>, String> {
-    std::thread::spawn(|| {
-        core_tts::sapi_list_voices().map_err(|e| e.to_string())
-    })
-    .join()
-    .map_err(|_| "SAPI thread panicked".to_string())?
+    core_tts::sapi_list_voices().map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn sapi_speak_text(text: String, voice_index: u32, rate: i32, volume: u32) -> Result<(), String> {
-    std::thread::spawn(move || {
-        core_tts::sapi_speak(&text, voice_index, rate, volume).map_err(|e| e.to_string())
-    })
-    .join()
-    .map_err(|_| "SAPI thread panicked".to_string())?
+    core_tts::sapi_speak(&text, voice_index, rate, volume).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn sapi_stop_speech() -> Result<(), String> {
-    std::thread::spawn(|| {
-        core_tts::sapi_stop().map_err(|e| e.to_string())
-    })
-    .join()
-    .map_err(|_| "SAPI thread panicked".to_string())?
+    core_tts::sapi_stop().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2109,11 +2102,8 @@ async fn tts_stop() -> Result<(), String> {
     // Stop current speech and clear queue
     let mut queue = core_tts::tts_queue().lock().await;
     queue.clear();
-    // Also stop SAPI if it's running
-    let _ = std::thread::spawn(|| {
-        let _ = core_tts::sapi_stop();
-    })
-    .join();
+    // Also stop SAPI if it's running (フラグを立てるだけで即座に返るため、スレッド分離は不要)
+    let _ = core_tts::sapi_stop();
     Ok(())
 }
 
@@ -2266,6 +2256,124 @@ fn clear_popup_images(app: AppHandle) -> Result<(), String> {
     let state = app.state::<ImagePopupState>();
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
     guard.clear();
+    Ok(())
+}
+
+// ===== Compose Popup Window Commands =====
+// スレッドタイトルバーの「書き込み」ボタンから開く、別ウィンドウの書き込み・スレ立てフォーム。
+// 実際の投稿処理 (NGチェック・Cookie・自分の投稿判定など) はメインウィンドウ側の既存ロジックを
+// そのまま使う。ポップアップは入力フォームを持つだけで、送信内容をイベントでメインへ渡し、
+// メインが投稿を実行して結果 (成功なら閉じる、失敗ならメッセージ) をポップアップへ返す。
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+struct ComposePopupUpdate {
+    thread_title: Option<String>,
+    thread_url: Option<String>,
+    default_name: Option<String>,
+    default_mail: Option<String>,
+    /// 指定時は本文欄に追記する (引用 `>>N` など)。置き換えではなく追記
+    append_quote: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ComposePopupSubmitData {
+    mode: String,
+    name: String,
+    mail: String,
+    body: String,
+    subject: Option<String>,
+}
+
+#[tauri::command]
+async fn compose_popup_show(app: AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("compose_popup") {
+        let _ = win.set_focus();
+        return Ok(());
+    }
+    let win = WebviewWindowBuilder::new(
+        &app,
+        "compose_popup",
+        tauri::WebviewUrl::App("compose_popup.html".into()),
+    )
+    .title("LiveFake - 書き込み")
+    .inner_size(420.0, 420.0)
+    .min_inner_size(320.0, 320.0)
+    .resizable(true)
+    .build()
+    .map_err(|e| e.to_string())?;
+    if let Ok(Some(monitor)) = app.primary_monitor() {
+        let ms = monitor.size();
+        let ws = win.outer_size().unwrap_or(tauri::PhysicalSize::new(420, 420));
+        let x = (ms.width as i32 - ws.width as i32) / 2;
+        let y = (ms.height as i32 - ws.height as i32) / 2;
+        let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
+    }
+    // ポップアップが閉じられたら (成功時の自動クローズ・ユーザーによる手動クローズのいずれも)
+    // メインへ通知し、「引用の転送先」の判定に使う
+    let handle = app.clone();
+    win.on_window_event(move |event| {
+        if let tauri::WindowEvent::Destroyed = event {
+            let _ = handle.emit_to("main", "compose-popup-closed", ());
+        }
+    });
+    Ok(())
+}
+
+#[tauri::command]
+fn compose_popup_update(app: AppHandle, data: ComposePopupUpdate) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("compose_popup") {
+        let js = format!(
+            "if(window.__composeUpdate)window.__composeUpdate({})",
+            serde_json::to_string(&data).unwrap_or_else(|_| "{}".to_string())
+        );
+        let _ = win.eval(&js);
+    }
+    Ok(())
+}
+
+/// ポップアップ側からの送信要求をメインウィンドウへ中継する。実際の投稿処理はメイン側で行う
+/// (NGフィルタ・Cookie・自分の投稿判定など既存の投稿フローをそのまま使うため)。
+#[tauri::command]
+fn compose_popup_submit(app: AppHandle, data: ComposePopupSubmitData) -> Result<(), String> {
+    if data.mode != "reply" && data.mode != "new_thread" {
+        return Err("unknown mode".to_string());
+    }
+    let _ = app.emit_to(
+        "main",
+        "compose-popup-submit",
+        serde_json::json!({
+            "mode": data.mode,
+            "name": data.name,
+            "mail": data.mail,
+            "body": data.body,
+            "subject": data.subject,
+        }),
+    );
+    Ok(())
+}
+
+/// メインウィンドウでの投稿結果をポップアップへ返す。失敗時はポップアップを開いたままメッセージを表示する
+/// (成功時はメイン側が compose_popup_hide で閉じるので、こちらは失敗時にのみ使われる想定)。
+#[tauri::command]
+fn compose_popup_result(app: AppHandle, ok: bool, message: String) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("compose_popup") {
+        let js = format!(
+            "if(window.__composeResult)window.__composeResult({}, {})",
+            ok,
+            serde_json::to_string(&message).unwrap_or_else(|_| "\"\"".to_string())
+        );
+        let _ = win.eval(&js);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn compose_popup_hide(app: AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("compose_popup") {
+        let _ = win.close();
+    }
     Ok(())
 }
 
@@ -2692,6 +2800,7 @@ pub fn run() {
                     if let tauri::WindowEvent::Destroyed = event {
                         if let Some(w) = handle.get_webview_window("subtitle") { let _ = w.close(); }
                         if let Some(w) = handle.get_webview_window("image_popup") { let _ = w.close(); }
+                        if let Some(w) = handle.get_webview_window("compose_popup") { let _ = w.close(); }
                     }
                 });
             }
@@ -2781,6 +2890,11 @@ pub fn run() {
             get_image_popup_data,
             remove_popup_image,
             clear_popup_images,
+            compose_popup_show,
+            compose_popup_update,
+            compose_popup_submit,
+            compose_popup_result,
+            compose_popup_hide,
             subtitle_show,
             subtitle_hide,
             subtitle_reset_position,

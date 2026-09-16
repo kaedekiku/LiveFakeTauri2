@@ -16,7 +16,7 @@ import {
   ClipboardList, RefreshCw, Pencil, FilePenLine, Save,
   Star, X, ChevronLeft, ChevronRight, ChevronDown, Ban,
   Image, Film, ExternalLink,
-  Subtitles, Volume2, ChevronUp, Search, PanelLeftClose, PanelLeftOpen,
+  Subtitles, Volume2, VolumeX, ChevronUp, Search, PanelLeftClose, PanelLeftOpen,
 } from "lucide-react";
 
 type MenuInfo = { topLevelKeys: number; normalizedSample: string };
@@ -673,6 +673,12 @@ export default function App() {
   const [updateResult, setUpdateResult] = useState<UpdateCheckResult | null>(null);
   const [updateProbe, setUpdateProbe] = useState("not run");
   const [composeOpen, setComposeOpen] = useState(false);
+  // スレッドタイトルバーの「書き込み」から開く別ウィンドウ (浮遊ウィンドウ) が現在開いているか。
+  // 開いている間はレスの引用 (ダブルクリック) をそちらへ転送する
+  const composePopupOpenRef = useRef(false);
+  // 浮遊ウィンドウを開いたときのスレを固定しておく。浮遊ウィンドウは別ウィンドウなので開いたまま
+  // メイン側でタブを切り替えられてしまい、それを送信時に読み直すと投稿先が意図と変わってしまうため
+  const composePopupTargetRef = useRef<{ url: string; title: string } | null>(null);
   const [composePanelPx, setComposePanelPx] = useState(DEFAULT_COMPOSE_PANEL_PX);
   const [composeNewThread, setComposeNewThread] = useState(false);
   const [composeSubject, setComposeSubject] = useState("");
@@ -1114,7 +1120,7 @@ export default function App() {
   type TtsDictEntry = { from: string; to: string; fullReplace?: boolean };
   const [ttsMode, setTtsMode] = useState<TtsMode>("off");
   const [ttsEnabled, setTtsEnabled] = useState(false);
-  const [ttsMaxReadLength, setTtsMaxReadLength] = useState(0);
+  const [ttsMaxReadLength, setTtsMaxReadLength] = useState(100);
   const [sapiVoices, setSapiVoices] = useState<{ index: number; name: string }[]>([]);
   const [sapiVoiceIndex, setSapiVoiceIndex] = useState(0);
   const [sapiRate, setSapiRate] = useState(0);
@@ -1245,6 +1251,10 @@ export default function App() {
   const resizeDragRef = useRef<ResizeDragState | null>(null);
   const [threadColWidths, setThreadColWidths] = useState<Record<string, number>>({ ...DEFAULT_COL_WIDTHS });
   const layoutPrefsLoadedRef = useRef(false);
+  // settings.ini の読み込み完了フラグ。これが立つ前に保存 (initial mount 時など) すると、
+  // まだ既定値のままの state で settings.ini を上書きし、直前まで保存されていた値
+  // (棒読みちゃんの実行ファイルパス等) を消してしまう
+  const appSettingsLoadedRef = useRef(false);
   const threadScrollPositions = useRef<Record<string, number>>({});
   const boardTreeRef = useRef<HTMLDivElement | null>(null);
   const boardTreeScrollRestoreRef = useRef<number | null>(null);
@@ -2538,21 +2548,22 @@ export default function App() {
     }
   };
 
-  const postSuccessCleanup = async (postedBody: string) => {
-    setComposeBody("");
-    if (composeName.trim()) {
+  // 投稿成功後の共通処理 (名前履歴・自分の投稿判定・再取得・スクロール)。
+  // 下部の書き込みパネルと、スレッドタイトルバーから開く浮遊ウィンドウの両方から呼ばれる
+  const applyPostSuccessBookkeeping = async (targetThreadUrl: string, name: string, postedBody: string) => {
+    if (name.trim()) {
       setNameHistory((prev) => {
-        const next = [composeName.trim(), ...prev.filter((n) => n !== composeName.trim())].slice(0, 20);
+        const next = [name.trim(), ...prev.filter((n) => n !== name.trim())].slice(0, 20);
         saveToFile("name-history.json", next);
         return next;
       });
     }
-    const prevCount = tabCacheRef.current.get(threadUrl.trim())?.responses.length ?? 0;
-    pendingMyPostRef.current = { threadUrl: threadUrl.trim(), body: postedBody, prevCount };
-    await fetchResponsesFromCurrent(threadUrl.trim());
+    const prevCount = tabCacheRef.current.get(targetThreadUrl)?.responses.length ?? 0;
+    pendingMyPostRef.current = { threadUrl: targetThreadUrl, body: postedBody, prevCount };
+    await fetchResponsesFromCurrent(targetThreadUrl);
     void refreshThreadListSilently();
     setTimeout(() => {
-      const items = tabCacheRef.current.get(threadUrl.trim())?.responses;
+      const items = tabCacheRef.current.get(targetThreadUrl)?.responses;
       if (items && items.length > 0) {
         setSelectedResponse(items[items.length - 1].responseNo);
       }
@@ -2560,6 +2571,11 @@ export default function App() {
         responseScrollRef.current.scrollTop = responseScrollRef.current.scrollHeight;
       }
     }, 100);
+  };
+
+  const postSuccessCleanup = async (postedBody: string) => {
+    setComposeBody("");
+    await applyPostSuccessBookkeeping(threadUrl.trim(), composeName, postedBody);
   };
 
   const probePostFlowTraceFromCompose = async () => {
@@ -2585,6 +2601,91 @@ export default function App() {
     } finally {
       setComposeSubmitting(false);
     }
+  };
+
+  // スレッドタイトルバーの「書き込み」から浮遊ウィンドウ (別 OS ウィンドウ) を開く。
+  // 下部の書き込みパネルとは独立で、名前・スレ情報などの初期値だけを渡す
+  const openComposePopup = () => {
+    if (!isTauriRuntime()) { setComposeOpen(true); setComposeBody(""); setComposeResult(null); return; }
+    const tab = threadTabs[activeTabIndex];
+    // 開いた時点のスレに固定する (別ウィンドウなので、開いたままメイン側でタブを切り替えられても
+    // 投稿先が変わらないようにする)
+    composePopupTargetRef.current = { url: tab?.threadUrl ?? threadUrl, title: tab?.title ?? threadUrl };
+    void invoke("compose_popup_show").then(() => {
+      composePopupOpenRef.current = true;
+      setTimeout(() => {
+        void invoke("compose_popup_update", {
+          data: {
+            threadTitle: tab?.title ?? threadUrl,
+            defaultName: composeName || (nameHistory[0] ?? ""),
+            defaultMail: composeSage ? "" : composeMail,
+          },
+        }).catch(() => {});
+      }, 250);
+    }).catch((e) => console.warn("compose_popup_show:", e));
+  };
+
+  // 浮遊ウィンドウからの送信要求を処理する。実際の投稿は既存の投稿フローをそのまま使い、
+  // NGフィルタ・Cookie・自分の投稿判定などは下部パネルの書き込みと完全に同じ経路を通る
+  const handleComposePopupSubmit = async (data: { mode?: unknown; name?: unknown; mail?: unknown; body?: unknown; subject?: unknown }) => {
+    const mode = data.mode === "new_thread" ? "new_thread" : "reply";
+    const name = typeof data.name === "string" ? data.name : "";
+    const mail = typeof data.mail === "string" ? data.mail : "";
+    const body = typeof data.body === "string" ? data.body : "";
+    const subject = typeof data.subject === "string" ? data.subject : "";
+    // 開いたときに固定したスレ (composePopupTargetRef) を使う。無ければ現在のタブにフォールバック
+    const postTargetUrl = composePopupTargetRef.current?.url ?? (threadTabs[activeTabIndex]?.threadUrl ?? threadUrl);
+    const reportResult = (ok: boolean, message: string) => {
+      if (isTauriRuntime()) void invoke("compose_popup_result", { ok, message }).catch(() => {});
+    };
+    if (mode === "new_thread") {
+      const boardUrl = getBoardUrlFromThreadUrl(postTargetUrl.trim()) || postTargetUrl.trim();
+      try {
+        const r = await invoke<{ status: number; containsError: boolean; bodyPreview: string; threadUrl: string | null }>("create_thread_command", {
+          boardUrl,
+          subject,
+          from: name || null,
+          mail: mail || null,
+          message: body,
+        });
+        if (r.containsError || !r.threadUrl) {
+          reportResult(false, `スレッド作成失敗: ${r.bodyPreview}`);
+          return;
+        }
+        if (name.trim()) {
+          setNameHistory((prev) => {
+            const next = [name.trim(), ...prev.filter((n) => n !== name.trim())].slice(0, 20);
+            saveToFile("name-history.json", next);
+            return next;
+          });
+        }
+        openThreadInTab(r.threadUrl, subject);
+        void fetchResponsesFromCurrent(r.threadUrl);
+        void refreshThreadListSilently();
+        if (isTauriRuntime()) void invoke("compose_popup_hide").catch(() => {});
+      } catch (error) {
+        reportResult(false, `Error: ${String(error)}`);
+      }
+      return;
+    }
+    try {
+      const result = await invoke<string>("post_reply_multisite", { threadUrl: postTargetUrl, from: name || null, mail: mail || null, message: body });
+      setPostHistory((prev) => [{ time: new Date().toLocaleTimeString(), threadUrl: postTargetUrl, body: body.slice(0, 100), ok: true }, ...prev].slice(0, 50));
+      void result;
+      await applyPostSuccessBookkeeping(postTargetUrl.trim(), name, body);
+      if (isTauriRuntime()) void invoke("compose_popup_hide").catch(() => {});
+    } catch (error) {
+      const msg = String(error);
+      setPostHistory((prev) => [{ time: new Date().toLocaleTimeString(), threadUrl: postTargetUrl, body: body.slice(0, 100), ok: false }, ...prev].slice(0, 50));
+      reportResult(false, `NG: ${msg}`);
+    }
+  };
+
+  // 浮遊ウィンドウが開いていればそちらへ引用を転送し、無ければ従来どおり下部パネルへ追記する
+  const forwardQuoteToComposePopup = (line: string): boolean => {
+    if (!composePopupOpenRef.current || !isTauriRuntime()) return false;
+    void invoke("compose_popup_update", { data: { appendQuote: line } }).catch(() => {});
+    return true;
   };
 
   // TTS: process queue sequentially (one item at a time)
@@ -3541,6 +3642,7 @@ export default function App() {
   const buildResponseUrl = (responseId: number) => `${threadUrl.endsWith("/") ? threadUrl : `${threadUrl}/`}${responseId}`;
 
   const appendComposeQuote = (line: string) => {
+    if (forwardQuoteToComposePopup(line)) return;
     setComposeOpen(true);
     setComposeBody((prev) => (prev.trim().length === 0 ? `${line}\n` : `${prev}\n${line}\n`));
   };
@@ -4542,8 +4644,11 @@ export default function App() {
   };
   // Load app settings from settings.ini on startup
   useEffect(() => {
-    if (!isTauriRuntime()) return;
-    invoke<Record<string, string>>("load_app_settings").then((map) => applyAppSettings(map)).catch(() => {});
+    if (!isTauriRuntime()) { appSettingsLoadedRef.current = true; return; }
+    invoke<Record<string, string>>("load_app_settings")
+      .then((map) => applyAppSettings(map))
+      .catch(() => {})
+      .finally(() => { appSettingsLoadedRef.current = true; });
   }, []);
 
   // Load TTS dictionary on startup
@@ -4790,6 +4895,26 @@ export default function App() {
     }).then((fn) => { if (disposed) fn(); else unlisten = fn; }).catch((e) => console.warn("subtitle-control listen failed", e));
     return () => { disposed = true; if (unlisten) unlisten(); };
   }, []);
+  // 書き込みの浮遊ウィンドウからの送信要求。実際の投稿は既存の投稿フローで行う
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void listen<{ mode?: unknown; name?: unknown; mail?: unknown; body?: unknown; subject?: unknown }>("compose-popup-submit", (ev) => {
+      void handleComposePopupSubmit(ev.payload ?? {});
+    }).then((fn) => { if (disposed) fn(); else unlisten = fn; }).catch((e) => console.warn("compose-popup-submit listen failed", e));
+    return () => { disposed = true; if (unlisten) unlisten(); };
+  }, []);
+  // 書き込みの浮遊ウィンドウが閉じられたら (成功時の自動クローズ・手動クローズいずれも)、
+  // 以後の引用は下部パネルへ戻す
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void listen("compose-popup-closed", () => { composePopupOpenRef.current = false; composePopupTargetRef.current = null; })
+      .then((fn) => { if (disposed) fn(); else unlisten = fn; }).catch((e) => console.warn("compose-popup-closed listen failed", e));
+    return () => { disposed = true; if (unlisten) unlisten(); };
+  }, []);
   // 字幕ヘッダに一時停止状態と残りキュー数を表示
   useEffect(() => {
     if (!isTauriRuntime() || !subtitleVisible) return;
@@ -4844,14 +4969,23 @@ export default function App() {
       "Posting.composeOpen": String(composeOpen),
   });
   // Save app settings to settings.ini when relevant values change.
-  // 設定画面を開いている間は保存しない (「設定を保存」で明示的に保存し、保存せずに閉じたら開いたときの値に戻す)
+  // 設定画面を開いている間は保存しない (「設定を保存」で明示的に保存し、保存せずに閉じたら開いたときの値に戻す)。
+  // load_app_settings が終わる前 (起動直後の一瞬) は、まだ既定値のままの state で
+  // ファイルを上書きしてしまわないよう appSettingsLoadedRef で待つ
   useEffect(() => {
-    if (!isTauriRuntime() || settingsOpenRef.current) return;
+    if (!isTauriRuntime() || !appSettingsLoadedRef.current || settingsOpenRef.current) return;
     void invoke("save_app_settings", { settings: buildAppSettingsMap() }).catch(() => {});
   }, [responsesFontSize, responseGap, autoRefreshInterval, autoRefreshEnabled, autoScrollEnabled, smoothScroll, maxOpenTabs, logRetentionDays, imageSaveFolder, cssAllowExternalUrls,
-      ttsMode, ttsEnabled, ttsMaxReadLength, sapiVoiceIndex, sapiRate, sapiVolume, bouyomiPath,
+      ttsMode, ttsEnabled, ttsMaxReadLength, sapiVoiceIndex, sapiRate, sapiVolume,
       voicevoxEndpoint, voicevoxSpeakerId, voicevoxSpeedScale, voicevoxPitchScale, voicevoxIntonationScale, voicevoxVolumeScale,
       composeName, composeMail, composeSage, composeFontSize, composeOpen]);
+
+  // 棒読みちゃんの実行ファイルパスは、設定画面を開いたまま他のエンジンに切り替えても消えないよう、
+  // 「設定を保存」を待たず入力した時点で即座に保存する (NG・辞書・ハイライトの登録と同じ扱い)
+  useEffect(() => {
+    if (!isTauriRuntime() || !appSettingsLoadedRef.current) return;
+    void invoke("save_app_settings", { settings: buildAppSettingsMap() }).catch(() => {});
+  }, [bouyomiPath]);
 
   // layout_prefs.json に保存する内容
   const buildLayoutPrefsPayload = (): Record<string, unknown> => ({
@@ -4926,9 +5060,16 @@ export default function App() {
     delete copy.lastBoard;
     return copy;
   };
+  // 棒読みちゃんの実行ファイルパスは入力した時点で即座に保存されるため (上の useEffect)、
+  // 「未保存の変更」の判定にも「保存しないで閉じる」の復元対象にも含めない
+  const stripVolatileAppSettings = (o: Record<string, string>): Record<string, string> => {
+    const copy = { ...o };
+    delete copy["Speech.bouyomiPath"];
+    return copy;
+  };
   const settingsDirty = settingsOpen && settingsSnapshot !== null && (
     JSON.stringify(stripVolatilePrefs(buildLayoutPrefsPayload())) !== JSON.stringify(stripVolatilePrefs(settingsSnapshot.layout))
-    || JSON.stringify(buildAppSettingsMap()) !== JSON.stringify(settingsSnapshot.app)
+    || JSON.stringify(stripVolatileAppSettings(buildAppSettingsMap())) !== JSON.stringify(stripVolatileAppSettings(settingsSnapshot.app))
   );
   useEffect(() => {
     if (settingsOpen) setSettingsSnapshot({ layout: buildLayoutPrefsPayload(), app: buildAppSettingsMap() });
@@ -5001,7 +5142,8 @@ export default function App() {
   const discardSettingsChanges = () => {
     const snap = settingsSnapshot;
     if (!snap) return;
-    applyAppSettings(snap.app);
+    // 棒読みちゃんパスは即時保存済みなので、スナップショットの値で巻き戻さない (現在値を維持)
+    applyAppSettings({ ...snap.app, "Speech.bouyomiPath": bouyomiPath });
     applyLayoutPrefs(JSON.stringify({ ...snap.layout, settingsSearchHistory }));
   };
   const requestCloseSettings = () => {
@@ -6127,7 +6269,7 @@ export default function App() {
                     </div>
                   )}
                 </div>
-                <button className="title-action-btn" onClick={() => { setComposeOpen(true); setComposeBody(""); setComposeResult(null); }} title="書き込み"><Pencil size={14} /></button>
+                <button className="title-action-btn" onClick={openComposePopup} title="書き込み（別ウィンドウ）"><Pencil size={14} /></button>
                 <div className="title-split-wrap" onClick={(e) => e.stopPropagation()}>
                   <button
                     className={`title-action-btn ${responseSearchMode ? "active" : ""}`}
@@ -6175,6 +6317,11 @@ export default function App() {
                   onClick={() => setTtsEnabled(!ttsEnabled)}
                   title={`読み上げ ${ttsEnabled ? "ON" : "OFF"}`}
                 ><Volume2 size={14} /></button>
+                <button
+                  className="title-action-btn"
+                  onClick={() => void ttsStop()}
+                  title="読み上げを今すぐ停止 (待機中の分もまとめて破棄)"
+                ><VolumeX size={14} /></button>
                 {!newArrivalPaneOpen && (
                   <button className="title-action-btn" onClick={() => setNewArrivalPaneOpen(true)} title="新着ペイン表示"><ChevronUp size={14} /></button>
                 )}
@@ -6501,46 +6648,6 @@ export default function App() {
                 );
               })}
             </div>
-            <div className="response-nav-bar">
-              <span className="nav-info">
-                着:{visibleResponseItems.length}{ngFilteredCount > 0 ? `(NG${ngFilteredCount})` : ""}
-                {" "}サイズ:{Math.round(visibleResponseItems.reduce((s, r) => s + r.text.length, 0) / 1024)}KB
-              </span>
-              <span className="link-filter-buttons">
-                <button className={`link-filter-btn ${responseLinkFilter === "image" ? "active" : ""}`} onClick={() => setResponseLinkFilter((p) => p === "image" ? "" : "image")} title="画像リンク"><Image size={13} /></button>
-                <button className={`link-filter-btn ${responseLinkFilter === "video" ? "active" : ""}`} onClick={() => setResponseLinkFilter((p) => p === "video" ? "" : "video")} title="動画リンク"><Film size={13} /></button>
-                <button className={`link-filter-btn ${responseLinkFilter === "link" ? "active" : ""}`} onClick={() => setResponseLinkFilter((p) => p === "link" ? "" : "link")} title="外部リンク"><ExternalLink size={13} /></button>
-              </span>
-              <span className="nav-buttons">
-                <button onClick={() => { if (visibleResponseItems.length > 0) setSelectedResponse(visibleResponseItems[0].id); }}>Top</button>
-                {newResponseStart !== null && (
-                  <button
-                    className="nav-new-btn"
-                    onClick={() => {
-                      const first = visibleResponseItems.find((r) => r.id >= newResponseStart);
-                      if (first) setSelectedResponse(first.id);
-                    }}
-                  >
-                    New
-                  </button>
-                )}
-                <button onClick={() => { if (visibleResponseItems.length > 0) setSelectedResponse(visibleResponseItems[visibleResponseItems.length - 1].id); }}>End</button>
-                <input
-                  className="nav-jump-input"
-                  placeholder=">>"
-                  onKeyDown={(e) => {
-                    if (e.key !== "Enter") return;
-                    const val = (e.target as HTMLInputElement).value.replace(/^>>?/, "").trim();
-                    const no = Number(val);
-                    if (no > 0 && visibleResponseItems.some((r) => r.id === no)) {
-                      setSelectedResponse(no);
-                      (e.target as HTMLInputElement).value = "";
-                      setStatus(`>>${no}`);
-                    }
-                  }}
-                />
-              </span>
-            </div>
           </div>
         </section>
         )}
@@ -6639,6 +6746,50 @@ export default function App() {
               </div>
             )}
           </>
+        )}
+        {/* 着~/サイズ~kb・画像/動画/外部リンクフィルタ・Top/New/End は、展開・格納どちらの状態でも
+            書き込みウィンドウの一番下 (展開時は本文欄より下) に幅いっぱいで配置する */}
+        {activePaneView !== "threads" && activeTabIndex >= 0 && activeTabIndex < threadTabs.length && (
+          <div className="response-nav-bar" style={{ '--fs-delta': `${responsesFontSize - 12}px` } as React.CSSProperties}>
+            <span className="nav-info">
+              着:{visibleResponseItems.length}{ngFilteredCount > 0 ? `(NG${ngFilteredCount})` : ""}
+              {" "}サイズ:{Math.round(visibleResponseItems.reduce((s, r) => s + r.text.length, 0) / 1024)}KB
+            </span>
+            <span className="link-filter-buttons">
+              <button className={`link-filter-btn ${responseLinkFilter === "image" ? "active" : ""}`} onClick={() => setResponseLinkFilter((p) => p === "image" ? "" : "image")} title="画像リンク"><Image size={13} /></button>
+              <button className={`link-filter-btn ${responseLinkFilter === "video" ? "active" : ""}`} onClick={() => setResponseLinkFilter((p) => p === "video" ? "" : "video")} title="動画リンク"><Film size={13} /></button>
+              <button className={`link-filter-btn ${responseLinkFilter === "link" ? "active" : ""}`} onClick={() => setResponseLinkFilter((p) => p === "link" ? "" : "link")} title="外部リンク"><ExternalLink size={13} /></button>
+            </span>
+            <span className="nav-buttons">
+              <button onClick={() => { if (visibleResponseItems.length > 0) setSelectedResponse(visibleResponseItems[0].id); }}>Top</button>
+              {newResponseStart !== null && (
+                <button
+                  className="nav-new-btn"
+                  onClick={() => {
+                    const first = visibleResponseItems.find((r) => r.id >= newResponseStart);
+                    if (first) setSelectedResponse(first.id);
+                  }}
+                >
+                  New
+                </button>
+              )}
+              <button onClick={() => { if (visibleResponseItems.length > 0) setSelectedResponse(visibleResponseItems[visibleResponseItems.length - 1].id); }}>End</button>
+              <input
+                className="nav-jump-input"
+                placeholder=">>"
+                onKeyDown={(e) => {
+                  if (e.key !== "Enter") return;
+                  const val = (e.target as HTMLInputElement).value.replace(/^>>?/, "").trim();
+                  const no = Number(val);
+                  if (no > 0 && visibleResponseItems.some((r) => r.id === no)) {
+                    setSelectedResponse(no);
+                    (e.target as HTMLInputElement).value = "";
+                    setStatus(`>>${no}`);
+                  }
+                }}
+              />
+            </span>
+          </div>
         )}
       </section>
       <footer className="status-bar">
@@ -6966,6 +7117,7 @@ export default function App() {
           <button onClick={() => { setTtsEnabled(!ttsEnabled); setResponseMenu(null); }}>
             {ttsEnabled ? "✓" : "　"} 読み上げ
           </button>
+          <button onClick={() => { void ttsStop(); setResponseMenu(null); }}>読み上げを今すぐ停止</button>
         </div>
       )}
       {addressMenu && (

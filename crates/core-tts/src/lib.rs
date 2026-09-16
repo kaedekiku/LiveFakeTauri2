@@ -170,21 +170,104 @@ pub fn sapi_list_voices() -> Result<Vec<VoiceInfo>, TtsError> {
     Err(TtsError::NotSupported)
 }
 
+// SAPI の読み上げは専用の常駐スレッド (1本) 上でのみ行う。COM の音声オブジェクト (ISpVoice) は
+// 作成したスレッド以外から直接呼び出せない (アパートメント制約) ため、読み上げ・停止の両方を
+// 必ず同じスレッドから実行する必要がある。設計:
+//   - 常駐スレッドが ISpVoice を1つだけ作成し、使い回す (呼び出しのたびに作り直さない)
+//   - 読み上げ要求はチャネル経由でこのスレッドに渡し、完了 (自然終了 or 停止による中断) まで
+//     呼び出し元 (Tauri コマンド) をブロックして待たせる。フロント側から見た「読み終わるまで待つ」
+//     という挙動 (新着レスの逐次読み上げに必要) は変えない
+//   - 停止は `SAPI_STOP_REQUESTED` フラグを立てるだけ。実際の中断 (Speak を購入フラグ付きで
+//     呼び直す) は常駐スレッド自身がポーリング中に検知して行うので、COM のスレッド制約に触れない
 #[cfg(target_os = "windows")]
-pub fn sapi_speak(text: &str, voice_index: u32, rate: i32, volume: u32) -> Result<(), TtsError> {
+static SAPI_STOP_REQUESTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(target_os = "windows")]
+struct SapiSpeakRequest {
+    text: String,
+    voice_index: u32,
+    rate: i32,
+    volume: u32,
+    resp: std::sync::mpsc::Sender<Result<(), TtsError>>,
+}
+
+#[cfg(target_os = "windows")]
+fn sapi_worker_sender() -> &'static std::sync::mpsc::Sender<SapiSpeakRequest> {
+    use std::sync::OnceLock;
+    static SENDER: OnceLock<std::sync::mpsc::Sender<SapiSpeakRequest>> = OnceLock::new();
+    SENDER.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<SapiSpeakRequest>();
+        // panic しても呼び出し元を永久に待たせない (send/recv が失敗として返る) よう、
+        // Builder 経由で spawn し、万一パニックしてもプロセス全体は道連れにしない
+        let spawn_result = std::thread::Builder::new()
+            .name("sapi-worker".to_string())
+            .spawn(move || sapi_worker_loop(rx));
+        if let Err(e) = spawn_result {
+            eprintln!("SAPI worker thread failed to start: {e}");
+        }
+        tx
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn sapi_worker_loop(rx: std::sync::mpsc::Receiver<SapiSpeakRequest>) {
+    use windows::Win32::Media::Speech::*;
+    use windows::Win32::System::Com::*;
+
+    let init_ok = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok() };
+    if !init_ok {
+        for req in rx {
+            let _ = req
+                .resp
+                .send(Err(TtsError::Sapi("CoInitializeEx failed in SAPI worker thread".to_string())));
+        }
+        return;
+    }
+    let voice: ISpVoice = match unsafe { CoCreateInstance(&SpVoice, None, CLSCTX_ALL) } {
+        Ok(v) => v,
+        Err(e) => {
+            for req in rx {
+                let _ = req
+                    .resp
+                    .send(Err(TtsError::Sapi(format!("CoCreateInstance: {e}"))));
+            }
+            unsafe { CoUninitialize() };
+            return;
+        }
+    };
+
+    for req in rx {
+        // 万一 SAPI 呼び出し中にパニックしても、常駐スレッドを落とさず・応答も必ず返す
+        // (これが無いと以後の全ての読み上げ要求が永久に応答待ちになってしまう)
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            sapi_speak_interruptible(&voice, &req.text, req.voice_index, req.rate, req.volume)
+        }))
+        .unwrap_or_else(|_| Err(TtsError::Sapi("SAPI worker panicked while speaking".to_string())));
+        let _ = req.resp.send(result);
+    }
+    unsafe { CoUninitialize() };
+}
+
+/// 1件のテキストを読み上げる。`SPF_ASYNC` で発話を開始した後、短い間隔でポーリングして
+/// 終了 (自然終了 or `SAPI_STOP_REQUESTED` による中断) を待つ。中断時は同じスレッドから
+/// 購入フラグ付きで `Speak` を呼び直すことで、COM のスレッド制約に触れずに即座に停止できる。
+#[cfg(target_os = "windows")]
+fn sapi_speak_interruptible(
+    voice: &windows::Win32::Media::Speech::ISpVoice,
+    text: &str,
+    voice_index: u32,
+    rate: i32,
+    volume: u32,
+) -> Result<(), TtsError> {
     use windows::Win32::Media::Speech::*;
     use windows::Win32::System::Com::*;
     use windows::core::*;
 
+    // 前回の発話が自然終了した後に残っている可能性のある古い停止フラグは、
+    // 新しい発話の開始時にクリアする (無関係な次の読み上げを巻き込んで止めないため)
+    SAPI_STOP_REQUESTED.store(false, std::sync::atomic::Ordering::SeqCst);
+
     unsafe {
-        CoInitializeEx(None, COINIT_APARTMENTTHREADED)
-            .ok()
-            .map_err(|e| TtsError::Sapi(format!("CoInitializeEx: {}", e)))?;
-
-        let voice: ISpVoice = CoCreateInstance(&SpVoice, None, CLSCTX_ALL)
-            .map_err(|e| TtsError::Sapi(format!("CoCreateInstance: {}", e)))?;
-
-        // Enumerate voices via category
         let cat: ISpObjectTokenCategory = CoCreateInstance(&SpObjectTokenCategory, None, CLSCTX_ALL)
             .map_err(|e| TtsError::Sapi(format!("CoCreateInstance category: {}", e)))?;
         cat.SetId(&HSTRING::from("HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Speech\\Voices"), false)
@@ -214,15 +297,58 @@ pub fn sapi_speak(text: &str, voice_index: u32, rate: i32, volume: u32) -> Resul
             .map_err(|e| TtsError::Sapi(format!("SetVolume: {}", e)))?;
 
         let text_wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
-        let text_pcwstr = PCWSTR(text_wide.as_ptr());
-
         voice
-            .Speak(text_pcwstr, (SPF_DEFAULT.0 | SPF_PURGEBEFORESPEAK.0) as u32, None)
+            .Speak(
+                PCWSTR(text_wide.as_ptr()),
+                (SPF_PURGEBEFORESPEAK.0 | SPF_ASYNC.0) as u32,
+                None,
+            )
             .map_err(|e| TtsError::Sapi(format!("Speak: {}", e)))?;
 
-        CoUninitialize();
-        Ok(())
+        loop {
+            if SAPI_STOP_REQUESTED.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                let empty: Vec<u16> = vec![0];
+                // 同じスレッド・同じ音声オブジェクトからの呼び出しなので COM のスレッド制約に触れない
+                let _ = voice.Speak(PCWSTR(empty.as_ptr()), SPF_PURGEBEFORESPEAK.0 as u32, None);
+                break;
+            }
+            // 状態確認の前に必ず一度スリープする (sleep してから確認、の順を守る)。
+            // Speak() 呼び出し直後は SAPI エンジンが「話し始めた」状態にまだ遷移していないことがあり、
+            // 間を置かずに GetStatus すると dwRunningState が更新前 (終了扱い) のまま読めてしまう。
+            // これを先に確認してしまうと、複数レスを連続で読み上げる際に「まだ話し始めていないのに
+            // 終わったと誤判定 → 次のレスが購入フラグ付きで割り込み」を繰り返し、結果として
+            // 最後の1件しか実際には再生されない (それより前は全て一瞬で打ち切られる) 不具合になる。
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            let mut status = SPVOICESTATUS::default();
+            voice
+                .GetStatus(&mut status, std::ptr::null_mut())
+                .map_err(|e| TtsError::Sapi(format!("GetStatus: {}", e)))?;
+            if status.dwRunningState != SPRS_IS_SPEAKING.0 as u32 {
+                break;
+            }
+        }
+        // text_wide はここまで生きている必要がある (Speak が SPF_ASYNC で戻った後も
+        // エンジンが参照し続ける可能性があるため、ポーリングループが終わるまで保持する)
+        drop(text_wide);
     }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+pub fn sapi_speak(text: &str, voice_index: u32, rate: i32, volume: u32) -> Result<(), TtsError> {
+    let (resp_tx, resp_rx) = std::sync::mpsc::channel();
+    sapi_worker_sender()
+        .send(SapiSpeakRequest {
+            text: text.to_string(),
+            voice_index,
+            rate,
+            volume,
+            resp: resp_tx,
+        })
+        .map_err(|_| TtsError::Sapi("SAPI worker thread is not available".to_string()))?;
+    resp_rx
+        .recv()
+        .map_err(|_| TtsError::Sapi("SAPI worker thread stopped responding".to_string()))?
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -230,29 +356,12 @@ pub fn sapi_speak(_text: &str, _voice_index: u32, _rate: i32, _volume: u32) -> R
     Err(TtsError::NotSupported)
 }
 
+/// 読み上げ中断の要求を出す。実際の中断は常駐スレッド (`sapi_speak_interruptible`) が
+/// ポーリング中に検知して行うため、この関数自体は COM を一切呼ばず即座に返る。
 #[cfg(target_os = "windows")]
 pub fn sapi_stop() -> Result<(), TtsError> {
-    use windows::Win32::Media::Speech::*;
-    use windows::Win32::System::Com::*;
-    use windows::core::*;
-
-    unsafe {
-        CoInitializeEx(None, COINIT_APARTMENTTHREADED)
-            .ok()
-            .map_err(|e| TtsError::Sapi(format!("CoInitializeEx: {}", e)))?;
-
-        let voice: ISpVoice = CoCreateInstance(&SpVoice, None, CLSCTX_ALL)
-            .map_err(|e| TtsError::Sapi(format!("CoCreateInstance: {}", e)))?;
-
-        // Speak empty string with purge flag to stop current speech
-        let empty: Vec<u16> = vec![0];
-        voice
-            .Speak(PCWSTR(empty.as_ptr()), SPF_PURGEBEFORESPEAK.0 as u32, None)
-            .map_err(|e| TtsError::Sapi(format!("Speak stop: {}", e)))?;
-
-        CoUninitialize();
-        Ok(())
-    }
+    SAPI_STOP_REQUESTED.store(true, std::sync::atomic::Ordering::SeqCst);
+    Ok(())
 }
 
 #[cfg(not(target_os = "windows"))]

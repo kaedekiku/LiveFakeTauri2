@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>LiveFake - 書き込み</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; background: #f5f5f5; color: #1b1b1b; font-family: "Meiryo", "Segoe UI", sans-serif; font-size: 12px; }
+  body { display: flex; flex-direction: column; overflow: hidden; }
+  #header { padding: 6px 8px; border-bottom: 1px solid #c0c0c0; background: #e8e8e8; flex-shrink: 0; }
+  #mode-row { display: flex; gap: 6px; margin-bottom: 4px; }
+  .mode-btn { flex: 1; padding: 4px 6px; border: 1px solid #c0c0c0; background: #f0f0f0; cursor: pointer; font-size: 12px; }
+  .mode-btn.active { background: #0066cc; color: #fff; border-color: #0066cc; }
+  #target { font-size: 11px; color: #555; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #form { flex: 1; display: flex; flex-direction: column; min-height: 0; padding: 6px 8px; gap: 6px; }
+  .row { display: flex; align-items: center; gap: 6px; }
+  .label { flex-shrink: 0; color: #555; }
+  input[type="text"] { flex: 1; min-width: 0; padding: 3px 5px; border: 1px solid #c0c0c0; font-size: 12px; }
+  #subject-row { display: none; }
+  #subject-row.show { display: flex; }
+  #body { flex: 1; min-height: 80px; padding: 5px; border: 1px solid #c0c0c0; font-size: 13px; resize: none; font-family: inherit; }
+  #meta { font-size: 11px; color: #777; display: flex; gap: 10px; }
+  #actions { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-top: 1px solid #c0c0c0; background: #e8e8e8; flex-shrink: 0; }
+  #submit { padding: 5px 14px; border: 1px solid #0066cc; background: #0066cc; color: #fff; cursor: pointer; font-size: 12px; }
+  #submit:disabled { opacity: 0.5; cursor: default; }
+  #close { margin-left: auto; padding: 5px 10px; border: 1px solid #c0c0c0; background: #f0f0f0; cursor: pointer; font-size: 12px; }
+  #result { font-size: 11px; padding: 4px 8px; white-space: pre-wrap; }
+  #result.ok { color: #227722; }
+  #result.err { color: #cc3333; }
+  .check { display: flex; align-items: center; gap: 3px; white-space: nowrap; }
+</style>
+</head>
+<body>
+<div id="header">
+  <div id="mode-row">
+    <button type="button" class="mode-btn active" id="mode-reply">レス</button>
+    <button type="button" class="mode-btn" id="mode-newthread">新スレ</button>
+  </div>
+  <div id="target">(スレ未選択)</div>
+</div>
+<div id="form">
+  <div class="row" id="subject-row">
+    <span class="label">スレタイ</span>
+    <input type="text" id="subject" placeholder="スレッドタイトルを入力" />
+  </div>
+  <div class="row">
+    <span class="label">名前</span>
+    <input type="text" id="name" list="name-list" />
+    <datalist id="name-list"></datalist>
+    <span class="label">メール</span>
+    <input type="text" id="mail" />
+    <label class="check"><input type="checkbox" id="sage" /> sage</label>
+  </div>
+  <textarea id="body" placeholder="本文を入力" autofocus></textarea>
+  <div id="meta"><span id="charcount">0文字</span><span id="linecount">1行</span></div>
+</div>
+<div id="result"></div>
+<div id="actions">
+  <button type="button" id="submit">送信 (Ctrl+Enter)</button>
+  <button type="button" id="close">閉じる</button>
+</div>
+
+<script>
+  let invoke;
+  let mode = "reply"; // "reply" | "new_thread"
+  let submitting = false;
+
+  const $ = (id) => document.getElementById(id);
+
+  function waitForTauri() {
+    if (window.__TAURI_INTERNALS__) { setup(); return; }
+    const id = setInterval(() => {
+      if (window.__TAURI_INTERNALS__) { clearInterval(id); setup(); }
+    }, 50);
+  }
+
+  function setMode(next) {
+    mode = next;
+    $("mode-reply").classList.toggle("active", mode === "reply");
+    $("mode-newthread").classList.toggle("active", mode === "new_thread");
+    $("subject-row").classList.toggle("show", mode === "new_thread");
+    $("submit").textContent = submitting ? "送信中..." : (mode === "new_thread" ? "スレッド作成" : "送信 (Ctrl+Enter)");
+  }
+
+  function updateMeta() {
+    const text = $("body").value;
+    $("charcount").textContent = text.length + "文字";
+    $("linecount").textContent = text.split("\n").length + "行";
+  }
+
+  function setResult(ok, message) {
+    const el = $("result");
+    if (!message) { el.textContent = ""; el.className = ""; return; }
+    el.textContent = (ok ? "OK: " : "NG: ") + message;
+    el.className = ok ? "ok" : "err";
+  }
+
+  function setSubmitting(v) {
+    submitting = v;
+    $("submit").disabled = v;
+    $("submit").textContent = v ? "送信中..." : (mode === "new_thread" ? "スレッド作成" : "送信 (Ctrl+Enter)");
+  }
+
+  // メインウィンドウから: スレ情報・既定の名前などを (部分的に) 反映する。
+  // appendQuote が指定されたときは本文へ追記する (置き換えない)
+  window.__composeUpdate = function(data) {
+    data = data || {};
+    if (typeof data.threadTitle === "string") {
+      $("target").textContent = data.threadTitle || "(スレ未選択)";
+    }
+    if (typeof data.defaultName === "string" && !$("name").dataset.touched) {
+      $("name").value = data.defaultName;
+    }
+    if (typeof data.defaultMail === "string" && !$("mail").dataset.touched) {
+      $("mail").value = data.defaultMail;
+    }
+    if (typeof data.appendQuote === "string" && data.appendQuote) {
+      const body = $("body");
+      body.value = body.value.trim().length === 0 ? (data.appendQuote + "\n") : (body.value + "\n" + data.appendQuote + "\n");
+      updateMeta();
+      body.focus();
+    }
+  };
+
+  // メインウィンドウから: 投稿結果 (失敗時のみ想定。成功時はメインがウィンドウを閉じる)
+  window.__composeResult = function(ok, message) {
+    setSubmitting(false);
+    setResult(ok, message);
+  };
+
+  function doSubmit() {
+    if (submitting) return;
+    const name = $("name").value;
+    const mail = $("sage").checked ? "sage" : $("mail").value;
+    const body = $("body").value;
+    if (mode === "new_thread") {
+      if (!$("subject").value.trim()) { setResult(false, "スレッドタイトルを入力してください"); return; }
+      if (!body.trim()) { setResult(false, "本文を入力してください"); return; }
+    } else if (!body.trim()) {
+      setResult(false, "本文を入力してください");
+      return;
+    }
+    setSubmitting(true);
+    setResult(true, "");
+    invoke("compose_popup_submit", {
+      data: { mode: mode, name: name, mail: mail, body: body, subject: mode === "new_thread" ? $("subject").value : null },
+    }).catch(function(e) {
+      setSubmitting(false);
+      setResult(false, String(e));
+    });
+  }
+
+  function setup() {
+    invoke = window.__TAURI_INTERNALS__.invoke;
+
+    $("mode-reply").addEventListener("click", function() { setMode("reply"); });
+    $("mode-newthread").addEventListener("click", function() { setMode("new_thread"); });
+    $("name").addEventListener("input", function() { this.dataset.touched = "1"; });
+    $("mail").addEventListener("input", function() { this.dataset.touched = "1"; });
+    $("body").addEventListener("input", updateMeta);
+    $("body").addEventListener("keydown", function(e) {
+      if (e.key === "Enter" && e.ctrlKey) { e.preventDefault(); doSubmit(); }
+    });
+    $("submit").addEventListener("click", doSubmit);
+    $("close").addEventListener("click", function() { window.close(); });
+
+    setMode("reply");
+    updateMeta();
+    $("body").focus();
+  }
+
+  waitForTauri();
+</script>
+</body>
+</html>

@@ -29,6 +29,15 @@
   scroll-behavior: auto;
 }
 
+/* html/body に高さ制限と overflow:hidden が無いと、フォーカス中の要素 (書き込み欄など) が
+   ブラウザの「フォーカスした要素を画面内に収めようとする」動作でページ全体をスクロールさせてしまい、
+   一番上のメニューバーが画面外に押し出されて見えなくなることがある (.shell 自体は 100vh で
+   収まっているはずでも、ページ (body) 側に逃げ場があると発生する)。高さを固定して逃げ場を無くす */
+html, body {
+  height: 100%;
+  overflow: hidden;
+}
+
 body {
   margin: 0;
   color: var(--ink);
@@ -2472,6 +2481,17 @@ button.search-history-btn:hover {
   background: #2b2b2e;
   color: #eee;
   border-color: #555;
+}
+/* 「primary」「danger」の無い素のボタン (キャンセル等) は base の button{} が
+   ライト向けの背景 (#f0f0f0) のまま残るため、ダーク時は文字色だけ明るくなって視認性が落ちる。
+   設定パネルのボタンと同じ配色に合わせる */
+.dark .app-confirm-buttons button:not(.primary):not(.danger) {
+  background: #3a3a3a;
+  color: var(--ink);
+  border-color: #555;
+}
+.dark .app-confirm-buttons button:not(.primary):not(.danger):hover {
+  background: #4a4a4a;
 }
 /* プリセット / バックアップの一覧 */
 .settings-file-list {
