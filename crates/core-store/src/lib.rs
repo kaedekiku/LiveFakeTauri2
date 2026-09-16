@@ -198,6 +198,9 @@ fn get_db() -> Result<std::sync::MutexGuard<'static, Option<Connection>>, StoreE
 
 /// OGP / X ポストカードのキャッシュ有効期間 (7日)。
 pub const OGP_CACHE_TTL_SECS: i64 = 7 * 24 * 60 * 60;
+/// タイトルも画像も取れなかった (取得失敗とみなす) エントリの再試行間隔 (30分)。
+/// 一時的な失敗や取得方法の改善後に、7日待たずにカード化できるようにする。
+pub const OGP_CACHE_RETRY_TTL_SECS: i64 = 30 * 60;
 
 fn unix_now() -> i64 {
     std::time::SystemTime::now()
@@ -208,6 +211,12 @@ fn unix_now() -> i64 {
 
 /// OGP キャッシュを読む。TTL 切れのものは `None` を返す (削除は次回保存時に上書き)。
 pub fn load_ogp_cache(url: &str) -> Result<Option<String>, StoreError> {
+    Ok(load_ogp_cache_with_age(url)?.map(|(json, _)| json))
+}
+
+/// OGP キャッシュを経過秒数付きで読む。TTL (7日) 切れのものは `None`。
+/// 呼び出し側は内容が「取得失敗相当」なら経過秒数を見て短い間隔で再試行できる。
+pub fn load_ogp_cache_with_age(url: &str) -> Result<Option<(String, i64)>, StoreError> {
     let guard = get_db()?;
     let conn = guard.as_ref().ok_or_else(|| StoreError::Other("no db".into()))?;
     let mut stmt = conn.prepare("SELECT json, fetched_at FROM ogp_cache WHERE url = ?1")?;
@@ -216,10 +225,11 @@ pub fn load_ogp_cache(url: &str) -> Result<Option<String>, StoreError> {
     });
     match result {
         Ok((json, fetched_at)) => {
-            if unix_now() - fetched_at > OGP_CACHE_TTL_SECS {
+            let age = unix_now() - fetched_at;
+            if age > OGP_CACHE_TTL_SECS {
                 Ok(None)
             } else {
-                Ok(Some(json))
+                Ok(Some((json, age)))
             }
         }
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),

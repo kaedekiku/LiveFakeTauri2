@@ -174,15 +174,22 @@
   window.__setScrollConfig = function(cfg) {
     cfg = cfg || {};
     scrollCfg = {
-      fitSec: clampNum(cfg.fitSec, 5, 0, 60),
-      waitSec: clampNum(cfg.waitSec, 2, 0, 10),
-      msPerPx: clampNum(cfg.msPerPx, 8, 1, 50),
-      holdSec: clampNum(cfg.holdSec, 5, 0, 60)
+      fitSec: clampNum(cfg.fitSec, 5, 0, 120),
+      waitSec: clampNum(cfg.waitSec, 2, 0, 20),
+      msPerPx: clampNum(cfg.msPerPx, 8, 1, 100),
+      holdSec: clampNum(cfg.holdSec, 5, 0, 120)
     };
   };
-  function reportTiming(seq, totalMs) {
+  // 最下行に達するまでの時間 (bottomInMs) と、達した後の表示時間 (holdMs) を分けて報告する。
+  // メイン側は新着ペインと合成して「両方が最下行まで表示し終えてから、長い方の表示時間」で次へ進める
+  function reportTiming(seq, bottomInMs, holdMs) {
     if (typeof seq !== "number" || !window.__TAURI_INTERNALS__) return;
-    window.__TAURI_INTERNALS__.invoke("subtitle_timing_report", { seq: seq, totalMs: Math.round(totalMs) }).catch(function(){});
+    window.__TAURI_INTERNALS__.invoke("subtitle_timing_report", {
+      seq: seq,
+      totalMs: Math.round(bottomInMs + holdMs),
+      bottomInMs: Math.round(bottomInMs),
+      holdMs: Math.round(holdMs)
+    }).catch(function(){});
   }
   function cancelScroll() {
     if (scrollTimer) { clearTimeout(scrollTimer); scrollTimer = null; }
@@ -196,7 +203,7 @@
       var dist = Math.max(0, bodyEl.scrollHeight - bodyEl.clientHeight);
       var dur = Math.max(1000, dist * scrollCfg.msPerPx);
       // 画像・カードの読み込みで距離が伸びていたら残り時間を報告し直す (メイン側は長い方を採用する)
-      reportTiming(seq, dur + scrollCfg.holdSec * 1000);
+      reportTiming(seq, dur, scrollCfg.holdSec * 1000);
       var start = performance.now();
       var from = bodyEl.scrollTop;
       var step = function(now) {
@@ -218,12 +225,12 @@
       if (run !== scrollRun) return;
       var dist = Math.max(0, bodyEl.scrollHeight - bodyEl.clientHeight);
       if (dist > 2) {
-        reportTiming(seq, scrollCfg.waitSec * 1000 + Math.max(1000, dist * scrollCfg.msPerPx) + scrollCfg.holdSec * 1000);
+        reportTiming(seq, scrollCfg.waitSec * 1000 + Math.max(1000, dist * scrollCfg.msPerPx), scrollCfg.holdSec * 1000);
         startScroll(run, seq);
         return;
       }
       // 収まる場合。カード等の遅延読み込みで溢れたら表示時間の終わり際にスクロールへ切り替える
-      reportTiming(seq, scrollCfg.fitSec * 1000);
+      reportTiming(seq, 0, scrollCfg.fitSec * 1000);
       scrollTimer = setTimeout(function() {
         scrollTimer = null;
         if (run !== scrollRun) return;

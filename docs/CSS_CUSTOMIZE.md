@@ -2,6 +2,7 @@
 
 LiveFake は UI の見た目をユーザー自身が CSS で自由にカスタマイズできます。
 このガイドでは、カスタム CSS の仕組み・書き方・主要な UI 要素のクラスリファレンス・実用レシピを解説します。
+（本ガイドは実装 [`App.tsx`](../apps/desktop/src/App.tsx) / [`styles.css`](../apps/desktop/src/styles.css) の内容に基づいています）
 
 ---
 
@@ -29,12 +30,15 @@ SIKI のカスタム CSS の知識・レシピをほぼそのまま流用でき�
 
 適用順（後勝ち）: 標準スタイル → `custom.css` → `main.css` → `light.css`/`dark.css` → `postform.css`/`setting.css`
 
+字幕ウィンドウ・画像ポップアップウィンドウは別の WebView なので、メインウィンドウの `custom.css` は届きません。
+これらの見た目を変えたい場合は `floating.css` / `mediaviewer.css` に書いてください。
+
 ### 1.2 反映方法
 
 | タイミング | 操作 |
 |-----------|------|
 | 起動時 | 自動で読み込まれる |
-| 編集後すぐ | メニュー **「設定 > ユーザーCSSを再読み込み」** — 再起動不要 |
+| 編集後すぐ | メニュー **「設定 > ユーザーCSSを再読み込み」** — 再起動不要（字幕・画像ポップアップが開いていれば同時に反映） |
 
 再読み込みの成否はステータスバーに表示されます。
 
@@ -59,7 +63,7 @@ SIKI のカスタム CSS の知識・レシピをほぼそのまま流用でき�
 
 ## 2. 基本: CSS 変数で全体の配色を変える
 
-LiveFake の配色は 6 つの CSS 変数で構成されており、これを上書きするだけで全体のテーマが変わります。
+LiveFake の配色は以下の CSS 変数で構成されており、これを上書きするだけで全体のテーマが変わります。
 
 ### 2.1 変数一覧
 
@@ -72,6 +76,8 @@ LiveFake の配色は 6 つの CSS 変数で構成されており、これを上
 | `--sub` | 補助文字色（メタ情報・日付等） | `#555555` | `#9e9e9e` |
 | `--accent` | アクセント色（リンク・強調） | `#0066cc` | `#4da6ff` |
 | `--bg-light` | ダークモード専用の明るめ背景 | — | `#2d2d30` |
+| `--response-gap` | レス間の余白（設定「レス間隔」から自動設定。直接編集は非推奨） | `10px` | 同左 |
+| `--thumb-size` | 画像サムネイルの一辺（設定「サムネイルサイズ」から自動設定） | `200px` | 同左 |
 
 ### 2.2 ライトモードの配色を変える
 
@@ -112,31 +118,34 @@ LiveFake の配色は 6 つの CSS 変数で構成されており、これを上
 | `.shell` | アプリ全体のルート（`.dark` が付く要素） |
 | `.menu-bar` / `.menu-item` / `.menu-dropdown` | メニューバー / 各メニュー / ドロップダウン |
 | `.tool-bar` / `.address-input` | ツールバー / アドレス入力欄 |
-| `.board-button-bar` / `.board-btn` | お気に入り板ボタンバー |
+| `.board-button-bar` / `.board-btn` | お気に入り板ボタンバー（ドラッグ並べ替え時 `.board-btn-drop-target`） |
 | `.status-bar` | 最下部のステータスバー |
 | `.pane` | 3ペイン共通（下記と組み合わせ） |
 | `.pane.boards` | 板一覧ペイン（左） |
 | `.pane.threads` | スレッド一覧ペイン |
 | `.pane.responses` | レス表示ペイン |
 | `.pane-splitter` | ペイン境界のリサイザー |
+| `.right-body` / `.right-pane` | スレッド一覧・レス表示側のまとまり |
 
 ### 3.2 板一覧ペイン
 
 | クラス | 要素 |
 |--------|------|
 | `.board-tree` | 板ツリー全体 |
-| `.board-category` / `.category-toggle` | カテゴリ / 開閉ボタン |
+| `.board-category` / `.category-toggle` / `.category-arrow` | カテゴリ / 開閉ボタン / 開閉矢印 |
 | `.board-item` | 板 1 件 |
 | `.board-search` / `.fav-search` | 板検索欄 / お気に入り検索欄 |
-| `.fav-threads-list` / `.fav-star` | お気に入りスレ一覧 / ★マーク |
+| `.fav-thread-list` / `.fav-category` | お気に入りスレ一覧 / お気に入りのカテゴリ |
+| `.external-board-add-btn` / `.external-category` | 外部板の追加ボタン / 外部板カテゴリ |
 
 ### 3.3 タブ
 
 | クラス | 要素 |
 |--------|------|
-| `.board-tab-bar` / `.board-tab` / `.board-tab.active` | 板タブバー / 板タブ / アクティブ板タブ |
-| `.thread-tab-bar` / `.thread-tab` / `.thread-tab.active` | スレタブバー / スレタブ / アクティブスレタブ |
-| `.thread-tab-title` / `.thread-tab-close` / `.tab-res-count` | タブのタイトル / ×ボタン / レス数バッジ |
+| `.board-tab-bar` / `.board-tab-bar-wrap` / `.board-tab` / `.board-tab.active` | 板タブバー / そのラップ / 板タブ / アクティブ板タブ |
+| `.thread-tab-bar` / `.thread-tab-bar-wrap` / `.thread-tab` / `.thread-tab.active` | スレタブバー / そのラップ / スレタブ / アクティブスレタブ |
+| `.thread-tab-title` / `.thread-tab-close` / `.tab-close-btn` / `.tab-res-count` | タブのタイトル / ×ボタン / 閉じるボタン共通 / レス数バッジ |
+| `.tab.drag-target` | ドラッグでの並べ替え中、ドロップ先になっているタブ |
 
 ### 3.4 スレッド一覧
 
@@ -145,57 +154,114 @@ LiveFake の配色は 6 つの CSS 変数で構成されており、これを上
 | `.threads-toolbar` / `.thread-search` | スレ一覧ツールバー / スレ検索欄 |
 | `.threads-table-wrap` | スレ一覧テーブルのスクロール領域 |
 | `.sortable-th` | ソート可能な列見出し |
-| `.thread-title-cell` | スレタイトルのセル |
+| `.thread-title-cell` / `.thread-title-text` / `.has-custom-title` | スレタイトルのセル / タイトル文字部分 / カスタムタイトル設定済み |
 | `.unread-row` / `.has-unread-row` | 未読スレ / 未読レスありスレの行 |
-| `.dat-ochi-row` | dat 落ちスレの行 |
-| `.speed-bar` / `.speed-cell` | 勢いバー / 勢いのセル |
+| `.dat-ochi-row` | dat 落ちスレの行（お気に入り表示時のグレーアウト） |
+| `.speed-bar` / `.speed-val` | 勢いバー / 勢いの数値 |
+| `.last-fetch-cell` / `.since-cell` / `.thread-fetched-cell` | 最終取得時刻 / 経過時間 / 取得済み件数のセル |
 
 ### 3.5 レス表示（1 レスの構造）
 
 レス 1 件は以下の入れ子構造です。
 
 ```text
-.response-block            ← レス1件の外枠
-│   （状態クラス: .selected 選択中 / .my-post 自分の投稿 / .reply-to-me 自分宛）
-├─ .response-header        ← ヘッダー行
-│   ├─ .response-no            レス番号
+.response-block            ← レス1件の外枠 (rcon)
+│   （状態クラス: .selected 選択中 / .my-post 自分の投稿 / .reply-to-me 自分宛 /
+│    .newly 新着 / .aa AA判定 / .no-header ヘッダ全非表示時）
+├─ .response-header        ← ヘッダー行 (rh、flex。非表示にした項目は出力されず、残りが詰めて並ぶ)
+│   ├─ .response-no            レス番号 (res-num)
 │   ├─ .my-post-label          [自分] ラベル
 │   ├─ .reply-to-me-label      [自分宛] ラベル
-│   ├─ .response-name          投稿者名
+│   ├─ .response-label         「名前：」「投稿日：」等のラベルテキスト
+│   ├─ .response-name          投稿者名 (res-name / mname)
 │   ├─ .response-mail          [メール欄]（sage は .response-mail-sage）
 │   ├─ .response-watchoi       (ワッチョイ)
-│   ├─ .back-ref-trigger       ▼N 被参照数
-│   └─ .response-header-right  ← ヘッダー右側
+│   ├─ .back-ref-trigger       ▼N 被参照数 (res-replies)
+│   └─ .response-header-right  ← 後半の項目のまとまり (display: contents なので、
+│       │                        中の要素はヘッダー行の直接の flex 子として並ぶ)
 │       ├─ .response-new-marker    New! マーカー
-│       ├─ .response-date          日付
-│       ├─ .response-id-cell       ID:xxxx
-│       ├─ .response-id-count      (n/総数) ID出現回数
+│       ├─ .response-date          日付 (res-date)
+│       ├─ .res-col[data-type="id"]  ← ID の列
+│       │   ├─ .response-id-cell       ID:xxxx (rc-id)
+│       │   └─ .response-id-count      (n/総数) ID出現回数 (.cnt)
 │       └─ .response-be-link       BE:xxxx
-└─ .response-body          ← 本文（AA 表示時は .aa が付く）
+└─ .response-body          ← 本文 (rb。AA 表示時は .aa が付く)
+    ├─ .body-link              本文中の URL リンク
+    ├─ .anchor-ref             本文中の `>>N` アンカーリンク
+    ├─ .response-thumbs-row    サムネイル行
+    │   └─ .thumb-link → .response-thumb   サムネイル 1 件
+    │       .thumb-size-gate                サイズ制限で保留中のサムネイル枠
+    │       .thumb-gate-loading / .thumb-gate-blocked  確認中 / サイズ超過の表示
+    ├─ .inline-video            twimg 動画の埋め込み再生
+    └─ .ogp-card-slot           リンクカードの読み込み枠（読み込み前は最小高さを確保）
+        └─ .ogp-card / .tweet-card (.th-cardlist)  OGP カード / X ポストカード
+```
+
+ヘッダーの項目を設定で全て非表示にすると、レス外枠に `.no-header` が付き、レス間に罫線が引かれます
+（設定「レス間に罫線を常に表示」ON のときはスクロール領域に `.always-divider` が付きます）。
+罫線の見た目は次のように変えられます:
+
+```css
+.response-block.no-header:not(:first-child),
+.response-scroll.always-divider .response-block:not(:first-child) {
+  border-top: 1px dashed #999;
+}
+```
+
+ヘッダー後半 (日付・ID など) を右寄せにしたい場合:
+
+```css
+.response-header-right > :first-child {
+  margin-left: auto;
+}
+```
+
+リンクカード (OGP / X ポスト) の内部構造:
+
+```text
+.ogp-card (th-cardlist)              ← OGP カード全体（クリックでリンク先を開く）
+├─ .ogp-card-thumb                       サムネイル画像
+└─ .ogp-card-main
+    ├─ .ogp-card-title (title)           タイトル
+    ├─ .ogp-card-desc (description)      説明文
+    └─ .ogp-card-site                    サイト名
+
+.tweet-card (th-cardlist)            ← X ポストカード全体
+├─ .tweet-card-head
+│   ├─ .tweet-card-avatar / .tweet-card-avatar-blank
+│   └─ .tweet-card-names → .tweet-card-name / .tweet-card-badge / .tweet-card-handle
+├─ .tweet-card-text → .tweet-card-link（本文中の URL・@メンション）
+├─ .tweet-card-quote → .tweet-card-quote-author / .tweet-card-quote-text（引用ポスト）
+├─ .tweet-card-photos → .tweet-card-photo（1〜4枚）
+├─ .tweet-card-video / .tweet-card-video-el（動画つきポストのラベル / 再生要素）
+└─ .tweet-card-meta → .tweet-card-dot（返信数・いいね数・投稿日時）
 ```
 
 その他のレスペイン要素:
 
 | クラス | 要素 |
 |--------|------|
-| `.response-scroll` | レスのスクロール領域 |
+| `.response-scroll` | レスのスクロール領域 (th-container)。タブ切替直後の高さ安定待ちで `.settling` が付く |
 | `.thread-title-bar` | スレタイトルバー |
-| `.response-search-bar` | スレ内検索バー |
-| `.response-nav-bar` | 下部ナビバー（着数・Top/New/Last ボタン） |
-| `.anchor-ref` | 本文中の `>>N` アンカーリンク |
-| `.body-link` | 本文中の URL リンク |
-| `.response-thumb` / `.response-thumbs-row` | 画像サムネイル / サムネイル行 |
+| `.response-search-bar` / `.search-with-history` | スレ内検索バー / 履歴付き検索欄 |
+| `.link-filter-buttons` / `.link-filter-btn` | リンクフィルタ（画像/動画/外部リンク）ボタン |
+| `.response-nav-bar` / `.nav-buttons` / `.nav-info` / `.nav-jump-input` | 下部ナビバー（着数・Top/New/Last ボタン・レス番ジャンプ欄） |
+| `.new-response-separator` | 「ここから新着」の区切り線 |
 
 ### 3.6 ポップアップ・メニュー
 
 | クラス | 要素 |
 |--------|------|
 | `.anchor-popup` / `.anchor-popup-header` / `.anchor-popup-body` | アンカーポップアップ |
-| `.id-popup` / `.id-popup-item` | ID ポップアップ（同一 ID レス一覧） |
-| `.back-ref-popup` | 被参照ポップアップ |
-| `.thread-menu` | 右クリックメニュー全般 |
+| `.popupfield` | アンカー・ID・逆参照ポップアップに共通の根本クラス（SIKI 互換） |
+| `.popup-main` | ポップアップ内のレス表示部（SIKI 互換） |
+| `.nested-popup` | アンカーポップアップから入れ子で開いたポップアップ |
+| `.id-popup` / `.id-popup-header` / `.id-popup-list` / `.id-popup-item` / `.id-popup-text` | ID ポップアップ（同一 ID レス一覧）全体 / ヘッダ / 一覧 / 1 件 / 本文 |
+| `.back-ref-popup` / `.back-ref-popup-item` | 被参照ポップアップ / その 1 件 |
+| `.thread-menu` | 右クリックメニュー全般共通クラス（`.response-menu` `.tab-menu` は用途別の追加クラス） |
 | `.hover-preview` | 画像ホバープレビュー |
-| `.lightbox-overlay` | 画像ライトボックス |
+| `.lightbox-overlay` | 画像ライトボックス / 設定パネルの背景オーバーレイ |
+| `.app-confirm-overlay` / `.app-confirm` / `.app-confirm-title` / `.app-confirm-message` / `.app-confirm-buttons` | 確認ダイアログ（設定の保存確認・リセット・プリセット読み込みなど）全体 / 本体 / タイトル / メッセージ / ボタン列 |
 
 ### 3.7 新着レスペイン
 
@@ -203,10 +269,12 @@ LiveFake の配色は 6 つの CSS 変数で構成されており、これを上
 |--------|------|
 | `.new-arrival-pane` | 新着ペイン全体 |
 | `.new-arrival-header` / `.new-arrival-title` | ヘッダー / タイトル |
+| `.new-arrival-scroll` / `.new-arrival-splitter` | スクロール領域 / 高さ調整のリサイザー |
+| `.new-arrival-empty` | 新着なしの表示 |
 | `.new-arrival-item` | 新着レス 1 件 |
-| `.new-arrival-meta` / `.new-arrival-res-no` / `.new-arrival-name` / `.new-arrival-time` / `.new-arrival-id` | メタ情報（レス番号・名前・時刻・ID） |
-| `.new-arrival-thread-title` | スレタイトル表示 |
-| `.new-arrival-body` | 本文 |
+| `.new-arrival-meta` | メタ情報のまとまり |
+| `.new-arrival-thread-title` / `.new-arrival-res-no` / `.new-arrival-name` / `.new-arrival-mail` / `.new-arrival-id` / `.new-arrival-id-count` / `.new-arrival-time` | スレタイトル / レス番号 / 名前 / [メール欄] / ID / (n/回数) / 時刻 |
+| `.new-arrival-body` | 本文（サムネイル・リンクカードも本文内に表示） |
 
 ### 3.8 書き込みウィンドウ
 
@@ -214,17 +282,42 @@ LiveFake の配色は 6 つの CSS 変数で構成されており、これを上
 |--------|------|
 | `.compose-window` | 書き込みウィンドウ全体（表示中は `.compose-window--open`） |
 | `.compose-header` / `.compose-target` | ヘッダー / 書き込み先表示 |
-| `.compose-input` / `.compose-body` | 名前・メール入力欄 / 本文入力欄 |
-| `.compose-preview` | プレビュー表示 |
-| `.compose-result-ok` / `.compose-result-err` | 投稿結果（成功 / 失敗） |
+| `.compose-row` / `.compose-label` | 1 行のまとまり / ラベル |
+| `.compose-input` / `.compose-input-full` / `.compose-body` | 名前・メール入力欄 / 幅いっぱいの入力欄 / 本文入力欄 |
+| `.compose-meta` / `.compose-check` | メール欄などの補助表示 / sage チェックボックス |
+| `.compose-mode-btn` | 通常書き込み / 新スレ立ての切替ボタン |
+| `.compose-resize-handle` | 高さ調整のリサイザー |
+| `.compose-actions` / `.postform-foot` | 送信ボタン行（SIKI 互換クラス `.postform-foot` も付与） |
+| `.postform-write` | 送信ボタン（SIKI 互換） |
+| `.compose-result` / `.compose-result-ok` / `.compose-result-err` | 投稿結果表示 / 成功 / 失敗 |
+| `.post-history-item` / `.post-history-time` / `.post-history-body` / `.post-history-status` | 書き込み履歴の 1 件 / 時刻 / 本文 / 結果 |
 
 ### 3.9 設定パネル
 
-| クラス | 要素 |
-|--------|------|
-| `.settings-panel` | 設定パネル本体 |
-| `.settings-nav` / `.settings-nav-item` | 左側ナビ / ナビ項目 |
-| `.settings-row` | 設定 1 行 |
+設定パネルは「ナビ（分類一覧）＋本体（節タブ・検索結果）」の 2 カラム構成です。
+
+```text
+.settings-panel (.settings-panel-wide)   ← パネル全体
+├─ .settings-header                          上部バー（タイトル・検索窓・保存/閉じるボタン）
+│   ├─ .settings-search                          検索窓 (input[type=search])
+│   ├─ .settings-search-note                     検索結果の案内文
+│   └─ .settings-header-actions                  右寄せのボタン群
+│       └─ .settings-dirty-note                      「未保存の変更があります」
+└─ .settings-2col
+    ├─ .settings-nav → .settings-nav-item            左側の分類ナビ (.active で選択中)
+    └─ .settings-content                             右側の本体
+        ├─ .settings-section-tabs → .settings-section-tab   節タブ (.active で選択中)
+        ├─ .settings-cat                                    分類 1 つ分 (data-cat 属性)
+        │   └─ .settings-section                                節 1 つ分 (data-section 属性)
+        │       └─ .settings-section-heading                       検索結果の「分類 › 節」見出し
+        ├─ .settings-row                                    設定 1 行
+        ├─ .settings-list-filter                            登録内容一覧の絞り込み行
+        ├─ .settings-hint                                   補足説明文
+        └─ .settings-file-list → .settings-file-row              プリセット/バックアップ一覧
+            .settings-file-name / .settings-file-date / .settings-file-empty
+```
+
+保存操作にまつわるボタンの見た目は `button.primary`（保存・実行系）／`button.danger`（削除・リセット系）でも調整できます。
 
 ---
 
@@ -269,7 +362,29 @@ LiveFake の配色は 6 つの CSS 変数で構成されており、これを上
 .response-mail-sage { opacity: 0.4; }
 ```
 
-### 4.6 新着ペインを大きな文字のシアター風にする
+### 4.6 ヘッダを全非表示にしたときの罫線を変える
+
+設定でレスヘッダの項目を全て非表示にすると `.no-header` が自動で付きます（常時表示は「レス間に罫線を常に表示」設定）。
+
+```css
+.response-block.no-header:not(:first-child),
+.response-scroll.always-divider .response-block:not(:first-child) {
+  border-top: 1px dashed #999;
+  padding-top: 6px;
+}
+```
+
+### 4.7 リンクカードの見た目を変える
+
+```css
+.ogp-card, .tweet-card {
+  border-radius: 12px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.15);
+}
+.ogp-card-title { font-weight: 700; }
+```
+
+### 4.8 新着ペインを大きな文字のシアター風にする
 
 ```css
 .new-arrival-pane { background: #000; }
@@ -277,7 +392,7 @@ LiveFake の配色は 6 つの CSS 変数で構成されており、これを上
 .new-arrival-meta { opacity: 0.6; }
 ```
 
-### 4.7 タブを角丸にする
+### 4.9 タブを角丸にする
 
 ```css
 .thread-tab, .board-tab {
@@ -286,7 +401,7 @@ LiveFake の配色は 6 つの CSS 変数で構成されており、これを上
 }
 ```
 
-### 4.8 スクロールバーの見た目を変える
+### 4.10 スクロールバーの見た目を変える
 
 ```css
 .response-scroll::-webkit-scrollbar { width: 10px; }
@@ -296,13 +411,22 @@ LiveFake の配色は 6 つの CSS 変数で構成されており、これを上
 }
 ```
 
-### 4.9 未読スレ行を強調する
+### 4.11 未読スレ行を強調する
 
 ```css
 .has-unread-row .thread-title-cell { font-weight: bold; color: var(--accent); }
 ```
 
-### 4.10 メニューバー・ステータスバーを隠してミニマルにする
+### 4.12 確認ダイアログの見た目を変える
+
+設定の保存確認・リセット・プリセット読み込みなどは共通の `.app-confirm` ダイアログを使います。
+
+```css
+.app-confirm { border-radius: 10px; }
+.app-confirm-buttons button.danger { background: #a92828; }
+```
+
+### 4.13 メニューバー・ステータスバーを隠してミニマルにする
 
 ```css
 .status-bar { display: none; }
@@ -316,9 +440,9 @@ LiveFake の配色は 6 つの CSS 変数で構成されており、これを上
 
 ### 5.1 設定画面と重複する項目
 
-フォントの種類・サイズ・レス間隔・各ペインの文字サイズなどは**設定パネルから変更でき、
-インラインスタイル（CSS より優先）で適用されます**。これらは custom.css ではなく
-設定画面から変更してください。CSS で無理に上書きするには `!important` が必要になり、
+フォントの種類・サイズ・レス間隔・各ペインの文字サイズ・サムネイルサイズなどは**設定パネルから変更でき、
+インラインスタイル（CSS より優先）または CSS 変数 (`--response-gap` / `--thumb-size` など) で適用されます**。
+これらは custom.css ではなく設定画面から変更してください。CSS で無理に上書きするには `!important` が必要になり、
 設定画面の操作と競合します。
 
 同様に、ID ハイライト色・テキストハイライト色は機能側（右クリックメニューの 15 色パレット）で
@@ -356,6 +480,10 @@ LiveFake の配色は 6 つの CSS 変数で構成されており、これを上
 | `.sage` | sage のメール欄 | メール欄が sage のとき付与 |
 | `.res-date` | 日時 | `.response-date` と同じ要素 |
 | `.rc-id` | ID 表示 | `.response-id-cell` と同じ要素 |
+| `.res-col[data-type="id"]` | ID の列 | ID と (n/回数) を囲む要素 |
+| `.res-col[data-type="id"] .cnt` | ID の書き込み回数 | `.response-id-count` と同じ要素 |
+| `.res-replies` | 被参照 (▼N) | `.back-ref-trigger` と同じ要素 |
+| `.th-cardlist` / `.th-cardlist .title` / `.th-cardlist .description` | リンクカード / そのタイトル / 説明文 | OGP カード (`.ogp-card`) と X ポストカード (`.tweet-card`) / `.ogp-card-title` / `.ogp-card-desc` |
 | `.mark-myself` | 自分のレス | `.my-post` と同時に付与 |
 | `.mark-anchor` | 自分への返信 | `.reply-to-me` と同時に付与 |
 | `.newly` | 新着レス | 新着範囲のレスに付与 |
@@ -373,8 +501,14 @@ LiveFake の配色は 6 つの CSS 変数で構成されており、これを上
 | `.postform-foot` / `.postform-write` | 書き込み欄のフッター / 書き込みボタン | 送信ボタン行 / 送信ボタン |
 | `.sv__<ホスト名>` | サイト・板別の条件スタイル | レスペインに付与（例: `.sv__jbbs_shitaraba_net`。ホスト名の記号は `_` に変換） |
 
-SIKI と DOM 構造そのものは異なるため、`order` による並べ替えなど構造依存のレシピは
-調整が必要な場合があります。要素の実際の構造は本ガイドの 3 章を参照してください。
+ヘッダーの各項目 (`.res-num` `.res-name` `.res-mail` `.res-date` `.rc-id` など) はすべて `.rh` の直接の
+flex 子として並ぶため、SIKI wiki の `order` による並べ替えレシピがそのまま使えます。
+SIKI と DOM 構造そのものは異なる箇所もあるため、それ以外の構造依存のレシピは調整が必要な場合があります。
+要素の実際の構造は本ガイドの 3 章を参照してください。
+
+SIKI wiki で配布されている `floating.css` (ヘッダー追従など) は LiveFake では動作確認していません。
+レス表示のスクロールコンテナは `.th-container` (= `.response-scroll`) なので、`position: sticky` を使う
+レシピはこの要素を基準に `top` を調整してください。
 
 ### 6.2 SIKI 互換 CSS 変数
 
@@ -425,4 +559,5 @@ WebView2 (Chromium) ベースのため、SIKI の高度なレシピで使われ�
 | テーマ別 CSS | `.theme` フォルダごと | `light.css` / `dark.css` の 2 ファイル |
 | ダークモードの起点 | テーマによる | `.shell` 要素の `.dark` クラス |
 | 外部 URL 画像 | 制限なし | **既定でブロック**（設定で許可可、1.3 参照） |
+| リンクカード | — | OGP / X ポストカード表示に対応（`.th-cardlist` で SIKI 互換） |
 | 開発者ツール (Ctrl+Shift+I) | 常時使用可 | 開発ビルドのみ（本ガイドのクラスリファレンスを参照してください） |

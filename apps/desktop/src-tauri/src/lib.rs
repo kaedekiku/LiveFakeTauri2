@@ -1159,8 +1159,15 @@ fn ogp_card_looks_garbled(card: &OgpCard) -> bool {
 /// OGP カード取得時の User-Agent。掲示板用の Monazilla UA だと一般サイトに弾かれることがある。
 const OGP_USER_AGENT: &str = "Mozilla/5.0 (compatible; LiveFake/0.1)";
 
+/// カードとして表示できる情報が何も無い (タイトルも画像も無い) = 取得失敗相当。
+/// このようなキャッシュは 7日ではなく 30分で再試行する。
+fn ogp_card_is_empty(card: &OgpCard) -> bool {
+    card.title.as_deref().is_none_or(|t| t.trim().is_empty())
+        && card.image.as_deref().is_none_or(|i| i.trim().is_empty())
+}
+
 /// 本文中の外部 URL の OGP 情報を取得してカード表示用に返す。
-/// キャッシュ (7日 TTL) を優先し、無ければ取得して保存する。
+/// キャッシュ (7日 TTL、内容が空のものは 30分) を優先し、無ければ取得して保存する。
 /// 接続先の検証 (私有 IP 拒否・DNS 解決結果の検証・リダイレクト毎の再検証) は
 /// `core_fetch::fetch_ogp` 側で行う。
 #[tauri::command]
@@ -1171,9 +1178,10 @@ async fn fetch_ogp_card(url: String) -> Result<OgpCard, String> {
     if url.len() > 2048 {
         return Err("url too long".to_string());
     }
-    if let Ok(Some(json)) = core_store::load_ogp_cache(&url) {
+    if let Ok(Some((json, age))) = core_store::load_ogp_cache_with_age(&url) {
         if let Ok(card) = serde_json::from_str::<OgpCard>(&json) {
-            if !ogp_card_looks_garbled(&card) {
+            let retry_soon = ogp_card_is_empty(&card) && age > core_store::OGP_CACHE_RETRY_TTL_SECS;
+            if !ogp_card_looks_garbled(&card) && !retry_soon {
                 return Ok(card);
             }
         }
@@ -1264,15 +1272,6 @@ fn default_tts_dict() -> Vec<TtsDictEntry> {
             full_replace: true,
         },
         dict("http://jbbs.shitaraba", "したらば掲示板"),
-        dict("http://bbs.jpnkn.com/livevenus/", "ジャパンくん掲示板"),
-        dict("http://mudai.duckdns.org:8000/", "無題鏡置き場様"),
-        dict("http://mudai.duckdns.org:8100", "無題鏡様配信URL"),
-        dict("http://mudai.duckdns.org:8200", "無題鏡様配信URL"),
-        dict("http://mudai.duckdns.org:8300", "無題鏡様配信URL"),
-        dict("http://mudai.duckdns.org:8400", "無題鏡様配信URL"),
-        dict("http://mudai.duckdns.org:8500", "無題鏡様配信URL"),
-        dict("http://mudai.duckdns.org:8600", "無題鏡様配信URL"),
-        dict("http://mudai.duckdns.org/t", "ツイッチ配信URL"),
         dict("youtube", "ゆーちゅーぶ"),
         dict("youtu.be", "ゆーちゅーぶ"),
     ]
@@ -1329,16 +1328,13 @@ fn save_tts_dict(entries: Vec<TtsDictEntry>) -> Result<(), String> {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct TtsIpAllowEntry {
-    /// `27.91.102.168:8030` のように `IP[:ポート]`。ポート省略時はその IP の全ポートに一致。
+    /// `192.0.2.1:8030` のように `IP[:ポート]`。ポート省略時はその IP の全ポートに一致。
     host: String,
     to: String,
 }
 
 fn default_tts_ip_allow() -> Vec<TtsIpAllowEntry> {
-    vec![TtsIpAllowEntry {
-        host: "27.91.102.168:8030".to_string(),
-        to: "ディオン軍鏡置き場様".to_string(),
-    }]
+    Vec::new()
 }
 
 #[tauri::command]
@@ -2383,16 +2379,25 @@ fn subtitle_topmost(app: AppHandle, enabled: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// 字幕ウィンドウからの「表示終了までの残り時間 (ms)」報告をメインウィンドウへイベントで中継する。
-/// メイン側は「字幕の表示が終わるまで次の新着レスを待つ」設定の判断に使う。
+/// 字幕ウィンドウからの表示時間の報告をメインウィンドウへイベントで中継する。
+/// `bottom_in_ms` = 最下行に達するまでの時間、`hold_ms` = 達した後の表示時間、`total_ms` = その合計 (旧形式互換)。
+/// メイン側は「新着レスペインと字幕の次レス表示を同期する」設定の判断に使う。
 /// 値は上限 10 分でクランプする (不具合で巨大な値が来ても新着キューが止まらないように)。
 #[tauri::command]
-fn subtitle_timing_report(app: AppHandle, seq: u64, total_ms: u64) -> Result<(), String> {
+fn subtitle_timing_report(
+    app: AppHandle,
+    seq: u64,
+    total_ms: u64,
+    bottom_in_ms: Option<u64>,
+    hold_ms: Option<u64>,
+) -> Result<(), String> {
     let total_ms = total_ms.min(600_000);
+    let bottom_in_ms = bottom_in_ms.unwrap_or(total_ms).min(600_000);
+    let hold_ms = hold_ms.unwrap_or(0).min(600_000);
     let _ = app.emit_to(
         "main",
         "subtitle-timing",
-        serde_json::json!({ "seq": seq, "totalMs": total_ms }),
+        serde_json::json!({ "seq": seq, "totalMs": total_ms, "bottomInMs": bottom_in_ms, "holdMs": hold_ms }),
     );
     Ok(())
 }
@@ -2405,6 +2410,155 @@ fn subtitle_control(app: AppHandle, action: String) -> Result<(), String> {
     }
     let _ = app.emit_to("main", "subtitle-control", serde_json::json!({ "action": action }));
     Ok(())
+}
+
+// ===== 設定のプリセット / 自動バックアップ =====
+// data/presets/<名前>.json と data/settings-backup/<日時>.json。中身はフロント側が組み立てた JSON オブジェクト。
+// 名前はファイル名としてのみ使い、パス区切りや親ディレクトリ参照を含むものは拒否する。
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SettingsFileInfo {
+    name: String,
+    saved_at: i64,
+}
+
+const SETTINGS_PRESET_DIR: &str = "presets";
+const SETTINGS_BACKUP_DIR: &str = "settings-backup";
+const SETTINGS_BACKUP_KEEP: usize = 20;
+const SETTINGS_FILE_MAX_BYTES: usize = 4 * 1024 * 1024;
+
+fn validate_settings_name(name: &str) -> Result<String, String> {
+    let name = name.trim();
+    let len = name.chars().count();
+    if len == 0 || len > 64 {
+        return Err("名前は 1〜64 文字で指定してください".to_string());
+    }
+    if name.starts_with('.') || name.ends_with('.') || name.ends_with(' ') {
+        return Err("名前の先頭・末尾に . や空白は使えません".to_string());
+    }
+    if name
+        .chars()
+        .any(|c| c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'))
+    {
+        return Err("名前に使えない文字 (/ \\ : * ? \" < > |) が含まれています".to_string());
+    }
+    // Windows の予約デバイス名 (CON, PRN, AUX, NUL, COM1-9, LPT1-9) はファイルにできない
+    let upper = name.to_ascii_uppercase();
+    let base = upper.split('.').next().unwrap_or("");
+    let reserved = matches!(base, "CON" | "PRN" | "AUX" | "NUL")
+        || (base.len() == 4
+            && (base.starts_with("COM") || base.starts_with("LPT"))
+            && base[3..].chars().all(|c| c.is_ascii_digit()));
+    if reserved {
+        return Err("その名前は使えません".to_string());
+    }
+    Ok(name.to_string())
+}
+
+fn settings_files_dir(sub: &str) -> Result<std::path::PathBuf, String> {
+    core_store::portable_data_dir()
+        .map(|d| d.join(sub))
+        .map_err(|e| e.to_string())
+}
+
+fn list_settings_files(sub: &str) -> Result<Vec<SettingsFileInfo>, String> {
+    let dir = settings_files_dir(sub)?;
+    let mut out = Vec::new();
+    let rd = match std::fs::read_dir(&dir) {
+        Ok(rd) => rd,
+        Err(_) => return Ok(out),
+    };
+    for entry in rd.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if validate_settings_name(stem).is_err() {
+            continue;
+        }
+        let saved_at = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        out.push(SettingsFileInfo { name: stem.to_string(), saved_at });
+    }
+    out.sort_by(|a, b| b.saved_at.cmp(&a.saved_at).then_with(|| b.name.cmp(&a.name)));
+    Ok(out)
+}
+
+fn read_settings_file(sub: &str, name: &str) -> Result<String, String> {
+    let name = validate_settings_name(name)?;
+    let path = settings_files_dir(sub)?.join(format!("{name}.json"));
+    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+    if bytes.len() > SETTINGS_FILE_MAX_BYTES {
+        return Err("ファイルが大きすぎます".to_string());
+    }
+    String::from_utf8(bytes).map_err(|e| e.to_string())
+}
+
+fn write_settings_file(sub: &str, name: &str, json: &str) -> Result<(), String> {
+    let name = validate_settings_name(name)?;
+    if json.len() > SETTINGS_FILE_MAX_BYTES {
+        return Err("設定データが大きすぎます".to_string());
+    }
+    let value: serde_json::Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
+    if !value.is_object() {
+        return Err("設定データの形式が不正です".to_string());
+    }
+    core_store::save_json(&format!("{sub}/{name}.json"), &value).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_settings_presets() -> Result<Vec<SettingsFileInfo>, String> {
+    list_settings_files(SETTINGS_PRESET_DIR)
+}
+
+#[tauri::command]
+fn save_settings_preset(name: String, json: String) -> Result<(), String> {
+    write_settings_file(SETTINGS_PRESET_DIR, &name, &json)
+}
+
+#[tauri::command]
+fn load_settings_preset(name: String) -> Result<String, String> {
+    read_settings_file(SETTINGS_PRESET_DIR, &name)
+}
+
+#[tauri::command]
+fn delete_settings_preset(name: String) -> Result<(), String> {
+    let name = validate_settings_name(&name)?;
+    let path = settings_files_dir(SETTINGS_PRESET_DIR)?.join(format!("{name}.json"));
+    std::fs::remove_file(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_settings_backups() -> Result<Vec<SettingsFileInfo>, String> {
+    list_settings_files(SETTINGS_BACKUP_DIR)
+}
+
+/// 自動バックアップを保存し、古いものを削除して最新 20 件だけ残す。名前 (日時) はフロント側で作る。
+#[tauri::command]
+fn save_settings_backup(name: String, json: String) -> Result<(), String> {
+    write_settings_file(SETTINGS_BACKUP_DIR, &name, &json)?;
+    let mut files = list_settings_files(SETTINGS_BACKUP_DIR)?;
+    // 日時名は辞書順 = 時系列なので名前で新しい順に並べ替える
+    files.sort_by(|a, b| b.name.cmp(&a.name));
+    let dir = settings_files_dir(SETTINGS_BACKUP_DIR)?;
+    for old in files.iter().skip(SETTINGS_BACKUP_KEEP) {
+        let _ = std::fs::remove_file(dir.join(format!("{}.json", old.name)));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn load_settings_backup(name: String) -> Result<String, String> {
+    read_settings_file(SETTINGS_BACKUP_DIR, &name)
 }
 
 /// 字幕ウィンドウのヘッダに一時停止状態と残りキュー数を表示させる。
@@ -2634,6 +2788,13 @@ pub fn run() {
             subtitle_timing_report,
             subtitle_control,
             subtitle_status,
+            list_settings_presets,
+            save_settings_preset,
+            load_settings_preset,
+            delete_settings_preset,
+            list_settings_backups,
+            save_settings_backup,
+            load_settings_backup,
             subtitle_opacity,
             subtitle_topmost,
             subtitle_font_size,
@@ -2644,4 +2805,58 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod settings_name_tests {
+    #[test]
+    fn settings_name_validation_rejects_paths_and_reserved_names() {
+        assert!(super::validate_settings_name("実況用").is_ok());
+        assert!(super::validate_settings_name("night mode").is_ok());
+        assert!(super::validate_settings_name("").is_err());
+        assert!(super::validate_settings_name("..").is_err());
+        assert!(super::validate_settings_name("../x").is_err());
+        assert!(super::validate_settings_name("a/b").is_err());
+        assert!(super::validate_settings_name("a\\b").is_err());
+        assert!(super::validate_settings_name("CON").is_err());
+        assert!(super::validate_settings_name("com1").is_err());
+        assert!(super::validate_settings_name(".hidden").is_err());
+        assert!(super::validate_settings_name(&"あ".repeat(65)).is_err());
+    }
+
+    #[test]
+    fn settings_files_roundtrip_and_backup_rotation() {
+        let dir = std::env::temp_dir().join(format!("livefake-settings-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("EMBER_DATA_DIR", &dir);
+
+        super::write_settings_file(super::SETTINGS_PRESET_DIR, "実況用", r#"{"version":1,"layout":{"a":1}}"#).unwrap();
+        assert!(super::write_settings_file(super::SETTINGS_PRESET_DIR, "x", "[1,2]").is_err());
+        assert!(super::write_settings_file(super::SETTINGS_PRESET_DIR, "../evil", "{}").is_err());
+        assert!(super::write_settings_file(super::SETTINGS_PRESET_DIR, "bad", "{not json").is_err());
+        let list = super::list_settings_files(super::SETTINGS_PRESET_DIR).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name, "実況用");
+        assert!(dir.join("presets").join("実況用.json").exists());
+        let json = super::read_settings_file(super::SETTINGS_PRESET_DIR, "実況用").unwrap();
+        assert!(json.contains("\"version\": 1"));
+        assert!(super::read_settings_file(super::SETTINGS_PRESET_DIR, "missing").is_err());
+        super::delete_settings_preset("実況用".to_string()).unwrap();
+        assert!(super::list_settings_files(super::SETTINGS_PRESET_DIR).unwrap().is_empty());
+
+        for i in 0..22u32 {
+            super::save_settings_backup(format!("20260101-{:06}", i), "{}".to_string()).unwrap();
+        }
+        let backups = super::list_settings_files(super::SETTINGS_BACKUP_DIR).unwrap();
+        assert_eq!(backups.len(), super::SETTINGS_BACKUP_KEEP);
+        let names: Vec<&str> = backups.iter().map(|b| b.name.as_str()).collect();
+        assert!(names.contains(&"20260101-000021"));
+        assert!(names.contains(&"20260101-000002"));
+        assert!(!names.contains(&"20260101-000001"));
+        assert!(!names.contains(&"20260101-000000"));
+
+        std::env::remove_var("EMBER_DATA_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

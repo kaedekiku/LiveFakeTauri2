@@ -776,12 +776,30 @@ li.fav-drag-over {
 }
 
 .response-header-right {
-  /* 5ch と同じく「番号 名前 [メール] 投稿日 ID (n/回数)」を左から並べる (右寄せしない) */
-  margin-left: 0;
-  display: flex;
+  /* 5ch と同じく「番号 名前 [メール] 投稿日 ID (n/回数)」を左から並べる (右寄せしない)。
+     display: contents で中身を .rh の直接の flex 子にし、SIKI の order によるヘッダ並べ替えレシピが効くようにする */
+  display: contents;
+}
+/* ID と (n/回数) をまとめる列 (SIKI の .res-col[data-type="id"] .cnt と同じ構造) */
+.res-col[data-type="id"] {
+  display: inline-flex;
   gap: 4px;
   align-items: baseline;
   white-space: nowrap;
+}
+/* ヘッダ項目を全て非表示にしたとき (.no-header)、または設定で常に表示にしたときのレス間の罫線 */
+.response-block.no-header:not(:first-child),
+.response-scroll.always-divider .response-block:not(:first-child) {
+  border-top: 1px solid #d8d8d8;
+  padding-top: 4px;
+}
+.dark .response-block.no-header:not(:first-child),
+.dark .response-scroll.always-divider .response-block:not(:first-child) {
+  border-top-color: #4a4a4a;
+}
+/* タブ切替直後、高さが安定するまで隠す (レイアウトは維持するので位置合わせはそのまま動く) */
+.response-scroll.settling {
+  visibility: hidden;
 }
 
 .response-name {
@@ -2200,6 +2218,37 @@ button.search-history-btn:hover {
   background: #f0f0f0;
   object-fit: contain;
 }
+/* レス表示欄のサムネイルは固定サイズの枠 (画像はその中に収める)。読み込み前後で高さが変わらないので
+   タブ切替や最下行追従のときにレイアウトが動かない。ポップアップ内は従来どおり画像サイズに合わせる */
+.response-scroll .response-thumb {
+  width: var(--thumb-size, 200px);
+  height: var(--thumb-size, 200px);
+  max-width: none;
+  max-height: none;
+  box-sizing: border-box;
+}
+.response-scroll .thumb-size-gate {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--thumb-size, 200px);
+  height: var(--thumb-size, 200px);
+  border: 1px solid #d0d0d0;
+  background: #f0f0f0;
+  box-sizing: border-box;
+  vertical-align: top;
+}
+.response-scroll .thumb-size-gate:has(.response-thumb) {
+  border: none;
+  background: none;
+}
+.response-scroll .thumb-size-gate .thumb-gate-blocked,
+.response-scroll .thumb-size-gate .thumb-gate-loading {
+  white-space: normal;
+  text-align: center;
+  max-width: 100%;
+  box-sizing: border-box;
+}
 
 .response-thumb:hover {
   border-color: var(--accent);
@@ -2357,6 +2406,97 @@ button.search-history-btn:hover {
 }
 .settings-header button {
   margin-left: auto;
+}
+.settings-header-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.settings-header-actions button,
+.settings-header .settings-search ~ button {
+  margin-left: 0;
+}
+.settings-dirty-note {
+  font-size: 11px;
+  color: #c05000;
+}
+.settings-header button.primary:not(:disabled),
+.app-confirm-buttons button.primary {
+  background: #2b6cb0;
+  color: #fff;
+  border-color: #2b6cb0;
+}
+.app-confirm-buttons button.danger,
+.settings-content button.danger {
+  background: #c0392b;
+  color: #fff;
+  border-color: #c0392b;
+}
+/* 確認ダイアログ (設定の保存確認・リセット・プリセット読み込みなど) */
+.app-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.app-confirm {
+  background: #fff;
+  color: #222;
+  border: 1px solid #bbb;
+  border-radius: 6px;
+  padding: 14px 16px;
+  width: min(440px, 90vw);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.3);
+  font-size: 12px;
+}
+.app-confirm-title {
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+.app-confirm-message {
+  white-space: pre-wrap;
+  line-height: 1.5;
+  margin-bottom: 12px;
+}
+.app-confirm-buttons {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+.dark .app-confirm {
+  background: #2b2b2e;
+  color: #eee;
+  border-color: #555;
+}
+/* プリセット / バックアップの一覧 */
+.settings-file-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+}
+.settings-file-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 4px;
+}
+.settings-file-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-file-date,
+.settings-file-empty {
+  color: var(--sub);
+  font-size: 11px;
 }
 .settings-body {
   padding: 8px 12px;
@@ -3059,60 +3199,6 @@ button.search-history-btn:hover {
   color: #888;
 }
 
-.typing-confetti-piece {
-  position: fixed;
-  left: 0;
-  top: 0;
-  width: 4px;
-  height: 7px;
-  border-radius: 1px;
-  pointer-events: none;
-  z-index: 220;
-  background: hsl(var(--h), 88%, 62%);
-  transform: translate3d(var(--x), var(--y), 0) rotate(0deg) scale(0.8);
-  animation: typing-confetti-burst var(--dur) ease-out forwards;
-}
-
-@keyframes typing-confetti-burst {
-  0% {
-    opacity: 0;
-    transform: translate3d(var(--x), var(--y), 0) rotate(0deg) scale(0.8);
-  }
-  10% {
-    opacity: 1;
-  }
-  100% {
-    opacity: 0;
-    transform: translate3d(calc(var(--x) + var(--tx)), calc(var(--y) + var(--ty)), 0) rotate(var(--rot)) scale(0.5);
-  }
-}
-
-.delete-explosion-piece {
-  position: fixed;
-  left: 0;
-  top: 0;
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  pointer-events: none;
-  z-index: 220;
-  background: #ff6030;
-  transform: translate3d(var(--x), var(--y), 0) scale(1);
-  animation: delete-explosion-burst var(--dur) ease-out forwards;
-}
-
-@keyframes delete-explosion-burst {
-  0% {
-    opacity: 1;
-    transform: translate3d(var(--x), var(--y), 0) scale(1);
-    background: #ffaa30;
-  }
-  100% {
-    opacity: 0;
-    transform: translate3d(calc(var(--x) + var(--tx)), calc(var(--y) + var(--ty)), 0) scale(0.2);
-    background: #882010;
-  }
-}
 
 .link-filter-buttons {
   display: flex;
@@ -3245,13 +3331,6 @@ button.search-history-btn:hover {
   border-color: #555;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .typing-confetti-piece,
-  .delete-explosion-piece {
-    /* コンフェティはアプリ内設定で制御するため、OS設定を無視 */
-  }
-}
-
 /* ===== Font Picker ===== */
 .font-picker {
   position: relative;
@@ -3315,6 +3394,13 @@ button.search-history-btn:hover {
    取得失敗/データ無し (data-ogp-state="empty") のときだけ非表示にする。 */
 .ogp-card-slot {
   min-height: 1px;
+}
+/* レス表示欄・新着ペインでは、読み込み中のカード枠の高さをあらかじめ確保して読み込み後のずれを小さくする */
+.response-scroll .ogp-card-slot:not([data-ogp-state]),
+.response-scroll .ogp-card-slot[data-ogp-state="loading"],
+.new-arrival-body .ogp-card-slot:not([data-ogp-state]),
+.new-arrival-body .ogp-card-slot[data-ogp-state="loading"] {
+  min-height: 100px;
 }
 .ogp-card-slot[data-ogp-state="empty"] {
   display: none;

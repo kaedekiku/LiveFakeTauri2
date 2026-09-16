@@ -216,100 +216,6 @@ const normalizeExternalUrl = (raw: string): string | null => {
   return result ? rewrite5chNet(result) : null;
 };
 
-const isTextLikeInput = (el: HTMLInputElement | HTMLTextAreaElement): boolean => {
-  if (el instanceof HTMLTextAreaElement) return true;
-  const t = (el.type || "text").toLowerCase();
-  return t === "text" || t === "search" || t === "url" || t === "email" || t === "tel" || t === "password";
-};
-
-const getCaretClientPoint = (el: HTMLInputElement | HTMLTextAreaElement): { x: number; y: number } | null => {
-  if (!isTextLikeInput(el)) return null;
-  const selectionStart = el.selectionStart;
-  if (selectionStart == null) return null;
-  const rect = el.getBoundingClientRect();
-  if (rect.width <= 0 || rect.height <= 0) return null;
-  const style = window.getComputedStyle(el);
-  const mirror = document.createElement("div");
-  mirror.style.position = "fixed";
-  mirror.style.left = `${rect.left}px`;
-  mirror.style.top = `${rect.top}px`;
-  mirror.style.width = `${rect.width}px`;
-  mirror.style.height = `${rect.height}px`;
-  mirror.style.visibility = "hidden";
-  mirror.style.pointerEvents = "none";
-  mirror.style.whiteSpace = el instanceof HTMLTextAreaElement ? "pre-wrap" : "pre";
-  mirror.style.overflow = "hidden";
-  mirror.style.boxSizing = style.boxSizing;
-  mirror.style.fontFamily = style.fontFamily;
-  mirror.style.fontSize = style.fontSize;
-  mirror.style.fontWeight = style.fontWeight;
-  mirror.style.fontStyle = style.fontStyle;
-  mirror.style.letterSpacing = style.letterSpacing;
-  mirror.style.lineHeight = style.lineHeight;
-  mirror.style.textTransform = style.textTransform;
-  mirror.style.textAlign = style.textAlign as "left" | "right" | "center" | "justify";
-  mirror.style.textIndent = style.textIndent;
-  mirror.style.padding = style.padding;
-  mirror.style.border = style.border;
-  mirror.style.tabSize = style.tabSize;
-
-  const before = el.value.slice(0, selectionStart);
-  mirror.textContent = before;
-  const marker = document.createElement("span");
-  marker.textContent = "\u200b";
-  mirror.appendChild(marker);
-  document.body.appendChild(mirror);
-  mirror.scrollTop = el.scrollTop;
-  mirror.scrollLeft = el.scrollLeft;
-  const markerRect = marker.getBoundingClientRect();
-  mirror.remove();
-  return {
-    x: clamp(markerRect.left, rect.left + 4, rect.right - 4),
-    y: clamp(markerRect.top, rect.top + 4, rect.bottom - 4),
-  };
-};
-
-const emitTypingConfetti = (x: number, y: number, count = 3) => {
-  for (let i = 0; i < count; i += 1) {
-    const piece = document.createElement("span");
-    piece.className = "typing-confetti-piece";
-    const tx = (Math.random() - 0.5) * 42;
-    const ty = -(18 + Math.random() * 30);
-    const rot = `${Math.round((Math.random() - 0.5) * 240)}deg`;
-    const hue = String(Math.floor(360 * Math.random()));
-    const dur = `${420 + Math.floor(Math.random() * 220)}ms`;
-    piece.style.setProperty("--x", `${x}px`);
-    piece.style.setProperty("--y", `${y}px`);
-    piece.style.setProperty("--tx", `${tx.toFixed(1)}px`);
-    piece.style.setProperty("--ty", `${ty.toFixed(1)}px`);
-    piece.style.setProperty("--rot", rot);
-    piece.style.setProperty("--h", hue);
-    piece.style.setProperty("--dur", dur);
-    document.body.appendChild(piece);
-    piece.addEventListener("animationend", () => piece.remove(), { once: true });
-  }
-};
-
-const emitDeleteExplosion = (x: number, y: number, count = 4) => {
-  for (let i = 0; i < count; i += 1) {
-    const piece = document.createElement("span");
-    piece.className = "delete-explosion-piece";
-    const angle = (Math.PI * 2 * i) / count + (Math.random() - 0.5) * 0.6;
-    const dist = 18 + Math.random() * 28;
-    const tx = Math.cos(angle) * dist;
-    const ty = Math.sin(angle) * dist;
-    const dur = `${300 + Math.floor(Math.random() * 200)}ms`;
-    piece.style.setProperty("--x", `${x}px`);
-    piece.style.setProperty("--y", `${y}px`);
-    piece.style.setProperty("--tx", `${tx.toFixed(1)}px`);
-    piece.style.setProperty("--ty", `${ty.toFixed(1)}px`);
-    piece.style.setProperty("--dur", dur);
-    document.body.appendChild(piece);
-    piece.addEventListener("animationend", () => piece.remove(), { once: true });
-  }
-};
-
-// ===== Highlight System =====
 const HIGHLIGHT_COLORS = [
   { name: "赤",     color: "#FF0000" },
   { name: "橙",     color: "#FF8000" },
@@ -447,11 +353,11 @@ const buildOgpCardHtml = (card: OgpCardData): string => {
     + (desc ? `<span class="ogp-card-hover-desc">${desc}</span>` : "")
     + `<span class="ogp-card-hover-url">${url}</span>`
     + `</span>`;
-  return `<a class="body-link ogp-card" href="${url}" target="_blank" rel="noopener">`
+  return `<a class="body-link ogp-card th-cardlist" href="${url}" target="_blank" rel="noopener">`
     + img
     + `<span class="ogp-card-main">`
-    + (title ? `<span class="ogp-card-title">${title}</span>` : "")
-    + (desc ? `<span class="ogp-card-desc">${desc}</span>` : "")
+    + (title ? `<span class="ogp-card-title title">${title}</span>` : "")
+    + (desc ? `<span class="ogp-card-desc description">${desc}</span>` : "")
     + (site ? `<span class="ogp-card-site">${site}</span>` : "")
     + `</span>`
     + hover
@@ -560,7 +466,7 @@ const buildTweetCardHtml = (card: TweetCardData): string => {
   const main = `<a class="body-link tweet-card-main" href="${url}" target="_blank" rel="noopener">`
     + head + body + quote + photos + videoLabel + meta
     + `</a>`;
-  return `<span class="tweet-card">${main}${videoEl}</span>`;
+  return `<span class="tweet-card th-cardlist">${main}${videoEl}</span>`;
 };
 
 type RenderBodyOpts = {
@@ -795,6 +701,8 @@ export default function App() {
   const [responseListProbe, setResponseListProbe] = useState("not run");
   const [fetchedThreads, setFetchedThreads] = useState<ThreadListItem[]>([]);
   const [fetchedResponses, setFetchedResponses] = useState<ThreadResponseItem[]>([]);
+  const fetchedResponsesLenRef = useRef(0);
+  fetchedResponsesLenRef.current = fetchedResponses.length;
   const [boardCategories, setBoardCategories] = useState<BoardCategory[]>([]);
   const [externalBoards, setExternalBoards] = useState<BoardEntry[]>([]);
   const [showExternalBoardDialog, setShowExternalBoardDialog] = useState(false);
@@ -815,7 +723,6 @@ export default function App() {
   const keepSortOnRefreshRef = useRef(keepSortOnRefresh);
   keepSortOnRefreshRef.current = keepSortOnRefresh;
   const [composeSubmitKey, setComposeSubmitKey] = useState<"shift" | "ctrl">("shift");
-  const [typingConfettiEnabled, setTypingConfettiEnabled] = useState(false);
   const [imageSizeLimit, setImageSizeLimit] = useState(0); // KB, 0 = unlimited
   const [showImagePreview, setShowImagePreview] = useState(true);
   const [hoverPreviewEnabled, setHoverPreviewEnabled] = useState(false);
@@ -843,6 +750,13 @@ export default function App() {
   const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(false);
   const [autoRefreshInterval, setAutoRefreshInterval] = useState(15);
   const [autoScrollEnabled, setAutoScrollEnabled] = useState(true);
+  const autoScrollEnabledRef = useRef(true);
+  autoScrollEnabledRef.current = autoScrollEnabled;
+  // タブ切替直後、画像・カードの読み込みで高さが変わるあいだレス表示欄を隠す (高さが安定したら表示)
+  const [responsePaneSettling, setResponsePaneSettling] = useState(false);
+  const responsePaneSettleRunRef = useRef(0);
+  // 最下行に追従中の scrollToBottom を止める関数 (ユーザー操作か、別の位置合わせが始まるまで追従する)
+  const followBottomCleanupRef = useRef<(() => void) | null>(null);
   const [responseGap, setResponseGap] = useState(10);
   const [smoothScroll, setSmoothScroll] = useState(true);
   const [maxOpenTabs, setMaxOpenTabs] = useState(20);
@@ -864,6 +778,11 @@ export default function App() {
   // Highlight state
   const [idHighlights, setIdHighlights] = useState<IdHighlightMap>({});
   const [textHighlights, setTextHighlights] = useState<TextHighlight[]>([]);
+  // 字幕更新はタイマー経由 (古いレンダーのクロージャ) から呼ばれるため、最新値は ref で参照する
+  const idHighlightsRef = useRef<IdHighlightMap>({});
+  idHighlightsRef.current = idHighlights;
+  const textHighlightsRef = useRef<TextHighlight[]>([]);
+  textHighlightsRef.current = textHighlights;
   const [threadSortKey, setThreadSortKey] = useState<"fetched" | "id" | "title" | "res" | "got" | "new" | "lastFetch" | "speed" | "since">("id");
   const [threadSortAsc, setThreadSortAsc] = useState(true);
   const cachedSortOrderRef = useRef<string[]>([]);
@@ -900,6 +819,30 @@ export default function App() {
   } | null>(null);
   const [hlSubMenu, setHlSubMenu] = useState<{ type: "text" | "id" | "name"; value: string; nearRight?: boolean } | null>(null);
   const [boardContextMenu, setBoardContextMenu] = useState<{ x: number; y: number; board: BoardEntry } | null>(null);
+  // URL バーの右クリックメニュー (貼り付けて移動 / 貼り付け / コピー / すべて選択)
+  const [addressMenu, setAddressMenu] = useState<{ x: number; y: number } | null>(null);
+  const addressInputRef = useRef<HTMLInputElement | null>(null);
+  // 入力欄の共通履歴 (欄ごとのキー → 新しい順・最大 20 件)。input-history.json に保存し datalist の候補として出す
+  type InputHistoryKey = "boardSearch" | "favSearch" | "settingsListFilter" | "newThreadSubject" | "newThreadMail";
+  const [inputHistory, setInputHistory] = useState<Partial<Record<InputHistoryKey, string[]>>>({});
+  const inputHistoryRef = useRef<Partial<Record<InputHistoryKey, string[]>>>({});
+  inputHistoryRef.current = inputHistory;
+  // 空や 1 文字は記録しない。同じ値は先頭へ移す
+  const recordInputHistory = (key: InputHistoryKey, value: string) => {
+    const v = value.trim();
+    if (v.length < 2) return;
+    const prev = inputHistoryRef.current[key] ?? [];
+    if (prev[0] === v) return;
+    const next = { ...inputHistoryRef.current, [key]: [v, ...prev.filter((x) => x !== v)].slice(0, 20) };
+    inputHistoryRef.current = next;
+    setInputHistory(next);
+    saveToFile("input-history.json", next);
+  };
+  const inputHistoryDatalist = (key: InputHistoryKey) => (
+    <datalist id={`input-history-${key}`}>
+      {(inputHistory[key] ?? []).map((v) => <option key={v} value={v} />)}
+    </datalist>
+  );
   const [aaOverrides, setAaOverrides] = useState<Map<number, boolean>>(new Map());
   const [anchorPopup, setAnchorPopup] = useState<{ x: number; y: number; anchorTop: number; responseIds: number[] } | null>(null);
   const [nestedPopups, setNestedPopups] = useState<{ x: number; y: number; anchorTop: number; responseIds: number[] }[]>([]);
@@ -924,9 +867,17 @@ export default function App() {
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  type SettingsCategory = "display" | "posting" | "tts" | "tts-dict" | "proxy" | "ng" | "subtitle" | "highlights" | "info";
-  const SETTINGS_CATEGORIES: SettingsCategory[] = ["display", "posting", "tts", "tts-dict", "subtitle", "proxy", "ng", "highlights", "info"];
-  const SETTINGS_CATEGORY_LABELS: Record<SettingsCategory, string> = { display: "表示", posting: "書き込み", tts: "読み上げ", "tts-dict": "読み上げ辞書", subtitle: "字幕", proxy: "プロキシ", ng: "NG", highlights: "ハイライト", info: "情報" };
+  type SettingsCategory = "display" | "posting" | "tts" | "tts-dict" | "proxy" | "ng" | "subtitle" | "highlights" | "presets" | "reset" | "info";
+  const SETTINGS_CATEGORIES: SettingsCategory[] = ["display", "posting", "tts", "tts-dict", "subtitle", "proxy", "ng", "highlights", "presets", "reset", "info"];
+  const SETTINGS_CATEGORY_LABELS: Record<SettingsCategory, string> = { display: "表示", posting: "書き込み", tts: "読み上げ", "tts-dict": "読み上げ辞書", subtitle: "字幕", proxy: "プロキシ", ng: "NG", highlights: "ハイライト", presets: "プリセット", reset: "リセット", info: "情報" };
+  // 設定画面の保存まわりの状態 (詳細は「設定画面の保存 / 復元 / リセット / プリセット」の節)
+  const settingsOpenRef = useRef(false);
+  settingsOpenRef.current = settingsOpen;
+  const [settingsSnapshot, setSettingsSnapshot] = useState<{ layout: Record<string, unknown>; app: Record<string, string> } | null>(null);
+  const defaultLayoutPrefsRef = useRef<Record<string, unknown> | null>(null);
+  const defaultAppSettingsRef = useRef<Record<string, string> | null>(null);
+  type AppConfirm = { title?: string; message: string; buttons: { label: string; onClick: () => void; primary?: boolean; danger?: boolean }[] };
+  const [appConfirm, setAppConfirm] = useState<AppConfirm | null>(null);
   // 分類内の節タブ (項目が多い分類だけ)。1 頁を短く保ち、関連する設定を同じ場所にまとめる (REQUIREMENTS 13 章)
   const SETTINGS_SECTIONS: Record<SettingsCategory, { id: string; label: string }[]> = {
     display: [
@@ -936,15 +887,24 @@ export default function App() {
     posting: [],
     tts: [],
     "tts-dict": [{ id: "dict", label: "辞書" }, { id: "allow", label: "許可リスト" }, { id: "mute", label: "読み上げない辞書" }],
-    subtitle: [{ id: "view", label: "表示" }, { id: "cards", label: "カード・スクロール" }],
+    subtitle: [{ id: "view", label: "表示" }, { id: "cards", label: "カード" }, { id: "scroll", label: "スクロール" }],
     proxy: [],
     ng: [{ id: "words", label: "ワード" }, { id: "ids", label: "ID" }, { id: "names", label: "名前" }],
     highlights: [{ id: "word", label: "ワード" }, { id: "name", label: "名前" }, { id: "id", label: "ID" }],
+    presets: [],
+    reset: [],
     info: [],
   };
   const [settingsCategory, setSettingsCategory] = useState<SettingsCategory>("display");
   const [settingsSection, setSettingsSection] = useState("");
   const [settingsQuery, setSettingsQuery] = useState("");
+  // 検索語の履歴 (新しい順・最大 20 件)。Enter か検索結果の見出しクリックで確定したものだけ残す
+  const [settingsSearchHistory, setSettingsSearchHistory] = useState<string[]>([]);
+  const pushSettingsSearchHistory = (q: string) => {
+    const v = q.trim();
+    if (!v) return;
+    setSettingsSearchHistory((prev) => [v, ...prev.filter((x) => x !== v)].slice(0, 20));
+  };
   const [settingsListFilter, setSettingsListFilter] = useState("");
   const settingsContentRef = useRef<HTMLDivElement | null>(null);
   const settingsSearching = settingsQuery.trim().length > 0;
@@ -959,7 +919,7 @@ export default function App() {
     const sec = SETTINGS_SECTIONS[cat].find((x) => x.id === sid);
     const label = sec ? `${SETTINGS_CATEGORY_LABELS[cat]} › ${sec.label}` : SETTINGS_CATEGORY_LABELS[cat];
     return (
-      <div className="settings-section-heading" hidden={!settingsSearching} onClick={() => { setSettingsQuery(""); setSettingsCategory(cat); setSettingsSection(sid); setSettingsListFilter(""); }} title="この場所へ移動">
+      <div className="settings-section-heading" hidden={!settingsSearching} onClick={() => { pushSettingsSearchHistory(settingsQuery); setSettingsQuery(""); setSettingsCategory(cat); setSettingsSection(sid); setSettingsListFilter(""); }} title="この場所へ移動">
         {label}
       </div>
     );
@@ -972,7 +932,11 @@ export default function App() {
   };
   const settingsListFilterRow = () => (
     <div className="settings-row settings-list-filter" data-search-exclude="1">
-      <input type="search" value={settingsListFilter} onChange={(e) => setSettingsListFilter(e.target.value)} placeholder="一覧を絞り込み" style={{ width: 200 }} />
+      <input type="search" value={settingsListFilter} onChange={(e) => setSettingsListFilter(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter") recordInputHistory("settingsListFilter", settingsListFilter); }}
+        onBlur={() => recordInputHistory("settingsListFilter", settingsListFilter)}
+        list="input-history-settingsListFilter" placeholder="一覧を絞り込み" style={{ width: 200 }} />
+      {inputHistoryDatalist("settingsListFilter")}
       {settingsListFilter && <button onClick={() => setSettingsListFilter("")}>クリア</button>}
     </div>
   );
@@ -980,6 +944,12 @@ export default function App() {
   const [ogpCardsEnabled, setOgpCardsEnabled] = useState(false);
   const [tweetCardsEnabled, setTweetCardsEnabled] = useState(false);
   const [ogpDomainFilters, setOgpDomainFilters] = useState<OgpDomainFilters>({ allow: [], block: [] });
+  const ogpCardsEnabledRef = useRef(false);
+  ogpCardsEnabledRef.current = ogpCardsEnabled;
+  const tweetCardsEnabledRef = useRef(false);
+  tweetCardsEnabledRef.current = tweetCardsEnabled;
+  const ogpDomainFiltersRef = useRef<OgpDomainFilters>({ allow: [], block: [] });
+  ogpDomainFiltersRef.current = ogpDomainFilters;
   const [ogpDomainInput, setOgpDomainInput] = useState("");
   const ogpCacheRef = useRef<Map<string, OgpCardData | null>>(new Map());
   const ogpInflightRef = useRef<Map<string, Promise<OgpCardData | null>>>(new Map());
@@ -1008,6 +978,9 @@ export default function App() {
   const [subtitleHeaderVis, setSubtitleHeaderVis] = useState<HeaderVis>(DEFAULT_HEADER_VIS);
   const subtitleHeaderVisRef = useRef<HeaderVis>(DEFAULT_HEADER_VIS);
   subtitleHeaderVisRef.current = subtitleHeaderVis;
+  // レス表示欄のヘッダ項目が全て非表示ならレスの境目が分からないので罫線を引く (no-header)。常に罫線を引く設定もある
+  const mainHeaderAllHidden = !mainHeaderVis.resNo && !mainHeaderVis.name && !mainHeaderVis.mail && !mainHeaderVis.watchoi && !mainHeaderVis.date && !mainHeaderVis.id && !mainHeaderVis.count;
+  const [responseDividerAlways, setResponseDividerAlways] = useState(false);
   const headerVisRows = (vis: HeaderVis, set: (next: HeaderVis) => void, opts: { threadTitle?: boolean; watchoi?: boolean }) => {
     const items: Array<[keyof HeaderVis, string]> = [
       ...(opts.threadTitle ? ([["threadTitle", "スレ名"]] as Array<[keyof HeaderVis, string]>) : []),
@@ -1030,10 +1003,11 @@ export default function App() {
   const [arrivalPaused, setArrivalPaused] = useState(false);
   const arrivalPausedRef = useRef(false);
   const advanceToNextArrivalRef = useRef<() => void>(() => {});
-  // スレ内でのその ID の書き込み順と総数 (レス表示欄の (n/回数) と同じ数え方)。取得済みレスのキャッシュから数える
-  const idStatsFor = (threadUrlForStats: string, responseNo: number, id: string): { seq: number; count: number } => {
+  // スレ内でのその ID の書き込み順と総数 (レス表示欄の (n/回数) と同じ数え方)。
+  // 呼び出し元が持っている最新のレス一覧 (rows) から数える。無ければ取得済みレスのキャッシュから数える
+  const idStatsFor = (threadUrlForStats: string, responseNo: number, id: string, rowsIn?: { responseNo: number; dateAndId: string }[]): { seq: number; count: number } => {
     if (!id) return { seq: 0, count: 0 };
-    const rows = tabCacheRef.current.get(threadUrlForStats)?.responses ?? [];
+    const rows = rowsIn ?? tabCacheRef.current.get(threadUrlForStats)?.responses ?? [];
     let seq = 0;
     let count = 0;
     for (const r of rows) {
@@ -1045,11 +1019,16 @@ export default function App() {
     }
     return { seq: Math.max(1, seq), count: Math.max(1, count) };
   };
+  // したらばの古いキャッシュ (ID 無し) を全件取り直したスレ (スレごとに 1 回だけ)
+  const idRefetchDoneRef = useRef<Set<string>>(new Set());
+  // したらばの古いキャッシュ (ID 無し) 判定。read.cgi 経由で取り直せば ID が付く
+  const cacheLacksIds = (url: string, rows: { dateAndId: string }[]): boolean =>
+    rows.length > 0 && detectSiteType(url) === "shitaraba" && !rows.some((r) => /ID:\S/.test(r.dateAndId));
   // 新着レスペイン / 字幕に流す 1 件を作る (ヘッダはレス表示欄と同じ情報を持つ)
-  const makeArrival = (r: { responseNo: number; name: string; mail: string; dateAndId: string; body: string }, threadTitle: string, threadUrlForItem: string): ArrivalItem => {
+  const makeArrival = (r: { responseNo: number; name: string; mail: string; dateAndId: string; body: string }, threadTitle: string, threadUrlForItem: string, rows?: { responseNo: number; dateAndId: string }[]): ArrivalItem => {
     const idMatch = r.dateAndId.match(/ID:(\S+)/);
     const id = idMatch ? idMatch[1] : "";
-    const stats = idStatsFor(threadUrlForItem, r.responseNo, id);
+    const stats = idStatsFor(threadUrlForItem, r.responseNo, id, rows);
     return {
       threadTitle,
       responseNo: r.responseNo,
@@ -1071,7 +1050,7 @@ export default function App() {
     const o = (v && typeof v === "object" ? v : {}) as Partial<Record<keyof ScrollTiming, unknown>>;
     const num = (x: unknown, def: number, min: number, max: number) =>
       typeof x === "number" && Number.isFinite(x) ? Math.min(max, Math.max(min, x)) : def;
-    return { fitSec: num(o.fitSec, 5, 0, 60), waitSec: num(o.waitSec, 2, 0, 10), msPerPx: num(o.msPerPx, 8, 1, 50), holdSec: num(o.holdSec, 5, 0, 60) };
+    return { fitSec: num(o.fitSec, 5, 0, 120), waitSec: num(o.waitSec, 2, 0, 20), msPerPx: num(o.msPerPx, 8, 1, 100), holdSec: num(o.holdSec, 5, 0, 120) };
   };
   const [arrivalTiming, setArrivalTiming] = useState<ScrollTiming>(DEFAULT_SCROLL_TIMING);
   const arrivalTimingRef = useRef<ScrollTiming>(DEFAULT_SCROLL_TIMING);
@@ -1085,7 +1064,10 @@ export default function App() {
   subtitleSyncEnabledRef.current = subtitleSyncEnabled;
   // 字幕へ送ったレスの通し番号と、字幕から報告された表示終了予定時刻 (performance.now() 基準)
   const subtitleSeqRef = useRef(0);
-  const subtitleEndAtRef = useRef<{ seq: number; endAt: number } | null>(null);
+  // 字幕からの報告: 最下行到達予定時刻 (bottomAt) と、到達後の表示時間 (holdMs)。同期 ON のとき新着ペイン側と合成する
+  const subtitleEndAtRef = useRef<{ seq: number; bottomAt: number; holdMs: number } | null>(null);
+  // 新着ペイン側の同じ情報 (最下行に達した時刻と、その後の表示時間)。scheduleArrivalAdvance で確定する
+  const arrivalPlanRef = useRef<{ bottomAt: number; holdMs: number } | null>(null);
   // 新着ペインの「次へ進む」最終タイマーの予定時刻と発火処理 (字幕の報告で延長するため保持)
   const arrivalFinalDeadlineRef = useRef<number | null>(null);
   const arrivalFinalFireRef = useRef<(() => void) | null>(null);
@@ -1095,19 +1077,19 @@ export default function App() {
     <>
       <label className="settings-row">
         <span>短いレスの表示時間 (秒・スクロール不要時)</span>
-        <input type="number" min={0} max={60} step={0.1} value={t.fitSec} onChange={(e) => set(sanitizeScrollTiming({ ...t, fitSec: Number(e.target.value) }))} style={{ width: 70 }} />
+        <input type="number" min={0} max={120} step={0.1} value={t.fitSec} onChange={(e) => set(sanitizeScrollTiming({ ...t, fitSec: Number(e.target.value) }))} style={{ width: 70 }} />
       </label>
       <label className="settings-row">
         <span>スクロール開始までの待ち時間 (秒)</span>
-        <input type="number" min={0} max={10} step={0.1} value={t.waitSec} onChange={(e) => set(sanitizeScrollTiming({ ...t, waitSec: Number(e.target.value) }))} style={{ width: 70 }} />
+        <input type="number" min={0} max={20} step={0.1} value={t.waitSec} onChange={(e) => set(sanitizeScrollTiming({ ...t, waitSec: Number(e.target.value) }))} style={{ width: 70 }} />
       </label>
       <label className="settings-row">
         <span>スクロール速度 (1px あたり ms)</span>
-        <input type="number" min={1} max={50} step={1} value={t.msPerPx} onChange={(e) => set(sanitizeScrollTiming({ ...t, msPerPx: Number(e.target.value) }))} style={{ width: 70 }} />
+        <input type="number" min={1} max={100} step={1} value={t.msPerPx} onChange={(e) => set(sanitizeScrollTiming({ ...t, msPerPx: Number(e.target.value) }))} style={{ width: 70 }} />
       </label>
       <label className="settings-row">
         <span>スクロール後の表示時間 (秒)</span>
-        <input type="number" min={0} max={60} step={0.1} value={t.holdSec} onChange={(e) => set(sanitizeScrollTiming({ ...t, holdSec: Number(e.target.value) }))} style={{ width: 70 }} />
+        <input type="number" min={0} max={120} step={0.1} value={t.holdSec} onChange={(e) => set(sanitizeScrollTiming({ ...t, holdSec: Number(e.target.value) }))} style={{ width: 70 }} />
       </label>
     </>
   );
@@ -1119,6 +1101,8 @@ export default function App() {
   const [hlIdColor, setHlIdColor] = useState<string>(HIGHLIGHT_COLORS[0].color);
   // Subtitle state
   const [subtitleVisible, setSubtitleVisible] = useState(false);
+  const subtitleVisibleRef = useRef(false);
+  subtitleVisibleRef.current = subtitleVisible;
   const [subtitleBodyFontSize, setSubtitleBodyFontSize] = useState(28);
   const [subtitleMetaFontSize, setSubtitleMetaFontSize] = useState(12);
   const [subtitleOpacity, setSubtitleOpacity] = useState(0.85);
@@ -1152,15 +1136,6 @@ export default function App() {
   const DEFAULT_TTS_DICT: TtsDictEntry[] = [
     { from: "WebABC", to: "このレスは番組表です", fullReplace: true },
     { from: "http://jbbs.shitaraba", to: "したらば掲示板" },
-    { from: "http://bbs.jpnkn.com/livevenus/", to: "ジャパンくん掲示板" },
-    { from: "http://mudai.duckdns.org:8000/", to: "無題鏡置き場様" },
-    { from: "http://mudai.duckdns.org:8100", to: "無題鏡様配信URL" },
-    { from: "http://mudai.duckdns.org:8200", to: "無題鏡様配信URL" },
-    { from: "http://mudai.duckdns.org:8300", to: "無題鏡様配信URL" },
-    { from: "http://mudai.duckdns.org:8400", to: "無題鏡様配信URL" },
-    { from: "http://mudai.duckdns.org:8500", to: "無題鏡様配信URL" },
-    { from: "http://mudai.duckdns.org:8600", to: "無題鏡様配信URL" },
-    { from: "http://mudai.duckdns.org/t", to: "ツイッチ配信URL" },
     { from: "youtube", to: "ゆーちゅーぶ" },
     { from: "youtu.be", to: "ゆーちゅーぶ" },
   ];
@@ -1174,7 +1149,7 @@ export default function App() {
   const [ttsDictNewFullReplace, setTtsDictNewFullReplace] = useState(false);
   // 読み上げ許可リスト (IP アドレス配信 URL 専用): 登録された IP[:ポート] だけ `to` で読み、未登録 IP は読まない
   type TtsIpAllowEntry = { host: string; to: string };
-  const DEFAULT_TTS_IP_ALLOW: TtsIpAllowEntry[] = [{ host: "27.91.102.168:8030", to: "ディオン軍鏡置き場様" }];
+  const DEFAULT_TTS_IP_ALLOW: TtsIpAllowEntry[] = [];
   const [ttsIpAllow, setTtsIpAllow] = useState<TtsIpAllowEntry[]>(DEFAULT_TTS_IP_ALLOW);
   const ttsIpAllowRef = useRef<TtsIpAllowEntry[]>(DEFAULT_TTS_IP_ALLOW);
   ttsIpAllowRef.current = ttsIpAllow;
@@ -1308,7 +1283,6 @@ export default function App() {
   const responseSearchRef = useRef<HTMLInputElement | null>(null);
   const [threadSearchHistory, setThreadSearchHistory] = useState<string[]>([]);
   const [responseSearchHistory, setResponseSearchHistory] = useState<string[]>([]);
-  const lastTypingConfettiTsRef = useRef(0);
   const [searchHistoryDropdown, setSearchHistoryDropdown] = useState<{ type: "thread" | "response" } | null>(null);
   const [searchHistoryMenu, setSearchHistoryMenu] = useState<{ x: number; y: number; type: "thread" | "response"; word: string } | null>(null);
 
@@ -1789,7 +1763,30 @@ export default function App() {
     }
   };
 
+  // タブ切替直後のちらつき対策: レス表示欄を visibility: hidden にしておき、scrollHeight が 2 フレーム続けて同じに
+  // なったら (最長 0.4 秒) 表示する。隠している間も scrollToBottom / scrollToResponseNo は動くので、
+  // 表示された時点で位置が合っている (画像やカードの読み込みで数レス分ずれて見える問題の対策)
+  const settleResponsePane = () => {
+    const run = ++responsePaneSettleRunRef.current;
+    setResponsePaneSettling(true);
+    const startedAt = performance.now();
+    let lastH = -1;
+    let stable = 0;
+    const tick = () => {
+      if (responsePaneSettleRunRef.current !== run) return;
+      const el = responseScrollRef.current;
+      const h = el ? el.scrollHeight : -1;
+      if (el && h === lastH) stable++; else stable = 0;
+      lastH = h;
+      if ((el && stable >= 2) || performance.now() - startedAt > 400) { setResponsePaneSettling(false); return; }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  };
+
   const scrollToBottom = () => {
+    // 前の追従を止める (二重に動かさない)
+    if (followBottomCleanupRef.current) { followBottomCleanupRef.current(); followBottomCleanupRef.current = null; }
     // Phase 0: the responses pane may not be mounted yet (e.g. switching from
     // the thread-list view unmounts it) — wait for the container to appear.
     let mountAttempts = 0;
@@ -1805,6 +1802,7 @@ export default function App() {
 
       let active = true;
       let prevScrollHeight = c.scrollHeight;
+      const lenAtStart = fetchedResponsesLenRef.current;
 
       const tryScroll = (attempts: number) => {
         if (!active) return;
@@ -1823,13 +1821,21 @@ export default function App() {
 
       // Poll for scrollHeight changes from images loading after the initial scroll.
       // rAF retries finish in ~160ms but network images expand scrollHeight over seconds.
+      // 画像・カードの読み込みで高さが伸びるたびに最下行へ合わせ直す。時間制限は設けず、
+      // ユーザーがスクロールするか、別の位置合わせが始まるまで追従する。
+      // 自動スクロール OFF で新着が増えたときは追従を止める (ユーザーの位置を勝手に動かさない)
       const pollInterval = setInterval(() => {
         if (!active) { clearInterval(pollInterval); return; }
+        if (!c.isConnected) { cleanup(); return; } // スレ一覧表示などで要素が外れたら追従を終える
+        if (!autoScrollEnabledRef.current && fetchedResponsesLenRef.current !== lenAtStart) { cleanup(); return; }
         if (c.scrollHeight !== prevScrollHeight) {
           prevScrollHeight = c.scrollHeight;
           c.scrollTop = c.scrollHeight;
         }
       }, 150);
+      const onNavKey = (e: KeyboardEvent) => {
+        if (e.key === "PageUp" || e.key === "ArrowUp" || e.key === "Home") cleanup();
+      };
 
       const cleanup = () => {
         active = false;
@@ -1837,18 +1843,22 @@ export default function App() {
         c.removeEventListener("wheel", onUserInput);
         c.removeEventListener("mousedown", onUserInput);
         c.removeEventListener("touchstart", onUserInput);
+        window.removeEventListener("keydown", onNavKey);
+        if (followBottomCleanupRef.current === cleanup) followBottomCleanupRef.current = null;
       };
 
       c.addEventListener("wheel", onUserInput, { passive: true });
       c.addEventListener("mousedown", onUserInput, { passive: true });
       c.addEventListener("touchstart", onUserInput, { passive: true });
-      setTimeout(cleanup, 5000);
+      window.addEventListener("keydown", onNavKey);
+      followBottomCleanupRef.current = cleanup;
       requestAnimationFrame(() => tryScroll(0));
     };
     start();
   };
 
   const scrollToResponseNo = (no: number) => {
+    if (followBottomCleanupRef.current) { followBottomCleanupRef.current(); followBottomCleanupRef.current = null; }
     if (no <= 1) return;
     // Phase 1: wait for the element to appear in DOM (rAF retry)
     let attempts = 0;
@@ -1945,6 +1955,7 @@ export default function App() {
         if (nextSel !== selectedResponse) suppressResponseSelScrollRef.current = true;
         setSelectedResponse(nextSel);
         setNewResponseStart(cached.newResponseStart ?? null);
+        settleResponsePane();
         if (cached.scrollAtBottom) scrollToBottom();
         else scrollToResponseNo(cached.scrollResponseNo ?? loadScrollPos(url));
       } else if (isTauriRuntime()) {
@@ -2049,6 +2060,7 @@ export default function App() {
       setFetchedResponses(cached.responses);
       if (cached.selectedResponse !== selectedResponse) suppressResponseSelScrollRef.current = true;
       setSelectedResponse(cached.selectedResponse);
+      settleResponsePane();
       if (cached.scrollAtBottom) scrollToBottom();
       else scrollToResponseNo(cached.scrollResponseNo ?? 0);
     }
@@ -2066,6 +2078,7 @@ export default function App() {
         const tab = threadTabs[index];
         const cached = tabCacheRef.current.get(tab.threadUrl);
         if (cached) {
+          settleResponsePane();
           if (cached.scrollAtBottom) scrollToBottom();
           else scrollToResponseNo(cached.scrollResponseNo ?? loadScrollPos(tab.threadUrl));
         } else {
@@ -2084,6 +2097,7 @@ export default function App() {
       setFetchedResponses(cached.responses);
       if (cached.selectedResponse !== selectedResponse) suppressResponseSelScrollRef.current = true;
       setSelectedResponse(cached.selectedResponse);
+      settleResponsePane();
       if (cached.scrollAtBottom) scrollToBottom();
       else scrollToResponseNo(cached.scrollResponseNo ?? 0);
     } else {
@@ -2230,25 +2244,31 @@ export default function App() {
       const cached = tabCacheRef.current.get(tabUrl);
       const prevResponses = cached?.responses ?? [];
       const prevCount = prevResponses.length;
-      // Differential fetch: pass last known response_no so backend returns only new responses
-      const lastResNo = prevCount > 0 ? prevResponses[prevCount - 1].responseNo : undefined;
+      // Differential fetch: pass last known response_no so backend returns only new responses.
+      // ID が付いていない古いしたらばキャッシュ (rawmode 時代) は書き込み回数を数えられないので、一度だけ全件取り直して
+      // キャッシュを置き換える (新着として扱うのは既知の最終レス番号より後のものだけ)。ID 非表示の板で毎回全件取らないよう 1 回限り
+      const lastKnownNo = prevCount > 0 ? prevResponses[prevCount - 1].responseNo : undefined;
+      const fullRefetch = prevCount > 0 && cacheLacksIds(tabUrl, prevResponses) && !idRefetchDoneRef.current.has(tabUrl);
+      const lastResNo = fullRefetch ? undefined : lastKnownNo;
       const result = await invoke<{ responses: ThreadResponseItem[]; title: string | null }>(
         "fetch_thread_responses_command",
         { threadUrl: tabUrl, limit: null, sinceResNo: lastResNo ?? null }
       );
-      const newRows = result.responses;
-      if (newRows.length === 0 && prevCount > 0) return; // no new responses
-      // Merge: full list = previous cached + new rows
-      const rows = lastResNo != null ? [...prevResponses, ...newRows] : newRows;
+      const fetched = result.responses;
+      if (fullRefetch) idRefetchDoneRef.current.add(tabUrl);
+      const newRows = fullRefetch ? fetched.filter((r) => r.responseNo > (lastKnownNo ?? 0)) : fetched;
+      // Merge: full list = previous cached + new rows (全件取り直しのときは取得結果で置き換え)
+      const rows = fullRefetch ? fetched : lastResNo != null ? [...prevResponses, ...fetched] : fetched;
       if (rows.length === 0) return;
       tabCacheRef.current.set(tabUrl, { responses: rows, selectedResponse: cached?.selectedResponse ?? 1, scrollResponseNo: cached?.scrollResponseNo, newResponseStart: cached?.newResponseStart });
+      if (newRows.length === 0 && prevCount > 0) return; // no new responses
       if (prevCount > 0 && newRows.length > 0) {
         const now = new Date();
         const timeStr = `${now.getFullYear()}/${String(now.getMonth() + 1).padStart(2, "0")}/${String(now.getDate()).padStart(2, "0")} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
         threadFetchTimesRef.current[tabUrl] = timeStr;
         const arrivals = newRows
           .filter((r) => getNgResult({ name: r.name, time: r.dateAndId, text: r.body.replace(/<[^>]*>/g, "") }, tabUrl) !== "hide")
-          .map((r) => makeArrival(r, tabTitle, tabUrl));
+          .map((r) => makeArrival(r, tabTitle, tabUrl, rows));
         if (autoRefreshEnabled && arrivals.length > 0) {
           const queueWasEmpty = arrivalQueueRef.current.length === 0;
           arrivalQueueRef.current.push(...arrivals);
@@ -2447,7 +2467,7 @@ export default function App() {
         const newRows = rows.slice(prevCount);
         const arrivals = newRows
           .filter((r) => getNgResult({ name: r.name, time: r.dateAndId, text: r.body.replace(/<[^>]*>/g, "") }, url) !== "hide")
-          .map((r) => makeArrival(r, arrivalTitle, url));
+          .map((r) => makeArrival(r, arrivalTitle, url, rows));
         // Add to new arrivals pane when autoReload is ON
         if (autoRefreshEnabled && arrivals.length > 0) {
           const queueWasEmpty = arrivalQueueRef.current.length === 0;
@@ -2708,25 +2728,29 @@ export default function App() {
 
   // Subtitle: send update to subtitle window
   const subtitleUpdate = (data: { threadTitle?: string; name?: string; mail?: string; id?: string; date?: string; body?: string; responseNo?: number; idSeq?: number; idCount?: number }) => {
-    if (!isTauriRuntime() || !subtitleVisible) return;
+    // タイマー経由で呼ばれるため、設定・ハイライトは ref で最新値を読む (古いレンダーの値を使わない)
+    if (!isTauriRuntime() || !subtitleVisibleRef.current) return;
     // 通し番号: 字幕からの表示終了報告を現在のレスと突き合わせるために使う
     const seq = ++subtitleSeqRef.current;
     subtitleEndAtRef.current = null;
     const scroll = subtitleTimingRef.current;
     const show = subtitleHeaderVisRef.current;
-    const idColor = data.id ? (idHighlights[data.id] ?? undefined) : undefined;
-    const wordHighlights = textHighlights.filter((h) => h.type === "word");
+    const idColor = data.id ? (idHighlightsRef.current[data.id] ?? undefined) : undefined;
+    const wordHighlights = textHighlightsRef.current.filter((h) => h.type === "word");
+    const ogpOn = ogpCardsEnabledRef.current;
+    const tweetOn = tweetCardsEnabledRef.current;
+    const filters = ogpDomainFiltersRef.current;
     // 字幕にもカードを出す: 字幕ウィンドウは別 WebView で IPC を持たないため、
     // メイン側でカードを解決してから HTML に埋め込んで送る (最長 2.5 秒待ち、取れなければカード無しで送る)
-    if (subtitleCardsEnabledRef.current && (ogpCardsEnabled || tweetCardsEnabled) && data.body) {
-      const raw = renderResponseBodyHighlighted(data.body, "", { hideImages: true, ogpCards: ogpCardsEnabled, tweetCards: tweetCardsEnabled, ogpAllow: ogpDomainFilters.allow, ogpBlock: ogpDomainFilters.block }, wordHighlights).__html;
+    if (subtitleCardsEnabledRef.current && (ogpOn || tweetOn) && data.body) {
+      const raw = renderResponseBodyHighlighted(data.body, "", { hideImages: true, ogpCards: ogpOn, tweetCards: tweetOn, ogpAllow: filters.allow, ogpBlock: filters.block }, wordHighlights).__html;
       const slotRe = /<div class="ogp-card-slot(?: tweet-card-slot)?" data-ogp-url="([^"]+)"(?: data-tweet-id="(\d+)")?><\/div>/g;
       const slots: { full: string; url: string; tweetId?: string }[] = [];
       let sm: RegExpExecArray | null;
       while ((sm = slotRe.exec(raw)) !== null) slots.push({ full: sm[0], url: sm[1], tweetId: sm[2] });
       const withTimeout = <T,>(p: Promise<T>, fallback: T): Promise<T> =>
         Promise.race([p, new Promise<T>((resolve) => setTimeout(() => resolve(fallback), 2500))]);
-      void Promise.all(slots.map((s) => withTimeout(resolveCardHtml(s.url, s.tweetId, ogpCardsEnabled), "")))
+      void Promise.all(slots.map((s) => withTimeout(resolveCardHtml(s.url, s.tweetId, ogpOn), "")))
         .then((htmls) => {
           let bodyHtml = raw;
           // 置換文字列に $ が含まれても特殊解釈されないよう関数形式で置換する
@@ -2769,20 +2793,32 @@ export default function App() {
 
   advanceToNextArrivalRef.current = advanceToNextArrival;
 
-  // 新着ペインの「次へ進む」を予約する。新着ペイン側の残り時間 baseMs と、同期 ON なら字幕から報告された
-  // 表示終了予定の長い方まで待つ。字幕ウィンドウが閉じている・報告が無いときは baseMs だけで進む。
-  // onBeforeAdvance が true を返したら別処理 (遅延読み込みで溢れた場合のスクロール) に切り替えたとみなし進まない。
-  const scheduleArrivalAdvance = (baseMs: number, onBeforeAdvance?: () => boolean) => {
-    const now = performance.now();
-    let endAt = now + baseMs;
+  // 同期 ON のときの「次へ進む」時刻: 新着ペインと字幕の両方が最下行まで表示し終えた時刻 (遅い方) に、
+  // 両方の「スクロール後の表示時間」の長い方を足す。収まるレスは最下行到達 = 表示開始、表示時間 = 「短いレスの表示時間」。
+  // 字幕ウィンドウが閉じている・報告が無い・同期 OFF のときは新着ペインの値だけで決める。
+  const syncedEndAt = (plan: { bottomAt: number; holdMs: number }): number => {
+    let bottomAt = plan.bottomAt;
+    let holdMs = plan.holdMs;
     const sub = subtitleEndAtRef.current;
-    if (subtitleSyncEnabledRef.current && sub && sub.seq === subtitleSeqRef.current && sub.endAt > endAt) endAt = sub.endAt;
+    if (subtitleSyncEnabledRef.current && sub && sub.seq === subtitleSeqRef.current) {
+      bottomAt = Math.max(bottomAt, sub.bottomAt);
+      holdMs = Math.max(holdMs, sub.holdMs);
+    }
+    return bottomAt + holdMs;
+  };
+  // 新着ペインが最下行まで表示し終えた (今) ので「次へ進む」を予約する。holdMs はその後の表示時間。
+  // onBeforeAdvance が true を返したら別処理 (遅延読み込みで溢れた場合のスクロール) に切り替えたとみなし進まない。
+  const scheduleArrivalAdvance = (holdMs: number, onBeforeAdvance?: () => boolean) => {
+    const now = performance.now();
+    const plan = { bottomAt: now, holdMs };
+    arrivalPlanRef.current = plan;
+    const endAt = syncedEndAt(plan);
     const fire = () => {
       arrivalTimerRef.current = null;
       arrivalFinalDeadlineRef.current = null;
       arrivalFinalFireRef.current = null;
       if (onBeforeAdvance && onBeforeAdvance()) return;
-      advanceToNextArrival();
+      advanceToNextArrivalRef.current();
     };
     arrivalFinalDeadlineRef.current = endAt;
     arrivalFinalFireRef.current = fire;
@@ -2793,6 +2829,7 @@ export default function App() {
     const runId = ++arrivalRunIdRef.current;
     arrivalFinalDeadlineRef.current = null;
     arrivalFinalFireRef.current = null;
+    arrivalPlanRef.current = null;
     const t = arrivalTimingRef.current;
     // After display settles, check for overflow and schedule advance
     arrivalTimerRef.current = setTimeout(() => {
@@ -2866,6 +2903,8 @@ export default function App() {
         setNewThreadResult({ ok: false, message: `エラー: ${r.bodyPreview}` });
       } else {
         setNewThreadResult({ ok: true, message: `スレ立て成功 (status=${r.status})` });
+        recordInputHistory("newThreadSubject", newThreadSubject);
+        recordInputHistory("newThreadMail", newThreadMail);
         if (newThreadName.trim()) {
           setNameHistory((prev) => {
             const next = [newThreadName.trim(), ...prev.filter((n) => n !== newThreadName.trim())].slice(0, 20);
@@ -3226,8 +3265,10 @@ export default function App() {
     return map;
   })();
 
-  const goFromLocationInput = () => {
-    const next = rewrite5chNet(locationInput.trim());
+  const goFromLocationInput = () => goToLocation(locationInput);
+  // URL バーの文字列 (手入力・貼り付け) で移動する。Enter と「貼り付けて移動」は同じ経路
+  const goToLocation = (raw: string) => {
+    const next = rewrite5chNet(raw.trim());
     if (!next) return;
     if (next !== locationInput.trim()) setLocationInput(next);
     // Detect thread URL (5ch, shitaraba, jpnkn) and open in tab
@@ -3272,6 +3313,35 @@ export default function App() {
     void fetchThreadListFromCurrent(next);
   };
 
+  // クリップボードは信頼できない入力として扱う: 先頭行だけ・2048 文字まで・URL らしい形式のみ。
+  // 読み取りはメニューを選んだときだけ行い、内容はログや設定に残さない
+  const readClipboardForAddress = async (): Promise<string | null> => {
+    let text = "";
+    try {
+      text = await navigator.clipboard.readText();
+    } catch (e) {
+      console.warn("clipboard read failed", e);
+      setStatus("クリップボードを読み取れませんでした");
+      return null;
+    }
+    const line = (text.split(/\r?\n/).find((l) => l.trim()) ?? "").trim().slice(0, 2048);
+    if (!line) { setStatus("クリップボードにテキストがありません"); return null; }
+    return line;
+  };
+  const looksLikeUrl = (v: string): boolean => /^(https?:\/\/[^\s]+|(?:[a-z0-9][-a-z0-9]*\.)+[a-z]{2,}(?:\/[^\s]*)?)$/i.test(v);
+  const pasteAndGo = async () => {
+    const line = await readClipboardForAddress();
+    if (line === null) return;
+    if (!looksLikeUrl(line)) { setStatus("クリップボードの内容が URL ではありません"); return; }
+    setLocationInput(line);
+    goToLocation(line);
+  };
+  const pasteToAddress = async () => {
+    const line = await readClipboardForAddress();
+    if (line === null) return;
+    setLocationInput(line);
+    addressInputRef.current?.focus();
+  };
   const onLocationInputKeyDown = (e: ReactKeyboardEvent<HTMLInputElement>) => {
     if (e.key !== "Enter") return;
     e.preventDefault();
@@ -3779,8 +3849,9 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [selectedThread, selectedResponse, visibleThreadItems, responseItems, activeTabIndex, threadTabs, responseReloadMenuOpen]);
 
-  useEffect(() => {
-    const applyPrefs = (raw: string | null) => {
+  // 保存済み設定 (layout_prefs.json の JSON 文字列) を state に反映する。起動時の読み込みのほか、
+  // 設定画面の「保存しない」「リセット」「プリセット読み込み」からも使う
+  const applyLayoutPrefs = (raw: string | null) => {
       if (!raw) return;
       try {
         const parsed = JSON.parse(raw) as {
@@ -3800,7 +3871,6 @@ export default function App() {
           showBoardButtons?: boolean;
           keepSortOnRefresh?: boolean;
           composeSubmitKey?: "shift" | "ctrl";
-          typingConfettiEnabled?: boolean;
           imageSizeLimit?: number;
           hoverPreviewEnabled?: boolean;
           ogpCardsEnabled?: boolean;
@@ -3813,6 +3883,8 @@ export default function App() {
           mainHeaderVis?: unknown;
           arrivalHeaderVis?: unknown;
           subtitleHeaderVis?: unknown;
+          responseDividerAlways?: boolean;
+          settingsSearchHistory?: unknown;
           lastBoard?: { boardName: string; url: string };
           hoverPreviewDelay?: number;
           thumbSize?: number;
@@ -3833,6 +3905,10 @@ export default function App() {
           popupMaxWidth?: number;
           popupMaxHeight?: number;
           composePanelPx?: number;
+          subtitleBodyFontSize?: number;
+          subtitleMetaFontSize?: number;
+          subtitleOpacity?: number;
+          subtitleAlwaysOnTop?: boolean;
         };
         if (typeof parsed.boardPaneVisible === "boolean") setBoardPaneVisible(parsed.boardPaneVisible);
         if (typeof parsed.boardPanePx === "number") setBoardPanePx(parsed.boardPanePx);
@@ -3871,7 +3947,6 @@ export default function App() {
         if (typeof parsed.showBoardButtons === "boolean") setShowBoardButtons(parsed.showBoardButtons);
         if (typeof parsed.keepSortOnRefresh === "boolean") setKeepSortOnRefresh(parsed.keepSortOnRefresh);
         if (parsed.composeSubmitKey === "shift" || parsed.composeSubmitKey === "ctrl") setComposeSubmitKey(parsed.composeSubmitKey);
-        if (typeof parsed.typingConfettiEnabled === "boolean") setTypingConfettiEnabled(parsed.typingConfettiEnabled);
         if (typeof parsed.imageSizeLimit === "number") setImageSizeLimit(parsed.imageSizeLimit);
         if (typeof parsed.showImagePreview === "boolean") setShowImagePreview(parsed.showImagePreview);
         if (typeof parsed.hoverPreviewEnabled === "boolean") setHoverPreviewEnabled(parsed.hoverPreviewEnabled);
@@ -3885,6 +3960,8 @@ export default function App() {
         if (parsed.mainHeaderVis !== undefined) setMainHeaderVis(sanitizeHeaderVis(parsed.mainHeaderVis));
         if (parsed.arrivalHeaderVis !== undefined) setArrivalHeaderVis(sanitizeHeaderVis(parsed.arrivalHeaderVis));
         if (parsed.subtitleHeaderVis !== undefined) setSubtitleHeaderVis(sanitizeHeaderVis(parsed.subtitleHeaderVis));
+        if (typeof parsed.responseDividerAlways === "boolean") setResponseDividerAlways(parsed.responseDividerAlways);
+        if (Array.isArray(parsed.settingsSearchHistory)) setSettingsSearchHistory(parsed.settingsSearchHistory.filter((x): x is string => typeof x === "string").slice(0, 20));
         if (parsed.lastBoard && typeof parsed.lastBoard.boardName === "string" && typeof parsed.lastBoard.url === "string") {
           pendingLastBoardRef.current = parsed.lastBoard;
         }
@@ -3906,12 +3983,22 @@ export default function App() {
         if (typeof parsed.popupMaxWidth === "number") setPopupMaxWidth(clamp(parsed.popupMaxWidth, 300, 2400));
         if (typeof parsed.popupMaxHeight === "number") setPopupMaxHeight(clamp(parsed.popupMaxHeight, 200, 1800));
         if (typeof parsed.composePanelPx === "number") setComposePanelPx(clamp(parsed.composePanelPx, MIN_COMPOSE_PANEL_PX, MAX_COMPOSE_PANEL_PX));
+        if (typeof parsed.subtitleBodyFontSize === "number") setSubtitleBodyFontSize(clamp(parsed.subtitleBodyFontSize, 10, 96));
+        if (typeof parsed.subtitleMetaFontSize === "number") setSubtitleMetaFontSize(clamp(parsed.subtitleMetaFontSize, 8, 48));
+        if (typeof parsed.subtitleOpacity === "number") setSubtitleOpacity(clamp(parsed.subtitleOpacity, 0.1, 1));
+        if (typeof parsed.subtitleAlwaysOnTop === "boolean") setSubtitleAlwaysOnTop(parsed.subtitleAlwaysOnTop);
       } catch { /* ignore */ }
-    };
+  };
+  useEffect(() => {
+    // 初期値のスナップショット (ファイル読み込み前の state = useState の初期値)。「リセット」で戻す先に使う
+    if (!defaultLayoutPrefsRef.current) {
+      defaultLayoutPrefsRef.current = buildLayoutPrefsPayload();
+      defaultAppSettingsRef.current = buildAppSettingsMap();
+    }
     // Layout prefs from file (settings.json via IPC)
     if (isTauriRuntime()) {
       invoke<string>("load_layout_prefs").then((raw) => {
-        if (raw) applyPrefs(raw);
+        if (raw) applyLayoutPrefs(raw);
         layoutPrefsLoadedRef.current = true;
       }).catch(() => { layoutPrefsLoadedRef.current = true; });
     } else {
@@ -4023,6 +4110,16 @@ export default function App() {
       });
       loadFromFile<string[]>("name-history.json").then((d) => {
         if (Array.isArray(d) && d.length > 0) setNameHistory(d);
+      });
+      loadFromFile<Record<string, unknown>>("input-history.json").then((d) => {
+        if (!d || typeof d !== "object") return;
+        const next: Partial<Record<InputHistoryKey, string[]>> = {};
+        for (const key of ["boardSearch", "favSearch", "settingsListFilter", "newThreadSubject", "newThreadMail"] as InputHistoryKey[]) {
+          const arr = d[key];
+          if (Array.isArray(arr)) next[key] = arr.filter((x): x is string => typeof x === "string").slice(0, 20);
+        }
+        inputHistoryRef.current = next;
+        setInputHistory(next);
       });
       loadFromFile<Record<string, number[]>>("my-posts.json").then((d) => {
         if (d && typeof d === "object" && Object.keys(d).length > 0) setMyPosts(d as Record<string, number[]>);
@@ -4410,10 +4507,8 @@ export default function App() {
     setStyleEl("theme-mode-css", darkMode ? themeModeCssRef.current.dark : themeModeCssRef.current.light);
   }, [darkMode]);
 
-  // Load app settings from settings.ini on startup
-  useEffect(() => {
-    if (!isTauriRuntime()) return;
-    invoke<Record<string, string>>("load_app_settings").then((map) => {
+  // settings.ini の内容 (キー → 文字列) を state に反映する。起動時の読み込みと、設定画面の復元・リセットで使う
+  const applyAppSettings = (map: Record<string, string>) => {
       if (map["App.fontSize"]) { const n = parseInt(map["App.fontSize"], 10); if (!isNaN(n)) { setResponsesFontSize(n); setBoardsFontSize(n); setThreadsFontSize(n); } }
       if (map["App.responseGap"]) { const n = parseInt(map["App.responseGap"], 10); if (!isNaN(n)) setResponseGap(n); }
       if (map["App.autoReloadIntervalSec"]) { const n = parseInt(map["App.autoReloadIntervalSec"], 10); if (!isNaN(n)) setAutoRefreshInterval(n); }
@@ -4422,7 +4517,7 @@ export default function App() {
       if (map["App.smoothScroll"]) setSmoothScroll(map["App.smoothScroll"] === "true");
       if (map["App.maxOpenTabs"]) { const n = parseInt(map["App.maxOpenTabs"], 10); if (!isNaN(n) && n >= 1) setMaxOpenTabs(n); }
       if (map["App.logRetentionDays"]) { const n = parseInt(map["App.logRetentionDays"], 10); if (!isNaN(n) && n >= 0) setLogRetentionDays(n); }
-      if (map["App.imageSaveFolder"]) setImageSaveFolder(map["App.imageSaveFolder"]);
+      if (map["App.imageSaveFolder"] !== undefined) setImageSaveFolder(map["App.imageSaveFolder"]);
       if (map["App.cssAllowExternalUrls"]) setCssAllowExternalUrls(map["App.cssAllowExternalUrls"] === "true");
       // Speech settings
       if (map["Speech.mode"]) setTtsMode(map["Speech.mode"] as TtsMode);
@@ -4431,7 +4526,7 @@ export default function App() {
       if (map["Speech.sapiVoiceIndex"]) { const n = parseInt(map["Speech.sapiVoiceIndex"], 10); if (!isNaN(n)) setSapiVoiceIndex(n); }
       if (map["Speech.sapiRate"]) { const n = parseInt(map["Speech.sapiRate"], 10); if (!isNaN(n)) setSapiRate(n); }
       if (map["Speech.sapiVolume"]) { const n = parseInt(map["Speech.sapiVolume"], 10); if (!isNaN(n)) setSapiVolume(n); }
-      if (map["Speech.bouyomiPath"]) setBouyomiPath(map["Speech.bouyomiPath"]);
+      if (map["Speech.bouyomiPath"] !== undefined) setBouyomiPath(map["Speech.bouyomiPath"]);
       if (map["Speech.voicevoxEndpoint"]) setVoicevoxEndpoint(map["Speech.voicevoxEndpoint"]);
       if (map["Speech.voicevoxSpeakerId"]) { const n = parseInt(map["Speech.voicevoxSpeakerId"], 10); if (!isNaN(n)) setVoicevoxSpeakerId(n); }
       if (map["Speech.voicevoxSpeedScale"]) { const n = parseFloat(map["Speech.voicevoxSpeedScale"]); if (!isNaN(n)) setVoicevoxSpeedScale(n); }
@@ -4444,7 +4539,11 @@ export default function App() {
       if (map["Posting.sage"]) setComposeSage(map["Posting.sage"] === "true");
       if (map["Posting.fontSize"]) { const n = parseInt(map["Posting.fontSize"], 10); if (!isNaN(n) && n >= 10 && n <= 24) setComposeFontSize(n); }
       if (map["Posting.composeOpen"]) setComposeOpen(map["Posting.composeOpen"] === "true");
-    }).catch(() => {});
+  };
+  // Load app settings from settings.ini on startup
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    invoke<Record<string, string>>("load_app_settings").then((map) => applyAppSettings(map)).catch(() => {});
   }, []);
 
   // Load TTS dictionary on startup
@@ -4599,16 +4698,23 @@ export default function App() {
     if (!isTauriRuntime()) return;
     let disposed = false;
     let unlisten: (() => void) | null = null;
-    void listen<{ seq?: unknown; totalMs?: unknown }>("subtitle-timing", (ev) => {
+    void listen<{ seq?: unknown; totalMs?: unknown; bottomInMs?: unknown; holdMs?: unknown }>("subtitle-timing", (ev) => {
       const payload = ev.payload ?? {};
       const seq = typeof payload.seq === "number" ? payload.seq : -1;
-      const totalMs = typeof payload.totalMs === "number" && Number.isFinite(payload.totalMs) ? Math.min(600000, Math.max(0, payload.totalMs)) : 0;
+      const ms = (v: unknown, def: number) => typeof v === "number" && Number.isFinite(v) ? Math.min(600000, Math.max(0, v)) : def;
+      const totalMs = ms(payload.totalMs, 0);
+      // 旧形式 (totalMs のみ) は「到達までが totalMs、到達後 0」とみなす
+      const bottomInMs = ms(payload.bottomInMs, totalMs);
+      const holdMs = ms(payload.holdMs, 0);
       if (seq !== subtitleSeqRef.current) return; // 古いレスの報告は無視
-      const endAt = performance.now() + totalMs;
-      subtitleEndAtRef.current = { seq, endAt };
+      subtitleEndAtRef.current = { seq, bottomAt: performance.now() + bottomInMs, holdMs };
       if (!subtitleSyncEnabledRef.current) return;
+      // 新着ペイン側が既に「次へ」を予約済みなら、字幕の分だけ延長する (短くはしない)
       const deadline = arrivalFinalDeadlineRef.current;
       const fire = arrivalFinalFireRef.current;
+      const plan = arrivalPlanRef.current;
+      if (!plan) return;
+      const endAt = syncedEndAt(plan);
       if (deadline !== null && fire && endAt > deadline && arrivalTimerRef.current) {
         clearTimeout(arrivalTimerRef.current);
         arrivalFinalDeadlineRef.current = endAt;
@@ -4706,10 +4812,8 @@ export default function App() {
     return setupOgpFill(container, ogpCardsEnabled);
   }, [arrivalCardsEnabled, ogpCardsEnabled, tweetCardsEnabled, newArrivalPaneOpen]);
 
-  // Save app settings to settings.ini when relevant values change
-  useEffect(() => {
-    if (!isTauriRuntime()) return;
-    void invoke("save_app_settings", { settings: {
+  // settings.ini に保存する内容 (キー → 文字列)
+  const buildAppSettingsMap = (): Record<string, string> => ({
       "App.fontSize": String(responsesFontSize),
       "App.responseGap": String(responseGap),
       "App.autoReloadIntervalSec": String(autoRefreshInterval),
@@ -4738,15 +4842,19 @@ export default function App() {
       "Posting.sage": String(composeSage),
       "Posting.fontSize": String(composeFontSize),
       "Posting.composeOpen": String(composeOpen),
-    } }).catch(() => {});
+  });
+  // Save app settings to settings.ini when relevant values change.
+  // 設定画面を開いている間は保存しない (「設定を保存」で明示的に保存し、保存せずに閉じたら開いたときの値に戻す)
+  useEffect(() => {
+    if (!isTauriRuntime() || settingsOpenRef.current) return;
+    void invoke("save_app_settings", { settings: buildAppSettingsMap() }).catch(() => {});
   }, [responsesFontSize, responseGap, autoRefreshInterval, autoRefreshEnabled, autoScrollEnabled, smoothScroll, maxOpenTabs, logRetentionDays, imageSaveFolder, cssAllowExternalUrls,
       ttsMode, ttsEnabled, ttsMaxReadLength, sapiVoiceIndex, sapiRate, sapiVolume, bouyomiPath,
       voicevoxEndpoint, voicevoxSpeakerId, voicevoxSpeedScale, voicevoxPitchScale, voicevoxIntonationScale, voicevoxVolumeScale,
       composeName, composeMail, composeSage, composeFontSize, composeOpen]);
 
-  useEffect(() => {
-    if (!layoutPrefsLoadedRef.current) return;
-    const payload = JSON.stringify({
+  // layout_prefs.json に保存する内容
+  const buildLayoutPrefsPayload = (): Record<string, unknown> => ({
       boardPaneVisible,
       boardPanePx,
       threadPanePx,
@@ -4762,7 +4870,6 @@ export default function App() {
       showBoardButtons,
       keepSortOnRefresh,
       composeSubmitKey,
-      typingConfettiEnabled,
       imageSizeLimit,
       showImagePreview,
       hoverPreviewEnabled,
@@ -4776,6 +4883,8 @@ export default function App() {
       mainHeaderVis,
       arrivalHeaderVis,
       subtitleHeaderVis,
+      responseDividerAlways,
+      settingsSearchHistory,
       lastBoard: lastBoardUrlRef.current ? { boardName: selectedBoard, url: lastBoardUrlRef.current } : undefined,
       hoverPreviewDelay,
       thumbSize,
@@ -4795,39 +4904,221 @@ export default function App() {
       popupMaxWidth,
       popupMaxHeight,
       composePanelPx,
-    });
-    if (isTauriRuntime()) {
-      void invoke("save_layout_prefs", { prefs: payload }).catch(() => {});
-    }
-  }, [boardPaneVisible, boardPanePx, threadPanePx, responseTopRatio, boardsFontSize, threadsFontSize, responsesFontSize, responsesHeaderFontSize, darkMode, fontFamily, fontBold, threadColWidths, showBoardButtons, keepSortOnRefresh, composeSubmitKey, typingConfettiEnabled, imageSizeLimit, showImagePreview, hoverPreviewEnabled, ogpCardsEnabled, tweetCardsEnabled, arrivalCardsEnabled, subtitleCardsEnabled, arrivalTiming, subtitleTiming, subtitleSyncEnabled, mainHeaderVis, arrivalHeaderVis, subtitleHeaderVis, selectedBoard, hoverPreviewDelay, thumbSize, restoreSession, autoRefreshInterval, autoScrollEnabled, newArrivalPaneOpen, newArrivalPaneHeight, newArrivalFontSize, resIdFontSize, resIdFontFamily, newArrivalIdFontSize, newArrivalIdFontFamily, subtitleIdFontSize, subtitleIdFontFamily, popupFontSize, popupMaxWidth, popupMaxHeight, composePanelPx]);
-
-
-
+      subtitleBodyFontSize,
+      subtitleMetaFontSize,
+      subtitleOpacity,
+      subtitleAlwaysOnTop,
+  });
   useEffect(() => {
-    if (!typingConfettiEnabled) return;
-    const onInput = (ev: Event) => {
-      const target = ev.target;
-      if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) return;
-      if (target.readOnly || target.disabled) return;
-      if (!isTextLikeInput(target)) return;
-      const inputEv = ev as InputEvent;
-      const isDelete = inputEv.inputType && (inputEv.inputType.startsWith("delete") || inputEv.inputType === "historyUndo");
-      const isInsert = inputEv.inputType && inputEv.inputType.startsWith("insert");
-      if (!isDelete && !isInsert) return;
-      const now = performance.now();
-      if (now - lastTypingConfettiTsRef.current < 50) return;
-      const point = getCaretClientPoint(target);
-      if (!point) return;
-      lastTypingConfettiTsRef.current = now;
-      if (isDelete) {
-        emitDeleteExplosion(point.x, point.y);
-      } else {
-        emitTypingConfetti(point.x, point.y);
+    if (!layoutPrefsLoadedRef.current || settingsOpenRef.current) return;
+    if (isTauriRuntime()) {
+      void invoke("save_layout_prefs", { prefs: JSON.stringify(buildLayoutPrefsPayload()) }).catch(() => {});
+    }
+  }, [boardPaneVisible, boardPanePx, threadPanePx, responseTopRatio, boardsFontSize, threadsFontSize, responsesFontSize, responsesHeaderFontSize, darkMode, fontFamily, fontBold, threadColWidths, showBoardButtons, keepSortOnRefresh, composeSubmitKey, imageSizeLimit, showImagePreview, hoverPreviewEnabled, ogpCardsEnabled, tweetCardsEnabled, arrivalCardsEnabled, subtitleCardsEnabled, arrivalTiming, subtitleTiming, subtitleSyncEnabled, mainHeaderVis, arrivalHeaderVis, subtitleHeaderVis, responseDividerAlways, settingsSearchHistory, selectedBoard, hoverPreviewDelay, thumbSize, restoreSession, autoRefreshInterval, autoScrollEnabled, newArrivalPaneOpen, newArrivalPaneHeight, newArrivalFontSize, resIdFontSize, resIdFontFamily, newArrivalIdFontSize, newArrivalIdFontFamily, subtitleIdFontSize, subtitleIdFontFamily, popupFontSize, popupMaxWidth, popupMaxHeight, composePanelPx, subtitleBodyFontSize, subtitleMetaFontSize, subtitleOpacity, subtitleAlwaysOnTop]);
+
+  // ===== 設定画面の保存 / 復元 / リセット / プリセット =====
+  // 値の設定は変更した時点で画面に反映される (プレビュー) が、ファイルへの保存は「設定を保存」を押したときだけ行う。
+  // 開いたときの値をスナップショットとして持ち、「保存しない」で閉じるときはそれに戻す。
+  // NG・辞書・ハイライト・許可リストなどの登録内容はこれまでどおり登録した時点で保存される。
+  const stripVolatilePrefs = (o: Record<string, unknown>): Record<string, unknown> => {
+    const copy = { ...o };
+    delete copy.settingsSearchHistory; // 検索履歴と最後に開いた板は「設定の変更」とみなさない
+    delete copy.lastBoard;
+    return copy;
+  };
+  const settingsDirty = settingsOpen && settingsSnapshot !== null && (
+    JSON.stringify(stripVolatilePrefs(buildLayoutPrefsPayload())) !== JSON.stringify(stripVolatilePrefs(settingsSnapshot.layout))
+    || JSON.stringify(buildAppSettingsMap()) !== JSON.stringify(settingsSnapshot.app)
+  );
+  useEffect(() => {
+    if (settingsOpen) setSettingsSnapshot({ layout: buildLayoutPrefsPayload(), app: buildAppSettingsMap() });
+    else setSettingsSnapshot(null);
+  }, [settingsOpen]);
+  const persistSettingsNow = (layoutObj?: Record<string, unknown>, appMap?: Record<string, string>) => {
+    const layout = layoutObj ?? buildLayoutPrefsPayload();
+    const app = appMap ?? buildAppSettingsMap();
+    if (isTauriRuntime()) {
+      void invoke("save_layout_prefs", { prefs: JSON.stringify(layout) }).catch((e) => console.warn("save_layout_prefs failed", e));
+      void invoke("save_app_settings", { settings: app }).catch((e) => console.warn("save_app_settings failed", e));
+    }
+    setSettingsSnapshot({ layout, app });
+  };
+  const settingsBackupName = () => {
+    const d = new Date();
+    const p = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+  };
+  const formatBackupName = (name: string) => {
+    const m = name.match(/^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})/);
+    return m ? `${m[1]}/${m[2]}/${m[3]} ${m[4]}:${m[5]}:${m[6]}` : name;
+  };
+  const formatUnixTime = (sec: number) => {
+    if (!sec) return "";
+    const d = new Date(sec * 1000);
+    const p = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}/${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  };
+  // プリセット / バックアップのファイル内容。lists (登録内容) はバックアップにだけ含める
+  const buildSettingsBundle = (layout: Record<string, unknown>, app: Record<string, string>, includeLists: boolean) => ({
+    version: 1,
+    savedAt: new Date().toISOString(),
+    layout: stripVolatilePrefs(layout),
+    app,
+    ...(includeLists ? { lists: { ngFilters, idHighlights, textHighlights, ttsDictEntries, ttsIpAllow, ttsMuteDict, ogpDomainFilters } } : {}),
+  });
+  const [settingsPresets, setSettingsPresets] = useState<{ name: string; savedAt: number }[]>([]);
+  const [settingsBackups, setSettingsBackups] = useState<{ name: string; savedAt: number }[]>([]);
+  const [presetNameInput, setPresetNameInput] = useState("");
+  const [resetIncludeLists, setResetIncludeLists] = useState(false);
+  const refreshSettingsFiles = async () => {
+    if (!isTauriRuntime()) return;
+    try {
+      const [p, b] = await Promise.all([
+        invoke<{ name: string; savedAt: number }[]>("list_settings_presets"),
+        invoke<{ name: string; savedAt: number }[]>("list_settings_backups"),
+      ]);
+      setSettingsPresets(p);
+      setSettingsBackups(b);
+    } catch (e) { console.warn("list settings files failed", e); }
+  };
+  useEffect(() => {
+    if (settingsOpen && (settingsCategory === "presets" || settingsCategory === "reset")) void refreshSettingsFiles();
+  }, [settingsOpen, settingsCategory]);
+  // 「設定を保存」の前とリセットの前の自動バックアップ (登録内容も含む。Rust 側で最新 20 件に整理)
+  const createSettingsBackup = async (layout: Record<string, unknown>, app: Record<string, string>) => {
+    if (!isTauriRuntime()) return;
+    try {
+      await invoke("save_settings_backup", { name: settingsBackupName(), json: JSON.stringify(buildSettingsBundle(layout, app, true)) });
+    } catch (e) { console.warn("save_settings_backup failed", e); }
+  };
+  const saveSettingsNow = async () => {
+    const prev = settingsSnapshot;
+    if (prev) await createSettingsBackup(prev.layout, prev.app);
+    persistSettingsNow();
+    setStatus("設定を保存しました");
+    if (settingsCategory === "presets" || settingsCategory === "reset") void refreshSettingsFiles();
+  };
+  const discardSettingsChanges = () => {
+    const snap = settingsSnapshot;
+    if (!snap) return;
+    applyAppSettings(snap.app);
+    applyLayoutPrefs(JSON.stringify({ ...snap.layout, settingsSearchHistory }));
+  };
+  const requestCloseSettings = () => {
+    if (!settingsDirty) {
+      // 検索履歴など「変更」扱いしない項目を書き出しておく
+      persistSettingsNow();
+      setSettingsOpen(false);
+      return;
+    }
+    setAppConfirm({
+      title: "設定が保存されていません",
+      message: "変更した設定を保存しますか？\n「保存しない」を選ぶと、開いたときの値に戻ります。",
+      buttons: [
+        { label: "保存して閉じる", primary: true, onClick: () => { void saveSettingsNow(); setSettingsOpen(false); } },
+        { label: "保存しないで閉じる", danger: true, onClick: () => { discardSettingsChanges(); setSettingsOpen(false); } },
+        { label: "キャンセル", onClick: () => {} },
+      ],
+    });
+  };
+  const switchSettingsCategory = (cat: SettingsCategory) => {
+    setSettingsCategory(cat); setSettingsSection(""); setSettingsListFilter(""); setSettingsQuery("");
+  };
+  const requestSwitchSettingsCategory = (cat: SettingsCategory) => {
+    if (cat === settingsCategory) return;
+    if (!settingsDirty) { switchSettingsCategory(cat); return; }
+    setAppConfirm({
+      title: "設定が保存されていません",
+      message: "変更した設定を保存してから移動しますか？\n「保存しない」を選ぶと、開いたときの値に戻ります。",
+      buttons: [
+        { label: "保存して移動", primary: true, onClick: () => { void saveSettingsNow(); switchSettingsCategory(cat); } },
+        { label: "保存しないで移動", danger: true, onClick: () => { discardSettingsChanges(); switchSettingsCategory(cat); } },
+        { label: "キャンセル", onClick: () => {} },
+      ],
+    });
+  };
+  const isStringMap = (v: unknown): v is Record<string, string> =>
+    !!v && typeof v === "object" && !Array.isArray(v) && Object.values(v as object).every((x) => typeof x === "string");
+  // プリセット / バックアップの内容を反映してそのまま保存する (登録内容は withLists のときだけ)
+  const applySettingsBundle = (raw: string, withLists: boolean): boolean => {
+    let parsed: unknown;
+    try { parsed = JSON.parse(raw); } catch { return false; }
+    if (!parsed || typeof parsed !== "object") return false;
+    const b = parsed as { layout?: unknown; app?: unknown; lists?: unknown };
+    const layoutIn = b.layout && typeof b.layout === "object" && !Array.isArray(b.layout) ? (b.layout as Record<string, unknown>) : {};
+    const appIn = isStringMap(b.app) ? b.app : {};
+    const layout = { ...buildLayoutPrefsPayload(), ...stripVolatilePrefs(layoutIn), settingsSearchHistory };
+    const app = { ...buildAppSettingsMap(), ...appIn };
+    applyAppSettings(app);
+    applyLayoutPrefs(JSON.stringify(layout));
+    persistSettingsNow(layout, app);
+    if (withLists && b.lists && typeof b.lists === "object") {
+      const l = b.lists as Record<string, unknown>;
+      const ng = l.ngFilters as Partial<NgFilters> | undefined;
+      if (ng && typeof ng === "object") {
+        void persistNgFilters({
+          words: Array.isArray(ng.words) ? ng.words : [],
+          ids: Array.isArray(ng.ids) ? ng.ids : [],
+          names: Array.isArray(ng.names) ? ng.names : [],
+          thread_words: Array.isArray(ng.thread_words) ? ng.thread_words.filter((x): x is string => typeof x === "string") : [],
+        });
       }
-    };
-    window.addEventListener("input", onInput, true);
-    return () => window.removeEventListener("input", onInput, true);
-  }, [typingConfettiEnabled]);
+      if (isStringMap(l.idHighlights)) persistIdHighlights(l.idHighlights);
+      if (Array.isArray(l.textHighlights)) {
+        persistTextHighlights(l.textHighlights.filter((h): h is TextHighlight =>
+          !!h && typeof h === "object" && typeof (h as TextHighlight).pattern === "string" && typeof (h as TextHighlight).color === "string"
+          && ((h as TextHighlight).type === "word" || (h as TextHighlight).type === "name")));
+      }
+      if (Array.isArray(l.ttsDictEntries)) {
+        setTtsDictEntries(l.ttsDictEntries.filter((e): e is TtsDictEntry => !!e && typeof e === "object" && typeof (e as TtsDictEntry).from === "string" && typeof (e as TtsDictEntry).to === "string"));
+      }
+      if (Array.isArray(l.ttsIpAllow)) {
+        setTtsIpAllow(l.ttsIpAllow.filter((e): e is TtsIpAllowEntry => !!e && typeof e === "object" && typeof (e as TtsIpAllowEntry).host === "string" && typeof (e as TtsIpAllowEntry).to === "string"));
+      }
+      const mute = l.ttsMuteDict as Partial<TtsMuteDict> | undefined;
+      if (mute && typeof mute === "object") {
+        setTtsMuteDict({ names: Array.isArray(mute.names) ? mute.names : [], words: Array.isArray(mute.words) ? mute.words : [], ids: Array.isArray(mute.ids) ? mute.ids : [] });
+      }
+      const f = l.ogpDomainFilters as Partial<OgpDomainFilters> | undefined;
+      if (f && typeof f === "object") {
+        persistOgpDomainFilters({
+          allow: Array.isArray(f.allow) ? f.allow.filter((x): x is string => typeof x === "string") : [],
+          block: Array.isArray(f.block) ? f.block.filter((x): x is string => typeof x === "string") : [],
+        });
+      }
+    }
+    return true;
+  };
+  const resetSettingsToDefaults = async () => {
+    const defaults = defaultLayoutPrefsRef.current;
+    const defaultsApp = defaultAppSettingsRef.current;
+    if (!defaults || !defaultsApp) return;
+    const snap = settingsSnapshot;
+    await createSettingsBackup(snap?.layout ?? buildLayoutPrefsPayload(), snap?.app ?? buildAppSettingsMap());
+    const layout = { ...buildLayoutPrefsPayload(), ...stripVolatilePrefs(defaults), settingsSearchHistory: [] as string[] };
+    applyAppSettings(defaultsApp);
+    applyLayoutPrefs(JSON.stringify(layout));
+    persistSettingsNow(layout, defaultsApp);
+    if (resetIncludeLists) {
+      void persistNgFilters({ words: [], ids: [], names: [], thread_words: [] });
+      persistIdHighlights({});
+      persistTextHighlights([]);
+      setTtsDictEntries(DEFAULT_TTS_DICT);
+      setTtsIpAllow(DEFAULT_TTS_IP_ALLOW);
+      setTtsMuteDict({ names: [], words: [], ids: [] });
+      persistOgpDomainFilters({ allow: [], block: [] });
+    }
+    setStatus("設定を初期値に戻しました (直前の設定は自動バックアップに保存)");
+    void refreshSettingsFiles();
+  };
+  // 字幕ウィンドウへの反映は state から行う (onChange では送らない)。「保存しない」で値が戻ったときも自動で反映される
+  useEffect(() => { if (isTauriRuntime() && subtitleVisibleRef.current) invoke("subtitle_font_size", { size: subtitleBodyFontSize }).catch((e) => console.warn("subtitle_font_size:", e)); }, [subtitleBodyFontSize]);
+  useEffect(() => { if (isTauriRuntime() && subtitleVisibleRef.current) invoke("subtitle_meta_font_size", { size: subtitleMetaFontSize }).catch((e) => console.warn("subtitle_meta_font_size:", e)); }, [subtitleMetaFontSize]);
+  useEffect(() => { if (isTauriRuntime() && subtitleVisibleRef.current) invoke("subtitle_opacity", { opacity: subtitleOpacity }).catch((e) => console.warn("subtitle_opacity:", e)); }, [subtitleOpacity]);
+  useEffect(() => { if (isTauriRuntime() && subtitleVisibleRef.current) invoke("subtitle_topmost", { enabled: subtitleAlwaysOnTop }).catch((e) => console.warn("subtitle_topmost:", e)); }, [subtitleAlwaysOnTop]);
+  useEffect(() => { if (isTauriRuntime() && subtitleVisibleRef.current) invoke("subtitle_id_font_size", { size: subtitleIdFontSize }).catch((e) => console.warn("subtitle_id_font_size:", e)); }, [subtitleIdFontSize]);
+  useEffect(() => { if (isTauriRuntime() && subtitleVisibleRef.current) invoke("subtitle_id_font_family", { family: subtitleIdFontFamily }).catch((e) => console.warn("subtitle_id_font_family:", e)); }, [subtitleIdFontFamily]);
+
 
   useEffect(() => {
     if (isTauriRuntime()) {
@@ -4900,6 +5191,7 @@ export default function App() {
         setIdMenu(null);
         setBeMenu(null);
         setBoardContextMenu(null);
+        setAddressMenu(null);
         setSearchHistoryDropdown(null);
         setSearchHistoryMenu(null);
         setResponseReloadMenuOpen(false);
@@ -4992,7 +5284,15 @@ export default function App() {
         </button>
         <button onClick={() => { void fetchMenu(); void fetchBoardCategories(); }} title="板更新"><ClipboardList size={14} /></button>
         <span className="tool-sep" />
-        <input className="address-input" value={locationInput} onChange={(e) => setLocationInput(e.target.value)} onKeyDown={onLocationInputKeyDown} onFocus={(e) => e.target.select()} />
+        <input
+          ref={addressInputRef}
+          className="address-input"
+          value={locationInput}
+          onChange={(e) => setLocationInput(e.target.value)}
+          onKeyDown={onLocationInputKeyDown}
+          onFocus={(e) => e.target.select()}
+          onContextMenu={(e) => { e.preventDefault(); const p = clampMenuPosition(e.clientX, e.clientY, 170, 110); setAddressMenu({ x: p.x, y: p.y }); }}
+        />
         <button onClick={goFromLocationInput}>移動</button>
         <span className="tool-sep" />
         <label className="auto-refresh-toggle">
@@ -5092,8 +5392,12 @@ export default function App() {
               className="board-search"
               value={boardSearchQuery}
               onChange={(e) => setBoardSearchQuery(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") recordInputHistory("boardSearch", boardSearchQuery); }}
+              onBlur={() => recordInputHistory("boardSearch", boardSearchQuery)}
+              list="input-history-boardSearch"
               placeholder="板を検索..."
             />
+            {inputHistoryDatalist("boardSearch")}
             <button className="external-board-add-btn" onClick={() => setShowExternalBoardDialog(true)} title="外部板を追加">+ 外部板</button>
             </>
           )}
@@ -5226,8 +5530,12 @@ export default function App() {
                 className="fav-search"
                 value={favSearchQuery}
                 onChange={(e) => setFavSearchQuery(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") recordInputHistory("favSearch", favSearchQuery); }}
+                onBlur={() => recordInputHistory("favSearch", favSearchQuery)}
+                list="input-history-favSearch"
                 placeholder="お気に入り検索"
               />
+              {inputHistoryDatalist("favSearch")}
               {favorites.threads.length === 0 ? (
                 <span className="ng-empty">(お気に入りスレッドなし)</span>
               ) : (
@@ -5941,7 +6249,7 @@ export default function App() {
             className="response-layout"
           >
             <div
-              className="response-scroll th-container"
+              className={`response-scroll th-container${responseDividerAlways ? " always-divider" : ""}${responsePaneSettling ? " settling" : ""}`}
               ref={responseScrollRef}
               style={{ '--response-gap': `${responseGap}px` } as React.CSSProperties}
               onScroll={onResponseScroll}
@@ -6076,7 +6384,7 @@ export default function App() {
                   )}
                   <div
                     data-response-no={r.id}
-                    className={`response-block rcon ${selectedResponse === r.id ? "selected" : ""}${myPostNos.has(r.id) ? " my-post mark-myself" : ""}${replyToMeNos.has(r.id) ? " reply-to-me mark-anchor" : ""}${isNew ? " newly" : ""}${isAa ? " aa" : ""}`}
+                    className={`response-block rcon ${selectedResponse === r.id ? "selected" : ""}${myPostNos.has(r.id) ? " my-post mark-myself" : ""}${replyToMeNos.has(r.id) ? " reply-to-me mark-anchor" : ""}${isNew ? " newly" : ""}${isAa ? " aa" : ""}${mainHeaderAllHidden ? " no-header" : ""}`}
                     onClick={() => setSelectedResponse(r.id)}
                     onDoubleClick={() => appendComposeQuote(`>>${r.id}`)}
                   >
@@ -6118,7 +6426,7 @@ export default function App() {
                       )}
                       {backRefMap.has(r.id) && (
                         <span
-                          className="back-ref-trigger"
+                          className="back-ref-trigger res-replies"
                           onMouseEnter={(e) => {
                             const rect = (e.target as HTMLElement).getBoundingClientRect();
                             setBackRefPopup({ x: rect.left, y: rect.top - 4, anchorTop: rect.top, responseIds: backRefMap.get(r.id)! });
@@ -6139,7 +6447,7 @@ export default function App() {
                           </>
                         )}
                         {id && (mainHeaderVis.id || mainHeaderVis.count) && (
-                          <>
+                          <span className="res-col" data-type="id">
                             {mainHeaderVis.id && (
                             <span
                               className="response-id-cell rc-id"
@@ -6164,13 +6472,13 @@ export default function App() {
                             )}
                             {mainHeaderVis.count && (
                             <span
-                              className="response-id-count"
+                              className="response-id-count cnt"
                               style={{ color: count >= 5 ? '#cc3333' : count >= 2 ? '#3366ff' : undefined }}
                             >
                               ({idSeqMap.get(r.id) ?? 1}/{count})
                             </span>
                             )}
-                          </>
+                          </span>
                         )}
                         {r.beNumber && (
                           <button
@@ -6622,7 +6930,7 @@ export default function App() {
                 const tabTitle = threadTabs[activeTabIndex]?.title ?? "";
                 const arrivals: ArrivalItem[] = items
                   .filter((item) => item.id < 1001)
-                  .map((item) => makeArrival({ responseNo: item.id, name: item.name, mail: item.mail, dateAndId: item.time, body: item.text }, tabTitle, curThreadUrl));
+                  .map((item) => makeArrival({ responseNo: item.id, name: item.name, mail: item.mail, dateAndId: item.time, body: item.text }, tabTitle, curThreadUrl, fetchedResponses));
                 if (arrivals.length > 0) {
                   const queueWasEmpty = arrivalQueueRef.current.length === 0;
                   arrivalQueueRef.current.push(...arrivals);
@@ -6658,6 +6966,14 @@ export default function App() {
           <button onClick={() => { setTtsEnabled(!ttsEnabled); setResponseMenu(null); }}>
             {ttsEnabled ? "✓" : "　"} 読み上げ
           </button>
+        </div>
+      )}
+      {addressMenu && (
+        <div className="thread-menu" style={{ left: addressMenu.x, top: addressMenu.y }} onClick={(e) => e.stopPropagation()}>
+          <button onClick={() => { setAddressMenu(null); void pasteAndGo(); }}>貼り付けて移動</button>
+          <button onClick={() => { setAddressMenu(null); void pasteToAddress(); }}>貼り付け</button>
+          <button onClick={() => { setAddressMenu(null); if (locationInput) { void navigator.clipboard.writeText(locationInput); setStatus("URL をコピーしました"); } }} disabled={!locationInput}>コピー</button>
+          <button onClick={() => { setAddressMenu(null); const el = addressInputRef.current; if (el) { el.focus(); el.select(); } }}>すべて選択</button>
         </div>
       )}
       {boardContextMenu && (
@@ -7049,8 +7365,21 @@ export default function App() {
           </div>
         </div>
       )}
+      {appConfirm && (
+        <div className="app-confirm-overlay" onClick={() => setAppConfirm(null)}>
+          <div className="app-confirm" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+            {appConfirm.title && <div className="app-confirm-title">{appConfirm.title}</div>}
+            <div className="app-confirm-message">{appConfirm.message}</div>
+            <div className="app-confirm-buttons">
+              {appConfirm.buttons.map((b) => (
+                <button key={b.label} className={b.primary ? "primary" : b.danger ? "danger" : ""} onClick={() => { setAppConfirm(null); b.onClick(); }}>{b.label}</button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
       {settingsOpen && (
-        <div className="lightbox-overlay" onClick={() => setSettingsOpen(false)}>
+        <div className="lightbox-overlay" onClick={requestCloseSettings}>
           <div className="settings-panel settings-panel-wide" onClick={(e) => e.stopPropagation()}>
             <header className="settings-header">
               <strong>設定</strong>
@@ -7059,16 +7388,28 @@ export default function App() {
                 className="settings-search"
                 placeholder="設定項目を検索（項目名・説明文）"
                 value={settingsQuery}
+                list="settings-search-history"
                 onChange={(e) => setSettingsQuery(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); setSettingsQuery(""); } }}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") { e.preventDefault(); setSettingsQuery(""); }
+                  else if (e.key === "Enter") { e.preventDefault(); pushSettingsSearchHistory(settingsQuery); }
+                }}
               />
+              <datalist id="settings-search-history">
+                {settingsSearchHistory.map((h) => <option key={h} value={h} />)}
+              </datalist>
               {settingsQuery && <button onClick={() => setSettingsQuery("")}>検索をクリア</button>}
-              <button onClick={() => setSettingsOpen(false)}>閉じる</button>
+              {settingsSearchHistory.length > 0 && <button onClick={() => setSettingsSearchHistory([])} title="検索語の履歴 (候補) を消去">履歴を消去</button>}
+              <span className="settings-header-actions">
+                {settingsDirty && <span className="settings-dirty-note">未保存の変更があります</span>}
+                <button className="primary" disabled={!settingsDirty} onClick={() => void saveSettingsNow()} title="値の設定をファイルに保存します (NG・辞書などの登録内容は登録した時点で保存済み)">設定を保存</button>
+                <button onClick={requestCloseSettings}>閉じる</button>
+              </span>
             </header>
             <div className="settings-2col">
               <nav className="settings-nav">
                 {SETTINGS_CATEGORIES.map((cat) => (
-                  <button key={cat} data-cat={cat} className={`settings-nav-item${settingsCategory === cat ? " active" : ""}`} onClick={() => { setSettingsCategory(cat); setSettingsSection(""); setSettingsListFilter(""); setSettingsQuery(""); }}>{SETTINGS_CATEGORY_LABELS[cat]}</button>
+                  <button key={cat} data-cat={cat} className={`settings-nav-item${settingsCategory === cat ? " active" : ""}`} onClick={() => requestSwitchSettingsCategory(cat)}>{SETTINGS_CATEGORY_LABELS[cat]}</button>
                 ))}
               </nav>
               <div className="settings-content" ref={settingsContentRef}>
@@ -7088,6 +7429,19 @@ export default function App() {
                 {settingsSectionHeading("display", "general")}
               <fieldset>
                 <legend>全般</legend>
+                <div className="settings-row">
+                  <span>検索・入力欄の履歴（板・お気に入り・スレ一覧・レス内の検索、設定の検索と絞り込み、スレ立てのタイトルとメール欄の候補）</span>
+                  <button onClick={() => {
+                    inputHistoryRef.current = {};
+                    setInputHistory({});
+                    saveToFile("input-history.json", {});
+                    setThreadSearchHistory([]);
+                    setResponseSearchHistory([]);
+                    persistSearchHistory([], []);
+                    setSettingsSearchHistory([]);
+                    setStatus("入力履歴を消去しました");
+                  }}>履歴を消去</button>
+                </div>
                 <label className="settings-row">
                   <span>テーマ</span>
                   <select value={darkMode ? "dark" : "light"} onChange={(e) => setDarkMode(e.target.value === "dark")}>
@@ -7213,6 +7567,10 @@ export default function App() {
                   <span>レスヘッダに表示する項目（非表示の項目は詰めて表示）</span>
                   {headerVisRows(mainHeaderVis, setMainHeaderVis, { watchoi: true })}
                 </div>
+                <label className="settings-row">
+                  <input type="checkbox" checked={responseDividerAlways} onChange={(e) => setResponseDividerAlways(e.target.checked)} />
+                  <span>レス間に罫線を常に表示（ヘッダ項目を全て非表示にしたときは自動で表示）</span>
+                </label>
                 <label className="settings-row">
                   <span>レスID 文字サイズ補正 (0=同じ、±px)</span>
                   <input type="number" value={resIdFontSize} min={-20} max={24} onChange={(e) => setResIdFontSize(Number(e.target.value))} style={{ width: 60 }} />
@@ -7452,10 +7810,6 @@ export default function App() {
                   <span>書き込み文字サイズ</span>
                   <input type="number" value={composeFontSize} min={10} max={24} onChange={(e) => setComposeFontSize(Number(e.target.value))} />
                 </label>
-                <label className="settings-row">
-                  <input type="checkbox" checked={typingConfettiEnabled} onChange={(e) => setTypingConfettiEnabled(e.target.checked)} />
-                  <span>入力時コンフェティ</span>
-                </label>
               </fieldset>
               </section>
               </div>
@@ -7471,7 +7825,6 @@ export default function App() {
                   <input type="number" min={10} max={96} value={subtitleBodyFontSize} onChange={(e) => {
                     const v = Number(e.target.value);
                     setSubtitleBodyFontSize(v);
-                    if (isTauriRuntime()) invoke("subtitle_font_size", { size: v }).catch(() => {});
                   }} style={{ width: 60 }} />
                 </div>
                 <div className="settings-row">
@@ -7479,7 +7832,6 @@ export default function App() {
                   <input type="number" min={8} max={48} value={subtitleMetaFontSize} onChange={(e) => {
                     const v = Number(e.target.value);
                     setSubtitleMetaFontSize(v);
-                    if (isTauriRuntime()) invoke("subtitle_meta_font_size", { size: v }).catch(() => {});
                   }} style={{ width: 60 }} />
                 </div>
                 <div className="settings-row">
@@ -7487,7 +7839,6 @@ export default function App() {
                   <input type="range" min={0.1} max={1.0} step={0.05} value={subtitleOpacity} onChange={(e) => {
                     const v = Number(e.target.value);
                     setSubtitleOpacity(v);
-                    if (isTauriRuntime()) invoke("subtitle_opacity", { opacity: v }).catch(() => {});
                   }} style={{ width: 120 }} />
                   <span>{subtitleOpacity.toFixed(2)}</span>
                 </div>
@@ -7495,7 +7846,6 @@ export default function App() {
                   <span>常に最前面</span>
                   <input type="checkbox" checked={subtitleAlwaysOnTop} onChange={(e) => {
                     setSubtitleAlwaysOnTop(e.target.checked);
-                    if (isTauriRuntime()) invoke("subtitle_topmost", { enabled: e.target.checked }).catch(() => {});
                   }} />
                 </div>
                 <div className="settings-row" style={{ flexDirection: "column", alignItems: "stretch", gap: 4 }}>
@@ -7507,7 +7857,6 @@ export default function App() {
                   <input type="number" min={-48} max={48} value={subtitleIdFontSize} onChange={(e) => {
                     const v = Number(e.target.value);
                     setSubtitleIdFontSize(v);
-                    if (isTauriRuntime()) invoke("subtitle_id_font_size", { size: v }).catch(() => {});
                   }} style={{ width: 60 }} />
                 </div>
                 <div className="settings-row" style={{ alignItems: "flex-start" }}>
@@ -7521,7 +7870,6 @@ export default function App() {
                         placeholder="デフォルト (入力またはクリック)" style={{ flex: 1, minWidth: 0 }} />
                       {subtitleIdFontFamily && <button style={{ flexShrink: 0 }} onClick={() => {
                         setSubtitleIdFontFamily(""); setSubtitleIdFontPickerInput("");
-                        if (isTauriRuntime()) invoke("subtitle_id_font_family", { family: "" }).catch(() => {});
                       }}>×</button>}
                     </div>
                     {subtitleIdFontPickerOpen && (() => {
@@ -7534,7 +7882,6 @@ export default function App() {
                               onMouseDown={(e) => {
                                 e.preventDefault();
                                 setSubtitleIdFontFamily(f); setSubtitleIdFontPickerInput(f); setSubtitleIdFontPickerOpen(false);
-                                if (isTauriRuntime()) invoke("subtitle_id_font_family", { family: f }).catch(() => {});
                               }}>{f}</div>
                           ))}
                         </div>
@@ -7553,14 +7900,20 @@ export default function App() {
               <section className="settings-section" data-section="cards">
                 {settingsSectionHeading("subtitle", "cards")}
               <fieldset>
-                <legend>カード表示・自動スクロール</legend>
+                <legend>カード表示</legend>
                 <label className="settings-row">
                   <input type="checkbox" checked={subtitleCardsEnabled} onChange={(e) => setSubtitleCardsEnabled(e.target.checked)} />
-                  <span>字幕ウィンドウにもカードを表示（OGP / X カードが ON のとき有効）</span>
+                  <span>字幕ウィンドウにもカードを表示（表示 › リンクカードで OGP / X カードが ON のとき有効）</span>
                 </label>
+              </fieldset>
+              </section>
+              <section className="settings-section" data-section="scroll">
+                {settingsSectionHeading("subtitle", "scroll")}
+              <fieldset>
+                <legend>自動スクロール</legend>
                 <label className="settings-row">
                   <input type="checkbox" checked={subtitleSyncEnabled} onChange={(e) => setSubtitleSyncEnabled(e.target.checked)} />
-                  <span>字幕の表示が終わるまで次の新着レスを待つ（字幕を閉じているときは新着ペインの時間で進む）</span>
+                  <span>新着レスペインと字幕の次レス表示を同期する（両方が最下行まで表示し終えてから、長い方の「スクロール後の表示時間」を待って次へ。字幕を閉じているときは新着ペインの時間で進む）</span>
                 </label>
                 <div className="settings-row" style={{ flexDirection: "column", alignItems: "stretch", gap: 4 }}>
                   <div style={{ fontSize: 11, color: "var(--text-secondary, #888)" }}>
@@ -7699,10 +8052,10 @@ export default function App() {
                     {ttsDictEntries.map((entry, i) => ({ entry, i })).filter(({ entry }) => settingsListMatch(entry.from, entry.to)).map(({ entry, i }) => (
                       <tr key={i} style={{ borderBottom: "1px solid var(--border-light, #eee)" }}>
                         <td style={{ padding: "3px 6px" }}>
-                          <input type="text" value={entry.from} onChange={(e) => setTtsDictEntries((prev) => prev.map((x, j) => j === i ? { ...x, from: e.target.value } : x))} style={{ width: 110 }} />
+                          <input type="text" value={entry.from} onChange={(e) => setTtsDictEntries((prev) => prev.map((x, j) => j === i ? { ...x, from: e.target.value } : x))} style={{ width: 220 }} />
                         </td>
                         <td style={{ padding: "3px 6px" }}>
-                          <input type="text" value={entry.to} onChange={(e) => setTtsDictEntries((prev) => prev.map((x, j) => j === i ? { ...x, to: e.target.value } : x))} style={{ width: 150 }} />
+                          <input type="text" value={entry.to} onChange={(e) => setTtsDictEntries((prev) => prev.map((x, j) => j === i ? { ...x, to: e.target.value } : x))} style={{ width: 220 }} />
                         </td>
                         <td style={{ padding: "3px 6px", textAlign: "center" }}>
                           <input type="checkbox" checked={!!entry.fullReplace} onChange={(e) => setTtsDictEntries((prev) => prev.map((x, j) => j === i ? { ...x, fullReplace: e.target.checked } : x))} />
@@ -7715,9 +8068,9 @@ export default function App() {
                   </tbody>
                 </table>
                 <div style={{ display: "flex", gap: 4, alignItems: "center", marginTop: 4 }}>
-                  <input type="text" value={ttsDictNewFrom} onChange={(e) => setTtsDictNewFrom(e.target.value)} placeholder="キーワード" style={{ width: 110 }} />
+                  <input type="text" value={ttsDictNewFrom} onChange={(e) => setTtsDictNewFrom(e.target.value)} placeholder="キーワード" style={{ width: 220 }} />
                   <span>→</span>
-                  <input type="text" value={ttsDictNewTo} onChange={(e) => setTtsDictNewTo(e.target.value)} placeholder="読み上げテキスト" style={{ width: 150 }} />
+                  <input type="text" value={ttsDictNewTo} onChange={(e) => setTtsDictNewTo(e.target.value)} placeholder="読み上げテキスト" style={{ width: 220 }} />
                   <label style={{ display: "flex", alignItems: "center", gap: 2, fontSize: 11 }}>
                     <input type="checkbox" checked={ttsDictNewFullReplace} onChange={(e) => setTtsDictNewFullReplace(e.target.checked)} />
                     全文置換
@@ -7736,7 +8089,7 @@ export default function App() {
                 <legend>読み上げ許可リスト（IPアドレス配信URL） ({ttsIpAllow.length}件)</legend>
                 {settingsListFilterRow()}
                 <div style={{ fontSize: 11, color: "var(--text-secondary, #888)", marginBottom: 6 }}>
-                  ホスト部分が生の IP アドレス (例: 27.91.102.168:8030) の URL は、ここに登録されたものだけ「読み上げテキスト」で読み上げ、
+                  ホスト部分が生の IP アドレス (例: 192.0.2.1:8030) の URL は、ここに登録されたものだけ「読み上げテキスト」で読み上げ、
                   未登録の IP アドレスは読み上げません。ポートを省略するとその IP の全ポートに一致します。ドメイン名の URL は上の読み上げ辞書で扱います。
                 </div>
                 <table data-search-exclude="1" style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, marginBottom: 6 }}>
@@ -7751,10 +8104,10 @@ export default function App() {
                     {ttsIpAllow.map((entry, i) => ({ entry, i })).filter(({ entry }) => settingsListMatch(entry.host, entry.to)).map(({ entry, i }) => (
                       <tr key={i} style={{ borderBottom: "1px solid var(--border-light, #eee)" }}>
                         <td style={{ padding: "3px 6px" }}>
-                          <input type="text" value={entry.host} onChange={(e) => setTtsIpAllow((prev) => prev.map((x, j) => j === i ? { ...x, host: e.target.value } : x))} style={{ width: 150 }} />
+                          <input type="text" value={entry.host} onChange={(e) => setTtsIpAllow((prev) => prev.map((x, j) => j === i ? { ...x, host: e.target.value } : x))} style={{ width: 220 }} />
                         </td>
                         <td style={{ padding: "3px 6px" }}>
-                          <input type="text" value={entry.to} onChange={(e) => setTtsIpAllow((prev) => prev.map((x, j) => j === i ? { ...x, to: e.target.value } : x))} style={{ width: 150 }} />
+                          <input type="text" value={entry.to} onChange={(e) => setTtsIpAllow((prev) => prev.map((x, j) => j === i ? { ...x, to: e.target.value } : x))} style={{ width: 220 }} />
                         </td>
                         <td style={{ padding: "3px 6px" }}>
                           <button onClick={() => setTtsIpAllow((prev) => prev.filter((_, j) => j !== i))}>削除</button>
@@ -7764,9 +8117,9 @@ export default function App() {
                   </tbody>
                 </table>
                 <div style={{ display: "flex", gap: 4, alignItems: "center", marginTop: 4 }}>
-                  <input type="text" value={ttsIpAllowNewHost} onChange={(e) => setTtsIpAllowNewHost(e.target.value)} placeholder="IPアドレス[:ポート]" style={{ width: 150 }} />
+                  <input type="text" value={ttsIpAllowNewHost} onChange={(e) => setTtsIpAllowNewHost(e.target.value)} placeholder="IPアドレス[:ポート]" style={{ width: 220 }} />
                   <span>→</span>
-                  <input type="text" value={ttsIpAllowNewTo} onChange={(e) => setTtsIpAllowNewTo(e.target.value)} placeholder="読み上げテキスト" style={{ width: 150 }} />
+                  <input type="text" value={ttsIpAllowNewTo} onChange={(e) => setTtsIpAllowNewTo(e.target.value)} placeholder="読み上げテキスト" style={{ width: 220 }} />
                   <button onClick={() => {
                     const host = ttsIpAllowNewHost.trim();
                     if (!host) return;
@@ -7800,7 +8153,7 @@ export default function App() {
                       <tr key={`${kind}-${i}`} style={{ borderBottom: "1px solid var(--border-light, #eee)" }}>
                         <td style={{ padding: "3px 6px", whiteSpace: "nowrap" }}>{kind === "names" ? "名前・ワッチョイ" : kind === "words" ? "レス本文ワード" : "ID"}</td>
                         <td style={{ padding: "3px 6px" }}>
-                          <input type="text" value={entry.value} onChange={(e) => setTtsMuteDict((prev) => ({ ...prev, [kind]: prev[kind].map((x, j) => j === i ? { ...x, value: e.target.value } : x) }))} style={{ width: 180 }} />
+                          <input type="text" value={entry.value} onChange={(e) => setTtsMuteDict((prev) => ({ ...prev, [kind]: prev[kind].map((x, j) => j === i ? { ...x, value: e.target.value } : x) }))} style={{ width: 220 }} />
                         </td>
                         <td style={{ padding: "3px 6px", textAlign: "center" }}>
                           {kind === "words"
@@ -7820,7 +8173,7 @@ export default function App() {
                     <option value="names">名前・ワッチョイ</option>
                     <option value="ids">ID</option>
                   </select>
-                  <input type="text" value={ttsMuteNewValue} onChange={(e) => setTtsMuteNewValue(e.target.value)} placeholder="ワード または /正規表現/" style={{ width: 180 }} />
+                  <input type="text" value={ttsMuteNewValue} onChange={(e) => setTtsMuteNewValue(e.target.value)} placeholder="ワード または /正規表現/" style={{ width: 220 }} />
                   {ttsMuteNewKind === "words" && (
                     <label style={{ display: "flex", alignItems: "center", gap: 2, fontSize: 11 }}>
                       <input type="checkbox" checked={ttsMuteNewSkipWhole} onChange={(e) => setTtsMuteNewSkipWhole(e.target.checked)} />
@@ -8141,6 +8494,119 @@ export default function App() {
               </section>
               </div>
               )}
+              {(settingsSearching || settingsCategory === "presets") && (
+              <div className="settings-cat" data-cat="presets">
+              <section className="settings-section" data-section="main">
+                {settingsSectionHeading("presets", "main")}
+              <fieldset>
+                <legend>プリセット</legend>
+                <div className="settings-row">
+                  <span>現在の値の設定に名前を付けて保存し、あとから読み込めます（NG・辞書・ハイライトなどの登録内容は含みません）</span>
+                </div>
+                <div className="settings-row" data-search-exclude="1">
+                  <input type="text" value={presetNameInput} onChange={(e) => setPresetNameInput(e.target.value)} list="settings-preset-names" placeholder="プリセット名" style={{ width: 220 }} maxLength={64} />
+                  <datalist id="settings-preset-names">
+                    {settingsPresets.map((p) => <option key={p.name} value={p.name} />)}
+                  </datalist>
+                  <button disabled={!presetNameInput.trim()} onClick={() => {
+                    const name = presetNameInput.trim();
+                    const doSave = async () => {
+                      try {
+                        await invoke("save_settings_preset", { name, json: JSON.stringify(buildSettingsBundle(buildLayoutPrefsPayload(), buildAppSettingsMap(), false)) });
+                        setPresetNameInput("");
+                        setStatus(`プリセット「${name}」を保存しました`);
+                        await refreshSettingsFiles();
+                      } catch (e) { setStatus(`プリセットの保存に失敗: ${String(e)}`); }
+                    };
+                    if (settingsPresets.some((p) => p.name === name)) {
+                      setAppConfirm({ title: "プリセットの上書き", message: `「${name}」は既にあります。上書きしますか？`, buttons: [
+                        { label: "上書き", primary: true, onClick: () => { void doSave(); } },
+                        { label: "キャンセル", onClick: () => {} },
+                      ] });
+                    } else {
+                      void doSave();
+                    }
+                  }}>保存</button>
+                </div>
+                <div className="settings-file-list" data-search-exclude="1">
+                  {settingsPresets.length === 0 && <div className="settings-file-empty">保存されたプリセットはありません</div>}
+                  {settingsPresets.map((p) => (
+                    <div key={p.name} className="settings-file-row">
+                      <span className="settings-file-name">{p.name}</span>
+                      <span className="settings-file-date">{formatUnixTime(p.savedAt)}</span>
+                      <button onClick={() => setAppConfirm({ title: "プリセットの読み込み", message: `「${p.name}」を読み込んで現在の値の設定を置き換えます。よろしいですか？\n（現在の設定は自動バックアップに保存されます）`, buttons: [
+                        { label: "読み込む", primary: true, onClick: () => { void (async () => {
+                          try {
+                            const raw = await invoke<string>("load_settings_preset", { name: p.name });
+                            await createSettingsBackup(buildLayoutPrefsPayload(), buildAppSettingsMap());
+                            setStatus(applySettingsBundle(raw, false) ? `プリセット「${p.name}」を読み込みました` : "プリセットの内容が不正です");
+                            void refreshSettingsFiles();
+                          } catch (e) { setStatus(`プリセットの読み込みに失敗: ${String(e)}`); }
+                        })(); } },
+                        { label: "キャンセル", onClick: () => {} },
+                      ] })}>読み込む</button>
+                      <button onClick={() => setAppConfirm({ title: "プリセットの削除", message: `「${p.name}」を削除します。よろしいですか？`, buttons: [
+                        { label: "削除", danger: true, onClick: () => { void (async () => {
+                          try { await invoke("delete_settings_preset", { name: p.name }); await refreshSettingsFiles(); }
+                          catch (e) { setStatus(`削除に失敗: ${String(e)}`); }
+                        })(); } },
+                        { label: "キャンセル", onClick: () => {} },
+                      ] })}>削除</button>
+                    </div>
+                  ))}
+                </div>
+              </fieldset>
+              <fieldset>
+                <legend>自動バックアップ</legend>
+                <div className="settings-row">
+                  <span>「設定を保存」とリセットの前に、直前の設定（登録内容を含む）を自動で保存します（最新 20 件）。復元すると登録内容も戻ります</span>
+                </div>
+                <div className="settings-file-list" data-search-exclude="1">
+                  {settingsBackups.length === 0 && <div className="settings-file-empty">バックアップはまだありません</div>}
+                  {settingsBackups.map((b) => (
+                    <div key={b.name} className="settings-file-row">
+                      <span className="settings-file-name">{formatBackupName(b.name)}</span>
+                      <button onClick={() => setAppConfirm({ title: "バックアップの復元", message: `${formatBackupName(b.name)} の設定に戻します（登録内容も含む）。よろしいですか？\n（現在の設定は自動バックアップに保存されます）`, buttons: [
+                        { label: "復元", primary: true, onClick: () => { void (async () => {
+                          try {
+                            const raw = await invoke<string>("load_settings_backup", { name: b.name });
+                            await createSettingsBackup(buildLayoutPrefsPayload(), buildAppSettingsMap());
+                            setStatus(applySettingsBundle(raw, true) ? "バックアップから設定を復元しました" : "バックアップの内容が不正です");
+                            void refreshSettingsFiles();
+                          } catch (e) { setStatus(`復元に失敗: ${String(e)}`); }
+                        })(); } },
+                        { label: "キャンセル", onClick: () => {} },
+                      ] })}>復元</button>
+                    </div>
+                  ))}
+                </div>
+              </fieldset>
+              </section>
+              </div>
+              )}
+              {(settingsSearching || settingsCategory === "reset") && (
+              <div className="settings-cat" data-cat="reset">
+              <section className="settings-section" data-section="main">
+                {settingsSectionHeading("reset", "main")}
+              <fieldset>
+                <legend>リセット</legend>
+                <div className="settings-row">
+                  <span>すべての値の設定（表示・書き込み・読み上げ・字幕など）を初期値に戻します。実行前に現在の設定を自動バックアップに保存するので、「プリセット」タブの自動バックアップから戻せます</span>
+                </div>
+                <label className="settings-row">
+                  <input type="checkbox" checked={resetIncludeLists} onChange={(e) => setResetIncludeLists(e.target.checked)} />
+                  <span>NG・ハイライト・読み上げ辞書・許可リスト・読み上げない辞書・カードのドメイン設定などの登録内容も初期化する</span>
+                </label>
+                <div className="settings-row">
+                  <button className="danger" onClick={() => setAppConfirm({ title: "設定のリセット", message: resetIncludeLists ? "値の設定と登録内容をすべて初期値に戻します。よろしいですか？" : "値の設定を初期値に戻します（登録内容はそのまま）。よろしいですか？", buttons: [
+                    { label: "初期値に戻す", danger: true, onClick: () => { void resetSettingsToDefaults(); } },
+                    { label: "キャンセル", onClick: () => {} },
+                  ] })}>設定を初期値に戻す…</button>
+                </div>
+              </fieldset>
+              </section>
+              </div>
+              )}
               {(settingsSearching || settingsCategory === "info") && (
               <div className="settings-cat" data-cat="info">
               <section className="settings-section" data-section="main">
@@ -8204,6 +8670,7 @@ export default function App() {
                 <input
                   value={newThreadSubject}
                   onChange={(e) => setNewThreadSubject(e.target.value)}
+                  list="input-history-newThreadSubject"
                   placeholder="スレッドタイトル"
                   style={{ width: "100%", boxSizing: "border-box" }}
                 />
@@ -8226,8 +8693,11 @@ export default function App() {
                   <input
                     value={newThreadMail}
                     onChange={(e) => setNewThreadMail(e.target.value)}
+                    list="input-history-newThreadMail"
                     style={{ width: "100%", boxSizing: "border-box" }}
                   />
+                  {inputHistoryDatalist("newThreadSubject")}
+                  {inputHistoryDatalist("newThreadMail")}
                 </label>
               </div>
               <label style={{ flex: 1, display: "flex", flexDirection: "column" }}>
