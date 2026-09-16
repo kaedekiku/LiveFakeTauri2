@@ -680,8 +680,6 @@ export default function App() {
   // メイン側でタブを切り替えられてしまい、それを送信時に読み直すと投稿先が意図と変わってしまうため
   const composePopupTargetRef = useRef<{ url: string; title: string } | null>(null);
   const [composePanelPx, setComposePanelPx] = useState(DEFAULT_COMPOSE_PANEL_PX);
-  const [composeNewThread, setComposeNewThread] = useState(false);
-  const [composeSubject, setComposeSubject] = useState("");
   const [composeName, setComposeName] = useState("");
   const [nameHistory, setNameHistory] = useState<string[]>([]);
   const [composeMail, setComposeMail] = useState("");
@@ -2519,35 +2517,6 @@ export default function App() {
     }
   };
 
-  const handleCreateThread = async () => {
-    if (!composeSubject.trim()) { setComposeResult({ ok: false, message: "スレッドタイトルを入力してください" }); return; }
-    if (!composeBody.trim()) { setComposeResult({ ok: false, message: "本文を入力してください" }); return; }
-    const boardUrl = getBoardUrlFromThreadUrl(threadUrl.trim()) || threadUrl.trim();
-    if (!boardUrl) { setComposeResult({ ok: false, message: "板URLが特定できません" }); return; }
-    setComposeResult(null);
-    try {
-      const r = await invoke<{ status: number; containsError: boolean; bodyPreview: string; threadUrl: string | null }>("create_thread_command", {
-        boardUrl,
-        subject: composeSubject,
-        from: composeName || null,
-        mail: composeMailValue || null,
-        message: composeBody,
-      });
-      const ok = !r.containsError;
-      setComposeResult({ ok, message: ok ? `スレッド作成成功 (${r.threadUrl ?? ""})` : `スレッド作成失敗: ${r.bodyPreview}` });
-      if (ok && r.threadUrl) {
-        openThreadInTab(r.threadUrl, composeSubject);
-        void fetchResponsesFromCurrent(r.threadUrl);
-        void refreshThreadListSilently();
-        setComposeNewThread(false);
-        setComposeSubject("");
-        setComposeBody("");
-      }
-    } catch (error) {
-      setComposeResult({ ok: false, message: `Error: ${String(error)}` });
-    }
-  };
-
   // 投稿成功後の共通処理 (名前履歴・自分の投稿判定・再取得・スクロール)。
   // 下部の書き込みパネルと、スレッドタイトルバーから開く浮遊ウィンドウの両方から呼ばれる
   const applyPostSuccessBookkeeping = async (targetThreadUrl: string, name: string, postedBody: string) => {
@@ -3077,6 +3046,18 @@ export default function App() {
   };
 
   const composeMailValue = composeSage ? "sage" : composeMail;
+  // 「プレビュー」タブ: 実際に投稿された後の見た目 (dat形式のプレーンテキスト) を表示する。
+  // レス番号は NG で隠れている分も含めた本当の最終レス番号+1。ID は投稿するまで分からないため "???"
+  const composePreviewLine = (): string => {
+    const dow = ["日", "月", "火", "水", "木", "金", "土"][new Date().getDay()];
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const dateStr = `${now.getFullYear()}/${pad(now.getMonth() + 1)}/${pad(now.getDate())}(${dow}) ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+    const nextNo = fetchedResponses.length + 1;
+    const name = composeName.trim() || "名無しさん";
+    const mailPart = composeMailValue ? `[${composeMailValue}]` : "";
+    return `${nextNo} ：${name}${mailPart} ：${dateStr} ID:???\n${composeBody}`;
+  };
   const boardItems: string[] = [];
   const fallbackThreadItems = [
     { id: 1, title: "プローブスレッド", res: 999, got: 24, speed: 2.5, lastLoad: "14:42", lastPost: "14:44", threadUrl: "https://mao.5ch.io/test/read.cgi/ngt/1/", threadKey: "1" },
@@ -6678,56 +6659,32 @@ export default function App() {
           }}
         >
           {composeOpen ? <ChevronDown size={13} /> : <ChevronUp size={13} />}
-          <strong>{composeNewThread ? "新スレ作成" : "書き込み"}</strong>
           {composeOpen && (
             <>
-              <button className={`compose-mode-btn ${!composeNewThread ? "active" : ""}`} onClick={() => setComposeNewThread(false)}>レス</button>
-              <button className={`compose-mode-btn ${composeNewThread ? "active" : ""}`} onClick={() => setComposeNewThread(true)}>新スレ</button>
-              <span className="compose-target" title={threadTabs[activeTabIndex]?.threadUrl ?? threadUrl}>
-                {threadTabs[activeTabIndex]?.title ?? threadUrl}
-              </span>
+              <button className={`compose-mode-btn ${!composePreview ? "active" : ""}`} onClick={() => setComposePreview(false)}>本文</button>
+              <button className={`compose-mode-btn ${composePreview ? "active" : ""}`} onClick={() => setComposePreview(true)}>プレビュー</button>
             </>
           )}
         </header>
         {composeOpen && (
           <>
-            {composeNewThread && (
-              <div className="compose-row">
-                <span className="compose-label">スレタイ</span>
-                <input className="compose-input-full" value={composeSubject} onChange={(e) => setComposeSubject(e.target.value)} placeholder="スレッドタイトルを入力" autoFocus />
-              </div>
-            )}
-            <div className="compose-row">
+            <div className="compose-row postform-foot">
               <span className="compose-label">名前</span>
-              <input className="compose-input" value={composeName} onChange={(e) => setComposeName(e.target.value)} list="name-history-list" />
+              <input className="compose-input compose-input-name" value={composeName} onChange={(e) => setComposeName(e.target.value)} list="name-history-list" />
               <datalist id="name-history-list">
                 {nameHistory.map((n) => <option key={n} value={n} />)}
               </datalist>
               <span className="compose-label">メール</span>
-              <input className="compose-input" value={composeMailValue} onChange={(e) => setComposeMail(e.target.value)} disabled={composeSage} />
+              <input className="compose-input compose-input-mail" value={composeMailValue} onChange={(e) => setComposeMail(e.target.value)} disabled={composeSage} />
               <label className="compose-check">
                 <input type="checkbox" checked={composeSage} onChange={(e) => setComposeSage(e.target.checked)} />
                 sage
               </label>
-            </div>
-            <textarea
-              className="compose-body"
-              value={composeBody}
-              onChange={(e) => setComposeBody(e.target.value)}
-              onKeyDown={onComposeBodyKeyDown}
-              placeholder="本文を入力"
-              autoFocus
-              style={{ fontSize: `${composeFontSize}px` }}
-            />
-            <div className="compose-meta">
-              <span>{composeBody.length}文字</span>
-              <span>{composeBody.split("\n").length}行</span>
-            </div>
-            {composePreview && (
-              <div className="compose-preview" dangerouslySetInnerHTML={renderResponseBody(composeBody || "(空)")} />
-            )}
-            <div className="compose-actions postform-foot">
-              <button className="postform-write" onClick={composeNewThread ? handleCreateThread : probePostFlowTraceFromCompose} disabled={composeSubmitting}>{composeSubmitting ? "送信中..." : composeNewThread ? "スレッド作成" : `送信 (${composeSubmitKey === "shift" ? "Shift" : "Ctrl"}+Enter)`}</button>
+              <span className="compose-meta-inline">
+                <span>{composeBody.length}文字</span>
+                <span>{composeBody.split("\n").length}行</span>
+              </span>
+              <button className="postform-write" onClick={probePostFlowTraceFromCompose} disabled={composeSubmitting}>{composeSubmitting ? "送信中..." : `送信 (${composeSubmitKey === "shift" ? "Shift" : "Ctrl"}+Enter)`}</button>
               {diagnosticsEnabled && (
                 <button onClick={async () => {
                   setComposeResult({ ok: false, message: "診断中..." });
@@ -6737,9 +6694,22 @@ export default function App() {
                   } catch (e) {
                     setComposeResult({ ok: false, message: `診断エラー: ${String(e)}` });
                   }
-                }} style={{ marginLeft: "auto", fontSize: "0.85em" }}>接続診断</button>
+                }} style={{ fontSize: "0.85em" }}>接続診断</button>
               )}
             </div>
+            {!composePreview ? (
+              <textarea
+                className="compose-body"
+                value={composeBody}
+                onChange={(e) => setComposeBody(e.target.value)}
+                onKeyDown={onComposeBodyKeyDown}
+                placeholder="本文を入力"
+                autoFocus
+                style={{ fontSize: `${composeFontSize}px` }}
+              />
+            ) : (
+              <div className="compose-body compose-preview-plain" style={{ fontSize: `${composeFontSize}px` }}>{composePreviewLine()}</div>
+            )}
             {composeResult && (
               <div className={`compose-result ${composeResult.ok ? "compose-result-ok" : "compose-result-err"}`}>
                 {composeResult.ok ? "OK" : "NG"}: {composeResult.message}
@@ -6747,10 +6717,10 @@ export default function App() {
             )}
           </>
         )}
-        {/* 着~/サイズ~kb・画像/動画/外部リンクフィルタ・Top/New/End は、展開・格納どちらの状態でも
-            書き込みウィンドウの一番下 (展開時は本文欄より下) に幅いっぱいで配置する */}
-        {activePaneView !== "threads" && activeTabIndex >= 0 && activeTabIndex < threadTabs.length && (
-          <div className="response-nav-bar" style={{ '--fs-delta': `${responsesFontSize - 12}px` } as React.CSSProperties}>
+      </section>
+      <footer className="status-bar">
+        {activePaneView !== "threads" && activeTabIndex >= 0 && activeTabIndex < threadTabs.length ? (
+          <div className="status-nav-bar" style={{ '--fs-delta': `${responsesFontSize - 12}px` } as React.CSSProperties}>
             <span className="nav-info">
               着:{visibleResponseItems.length}{ngFilteredCount > 0 ? `(NG${ngFilteredCount})` : ""}
               {" "}サイズ:{Math.round(visibleResponseItems.reduce((s, r) => s + r.text.length, 0) / 1024)}KB
@@ -6790,16 +6760,17 @@ export default function App() {
               />
             </span>
           </div>
+        ) : (
+          <>
+            <span className="status-main">{status}</span>
+            <span className="status-sep">|</span>
+            <span>TS～{visibleThreadItems.length}</span>
+            <span className="status-sep">|</span>
+            <span>US～{unreadThreadCount}</span>
+            <span className="status-sep">|</span>
+            <span>Runtime:{runtimeState}</span>
+          </>
         )}
-      </section>
-      <footer className="status-bar">
-        <span className="status-main">{status}</span>
-        <span className="status-sep">|</span>
-        <span>TS～{visibleThreadItems.length}</span>
-        <span className="status-sep">|</span>
-        <span>US～{unreadThreadCount}</span>
-        <span className="status-sep">|</span>
-        <span>Runtime:{runtimeState}</span>
       </footer>
       {ngPanelOpen && (
         <section className="ng-panel" role="dialog" aria-label="NGフィルタ">

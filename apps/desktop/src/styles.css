@@ -647,19 +647,9 @@ li.fav-drag-over {
   flex: 1;
 }
 
-.response-nav-bar {
-  display: flex;
-  align-items: center;
-  background: #e0e0e0;
-  border-top: 1px solid #a0a0a0;
-  padding: 1px 4px;
-  flex-shrink: 0;
-}
-
-.response-nav-bar .nav-info {
+.status-nav-bar .nav-info {
   font-size: calc(10px + var(--fs-delta, 0px));
   color: var(--sub);
-  padding: 1px 4px;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -673,7 +663,7 @@ li.fav-drag-over {
   margin-left: auto;
 }
 
-.response-nav-bar button {
+.status-nav-bar button {
   padding: 1px 6px;
   font-size: calc(10px + var(--fs-delta, 0px));
   border: 1px solid #b0b0b0;
@@ -681,13 +671,13 @@ li.fav-drag-over {
   color: var(--sub);
   cursor: pointer;
 }
-.response-nav-bar button.nav-btn-lg {
+.status-nav-bar button.nav-btn-lg {
   padding: 2px 10px;
   font-size: calc(11px + var(--fs-delta, 0px));
   font-weight: 600;
 }
 
-.response-nav-bar button:hover {
+.status-nav-bar button:hover {
   background: #d0d0d0;
 }
 
@@ -699,7 +689,7 @@ li.fav-drag-over {
   background: #ffffff;
 }
 
-.response-nav-bar > .search-with-history {
+.status-nav-bar > .search-with-history {
   margin-left: auto;
 }
 
@@ -1560,13 +1550,24 @@ pre {
 .status-bar {
   border-top: 1px solid var(--line);
   background: #e0e0e0;
-  padding: 1px 6px;
+  /* スレを開いているときは着~/フィルタ/Top・New・End も表示するため、通常より少し高さを持たせる */
+  padding: 3px 6px;
   font-size: 10px;
   color: var(--sub);
   display: flex;
   align-items: center;
   gap: 0;
   white-space: nowrap;
+  overflow: hidden;
+}
+
+/* スレを開いているときだけ status-bar の中身が着~/サイズ~kb・リンクフィルタ・Top/New/End に切り替わる
+   (レス表示欄の中ではなく、書き込みウィンドウの高さ制限の外に置くことで、はみ出しによる表示崩れを避ける) */
+.status-nav-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
   overflow: hidden;
 }
 
@@ -1645,17 +1646,9 @@ pre {
   border-color: #0078d4;
 }
 
-.compose-target {
-  flex: 1;
-  font-size: 11px;
-  color: var(--sub);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .compose-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   padding: 4px 8px;
@@ -1670,6 +1663,15 @@ pre {
   flex: 1;
   min-width: 60px;
 }
+/* 書き込みウィンドウの省スペース化: 名前・メール欄は、同じ行に sage・文字数/行数・送信ボタンが
+   収まるよう、以前の flex:1 (同幅) から縮小した比率にする。名前は長くなりがちなので広め、
+   メールは sage 等の短い入力が主なので狭めにする */
+.compose-input-name {
+  flex: 0.8;
+}
+.compose-input-mail {
+  flex: 0.5;
+}
 .compose-input-full {
   flex: 1;
 }
@@ -1680,6 +1682,14 @@ pre {
   white-space: nowrap;
   flex-shrink: 0;
   cursor: pointer;
+}
+.compose-meta-inline {
+  display: flex;
+  gap: 8px;
+  font-size: 10px;
+  color: var(--sub);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .compose-body {
@@ -1693,22 +1703,12 @@ pre {
   resize: none;
 }
 
-.compose-meta {
-  display: flex;
-  gap: 12px;
-  padding: 2px 8px;
-  font-size: 10px;
-  color: var(--sub);
-}
-
-.compose-preview {
-  margin: 8px;
-}
-
-.compose-actions {
-  display: flex;
-  gap: 6px;
-  padding: 8px;
+.compose-preview-plain {
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-family: monospace;
+  color: var(--ink);
 }
 
 .compose-result {
@@ -2886,12 +2886,12 @@ button.search-history-btn:hover {
   color: var(--ink);
   border-color: #555;
 }
-.dark .compose-actions button {
+.dark .compose-row button {
   background: #3a3a3a;
   color: var(--ink);
   border-color: #555;
 }
-.dark .compose-actions button:hover {
+.dark .compose-row button:hover {
   background: #4a4a4a;
 }
 .dark .dev-panel {
@@ -3121,11 +3121,7 @@ button.search-history-btn:hover {
 .dark .title-split-menu button:hover {
   background: #3b3b40;
 }
-.dark .response-nav-bar {
-  background: #2d2d30;
-  border-color: #3c3c3c;
-}
-.dark .response-nav-bar button {
+.dark .status-nav-bar button {
   background: #3a3a3a;
   color: var(--ink);
   border-color: #555;

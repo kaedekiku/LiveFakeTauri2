@@ -244,8 +244,8 @@ LiveFake の配色は以下の CSS 変数で構成されており、これを上
 | `.response-scroll` | レスのスクロール領域 (th-container)。タブ切替直後の高さ安定待ちで `.settling` が付く |
 | `.thread-title-bar` | スレタイトルバー |
 | `.response-search-bar` / `.search-with-history` | スレ内検索バー / 履歴付き検索欄 |
-| `.link-filter-buttons` / `.link-filter-btn` | リンクフィルタ（画像/動画/外部リンク）ボタン |
-| `.response-nav-bar` / `.nav-buttons` / `.nav-info` / `.nav-jump-input` | 下部ナビバー（着数・Top/New/Last ボタン・レス番ジャンプ欄） |
+| `.link-filter-buttons` / `.link-filter-btn` | リンクフィルタ（画像/動画/外部リンク）ボタン。表示先はレス表示欄ではなくステータスバー（3.11 参照） |
+| `.nav-buttons` / `.nav-info` / `.nav-jump-input` | 着数・Top/New/Last ボタン・レス番ジャンプ欄。スレを開いているときステータスバー内に表示される |
 | `.new-response-separator` | 「ここから新着」の区切り線 |
 
 ### 3.6 ポップアップ・メニュー
@@ -278,18 +278,28 @@ LiveFake の配色は以下の CSS 変数で構成されており、これを上
 
 ### 3.8 書き込みウィンドウ
 
+下部の書き込みウィンドウは**返信専用**です（新スレ立てはスレッドタイトルバーの「書き込み」から開く別ウィンドウで行います。3.10 参照）。
+
+```text
+.compose-window (.compose-window--open)   ← ウィンドウ全体
+├─ .compose-resize-handle                     高さ調整のリサイザー（展開時のみ）
+├─ .compose-header                            ヘッダー行（クリックで展開・格納）
+│   └─ .compose-mode-btn                          「本文」「プレビュー」の切替タブ（展開時のみ）
+├─ .compose-row.postform-foot                 名前・メール・sage・文字数/行数・送信ボタンの行
+│   ├─ .compose-label / .compose-input            ラベル / 名前・メール入力欄
+│   │   └─ .compose-input-name / .compose-input-mail  名前欄 / メール欄（幅の比率違いを付与）
+│   ├─ .compose-check                              sage チェックボックス
+│   ├─ .compose-meta-inline                        文字数・行数の表示
+│   └─ .postform-write                             送信ボタン（診断ビルドのみ「接続診断」ボタンも同じ行）
+├─ .compose-body                              本文入力欄（「本文」タブ）/ 投稿後の見た目のプレビュー（「プレビュー」タブ、`.compose-preview-plain` が付く。dat形式のプレーンテキスト）
+└─ .compose-result (.compose-result-ok / .compose-result-err)   投稿結果表示
+```
+
+その他:
+
 | クラス | 要素 |
 |--------|------|
-| `.compose-window` | 書き込みウィンドウ全体（表示中は `.compose-window--open`） |
-| `.compose-header` / `.compose-target` | ヘッダー / 書き込み先表示 |
-| `.compose-row` / `.compose-label` | 1 行のまとまり / ラベル |
-| `.compose-input` / `.compose-input-full` / `.compose-body` | 名前・メール入力欄 / 幅いっぱいの入力欄 / 本文入力欄 |
-| `.compose-meta` / `.compose-check` | メール欄などの補助表示 / sage チェックボックス |
-| `.compose-mode-btn` | 通常書き込み / 新スレ立ての切替ボタン |
-| `.compose-resize-handle` | 高さ調整のリサイザー |
-| `.compose-actions` / `.postform-foot` | 送信ボタン行（SIKI 互換クラス `.postform-foot` も付与） |
-| `.postform-write` | 送信ボタン（SIKI 互換） |
-| `.compose-result` / `.compose-result-ok` / `.compose-result-err` | 投稿結果表示 / 成功 / 失敗 |
+| `.compose-input-full` | 幅いっぱいの入力欄（浮遊ウィンドウのスレタイ欄など） |
 | `.post-history-item` / `.post-history-time` / `.post-history-body` / `.post-history-status` | 書き込み履歴の 1 件 / 時刻 / 本文 / 結果 |
 
 ### 3.9 設定パネル
@@ -318,6 +328,22 @@ LiveFake の配色は以下の CSS 変数で構成されており、これを上
 ```
 
 保存操作にまつわるボタンの見た目は `button.primary`（保存・実行系）／`button.danger`（削除・リセット系）でも調整できます。
+
+### 3.10 書き込みの浮遊ウィンドウ
+
+スレッドタイトルバーの「書き込み」ボタンから開く、新スレ立て・返信用の別ウィンドウです（字幕ウィンドウ・画像ポップアップと同じ仕組みの独立した OS ウィンドウ）。
+
+> ⚠️ この浮遊ウィンドウは、現時点では `data/custom.css` / `data/theme/` によるカスタマイズに**対応していません**（`floating.css` は字幕ウィンドウ、`mediaviewer.css` は画像ポップアップ専用で、浮遊ウィンドウ向けのテーマファイルはまだありません）。見た目はダーク系の固定スタイルです。
+
+### 3.11 ステータスバー
+
+| クラス | 要素 |
+|--------|------|
+| `.status-bar` | 最下部のステータスバー全体 |
+| `.status-main` | 通常時のステータスメッセージ |
+| `.status-nav-bar` | スレを開いているときだけ、`.status-bar` の中身がこちらに切り替わる（着数・サイズ・リンクフィルタ・Top/New/End など。3.5 参照） |
+
+板一覧・スレ一覧を見ているときは通常のステータスメッセージ（`.status-main` 等）、スレを開いているときは `.status-nav-bar` の内容と、**同じ 1 行の中身が状況によって入れ替わります**（同時に両方が表示されるわけではありません）。
 
 ---
 
