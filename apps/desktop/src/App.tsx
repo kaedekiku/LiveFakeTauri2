@@ -1,7 +1,7 @@
 import {
   Fragment,
   useEffect,
-
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -924,7 +924,58 @@ export default function App() {
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsCategory, setSettingsCategory] = useState<"display" | "posting" | "tts" | "tts-dict" | "proxy" | "ng" | "subtitle" | "highlights" | "info">("display");
+  type SettingsCategory = "display" | "posting" | "tts" | "tts-dict" | "proxy" | "ng" | "subtitle" | "highlights" | "info";
+  const SETTINGS_CATEGORIES: SettingsCategory[] = ["display", "posting", "tts", "tts-dict", "subtitle", "proxy", "ng", "highlights", "info"];
+  const SETTINGS_CATEGORY_LABELS: Record<SettingsCategory, string> = { display: "表示", posting: "書き込み", tts: "読み上げ", "tts-dict": "読み上げ辞書", subtitle: "字幕", proxy: "プロキシ", ng: "NG", highlights: "ハイライト", info: "情報" };
+  // 分類内の節タブ (項目が多い分類だけ)。1 頁を短く保ち、関連する設定を同じ場所にまとめる (REQUIREMENTS 13 章)
+  const SETTINGS_SECTIONS: Record<SettingsCategory, { id: string; label: string }[]> = {
+    display: [
+      { id: "general", label: "全般" }, { id: "response", label: "レス表示" }, { id: "image", label: "画像" },
+      { id: "cards", label: "リンクカード" }, { id: "arrival", label: "新着レスペイン" }, { id: "popup", label: "ポップアップ" },
+    ],
+    posting: [],
+    tts: [],
+    "tts-dict": [{ id: "dict", label: "辞書" }, { id: "allow", label: "許可リスト" }, { id: "mute", label: "読み上げない辞書" }],
+    subtitle: [{ id: "view", label: "表示" }, { id: "cards", label: "カード・スクロール" }],
+    proxy: [],
+    ng: [{ id: "words", label: "ワード" }, { id: "ids", label: "ID" }, { id: "names", label: "名前" }],
+    highlights: [{ id: "word", label: "ワード" }, { id: "name", label: "名前" }, { id: "id", label: "ID" }],
+    info: [],
+  };
+  const [settingsCategory, setSettingsCategory] = useState<SettingsCategory>("display");
+  const [settingsSection, setSettingsSection] = useState("");
+  const [settingsQuery, setSettingsQuery] = useState("");
+  const [settingsListFilter, setSettingsListFilter] = useState("");
+  const settingsContentRef = useRef<HTMLDivElement | null>(null);
+  const settingsSearching = settingsQuery.trim().length > 0;
+  const settingsSectionsFor = (cat: SettingsCategory) => SETTINGS_SECTIONS[cat];
+  const settingsActiveSection = (() => {
+    const secs = SETTINGS_SECTIONS[settingsCategory];
+    if (secs.length === 0) return "main";
+    return secs.some((x) => x.id === settingsSection) ? settingsSection : secs[0].id;
+  })();
+  // 検索結果表示のときだけ出る見出し「分類 › 節」。クリックでその場所へ移動
+  const settingsSectionHeading = (cat: SettingsCategory, sid: string) => {
+    const sec = SETTINGS_SECTIONS[cat].find((x) => x.id === sid);
+    const label = sec ? `${SETTINGS_CATEGORY_LABELS[cat]} › ${sec.label}` : SETTINGS_CATEGORY_LABELS[cat];
+    return (
+      <div className="settings-section-heading" hidden={!settingsSearching} onClick={() => { setSettingsQuery(""); setSettingsCategory(cat); setSettingsSection(sid); setSettingsListFilter(""); }} title="この場所へ移動">
+        {label}
+      </div>
+    );
+  };
+  // 一覧 (辞書・NG・ハイライト) の絞り込み。設定検索とは別で、登録内容だけを対象にする
+  const settingsListMatch = (...values: string[]) => {
+    const q = settingsListFilter.trim().toLowerCase();
+    if (!q) return true;
+    return values.some((v) => (v ?? "").toLowerCase().includes(q));
+  };
+  const settingsListFilterRow = () => (
+    <div className="settings-row settings-list-filter" data-search-exclude="1">
+      <input type="search" value={settingsListFilter} onChange={(e) => setSettingsListFilter(e.target.value)} placeholder="一覧を絞り込み" style={{ width: 200 }} />
+      {settingsListFilter && <button onClick={() => setSettingsListFilter("")}>クリア</button>}
+    </div>
+  );
   // OGP リンクカード / X ポストカード (既定 OFF: 本文中の URL 先へ通信するため明示的に有効化してもらう)
   const [ogpCardsEnabled, setOgpCardsEnabled] = useState(false);
   const [tweetCardsEnabled, setTweetCardsEnabled] = useState(false);
@@ -1603,6 +1654,34 @@ export default function App() {
     void persistNgFilters({ ...ngFilters, [type]: ngFilters[type].filter((v) => ngVal(v) !== value) });
     setStatus(`removed NG ${type}: ${value}`);
   };
+
+  // 設定 > NG の各節 (ワード / ID / 名前) で共通の追加フォーム
+  const ngAddForm = (
+    <div className="ng-panel-add">
+      <select value={ngInputType} onChange={(e) => setNgInputType(e.target.value as "words" | "ids" | "names" | "regex")}>
+        <option value="words">ワード</option>
+        <option value="ids">ID</option>
+        <option value="names">名前</option>
+        <option value="regex">正規表現</option>
+      </select>
+      <input
+        value={ngInput}
+        onChange={(e) => setNgInput(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter") addNgFromInput(); }}
+        placeholder={ngInputType === "regex" ? "正規表現パターンを入力" : ngInputType === "words" ? "NGワードを入力" : ngInputType === "ids" ? "NG IDを入力" : "NG名前を入力"}
+      />
+      <select value={ngAddMode} onChange={(e) => setNgAddMode(e.target.value as "hide" | "hide-images")} className="ng-mode-select">
+        <option value="hide">非表示</option>
+        <option value="hide-images">画像NG</option>
+      </select>
+      <select value={ngAddScope} onChange={(e) => setNgAddScope(e.target.value as "global" | "board" | "thread")} className="ng-mode-select">
+        <option value="global">全体</option>
+        <option value="board">この板</option>
+        <option value="thread">このスレ</option>
+      </select>
+      <button onClick={() => addNgFromInput()}>追加</button>
+    </div>
+  );
 
   const ngMatch = (pattern: string, target: string): boolean => {
     if (pattern.startsWith("/") && pattern.endsWith("/") && pattern.length > 2) {
@@ -4538,6 +4617,51 @@ export default function App() {
     }).then((fn) => { if (disposed) fn(); else unlisten = fn; }).catch((e) => console.warn("subtitle-timing listen failed", e));
     return () => { disposed = true; if (unlisten) unlisten(); };
   }, []);
+  // 設定画面: 節タブによる表示切り替えと、検索語による設定項目の絞り込み (DOM の文言で照合)。
+  // 登録内容 (NG ワード・辞書・ハイライト) は data-search-exclude で検索対象から外す。
+  useLayoutEffect(() => {
+    const root = settingsContentRef.current;
+    if (!settingsOpen || !root) return;
+    const q = settingsQuery.trim().toLowerCase();
+    const cats = Array.from(root.querySelectorAll<HTMLElement>(".settings-cat"));
+    const matchedCats = new Set<string>();
+    for (const cat of cats) {
+      let catVisible = false;
+      for (const sec of Array.from(cat.querySelectorAll<HTMLElement>(".settings-section"))) {
+        if (!q) {
+          // 通常表示: 選択中の節だけ表示し、検索用の hidden を全て解除
+          sec.hidden = sec.dataset.section !== settingsActiveSection;
+          for (const el of Array.from(sec.querySelectorAll<HTMLElement>("[data-sf]"))) { el.hidden = false; el.classList.remove("settings-match"); delete el.dataset.sf; }
+          continue;
+        }
+        let secVisible = false;
+        for (const fs of Array.from(sec.querySelectorAll<HTMLElement>("fieldset"))) {
+          const legend = fs.querySelector("legend");
+          const legendMatch = !!legend && (legend.textContent ?? "").toLowerCase().includes(q);
+          let anyRow = false;
+          for (const row of Array.from(fs.querySelectorAll<HTMLElement>(".settings-row"))) {
+            if (row.closest("[data-search-exclude]")) continue;
+            const hit = legendMatch || (row.textContent ?? "").toLowerCase().includes(q);
+            row.hidden = !hit; row.dataset.sf = "1";
+            row.classList.toggle("settings-match", hit && !legendMatch);
+            if (hit) anyRow = true;
+          }
+          for (const ex of Array.from(fs.querySelectorAll<HTMLElement>("[data-search-exclude]"))) { ex.hidden = !legendMatch; ex.dataset.sf = "1"; }
+          const fsVisible = legendMatch || anyRow;
+          fs.hidden = !fsVisible; fs.dataset.sf = "1";
+          if (fsVisible) secVisible = true;
+        }
+        sec.hidden = !secVisible;
+        if (secVisible) catVisible = true;
+      }
+      if (catVisible) matchedCats.add(cat.dataset.cat ?? "");
+    }
+    // 左の分類: 検索中は一致の無い分類を薄く表示
+    for (const btn of Array.from(document.querySelectorAll<HTMLElement>(".settings-nav-item[data-cat]"))) {
+      btn.classList.toggle("no-match", !!q && !matchedCats.has(btn.dataset.cat ?? ""));
+    }
+  });
+
   // 字幕ウィンドウからの操作: 手動スクロール → 一時停止 / ▶ → 次のレスへ (以降は通常のタイマー制御)
   useEffect(() => {
     if (!isTauriRuntime()) return;
@@ -6930,21 +7054,40 @@ export default function App() {
           <div className="settings-panel settings-panel-wide" onClick={(e) => e.stopPropagation()}>
             <header className="settings-header">
               <strong>設定</strong>
+              <input
+                type="search"
+                className="settings-search"
+                placeholder="設定項目を検索（項目名・説明文）"
+                value={settingsQuery}
+                onChange={(e) => setSettingsQuery(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); setSettingsQuery(""); } }}
+              />
+              {settingsQuery && <button onClick={() => setSettingsQuery("")}>検索をクリア</button>}
               <button onClick={() => setSettingsOpen(false)}>閉じる</button>
             </header>
             <div className="settings-2col">
               <nav className="settings-nav">
-                {(["display","posting","tts","tts-dict","subtitle","proxy","ng","highlights","info"] as const).map((cat) => {
-                  const labels: Record<string, string> = { display:"表示", posting:"書き込み", tts:"読み上げ", "tts-dict":"読み上げ辞書", subtitle:"字幕", proxy:"プロキシ", ng:"NG", highlights:"ハイライト", info:"情報" };
-                  return (
-                    <button key={cat} className={`settings-nav-item${settingsCategory === cat ? " active" : ""}`} onClick={() => setSettingsCategory(cat)}>{labels[cat]}</button>
-                  );
-                })}
+                {SETTINGS_CATEGORIES.map((cat) => (
+                  <button key={cat} data-cat={cat} className={`settings-nav-item${settingsCategory === cat ? " active" : ""}`} onClick={() => { setSettingsCategory(cat); setSettingsSection(""); setSettingsListFilter(""); setSettingsQuery(""); }}>{SETTINGS_CATEGORY_LABELS[cat]}</button>
+                ))}
               </nav>
-              <div className="settings-content">
-              {settingsCategory === "display" && (<>
+              <div className="settings-content" ref={settingsContentRef}>
+              {!settingsSearching && settingsSectionsFor(settingsCategory).length > 1 && (
+                <div className="settings-section-tabs">
+                  {settingsSectionsFor(settingsCategory).map((sec) => (
+                    <button key={sec.id} className={`settings-section-tab${settingsActiveSection === sec.id ? " active" : ""}`} onClick={() => { setSettingsSection(sec.id); setSettingsListFilter(""); if (settingsCategory === "ng" && (sec.id === "words" || sec.id === "ids" || sec.id === "names")) setNgInputType(sec.id); }}>{sec.label}</button>
+                  ))}
+                </div>
+              )}
+              {settingsSearching && (
+                <div className="settings-search-note">「{settingsQuery}」に一致する設定項目 — 見出しをクリックするとその場所へ移動します</div>
+              )}
+              {(settingsSearching || settingsCategory === "display") && (
+              <div className="settings-cat" data-cat="display">
+              <section className="settings-section" data-section="general">
+                {settingsSectionHeading("display", "general")}
               <fieldset>
-                <legend>表示</legend>
+                <legend>全般</legend>
                 <label className="settings-row">
                   <span>テーマ</span>
                   <select value={darkMode ? "dark" : "light"} onChange={(e) => setDarkMode(e.target.value === "dark")}>
@@ -7007,48 +7150,6 @@ export default function App() {
                   <span>文字サイズ (スレ)</span>
                   <input type="number" value={threadsFontSize} min={8} max={20} onChange={(e) => setThreadsFontSize(Number(e.target.value))} />
                 </label>
-                <label className="settings-row">
-                  <span>文字サイズ (レス)</span>
-                  <input type="number" value={responsesFontSize} min={8} max={20} onChange={(e) => setResponsesFontSize(Number(e.target.value))} />
-                </label>
-                <label className="settings-row">
-                  <span>文字サイズ (レスヘッダ)</span>
-                  <input type="number" value={responsesHeaderFontSize} min={8} max={20} onChange={(e) => setResponsesHeaderFontSize(Number(e.target.value))} />
-                </label>
-                <div className="settings-row" style={{ flexDirection: "column", alignItems: "stretch", gap: 4 }}>
-                  <span>レスヘッダに表示する項目（非表示の項目は詰めて表示）</span>
-                  {headerVisRows(mainHeaderVis, setMainHeaderVis, { watchoi: true })}
-                </div>
-                <label className="settings-row">
-                  <span>文字サイズ (新着レス)</span>
-                  <input type="number" value={newArrivalFontSize} min={8} max={24} onChange={(e) => setNewArrivalFontSize(Number(e.target.value))} />
-                </label>
-                <label className="settings-row">
-                  <input type="checkbox" checked={arrivalCardsEnabled} onChange={(e) => setArrivalCardsEnabled(e.target.checked)} />
-                  <span>新着レスペインにもカードを表示（OGP / X カードが ON のとき有効）</span>
-                </label>
-                <div className="settings-row" style={{ flexDirection: "column", alignItems: "stretch", gap: 4 }}>
-                  <div style={{ fontSize: 11, color: "var(--text-secondary, #888)" }}>
-                    新着レスペインの自動スクロール: 収まらない長文は「待ち時間」の後、最下行まで「スクロール速度」でゆっくり流し、到達後の表示時間が過ぎたら次のレスへ進みます。
-                  </div>
-                  {scrollTimingRows(arrivalTiming, setArrivalTiming)}
-                </div>
-                <div className="settings-row" style={{ flexDirection: "column", alignItems: "stretch", gap: 4 }}>
-                  <span>新着レスペインのヘッダに表示する項目（非表示の項目は詰めて表示）</span>
-                  {headerVisRows(arrivalHeaderVis, setArrivalHeaderVis, { threadTitle: true })}
-                </div>
-                <label className="settings-row">
-                  <span>文字サイズ (ポップアップ)</span>
-                  <input type="number" value={popupFontSize} min={8} max={40} onChange={(e) => setPopupFontSize(Number(e.target.value))} />
-                </label>
-                <label className="settings-row">
-                  <span>最大幅 (ポップアップ) px</span>
-                  <input type="number" value={popupMaxWidth} min={300} max={2400} step={20} onChange={(e) => setPopupMaxWidth(Number(e.target.value))} />
-                </label>
-                <label className="settings-row">
-                  <span>最大高さ (ポップアップ) px</span>
-                  <input type="number" value={popupMaxHeight} min={200} max={1800} step={20} onChange={(e) => setPopupMaxHeight(Number(e.target.value))} />
-                </label>
                 <label className="settings-row" title="カスタムCSS内の url(http…) による外部サーバーへの画像参照を許可します。信頼できないCSSを貼り付ける場合はオフのままを推奨">
                   <span>カスタムCSSの外部URL参照を許可 (非推奨)</span>
                   <input
@@ -7062,6 +7163,56 @@ export default function App() {
                     }}
                   />
                 </label>
+                <label className="settings-row">
+                  <span>自動更新間隔 (秒)</span>
+                  <input type="number" value={autoRefreshInterval} min={10} max={300} step={1} onChange={(e) => {
+                    const v = Math.max(10, Math.min(300, Number(e.target.value)));
+                    setAutoRefreshInterval(v);
+                  }} />
+                </label>
+                <label className="settings-row">
+                  <input type="checkbox" checked={smoothScroll} onChange={(e) => setSmoothScroll(e.target.checked)} />
+                  <span>スムーススクロール (再起動後に反映)</span>
+                </label>
+                <label className="settings-row">
+                  <span>最大タブ数</span>
+                  <input type="number" value={maxOpenTabs} min={1} max={50} step={1} onChange={(e) => setMaxOpenTabs(Math.max(1, Math.min(50, Number(e.target.value))))} />
+                </label>
+                <label className="settings-row">
+                  <span>ログ保持日数</span>
+                  <input type="number" value={logRetentionDays} min={0} max={365} step={1} onChange={(e) => setLogRetentionDays(Math.max(0, Math.min(365, Number(e.target.value))))} />
+                  <span className="settings-hint">0 = 無制限</span>
+                </label>
+                <label className="settings-row">
+                  <input type="checkbox" checked={showBoardButtons} onChange={(e) => setShowBoardButtons(e.target.checked)} />
+                  <span>板ボタンバー</span>
+                </label>
+                <label className="settings-row">
+                  <input type="checkbox" checked={keepSortOnRefresh} onChange={(e) => setKeepSortOnRefresh(e.target.checked)} />
+                  <span>スレ一覧の更新時にソートを維持</span>
+                </label>
+                <label className="settings-row">
+                  <input type="checkbox" checked={restoreSession} onChange={(e) => setRestoreSession(e.target.checked)} />
+                  <span>起動時に前回のタブと板を復元</span>
+                </label>
+              </fieldset>
+              </section>
+              <section className="settings-section" data-section="response">
+                {settingsSectionHeading("display", "response")}
+              <fieldset>
+                <legend>レス表示</legend>
+                <label className="settings-row">
+                  <span>文字サイズ (レス)</span>
+                  <input type="number" value={responsesFontSize} min={8} max={20} onChange={(e) => setResponsesFontSize(Number(e.target.value))} />
+                </label>
+                <label className="settings-row">
+                  <span>文字サイズ (レスヘッダ)</span>
+                  <input type="number" value={responsesHeaderFontSize} min={8} max={20} onChange={(e) => setResponsesHeaderFontSize(Number(e.target.value))} />
+                </label>
+                <div className="settings-row" style={{ flexDirection: "column", alignItems: "stretch", gap: 4 }}>
+                  <span>レスヘッダに表示する項目（非表示の項目は詰めて表示）</span>
+                  {headerVisRows(mainHeaderVis, setMainHeaderVis, { watchoi: true })}
+                </div>
                 <label className="settings-row">
                   <span>レスID 文字サイズ補正 (0=同じ、±px)</span>
                   <input type="number" value={resIdFontSize} min={-20} max={24} onChange={(e) => setResIdFontSize(Number(e.target.value))} style={{ width: 60 }} />
@@ -7092,74 +7243,19 @@ export default function App() {
                   </div>
                 </label>
                 <label className="settings-row">
-                  <span>新着ID 文字サイズ補正 (0=同じ、±px)</span>
-                  <input type="number" value={newArrivalIdFontSize} min={-20} max={24} onChange={(e) => setNewArrivalIdFontSize(Number(e.target.value))} style={{ width: 60 }} />
-                </label>
-                <label className="settings-row" style={{ alignItems: "flex-start" }}>
-                  <span style={{ paddingTop: 4 }}>新着ID フォント</span>
-                  <div className="font-picker">
-                    <div style={{ display: "flex", gap: 4 }}>
-                      <input type="text" className="font-picker-input" value={newArrivalIdFontPickerInput}
-                        onChange={(e) => { setNewArrivalIdFontPickerInput(e.target.value); setNewArrivalIdFontPickerOpen(true); }}
-                        onFocus={() => setNewArrivalIdFontPickerOpen(true)}
-                        onBlur={() => setTimeout(() => setNewArrivalIdFontPickerOpen(false), 150)}
-                        placeholder="デフォルト (入力またはクリック)" style={{ flex: 1, minWidth: 0 }} />
-                      {newArrivalIdFontFamily && <button style={{ flexShrink: 0 }} onClick={() => { setNewArrivalIdFontFamily(""); setNewArrivalIdFontPickerInput(""); }}>×</button>}
-                    </div>
-                    {newArrivalIdFontPickerOpen && (() => {
-                      const q = newArrivalIdFontPickerInput.toLowerCase();
-                      const filtered = q ? systemFonts.filter((f) => f.toLowerCase().includes(q)) : systemFonts;
-                      return filtered.length > 0 ? (
-                        <div className="font-picker-dropdown">
-                          {filtered.slice(0, 120).map((f) => (
-                            <div key={f} className={`font-picker-option${f === newArrivalIdFontFamily ? " selected" : ""}`} style={{ fontFamily: `"${f}", sans-serif` }}
-                              onMouseDown={(e) => { e.preventDefault(); setNewArrivalIdFontFamily(f); setNewArrivalIdFontPickerInput(f); setNewArrivalIdFontPickerOpen(false); }}>{f}</div>
-                          ))}
-                        </div>
-                      ) : null;
-                    })()}
-                  </div>
-                </label>
-                <label className="settings-row">
-                  <span>自動更新間隔 (秒)</span>
-                  <input type="number" value={autoRefreshInterval} min={10} max={300} step={1} onChange={(e) => {
-                    const v = Math.max(10, Math.min(300, Number(e.target.value)));
-                    setAutoRefreshInterval(v);
-                  }} />
-                </label>
-                <label className="settings-row">
                   <input type="checkbox" checked={autoScrollEnabled} onChange={(e) => setAutoScrollEnabled(e.target.checked)} />
                   <span>新着レス取得時に自動スクロール</span>
-                </label>
-                <label className="settings-row">
-                  <input type="checkbox" checked={smoothScroll} onChange={(e) => setSmoothScroll(e.target.checked)} />
-                  <span>スムーススクロール (再起動後に反映)</span>
                 </label>
                 <label className="settings-row">
                   <span>レス間隔 (px)</span>
                   <input type="number" value={responseGap} min={0} max={40} step={1} onChange={(e) => setResponseGap(Math.max(0, Math.min(40, Number(e.target.value))))} />
                 </label>
-                <label className="settings-row">
-                  <span>最大タブ数</span>
-                  <input type="number" value={maxOpenTabs} min={1} max={50} step={1} onChange={(e) => setMaxOpenTabs(Math.max(1, Math.min(50, Number(e.target.value))))} />
-                </label>
-                <label className="settings-row">
-                  <span>ログ保持日数</span>
-                  <input type="number" value={logRetentionDays} min={0} max={365} step={1} onChange={(e) => setLogRetentionDays(Math.max(0, Math.min(365, Number(e.target.value))))} />
-                  <span className="settings-hint">0 = 無制限</span>
-                </label>
-                <label className="settings-row">
-                  <input type="checkbox" checked={showBoardButtons} onChange={(e) => setShowBoardButtons(e.target.checked)} />
-                  <span>板ボタンバー</span>
-                </label>
-                <label className="settings-row">
-                  <input type="checkbox" checked={keepSortOnRefresh} onChange={(e) => setKeepSortOnRefresh(e.target.checked)} />
-                  <span>スレ一覧の更新時にソートを維持</span>
-                </label>
-                <label className="settings-row">
-                  <input type="checkbox" checked={restoreSession} onChange={(e) => setRestoreSession(e.target.checked)} />
-                  <span>起動時に前回のタブと板を復元</span>
-                </label>
+              </fieldset>
+              </section>
+              <section className="settings-section" data-section="image">
+                {settingsSectionHeading("display", "image")}
+              <fieldset>
+                <legend>画像</legend>
                 <label className="settings-row">
                   <input type="checkbox" checked={showImagePreview} onChange={(e) => setShowImagePreview(e.target.checked)} />
                   <span>画像をプレビュー表示</span>
@@ -7182,6 +7278,45 @@ export default function App() {
                   <input type="number" value={hoverPreviewDelay} min={0} max={2000} step={50} onChange={(e) => setHoverPreviewDelay(Number(e.target.value))} />
                   <span className="settings-hint">0 = 即時</span>
                 </label>
+                <div className="settings-row">
+                  <span>画像保存先フォルダ</span>
+                  <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11, color: "#888" }}>{imageSaveFolder || "(未設定 — 毎回選択)"}</span>
+                  <button onClick={() => {
+                    if (!isTauriRuntime()) return;
+                    invoke<string | null>("open_folder_dialog").then((p) => { if (p) setImageSaveFolder(p); }).catch((e) => console.warn("open_folder_dialog:", e));
+                  }}>選択</button>
+                  {imageSaveFolder && <button onClick={() => setImageSaveFolder("")}>クリア</button>}
+                </div>
+              </fieldset>
+              <fieldset>
+                <legend>画像 URL 変換ルール (ImageViewURLReplace)</legend>
+                <div className="settings-row">
+                  <span>有効なルール数</span>
+                  <span>{imageUrlRules.length} 件</span>
+                </div>
+                <div className="settings-row" style={{ gap: 8 }}>
+                  <button onClick={() => {
+                    if (!isTauriRuntime()) return;
+                    invoke<UrlReplaceRule[]>("reset_image_url_replace")
+                      .then((rules) => { setImageUrlRules(rules); setStatus("URLルールをデフォルトにリセットしました"); })
+                      .catch((e) => console.warn("reset_image_url_replace:", e));
+                  }}>デフォルトに戻す</button>
+                  <button onClick={() => {
+                    if (!isTauriRuntime()) return;
+                    invoke<string>("get_data_dir").then((dir) => {
+                      invoke("open_external_url", { url: dir }).catch(() => {});
+                    }).catch(() => {});
+                  }}>データフォルダを開く</button>
+                </div>
+                <div style={{ fontSize: "0.8em", color: "var(--sub)", marginTop: 4 }}>
+                  データフォルダ内の ImageViewURLReplace.txt を編集してアプリを再起動すると反映されます
+                </div>
+              </fieldset>
+              </section>
+              <section className="settings-section" data-section="cards">
+                {settingsSectionHeading("display", "cards")}
+              <fieldset>
+                <legend>リンクカード（OGP / X）</legend>
                 <label className="settings-row">
                   <input type="checkbox" checked={ogpCardsEnabled} onChange={(e) => setOgpCardsEnabled(e.target.checked)} />
                   <span>リンクをOGPカード表示（本文中のURL先サイトへ通信します）</span>
@@ -7221,42 +7356,85 @@ export default function App() {
                     )}
                   </div>
                 )}
-                <div className="settings-row">
-                  <span>画像保存先フォルダ</span>
-                  <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11, color: "#888" }}>{imageSaveFolder || "(未設定 — 毎回選択)"}</span>
-                  <button onClick={() => {
-                    if (!isTauriRuntime()) return;
-                    invoke<string | null>("open_folder_dialog").then((p) => { if (p) setImageSaveFolder(p); }).catch((e) => console.warn("open_folder_dialog:", e));
-                  }}>選択</button>
-                  {imageSaveFolder && <button onClick={() => setImageSaveFolder("")}>クリア</button>}
-                </div>
               </fieldset>
+              </section>
+              <section className="settings-section" data-section="arrival">
+                {settingsSectionHeading("display", "arrival")}
               <fieldset>
-                <legend>画像 URL 変換ルール (ImageViewURLReplace)</legend>
-                <div className="settings-row">
-                  <span>有効なルール数</span>
-                  <span>{imageUrlRules.length} 件</span>
+                <legend>新着レスペイン</legend>
+                <label className="settings-row">
+                  <span>文字サイズ (新着レス)</span>
+                  <input type="number" value={newArrivalFontSize} min={8} max={24} onChange={(e) => setNewArrivalFontSize(Number(e.target.value))} />
+                </label>
+                <label className="settings-row">
+                  <input type="checkbox" checked={arrivalCardsEnabled} onChange={(e) => setArrivalCardsEnabled(e.target.checked)} />
+                  <span>新着レスペインにもカードを表示（OGP / X カードが ON のとき有効）</span>
+                </label>
+                <div className="settings-row" style={{ flexDirection: "column", alignItems: "stretch", gap: 4 }}>
+                  <div style={{ fontSize: 11, color: "var(--text-secondary, #888)" }}>
+                    新着レスペインの自動スクロール: 収まらない長文は「待ち時間」の後、最下行まで「スクロール速度」でゆっくり流し、到達後の表示時間が過ぎたら次のレスへ進みます。
+                  </div>
+                  {scrollTimingRows(arrivalTiming, setArrivalTiming)}
                 </div>
-                <div className="settings-row" style={{ gap: 8 }}>
-                  <button onClick={() => {
-                    if (!isTauriRuntime()) return;
-                    invoke<UrlReplaceRule[]>("reset_image_url_replace")
-                      .then((rules) => { setImageUrlRules(rules); setStatus("URLルールをデフォルトにリセットしました"); })
-                      .catch((e) => console.warn("reset_image_url_replace:", e));
-                  }}>デフォルトに戻す</button>
-                  <button onClick={() => {
-                    if (!isTauriRuntime()) return;
-                    invoke<string>("get_data_dir").then((dir) => {
-                      invoke("open_external_url", { url: dir }).catch(() => {});
-                    }).catch(() => {});
-                  }}>データフォルダを開く</button>
+                <div className="settings-row" style={{ flexDirection: "column", alignItems: "stretch", gap: 4 }}>
+                  <span>新着レスペインのヘッダに表示する項目（非表示の項目は詰めて表示）</span>
+                  {headerVisRows(arrivalHeaderVis, setArrivalHeaderVis, { threadTitle: true })}
                 </div>
-                <div style={{ fontSize: "0.8em", color: "var(--sub)", marginTop: 4 }}>
-                  データフォルダ内の ImageViewURLReplace.txt を編集してアプリを再起動すると反映されます
-                </div>
+                <label className="settings-row">
+                  <span>新着ID 文字サイズ補正 (0=同じ、±px)</span>
+                  <input type="number" value={newArrivalIdFontSize} min={-20} max={24} onChange={(e) => setNewArrivalIdFontSize(Number(e.target.value))} style={{ width: 60 }} />
+                </label>
+                <label className="settings-row" style={{ alignItems: "flex-start" }}>
+                  <span style={{ paddingTop: 4 }}>新着ID フォント</span>
+                  <div className="font-picker">
+                    <div style={{ display: "flex", gap: 4 }}>
+                      <input type="text" className="font-picker-input" value={newArrivalIdFontPickerInput}
+                        onChange={(e) => { setNewArrivalIdFontPickerInput(e.target.value); setNewArrivalIdFontPickerOpen(true); }}
+                        onFocus={() => setNewArrivalIdFontPickerOpen(true)}
+                        onBlur={() => setTimeout(() => setNewArrivalIdFontPickerOpen(false), 150)}
+                        placeholder="デフォルト (入力またはクリック)" style={{ flex: 1, minWidth: 0 }} />
+                      {newArrivalIdFontFamily && <button style={{ flexShrink: 0 }} onClick={() => { setNewArrivalIdFontFamily(""); setNewArrivalIdFontPickerInput(""); }}>×</button>}
+                    </div>
+                    {newArrivalIdFontPickerOpen && (() => {
+                      const q = newArrivalIdFontPickerInput.toLowerCase();
+                      const filtered = q ? systemFonts.filter((f) => f.toLowerCase().includes(q)) : systemFonts;
+                      return filtered.length > 0 ? (
+                        <div className="font-picker-dropdown">
+                          {filtered.slice(0, 120).map((f) => (
+                            <div key={f} className={`font-picker-option${f === newArrivalIdFontFamily ? " selected" : ""}`} style={{ fontFamily: `"${f}", sans-serif` }}
+                              onMouseDown={(e) => { e.preventDefault(); setNewArrivalIdFontFamily(f); setNewArrivalIdFontPickerInput(f); setNewArrivalIdFontPickerOpen(false); }}>{f}</div>
+                          ))}
+                        </div>
+                      ) : null;
+                    })()}
+                  </div>
+                </label>
               </fieldset>
-              </>)}
-              {settingsCategory === "posting" && (<>
+              </section>
+              <section className="settings-section" data-section="popup">
+                {settingsSectionHeading("display", "popup")}
+              <fieldset>
+                <legend>ポップアップ</legend>
+                <label className="settings-row">
+                  <span>文字サイズ (ポップアップ)</span>
+                  <input type="number" value={popupFontSize} min={8} max={40} onChange={(e) => setPopupFontSize(Number(e.target.value))} />
+                </label>
+                <label className="settings-row">
+                  <span>最大幅 (ポップアップ) px</span>
+                  <input type="number" value={popupMaxWidth} min={300} max={2400} step={20} onChange={(e) => setPopupMaxWidth(Number(e.target.value))} />
+                </label>
+                <label className="settings-row">
+                  <span>最大高さ (ポップアップ) px</span>
+                  <input type="number" value={popupMaxHeight} min={200} max={1800} step={20} onChange={(e) => setPopupMaxHeight(Number(e.target.value))} />
+                </label>
+              </fieldset>
+              </section>
+              </div>
+              )}
+              {(settingsSearching || settingsCategory === "posting") && (
+              <div className="settings-cat" data-cat="posting">
+              <section className="settings-section" data-section="main">
+                {settingsSectionHeading("posting", "main")}
               <fieldset>
                 <legend>書き込み</legend>
                 <label className="settings-row">
@@ -7279,10 +7457,15 @@ export default function App() {
                   <span>入力時コンフェティ</span>
                 </label>
               </fieldset>
-              </>)}
-              {settingsCategory === "subtitle" && (<>
+              </section>
+              </div>
+              )}
+              {(settingsSearching || settingsCategory === "subtitle") && (
+              <div className="settings-cat" data-cat="subtitle">
+              <section className="settings-section" data-section="view">
+                {settingsSectionHeading("subtitle", "view")}
               <fieldset>
-                <legend>字幕</legend>
+                <legend>字幕の表示</legend>
                 <div className="settings-row">
                   <span>本文フォントサイズ</span>
                   <input type="number" min={10} max={96} value={subtitleBodyFontSize} onChange={(e) => {
@@ -7314,20 +7497,6 @@ export default function App() {
                     setSubtitleAlwaysOnTop(e.target.checked);
                     if (isTauriRuntime()) invoke("subtitle_topmost", { enabled: e.target.checked }).catch(() => {});
                   }} />
-                </div>
-                <label className="settings-row">
-                  <input type="checkbox" checked={subtitleCardsEnabled} onChange={(e) => setSubtitleCardsEnabled(e.target.checked)} />
-                  <span>字幕ウィンドウにもカードを表示（OGP / X カードが ON のとき有効）</span>
-                </label>
-                <label className="settings-row">
-                  <input type="checkbox" checked={subtitleSyncEnabled} onChange={(e) => setSubtitleSyncEnabled(e.target.checked)} />
-                  <span>字幕の表示が終わるまで次の新着レスを待つ（字幕を閉じているときは新着ペインの時間で進む）</span>
-                </label>
-                <div className="settings-row" style={{ flexDirection: "column", alignItems: "stretch", gap: 4 }}>
-                  <div style={{ fontSize: 11, color: "var(--text-secondary, #888)" }}>
-                    字幕の自動スクロール（新着ペインとは別に設定。字幕は文字が大きい分、同じ速度でも時間がかかります）
-                  </div>
-                  {scrollTimingRows(subtitleTiming, setSubtitleTiming)}
                 </div>
                 <div className="settings-row" style={{ flexDirection: "column", alignItems: "stretch", gap: 4 }}>
                   <span>字幕のヘッダに表示する項目（非表示の項目は詰めて表示）</span>
@@ -7380,8 +7549,33 @@ export default function App() {
                   }}>中央に戻す</button>
                 </div>
               </fieldset>
-              </>)}
-              {settingsCategory === "tts" && (<>
+              </section>
+              <section className="settings-section" data-section="cards">
+                {settingsSectionHeading("subtitle", "cards")}
+              <fieldset>
+                <legend>カード表示・自動スクロール</legend>
+                <label className="settings-row">
+                  <input type="checkbox" checked={subtitleCardsEnabled} onChange={(e) => setSubtitleCardsEnabled(e.target.checked)} />
+                  <span>字幕ウィンドウにもカードを表示（OGP / X カードが ON のとき有効）</span>
+                </label>
+                <label className="settings-row">
+                  <input type="checkbox" checked={subtitleSyncEnabled} onChange={(e) => setSubtitleSyncEnabled(e.target.checked)} />
+                  <span>字幕の表示が終わるまで次の新着レスを待つ（字幕を閉じているときは新着ペインの時間で進む）</span>
+                </label>
+                <div className="settings-row" style={{ flexDirection: "column", alignItems: "stretch", gap: 4 }}>
+                  <div style={{ fontSize: 11, color: "var(--text-secondary, #888)" }}>
+                    字幕の自動スクロール（新着ペインとは別に設定。字幕は文字が大きい分、同じ速度でも時間がかかります）
+                  </div>
+                  {scrollTimingRows(subtitleTiming, setSubtitleTiming)}
+                </div>
+              </fieldset>
+              </section>
+              </div>
+              )}
+              {(settingsSearching || settingsCategory === "tts") && (
+              <div className="settings-cat" data-cat="tts">
+              <section className="settings-section" data-section="main">
+                {settingsSectionHeading("tts", "main")}
               <fieldset>
                 <legend>音声読み上げ</legend>
                 <div className="settings-row">
@@ -7477,16 +7671,22 @@ export default function App() {
                   <button onClick={() => ttsStop()}>停止</button>
                 </div>
               </fieldset>
-              </>)}
-              {settingsCategory === "tts-dict" && (<>
+              </section>
+              </div>
+              )}
+              {(settingsSearching || settingsCategory === "tts-dict") && (
+              <div className="settings-cat" data-cat="tts-dict">
+              <section className="settings-section" data-section="dict">
+                {settingsSectionHeading("tts-dict", "dict")}
               <fieldset>
-                <legend>読み上げ辞書</legend>
+                <legend>読み上げ辞書 ({ttsDictEntries.length}件)</legend>
+                {settingsListFilterRow()}
                 <div style={{ fontSize: 11, color: "var(--text-secondary, #888)", marginBottom: 6 }}>
                   「全文置換」: テキストにキーワードが含まれる場合、レス全体を「読み上げテキスト」で置換します。<br />
                   URL はキーワードに「://」を含む項目なら URL 文字列との部分一致、含まない項目ならホスト名との部分一致 (例: youtube) で照合し、
                   一致した URL 全体を読み上げテキストに置き換えます。どの項目にも一致しない URL は読み上げません。
                 </div>
-                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, marginBottom: 6 }}>
+                <table data-search-exclude="1" style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, marginBottom: 6 }}>
                   <thead>
                     <tr style={{ borderBottom: "1px solid var(--border, #ccc)", textAlign: "left" }}>
                       <th style={{ padding: "2px 6px" }}>キーワード</th>
@@ -7496,7 +7696,7 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {ttsDictEntries.map((entry, i) => (
+                    {ttsDictEntries.map((entry, i) => ({ entry, i })).filter(({ entry }) => settingsListMatch(entry.from, entry.to)).map(({ entry, i }) => (
                       <tr key={i} style={{ borderBottom: "1px solid var(--border-light, #eee)" }}>
                         <td style={{ padding: "3px 6px" }}>
                           <input type="text" value={entry.from} onChange={(e) => setTtsDictEntries((prev) => prev.map((x, j) => j === i ? { ...x, from: e.target.value } : x))} style={{ width: 110 }} />
@@ -7529,13 +7729,17 @@ export default function App() {
                   }}>追加</button>
                 </div>
               </fieldset>
+              </section>
+              <section className="settings-section" data-section="allow">
+                {settingsSectionHeading("tts-dict", "allow")}
               <fieldset>
-                <legend>読み上げ許可リスト（IPアドレス配信URL）</legend>
+                <legend>読み上げ許可リスト（IPアドレス配信URL） ({ttsIpAllow.length}件)</legend>
+                {settingsListFilterRow()}
                 <div style={{ fontSize: 11, color: "var(--text-secondary, #888)", marginBottom: 6 }}>
                   ホスト部分が生の IP アドレス (例: 27.91.102.168:8030) の URL は、ここに登録されたものだけ「読み上げテキスト」で読み上げ、
                   未登録の IP アドレスは読み上げません。ポートを省略するとその IP の全ポートに一致します。ドメイン名の URL は上の読み上げ辞書で扱います。
                 </div>
-                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, marginBottom: 6 }}>
+                <table data-search-exclude="1" style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, marginBottom: 6 }}>
                   <thead>
                     <tr style={{ borderBottom: "1px solid var(--border, #ccc)", textAlign: "left" }}>
                       <th style={{ padding: "2px 6px" }}>IPアドレス[:ポート]</th>
@@ -7544,7 +7748,7 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {ttsIpAllow.map((entry, i) => (
+                    {ttsIpAllow.map((entry, i) => ({ entry, i })).filter(({ entry }) => settingsListMatch(entry.host, entry.to)).map(({ entry, i }) => (
                       <tr key={i} style={{ borderBottom: "1px solid var(--border-light, #eee)" }}>
                         <td style={{ padding: "3px 6px" }}>
                           <input type="text" value={entry.host} onChange={(e) => setTtsIpAllow((prev) => prev.map((x, j) => j === i ? { ...x, host: e.target.value } : x))} style={{ width: 150 }} />
@@ -7571,14 +7775,18 @@ export default function App() {
                   }}>追加</button>
                 </div>
               </fieldset>
+              </section>
+              <section className="settings-section" data-section="mute">
+                {settingsSectionHeading("tts-dict", "mute")}
               <fieldset>
-                <legend>読み上げない辞書</legend>
+                <legend>読み上げない辞書 ({ttsMuteDict.names.length + ttsMuteDict.words.length + ttsMuteDict.ids.length}件)</legend>
+                {settingsListFilterRow()}
                 <div style={{ fontSize: 11, color: "var(--text-secondary, #888)", marginBottom: 6 }}>
                   表示やあぼーんには影響せず、読み上げだけを抑制します。「/.../」で囲むと正規表現、それ以外は大小無視の部分一致です。<br />
                   レス本文ワード: 「レス全体を読まない」が OFF なら一致した語句だけを無音で除去、ON ならそのレス全体を読み上げません。<br />
                   名前・ワッチョイ / ID: 読み上げ文に含まれないため、一致したレス全体を常に読み上げません。
                 </div>
-                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, marginBottom: 6 }}>
+                <table data-search-exclude="1" style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, marginBottom: 6 }}>
                   <thead>
                     <tr style={{ borderBottom: "1px solid var(--border, #ccc)", textAlign: "left" }}>
                       <th style={{ padding: "2px 6px" }}>種類</th>
@@ -7588,7 +7796,7 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {(["names", "words", "ids"] as const).flatMap((kind) => ttsMuteDict[kind].map((entry, i) => (
+                    {(["names", "words", "ids"] as const).flatMap((kind) => ttsMuteDict[kind].map((entry, i) => ({ entry, i })).filter(({ entry }) => settingsListMatch(entry.value)).map(({ entry, i }) => (
                       <tr key={`${kind}-${i}`} style={{ borderBottom: "1px solid var(--border-light, #eee)" }}>
                         <td style={{ padding: "3px 6px", whiteSpace: "nowrap" }}>{kind === "names" ? "名前・ワッチョイ" : kind === "words" ? "レス本文ワード" : "ID"}</td>
                         <td style={{ padding: "3px 6px" }}>
@@ -7628,8 +7836,13 @@ export default function App() {
                   }}>追加</button>
                 </div>
               </fieldset>
-              </>)}
-              {settingsCategory === "proxy" && (<>
+              </section>
+              </div>
+              )}
+              {(settingsSearching || settingsCategory === "proxy") && (
+              <div className="settings-cat" data-cat="proxy">
+              <section className="settings-section" data-section="main">
+                {settingsSectionHeading("proxy", "main")}
               <fieldset>
                 <legend>プロキシ</legend>
                 <label className="settings-row">
@@ -7667,10 +7880,16 @@ export default function App() {
                   }}>保存</button>
                 </div>
               </fieldset>
-              </>)}
-              {settingsCategory === "highlights" && (<>
+              </section>
+              </div>
+              )}
+              {(settingsSearching || settingsCategory === "highlights") && (
+              <div className="settings-cat" data-cat="highlights">
+              <section className="settings-section" data-section="word">
+                {settingsSectionHeading("highlights", "word")}
               <fieldset>
-                <legend>ワードハイライト</legend>
+                <legend>ワードハイライト ({textHighlights.filter((h) => h.type === "word").length}件)</legend>
+                {settingsListFilterRow()}
                 <div className="settings-row" style={{ gap: 4, flexWrap: "wrap", marginBottom: 6 }}>
                   <input
                     type="text"
@@ -7701,11 +7920,12 @@ export default function App() {
                     />
                   ))}
                 </div>
+                <div data-search-exclude="1">
                 {textHighlights.filter((h) => h.type === "word").length === 0 ? (
                   <div style={{ color: "var(--sub)", fontSize: "0.85em" }}>登録なし</div>
                 ) : (
                   <>
-                    {textHighlights.filter((h) => h.type === "word").map((h, i) => (
+                    {textHighlights.filter((h) => h.type === "word" && settingsListMatch(h.pattern)).map((h, i) => (
                       <div key={i} className="settings-row" style={{ gap: 6 }}>
                         <span style={{ width: 16, height: 16, display: "inline-block", background: h.color, border: "1px solid #888", borderRadius: 2, flexShrink: 0 }} />
                         <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={h.pattern}>{h.pattern}</span>
@@ -7717,9 +7937,14 @@ export default function App() {
                     </div>
                   </>
                 )}
+                </div>
               </fieldset>
+              </section>
+              <section className="settings-section" data-section="name">
+                {settingsSectionHeading("highlights", "name")}
               <fieldset>
-                <legend>名前ハイライト</legend>
+                <legend>名前ハイライト ({textHighlights.filter((h) => h.type === "name").length}件)</legend>
+                {settingsListFilterRow()}
                 <div className="settings-row" style={{ gap: 4, flexWrap: "wrap", marginBottom: 6 }}>
                   <input
                     type="text"
@@ -7750,11 +7975,12 @@ export default function App() {
                     />
                   ))}
                 </div>
+                <div data-search-exclude="1">
                 {textHighlights.filter((h) => h.type === "name").length === 0 ? (
                   <div style={{ color: "var(--sub)", fontSize: "0.85em" }}>登録なし</div>
                 ) : (
                   <>
-                    {textHighlights.filter((h) => h.type === "name").map((h, i) => (
+                    {textHighlights.filter((h) => h.type === "name" && settingsListMatch(h.pattern)).map((h, i) => (
                       <div key={i} className="settings-row" style={{ gap: 6 }}>
                         <span style={{ width: 16, height: 16, display: "inline-block", background: h.color, border: "1px solid #888", borderRadius: 2, flexShrink: 0 }} />
                         <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={h.pattern}>{h.pattern}</span>
@@ -7766,9 +7992,14 @@ export default function App() {
                     </div>
                   </>
                 )}
+                </div>
               </fieldset>
+              </section>
+              <section className="settings-section" data-section="id">
+                {settingsSectionHeading("highlights", "id")}
               <fieldset>
-                <legend>ID ハイライト（今日分）</legend>
+                <legend>ID ハイライト（今日分） ({Object.keys(idHighlights).length}件)</legend>
+                {settingsListFilterRow()}
                 <div className="settings-row" style={{ gap: 4, flexWrap: "wrap", marginBottom: 6 }}>
                   <input
                     type="text"
@@ -7797,11 +8028,12 @@ export default function App() {
                     />
                   ))}
                 </div>
+                <div data-search-exclude="1">
                 {Object.keys(idHighlights).length === 0 ? (
                   <div style={{ color: "var(--sub)", fontSize: "0.85em" }}>登録なし</div>
                 ) : (
                   <>
-                    {Object.entries(idHighlights).map(([id, color]) => (
+                    {Object.entries(idHighlights).filter(([id]) => settingsListMatch(id)).map(([id, color]) => (
                       <div key={id} className="settings-row" style={{ gap: 6 }}>
                         <span style={{ width: 16, height: 16, display: "inline-block", background: color, border: "1px solid #888", borderRadius: 2, flexShrink: 0 }} />
                         <span style={{ flex: 1, fontFamily: "monospace" }}>ID:{id}</span>
@@ -7813,63 +8045,106 @@ export default function App() {
                     </div>
                   </>
                 )}
-              </fieldset>
-              </>)}
-              {settingsCategory === "ng" && (
-                <div className="settings-ng-inline">
-                  <div className="ng-panel-add">
-                    <select value={ngInputType} onChange={(e) => setNgInputType(e.target.value as "words" | "ids" | "names" | "regex")}>
-                      <option value="words">ワード</option>
-                      <option value="ids">ID</option>
-                      <option value="names">名前</option>
-                      <option value="regex">正規表現</option>
-                    </select>
-                    <input
-                      value={ngInput}
-                      onChange={(e) => setNgInput(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === "Enter") addNgFromInput(); }}
-                      placeholder={ngInputType === "regex" ? "正規表現パターンを入力" : ngInputType === "words" ? "NGワードを入力" : ngInputType === "ids" ? "NG IDを入力" : "NG名前を入力"}
-                    />
-                    <select value={ngAddMode} onChange={(e) => setNgAddMode(e.target.value as "hide" | "hide-images")} className="ng-mode-select">
-                      <option value="hide">非表示</option>
-                      <option value="hide-images">画像NG</option>
-                    </select>
-                    <select value={ngAddScope} onChange={(e) => setNgAddScope(e.target.value as "global" | "board" | "thread")} className="ng-mode-select">
-                      <option value="global">全体</option>
-                      <option value="board">この板</option>
-                      <option value="thread">このスレ</option>
-                    </select>
-                    <button onClick={() => addNgFromInput()}>追加</button>
-                  </div>
-                  <div className="ng-panel-lists">
-                    {(["words", "ids", "names"] as const).map((type) => (
-                      <div key={type} className="ng-list-section">
-                        <h4>{type === "words" ? "ワード" : type === "ids" ? "ID" : "名前"} ({ngFilters[type].length})</h4>
-                        {ngFilters[type].length === 0 ? (
-                          <span className="ng-empty">(なし)</span>
-                        ) : (
-                          <ul className="ng-list">
-                            {ngFilters[type].map((entry) => {
-                              const v = ngVal(entry); const mode = ngEntryMode(entry); const scope = ngEntryScope(entry);
-                              const isRegex = v.startsWith("/") && v.endsWith("/") && v.length > 2;
-                              return (
-                                <li key={v}>
-                                  <span className={`ng-mode-label ${mode === "hide-images" ? "ng-mode-img" : "ng-mode-hide"}`}>{mode === "hide-images" ? "画像" : "非表示"}</span>
-                                  {scope !== "global" && <span className="ng-mode-label" style={{ background: scope === "board" ? "#2a7a2a" : "#2a5a9a", color: "#fff" }}>{scope === "board" ? "板" : "スレ"}</span>}
-                                  {isRegex && <span className="ng-mode-label" style={{ background: "#6b4c9a", color: "#fff" }}>正規表現</span>}
-                                  <span>{v}</span>
-                                  <button className="ng-remove" onClick={() => removeNgEntry(type, v)}>×</button>
-                                </li>
-                              );
-                            })}
-                          </ul>
-                        )}
-                      </div>
-                    ))}
-                  </div>
                 </div>
+              </fieldset>
+              </section>
+              </div>
               )}
-              {settingsCategory === "info" && (<>
+              {(settingsSearching || settingsCategory === "ng") && (
+              <div className="settings-cat" data-cat="ng">
+              <section className="settings-section" data-section="words">
+                {settingsSectionHeading("ng", "words")}
+              <fieldset>
+                <legend>NG ワード ({ngFilters["words"].length}件)</legend>
+                {ngAddForm}
+                {settingsListFilterRow()}
+                <div data-search-exclude="1">
+                {ngFilters["words"].length === 0 ? (
+                  <span className="ng-empty">(なし)</span>
+                ) : (
+                  <ul className="ng-list">
+                    {ngFilters["words"].filter((entry) => settingsListMatch(ngVal(entry))).map((entry) => {
+                      const v = ngVal(entry); const mode = ngEntryMode(entry); const scope = ngEntryScope(entry);
+                      const isRegex = v.startsWith("/") && v.endsWith("/") && v.length > 2;
+                      return (
+                        <li key={v}>
+                          <span className={`ng-mode-label ${mode === "hide-images" ? "ng-mode-img" : "ng-mode-hide"}`}>{mode === "hide-images" ? "画像" : "非表示"}</span>
+                          {scope !== "global" && <span className="ng-mode-label" style={{ background: scope === "board" ? "#2a7a2a" : "#2a5a9a", color: "#fff" }}>{scope === "board" ? "板" : "スレ"}</span>}
+                          {isRegex && <span className="ng-mode-label" style={{ background: "#6b4c9a", color: "#fff" }}>正規表現</span>}
+                          <span>{v}</span>
+                          <button className="ng-remove" onClick={() => removeNgEntry("words", v)}>×</button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+                </div>
+              </fieldset>
+              </section>
+              <section className="settings-section" data-section="ids">
+                {settingsSectionHeading("ng", "ids")}
+              <fieldset>
+                <legend>NG ID ({ngFilters["ids"].length}件)</legend>
+                {ngAddForm}
+                {settingsListFilterRow()}
+                <div data-search-exclude="1">
+                {ngFilters["ids"].length === 0 ? (
+                  <span className="ng-empty">(なし)</span>
+                ) : (
+                  <ul className="ng-list">
+                    {ngFilters["ids"].filter((entry) => settingsListMatch(ngVal(entry))).map((entry) => {
+                      const v = ngVal(entry); const mode = ngEntryMode(entry); const scope = ngEntryScope(entry);
+                      const isRegex = v.startsWith("/") && v.endsWith("/") && v.length > 2;
+                      return (
+                        <li key={v}>
+                          <span className={`ng-mode-label ${mode === "hide-images" ? "ng-mode-img" : "ng-mode-hide"}`}>{mode === "hide-images" ? "画像" : "非表示"}</span>
+                          {scope !== "global" && <span className="ng-mode-label" style={{ background: scope === "board" ? "#2a7a2a" : "#2a5a9a", color: "#fff" }}>{scope === "board" ? "板" : "スレ"}</span>}
+                          {isRegex && <span className="ng-mode-label" style={{ background: "#6b4c9a", color: "#fff" }}>正規表現</span>}
+                          <span>{v}</span>
+                          <button className="ng-remove" onClick={() => removeNgEntry("ids", v)}>×</button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+                </div>
+              </fieldset>
+              </section>
+              <section className="settings-section" data-section="names">
+                {settingsSectionHeading("ng", "names")}
+              <fieldset>
+                <legend>NG 名前 ({ngFilters["names"].length}件)</legend>
+                {ngAddForm}
+                {settingsListFilterRow()}
+                <div data-search-exclude="1">
+                {ngFilters["names"].length === 0 ? (
+                  <span className="ng-empty">(なし)</span>
+                ) : (
+                  <ul className="ng-list">
+                    {ngFilters["names"].filter((entry) => settingsListMatch(ngVal(entry))).map((entry) => {
+                      const v = ngVal(entry); const mode = ngEntryMode(entry); const scope = ngEntryScope(entry);
+                      const isRegex = v.startsWith("/") && v.endsWith("/") && v.length > 2;
+                      return (
+                        <li key={v}>
+                          <span className={`ng-mode-label ${mode === "hide-images" ? "ng-mode-img" : "ng-mode-hide"}`}>{mode === "hide-images" ? "画像" : "非表示"}</span>
+                          {scope !== "global" && <span className="ng-mode-label" style={{ background: scope === "board" ? "#2a7a2a" : "#2a5a9a", color: "#fff" }}>{scope === "board" ? "板" : "スレ"}</span>}
+                          {isRegex && <span className="ng-mode-label" style={{ background: "#6b4c9a", color: "#fff" }}>正規表現</span>}
+                          <span>{v}</span>
+                          <button className="ng-remove" onClick={() => removeNgEntry("names", v)}>×</button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+                </div>
+              </fieldset>
+              </section>
+              </div>
+              )}
+              {(settingsSearching || settingsCategory === "info") && (
+              <div className="settings-cat" data-cat="info">
+              <section className="settings-section" data-section="main">
+                {settingsSectionHeading("info", "main")}
               <fieldset>
                 <legend>情報</legend>
                 <div className="settings-row"><span>バージョン</span><span>{currentVersion}</span></div>
@@ -7878,7 +8153,9 @@ export default function App() {
                   <button onClick={() => { const url = "https://github.com/kaedekiku/LiveFakeTauri2"; if (isTauriRuntime()) void invoke("open_external_url", { url }).catch(() => window.open(url, "_blank")); else window.open(url, "_blank"); }}>GitHubページを開く</button>
                 </div>
               </fieldset>
-              </>)}
+              </section>
+              </div>
+              )}
               </div>
             </div>
           </div>

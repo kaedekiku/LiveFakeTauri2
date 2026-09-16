@@ -3667,3 +3667,85 @@ button.search-history-btn:hover {
 .new-arrival-id-count {
   font-size: 0.9em;
 }
+
+/* --- 設定画面: 検索 / 節タブ / 検索結果見出し --- */
+.settings-search {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 6px;
+  font-size: 12px;
+}
+.settings-nav-item.no-match {
+  opacity: 0.4;
+}
+.settings-section-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 8px;
+  position: sticky;
+  top: -8px;
+  padding: 4px 0;
+  background: #f5f5f5;
+  z-index: 1;
+}
+.settings-section-tab {
+  border: 1px solid #c8c8c8;
+  background: #fff;
+  border-radius: 12px;
+  padding: 2px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  color: inherit;
+}
+.settings-section-tab:hover {
+  background: #e8f0fe;
+}
+.settings-section-tab.active {
+  background: #4a90d9;
+  border-color: #4a90d9;
+  color: #fff;
+  font-weight: 700;
+}
+.settings-search-note {
+  font-size: 11px;
+  color: var(--sub);
+  margin-bottom: 6px;
+}
+.settings-section-heading {
+  font-size: 12px;
+  font-weight: 700;
+  color: #2a5a9a;
+  cursor: pointer;
+  margin: 8px 0 2px;
+}
+.settings-section-heading:hover {
+  text-decoration: underline;
+}
+.settings-match {
+  background: rgba(255, 220, 0, 0.18);
+}
+.settings-list-filter input {
+  font-size: 12px;
+  padding: 2px 6px;
+}
+.dark .settings-section-tabs {
+  background: #2d2d30;
+}
+.dark .settings-section-tab {
+  background: #3a3a3d;
+  border-color: #555;
+}
+.dark .settings-section-tab:hover {
+  background: #094771;
+}
+.dark .settings-section-tab.active {
+  background: #005a9e;
+  border-color: #005a9e;
+}
+.dark .settings-section-heading {
+  color: #6cb6ff;
+}
+.dark .settings-match {
+  background: rgba(255, 220, 0, 0.12);
+}
