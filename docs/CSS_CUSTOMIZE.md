@@ -25,13 +25,14 @@ SIKI のカスタム CSS の知識・レシピをほぼそのまま流用でき�
 | `dark.css` | ダークモード時のみ | ダーク系テーマの `user.css` 相当 |
 | `floating.css` | 字幕ウィンドウ | `floating.css`（実況ウィンドウ） |
 | `mediaviewer.css` | 画像ポップアップウィンドウ | `mediaviewer.css` |
+| `compose.css` | 書き込みの浮遊ウィンドウ（→ [3.10](#310-書き込みの浮遊ウィンドウ)） | 対応ファイルなし（LiveFake 独自） |
 | `postform.css` | 書き込みパネル（`@scope` で書き込み欄に限定適用） | `postform.css` |
 | `setting.css` | 設定パネル（同上） | `setting.css` |
 
 適用順（後勝ち）: 標準スタイル → `custom.css` → `main.css` → `light.css`/`dark.css` → `postform.css`/`setting.css`
 
-字幕ウィンドウ・画像ポップアップウィンドウは別の WebView なので、メインウィンドウの `custom.css` は届きません。
-これらの見た目を変えたい場合は `floating.css` / `mediaviewer.css` に書いてください。
+字幕ウィンドウ・画像ポップアップウィンドウ・書き込みの浮遊ウィンドウは別の WebView なので、メインウィンドウの `custom.css` は届きません。
+これらの見た目を変えたい場合はそれぞれ `floating.css` / `mediaviewer.css` / `compose.css` に書いてください。
 
 ### 1.2 反映方法
 
