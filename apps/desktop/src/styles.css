@@ -1476,6 +1476,15 @@ input:not([type="checkbox"]):not([type="radio"]) {
   padding: 6px;
 }
 
+input.color-swatch[type="color"] {
+  /* px ではなく em: OSのDPIスケーリング(4Kモニタ等)自体はWebViewが自動対応するが、
+     ここではUI全体のフォントサイズに連動させることで表示崩れの余地を無くす */
+  width: 2.5em;
+  height: 2em;
+  padding: 2px;
+  flex: none;
+}
+
 input[type="checkbox"],
 input[type="radio"] {
   width: auto;

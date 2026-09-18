@@ -1,6 +1,6 @@
 [package]
 name = "livefake"
-version = "0.0.103"
+version = "0.0.104"
 license = "MIT"
 description = "実況向け掲示板ブラウザ"
 homepage = ""
@@ -27,3 +27,4 @@ serde_json = { workspace = true }
 tauri = { version = "2", features = [] }
 tauri-plugin-single-instance = "2"
 winreg = "0.56.0"
+tokio = { version = "1", default-features = false, features = ["time"] }

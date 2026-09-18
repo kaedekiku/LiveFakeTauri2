@@ -17,6 +17,7 @@ import {
   Star, X, ChevronLeft, ChevronRight, ChevronDown, Ban,
   Image, Film, ExternalLink,
   Subtitles, Volume2, VolumeX, ChevronUp, Search, PanelLeftClose, PanelLeftOpen,
+  Cast,
 } from "lucide-react";
 
 type MenuInfo = { topLevelKeys: number; normalizedSample: string };
@@ -136,10 +137,33 @@ const clampMenuPosition = (x: number, y: number, width: number, height: number) 
 const isTauriRuntime = () =>
   typeof window !== "undefined" && Boolean((globalThis as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
 type SiteType = "fiveCh" | "shitaraba" | "jpnkn";
+const DEFAULT_BBSMENU_URL = "https://menu.5ch.io/bbsmenu.json";
+const DEFAULT_SHITARABA_HOST = "jbbs.shitaraba.net";
+const DEFAULT_JPNKN_HOST = "bbs.jpnkn.com";
+const urlHostname = (url: string): string | null => {
+  try { return new URL(url).hostname.toLowerCase(); } catch { return null; }
+};
+// ホスト名の完全一致/末尾一致で判定する (部分一致だと bbs.jpnkn.com.evil.example のような
+// 偽装ドメインも誤って本家と判定してしまうため)
 const detectSiteType = (url: string): SiteType => {
-  if (/jbbs\.shitaraba\.net/i.test(url) || /jbbs\.livedoor\.jp/i.test(url)) return "shitaraba";
-  if (/bbs\.jpnkn\.com/i.test(url)) return "jpnkn";
+  const host = urlHostname(url);
+  if (host === "jbbs.shitaraba.net" || host === "jbbs.livedoor.jp") return "shitaraba";
+  if (host === "bbs.jpnkn.com") return "jpnkn";
   return "fiveCh";
+};
+// レス本文中のリンクが自サイト(5ch/したらば/JPNKN)の板・スレURLかどうかを、
+// ホスト名の完全一致/末尾一致で厳密に判定する。クリック時に「内部の板として開く」か
+// 「外部ブラウザで開く」かを振り分けるのに使う
+const isSameSiteBoardUrl = (url: string): boolean => {
+  const host = urlHostname(url);
+  if (!host) return false;
+  return (
+    host === "5ch.io" || host.endsWith(".5ch.io") ||
+    host === "5ch.net" || host.endsWith(".5ch.net") ||
+    host === "2ch.net" || host.endsWith(".2ch.net") ||
+    host === "jbbs.shitaraba.net" || host === "jbbs.livedoor.jp" ||
+    host === "bbs.jpnkn.com"
+  );
 };
 const isTypingTarget = (target: EventTarget | null) => {
   if (!(target instanceof HTMLElement)) return false;
@@ -812,15 +836,31 @@ export default function App() {
   const pendingLastBoardRef = useRef<{ boardName: string; url: string } | null>(null);
   const currentThreadUrlRef = useRef("");
   const [selectedBoard, setSelectedBoard] = useState("Favorite");
-  const [selectedThread, setSelectedThread] = useState<number | null>(1);
+  // 選択中スレ・既読管理は threadUrl(不変)をキーにする — 一覧の連番(id)は自動更新のたびに
+  // 板の並び替えで別のスレを指すようになり得るため、識別子として使ってはいけない
+  const [selectedThread, setSelectedThread] = useState<string | null>(null);
   const [selectedResponse, setSelectedResponse] = useState<number>(1);
-  const [threadReadMap, setThreadReadMap] = useState<Record<number, boolean>>({ 1: false, 2: true });
-  const [threadLastReadCount, setThreadLastReadCount] = useState<Record<number, number>>({});
+  const [threadReadMap, setThreadReadMap] = useState<Record<string, boolean>>({});
+  const [threadLastReadCount, setThreadLastReadCount] = useState<Record<string, number>>({});
   const [threadMenu, setThreadMenu] = useState<{ x: number; y: number; threadId: number } | null>(null);
   const [responseMenu, setResponseMenu] = useState<{
     x: number; y: number; responseId: number;
     selection?: string; resId?: string; resName?: string; isOnResNo?: boolean; imageUrl?: string; linkUrl?: string;
   } | null>(null);
+  const responseMenuRef = useRef<HTMLDivElement | null>(null);
+  // レスの右クリックメニューは項目数がハイライト・配信ホワイトリストなどの状態で変わるため、
+  // 決め打ちの高さでは足りずウィンドウ下端からはみ出すことがある。実際に描画されたサイズで
+  // 測り直し、はみ出していれば位置を補正する
+  useLayoutEffect(() => {
+    if (!responseMenu || !responseMenuRef.current) return;
+    const el = responseMenuRef.current;
+    const rect = el.getBoundingClientRect();
+    const p = clampMenuPosition(responseMenu.x, responseMenu.y, rect.width, rect.height);
+    if (p.x !== responseMenu.x || p.y !== responseMenu.y) {
+      setResponseMenu({ ...responseMenu, x: p.x, y: p.y });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [responseMenu?.responseId, responseMenu?.selection, responseMenu?.resId, responseMenu?.resName, responseMenu?.isOnResNo, responseMenu?.imageUrl, responseMenu?.linkUrl]);
   const [hlSubMenu, setHlSubMenu] = useState<{ type: "text" | "id" | "name"; value: string; nearRight?: boolean } | null>(null);
   const [boardContextMenu, setBoardContextMenu] = useState<{ x: number; y: number; board: BoardEntry } | null>(null);
   // URL バーの右クリックメニュー (貼り付けて移動 / 貼り付け / コピー / すべて選択)
@@ -851,6 +891,35 @@ export default function App() {
   const [anchorPopup, setAnchorPopup] = useState<{ x: number; y: number; anchorTop: number; responseIds: number[] } | null>(null);
   const [nestedPopups, setNestedPopups] = useState<{ x: number; y: number; anchorTop: number; responseIds: number[] }[]>([]);
   const [imageSaveFolder, setImageSaveFolder] = useState<string>("");
+  const [bbsmenuUrl, setBbsmenuUrl] = useState<string>(DEFAULT_BBSMENU_URL);
+  const [shitarabaHost, setShitarabaHost] = useState<string>(DEFAULT_SHITARABA_HOST);
+  const [jpnknHost, setJpnknHost] = useState<string>(DEFAULT_JPNKN_HOST);
+
+  // ===== OBS連携 (配信ホワイトリスト表示ウィンドウ) =====
+  // 想定利用者がごく一部のため、設定タブは既定で隠しておき、「情報」タブのボタンで表示する。
+  // 機能自体も既定でオフで、オンにするにはOBSの起動が必要 (Rust側でチェック)。
+  const [obsTabRevealed, setObsTabRevealed] = useState(false);
+  const [obsIntegrationEnabled, setObsIntegrationEnabled] = useState(false);
+  const obsIntegrationEnabledRef = useRef(false);
+  obsIntegrationEnabledRef.current = obsIntegrationEnabled;
+  const [obsToggleError, setObsToggleError] = useState("");
+  const [broadcastVisible, setBroadcastVisible] = useState(false);
+  const broadcastVisibleRef = useRef(false);
+  broadcastVisibleRef.current = broadcastVisible;
+  // 配信ホワイトリスト (当日限り・アプリ再起動でリセットされる、IDハイライトより短命の運用でよい)
+  const [broadcastWhitelist, setBroadcastWhitelist] = useState<Record<string, true>>({});
+  const broadcastWhitelistRef = useRef<Record<string, true>>({});
+  broadcastWhitelistRef.current = broadcastWhitelist;
+  // 見た目設定
+  const [broadcastFontFamily, setBroadcastFontFamily] = useState("");
+  const [broadcastFontPickerInput, setBroadcastFontPickerInput] = useState("");
+  const [broadcastFontPickerOpen, setBroadcastFontPickerOpen] = useState(false);
+  const [broadcastFontSize, setBroadcastFontSize] = useState(22);
+  const [broadcastTextColor, setBroadcastTextColor] = useState("#ffffff");
+  const [broadcastOutlineColor, setBroadcastOutlineColor] = useState("#000000");
+  const [broadcastOutlineWidth, setBroadcastOutlineWidth] = useState(2);
+  const [broadcastBgColor, setBroadcastBgColor] = useState("#00ff00");
+  const [broadcastDisplaySeconds, setBroadcastDisplaySeconds] = useState(12);
   const hoverPreviewRef = useRef<HTMLDivElement | null>(null);
   const hoverPreviewImgRef = useRef<HTMLImageElement | null>(null);
   const hoverPreviewSrcRef = useRef<string | null>(null);
@@ -871,9 +940,9 @@ export default function App() {
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  type SettingsCategory = "display" | "posting" | "tts" | "tts-dict" | "proxy" | "ng" | "subtitle" | "highlights" | "presets" | "reset" | "info";
-  const SETTINGS_CATEGORIES: SettingsCategory[] = ["display", "posting", "tts", "tts-dict", "subtitle", "proxy", "ng", "highlights", "presets", "reset", "info"];
-  const SETTINGS_CATEGORY_LABELS: Record<SettingsCategory, string> = { display: "表示", posting: "書き込み", tts: "読み上げ", "tts-dict": "読み上げ辞書", subtitle: "字幕", proxy: "プロキシ", ng: "NG", highlights: "ハイライト", presets: "プリセット", reset: "リセット", info: "情報" };
+  type SettingsCategory = "display" | "posting" | "tts" | "tts-dict" | "proxy" | "ng" | "subtitle" | "highlights" | "presets" | "reset" | "info" | "obs";
+  const SETTINGS_CATEGORIES: SettingsCategory[] = ["display", "posting", "tts", "tts-dict", "subtitle", "proxy", "ng", "highlights", "presets", "reset", "info", ...(obsTabRevealed ? (["obs"] as const) : [])];
+  const SETTINGS_CATEGORY_LABELS: Record<SettingsCategory, string> = { display: "表示", posting: "書き込み", tts: "読み上げ", "tts-dict": "読み上げ辞書", subtitle: "字幕", proxy: "プロキシ", ng: "NG", highlights: "ハイライト", presets: "プリセット", reset: "リセット", info: "情報", obs: "OBS連携" };
   // 設定画面の保存まわりの状態 (詳細は「設定画面の保存 / 復元 / リセット / プリセット」の節)
   const settingsOpenRef = useRef(false);
   settingsOpenRef.current = settingsOpen;
@@ -898,6 +967,7 @@ export default function App() {
     presets: [],
     reset: [],
     info: [],
+    obs: [],
   };
   const [settingsCategory, setSettingsCategory] = useState<SettingsCategory>("display");
   const [settingsSection, setSettingsSection] = useState("");
@@ -1062,6 +1132,78 @@ export default function App() {
   const [subtitleTiming, setSubtitleTiming] = useState<ScrollTiming>(DEFAULT_SCROLL_TIMING);
   const subtitleTimingRef = useRef<ScrollTiming>(DEFAULT_SCROLL_TIMING);
   subtitleTimingRef.current = subtitleTiming;
+  const [broadcastTiming, setBroadcastTiming] = useState<ScrollTiming>(DEFAULT_SCROLL_TIMING);
+  const broadcastTimingRef = useRef<ScrollTiming>(DEFAULT_SCROLL_TIMING);
+  broadcastTimingRef.current = broadcastTiming;
+
+  // 配信ホワイトリスト表示ウィンドウへ、見た目設定をまとめて送る
+  const pushBroadcastStyle = () => {
+    if (!isTauriRuntime()) return;
+    void invoke("broadcast_update", {
+      data: {
+        style: {
+          fontFamily: broadcastFontFamily || undefined,
+          fontSize: broadcastFontSize,
+          textColor: broadcastTextColor,
+          outlineColor: broadcastOutlineColor,
+          outlineWidth: broadcastOutlineWidth,
+          bgColor: broadcastBgColor,
+          displaySeconds: broadcastDisplaySeconds,
+          msPerPx: broadcastTiming.msPerPx,
+          waitSec: broadcastTiming.waitSec,
+        },
+      },
+    }).catch(() => {});
+  };
+  // OBS連携の大元スイッチ。オンにする際はOBSが起動している必要がある (Rust側で確認)
+  const toggleObsIntegration = () => {
+    if (!isTauriRuntime()) return;
+    setObsToggleError("");
+    if (obsIntegrationEnabled) {
+      void invoke("obs_integration_set_enabled", { enabled: false }).catch(() => {});
+      setObsIntegrationEnabled(false);
+      if (broadcastVisibleRef.current) {
+        void invoke("broadcast_hide").catch(() => {});
+        setBroadcastVisible(false);
+      }
+    } else {
+      void invoke("obs_integration_set_enabled", { enabled: true })
+        .then(() => setObsIntegrationEnabled(true))
+        .catch((e) => setObsToggleError(String(e)));
+    }
+  };
+  // ツールバーのトグル: OBS連携ウィンドウの表示/非表示 (大元のスイッチがオンのときだけ操作できる)
+  const toggleBroadcastWindow = () => {
+    if (!isTauriRuntime() || !obsIntegrationEnabledRef.current) return;
+    if (broadcastVisible) {
+      void invoke("broadcast_hide").catch((e) => console.warn("broadcast_hide:", e));
+      setBroadcastVisible(false);
+    } else {
+      void invoke("broadcast_show").then(() => {
+        setBroadcastVisible(true);
+        setTimeout(pushBroadcastStyle, 250);
+      }).catch((e) => console.warn("broadcast_show:", e));
+    }
+  };
+  useEffect(() => {
+    if (broadcastVisible) pushBroadcastStyle();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [broadcastVisible, broadcastFontFamily, broadcastFontSize, broadcastTextColor, broadcastOutlineColor, broadcastOutlineWidth, broadcastBgColor, broadcastDisplaySeconds, broadcastTiming]);
+  // 新着レスのうち、配信ホワイトリストに登録されているIDのものだけをOBS連携ウィンドウへ送る。
+  // カード化・サムネイル化はせず、本文はプレーンな文字列のまま渡す (リンク先の安全性が
+  // 保証できないものを配信画面に自動表示しないため)
+  const pushBroadcastArrivals = (arrivals: ArrivalItem[]) => {
+    if (!isTauriRuntime() || !obsIntegrationEnabledRef.current) return;
+    // 複数件をまとめて1回のinvokeで送る (1件ずつ個別にinvokeすると、非同期呼び出しの完了順が
+    // 送信順と一致する保証が無く、配信ウィンドウ側での表示順が入れ替わることがあったため)
+    const items = arrivals
+      .filter((a) => broadcastWhitelistRef.current[a.id])
+      .map((a) => ({ name: a.name, id: a.id, date: a.time, body: a.text, isAa: isAsciiArt(a.text) }));
+    if (items.length === 0) return;
+    void invoke("broadcast_update", { data: { items } }).catch(() => {});
+  };
+  // OBS連携がオフになったら、レス右クリックメニューを開いていても表示されないよう
+  // ホワイトリストは残したままでよい (当日限りで自然に意味を失う運用)
   // 字幕の表示が終わるまで次のレスを待つ (同期)。字幕ウィンドウが閉じている・報告が無いときは新着ペインの時間だけで進む
   const [subtitleSyncEnabled, setSubtitleSyncEnabled] = useState(true);
   const subtitleSyncEnabledRef = useRef(true);
@@ -1424,13 +1566,12 @@ export default function App() {
     try {
       const all = await invoke<Record<string, Record<string, number>>>("load_read_status");
       const boardStatus = all[boardUrl] ?? {};
-      const readMap: Record<number, boolean> = {};
-      const lastReadMap: Record<number, number> = {};
-      threads.forEach((t, i) => {
-        const id = i + 1;
+      const readMap: Record<string, boolean> = {};
+      const lastReadMap: Record<string, number> = {};
+      threads.forEach((t) => {
         const lastRead = boardStatus[t.threadKey] ?? 0;
-        readMap[id] = lastRead > 0;
-        lastReadMap[id] = lastRead;
+        readMap[t.threadUrl] = lastRead > 0;
+        lastReadMap[t.threadUrl] = lastRead;
       });
       setThreadReadMap(readMap);
       setThreadLastReadCount(lastReadMap);
@@ -2228,8 +2369,7 @@ export default function App() {
       suppressThreadScrollRef.current = true;
       if (activeTabIndex >= 0 && activeTabIndex < threadTabs.length) {
         const activeUrl = threadTabs[activeTabIndex].threadUrl;
-        const matchIdx = rows.findIndex((r) => r.threadUrl === activeUrl);
-        setSelectedThread(matchIdx >= 0 ? matchIdx + 1 : null);
+        setSelectedThread(rows.some((r) => r.threadUrl === activeUrl) ? activeUrl : null);
       } else {
         setSelectedThread(null);
       }
@@ -2281,6 +2421,7 @@ export default function App() {
           const queueWasEmpty = arrivalQueueRef.current.length === 0;
           arrivalQueueRef.current.push(...arrivals);
           setArrivalQueueCount(arrivalQueueRef.current.length);
+          pushBroadcastArrivals(arrivals);
           if (!arrivalPausedRef.current && !arrivalTimerRef.current && (currentArrivalItemRef.current === null || queueWasEmpty)) {
             advanceToNextArrival();
           }
@@ -2356,18 +2497,17 @@ export default function App() {
       })
     );
     // Build readMap and lastReadMap for favorites
-    const readMap: Record<number, boolean> = {};
-    const lastReadMap: Record<number, number> = {};
-    favorites.threads.forEach((ft, i) => {
-      const id = i + 1;
+    const readMap: Record<string, boolean> = {};
+    const lastReadMap: Record<string, number> = {};
+    favorites.threads.forEach((ft) => {
       const bUrl = getBoardUrlFromThreadUrl(ft.threadUrl);
       const boardStatus = allReadStatus[bUrl] ?? {};
       // Extract thread key from URL
       const parts = ft.threadUrl.replace(/\/$/, "").split("/");
       const threadKey = parts[parts.length - 1] ?? "";
       const lastRead = boardStatus[threadKey] ?? 0;
-      readMap[id] = lastRead > 0;
-      lastReadMap[id] = lastRead;
+      readMap[ft.threadUrl] = lastRead > 0;
+      lastReadMap[ft.threadUrl] = lastRead;
     });
     setThreadReadMap(readMap);
     setThreadLastReadCount(lastReadMap);
@@ -2454,9 +2594,8 @@ export default function App() {
       // Update thread list read counts and response count
       const threadListIndex = fetchedThreads.findIndex((ft) => ft.threadUrl === url);
       if (threadListIndex >= 0) {
-        const tid = threadListIndex + 1;
-        setThreadReadMap((prev) => ({ ...prev, [tid]: true }));
-        setThreadLastReadCount((prev) => ({ ...prev, [tid]: rows.length }));
+        setThreadReadMap((prev) => ({ ...prev, [url]: true }));
+        setThreadLastReadCount((prev) => ({ ...prev, [url]: rows.length }));
         if (rows.length > fetchedThreads[threadListIndex].responseCount) {
           setFetchedThreads((prev) => prev.map((ft, i) => i === threadListIndex ? { ...ft, responseCount: rows.length } : ft));
         }
@@ -2481,6 +2620,7 @@ export default function App() {
           const queueWasEmpty = arrivalQueueRef.current.length === 0;
           arrivalQueueRef.current.push(...arrivals);
           setArrivalQueueCount(arrivalQueueRef.current.length);
+          pushBroadcastArrivals(arrivals);
           if (!arrivalPausedRef.current && !arrivalTimerRef.current && (currentArrivalItemRef.current === null || queueWasEmpty)) {
             advanceToNextArrival();
           }
@@ -2588,6 +2728,7 @@ export default function App() {
             threadTitle: tab?.title ?? threadUrl,
             defaultName: composeName || (nameHistory[0] ?? ""),
             defaultMail: composeSage ? "" : composeMail,
+            darkMode,
           },
         }).catch(() => {});
       }, 250);
@@ -3088,7 +3229,7 @@ export default function App() {
         const cached = tabCacheRef.current.get(ft.threadUrl);
         const cachedCount = cached ? cached.responses.length : 0;
         const res = serverCount ?? (fetched ? fetched.responseCount : (cachedCount > 0 ? cachedCount : -1));
-        const lastRead = threadLastReadCount[id] ?? 0;
+        const lastRead = threadLastReadCount[ft.threadUrl] ?? 0;
         const got = lastRead > 0 ? lastRead : (cachedCount > 0 ? cachedCount : 0);
         const datOchi = favNewCountsFetched && serverCount === undefined;
         return {
@@ -3110,7 +3251,7 @@ export default function App() {
           const created = Number(t.threadKey) * 1000;
           const elapsedDays = Math.max((Date.now() - created) / 86400000, 0.01);
           const speed = Number((t.responseCount / elapsedDays).toFixed(1));
-          const readCount = threadLastReadCount[i + 1] ?? 0;
+          const readCount = threadLastReadCount[t.threadUrl] ?? 0;
           const sinceDate = created > 0 ? new Date(created) : null;
           const sinceStr = sinceDate ? `${sinceDate.getFullYear()}/${String(sinceDate.getMonth() + 1).padStart(2, "0")}/${String(sinceDate.getDate()).padStart(2, "0")}` : "-";
           return {
@@ -3148,7 +3289,7 @@ export default function App() {
   if (needsResort || cachedSortOrderRef.current.length === 0) {
     visibleThreadItems = [...filteredThreadItems].sort((a, b) => {
       let cmp = 0;
-      if (threadSortKey === "fetched") cmp = (threadReadMap[a.id] ? 0 : 1) - (threadReadMap[b.id] ? 0 : 1);
+      if (threadSortKey === "fetched") cmp = (threadReadMap[a.threadUrl] ? 0 : 1) - (threadReadMap[b.threadUrl] ? 0 : 1);
       else if (threadSortKey === "id") cmp = a.id - b.id;
       else if (threadSortKey === "title") cmp = a.title.localeCompare(b.title);
       else if (threadSortKey === "res") cmp = a.res - b.res;
@@ -3172,8 +3313,8 @@ export default function App() {
       return (orderMap.get(a.threadUrl) ?? 999999) - (orderMap.get(b.threadUrl) ?? 999999);
     });
   }
-  const selectedThreadItem = visibleThreadItems.find((t) => t.id === selectedThread) ?? null;
-  const unreadThreadCount = visibleThreadItems.filter((t) => !threadReadMap[t.id]).length;
+  const selectedThreadItem = visibleThreadItems.find((t) => t.threadUrl === selectedThread) ?? null;
+  const unreadThreadCount = visibleThreadItems.filter((t) => !threadReadMap[t.threadUrl]).length;
   const selectedThreadLabel = selectedThreadItem ? `#${selectedThreadItem.id}` : "-";
   const responseItems = [
     ...(fetchedResponses.length > 0
@@ -3532,7 +3673,8 @@ export default function App() {
   };
 
   const markThreadRead = (threadId: number, value: boolean) => {
-    setThreadReadMap((prev) => ({ ...prev, [threadId]: value }));
+    const target = threadItems.find((t) => t.id === threadId);
+    if (target) setThreadReadMap((prev) => ({ ...prev, [target.threadUrl]: value }));
     setThreadMenu(null);
   };
 
@@ -3564,11 +3706,8 @@ export default function App() {
     delete threadFetchTimesRef.current[url];
     saveToFile("thread-fetch-times.json", threadFetchTimesRef.current);
     // clear read status for this thread in the thread list
-    const threadId = threadItems.find((t) => "threadUrl" in t && t.threadUrl === url)?.id;
-    if (threadId != null) {
-      setThreadReadMap((prev) => { const next = { ...prev }; delete next[threadId]; return next; });
-      setThreadLastReadCount((prev) => { const next = { ...prev }; delete next[threadId]; return next; });
-    }
+    setThreadReadMap((prev) => { const next = { ...prev }; delete next[url]; return next; });
+    setThreadLastReadCount((prev) => { const next = { ...prev }; delete next[url]; return next; });
     // clear persisted read status
     const bUrl = getBoardUrlFromThreadUrl(url);
     try {
@@ -3962,6 +4101,7 @@ export default function App() {
           subtitleCardsEnabled?: boolean;
           arrivalTiming?: unknown;
           subtitleTiming?: unknown;
+          broadcastTiming?: unknown;
           subtitleSyncEnabled?: boolean;
           mainHeaderVis?: unknown;
           arrivalHeaderVis?: unknown;
@@ -4039,6 +4179,7 @@ export default function App() {
         if (typeof parsed.subtitleCardsEnabled === "boolean") setSubtitleCardsEnabled(parsed.subtitleCardsEnabled);
         if (parsed.arrivalTiming !== undefined) setArrivalTiming(sanitizeScrollTiming(parsed.arrivalTiming));
         if (parsed.subtitleTiming !== undefined) setSubtitleTiming(sanitizeScrollTiming(parsed.subtitleTiming));
+        if (parsed.broadcastTiming !== undefined) setBroadcastTiming(sanitizeScrollTiming(parsed.broadcastTiming));
         if (typeof parsed.subtitleSyncEnabled === "boolean") setSubtitleSyncEnabled(parsed.subtitleSyncEnabled);
         if (parsed.mainHeaderVis !== undefined) setMainHeaderVis(sanitizeHeaderVis(parsed.mainHeaderVis));
         if (parsed.arrivalHeaderVis !== undefined) setArrivalHeaderVis(sanitizeHeaderVis(parsed.arrivalHeaderVis));
@@ -4601,6 +4742,17 @@ export default function App() {
       if (map["App.maxOpenTabs"]) { const n = parseInt(map["App.maxOpenTabs"], 10); if (!isNaN(n) && n >= 1) setMaxOpenTabs(n); }
       if (map["App.logRetentionDays"]) { const n = parseInt(map["App.logRetentionDays"], 10); if (!isNaN(n) && n >= 0) setLogRetentionDays(n); }
       if (map["App.imageSaveFolder"] !== undefined) setImageSaveFolder(map["App.imageSaveFolder"]);
+      if (map["App.bbsmenuUrl"] !== undefined && map["App.bbsmenuUrl"].trim()) setBbsmenuUrl(map["App.bbsmenuUrl"]);
+      if (map["App.shitarabaHost"] !== undefined && map["App.shitarabaHost"].trim()) setShitarabaHost(map["App.shitarabaHost"]);
+      if (map["App.jpnknHost"] !== undefined && map["App.jpnknHost"].trim()) setJpnknHost(map["App.jpnknHost"]);
+      if (map["App.obsTabRevealed"]) setObsTabRevealed(map["App.obsTabRevealed"] === "true");
+      if (map["App.broadcastFontFamily"] !== undefined) { setBroadcastFontFamily(map["App.broadcastFontFamily"]); setBroadcastFontPickerInput(map["App.broadcastFontFamily"]); }
+      if (map["App.broadcastFontSize"]) { const n = parseInt(map["App.broadcastFontSize"], 10); if (!isNaN(n)) setBroadcastFontSize(n); }
+      if (map["App.broadcastTextColor"]) setBroadcastTextColor(map["App.broadcastTextColor"]);
+      if (map["App.broadcastOutlineColor"]) setBroadcastOutlineColor(map["App.broadcastOutlineColor"]);
+      if (map["App.broadcastOutlineWidth"]) { const n = parseInt(map["App.broadcastOutlineWidth"], 10); if (!isNaN(n)) setBroadcastOutlineWidth(n); }
+      if (map["App.broadcastBgColor"]) setBroadcastBgColor(map["App.broadcastBgColor"]);
+      if (map["App.broadcastDisplaySeconds"]) { const n = parseFloat(map["App.broadcastDisplaySeconds"]); if (!isNaN(n)) setBroadcastDisplaySeconds(n); }
       if (map["App.cssAllowExternalUrls"]) setCssAllowExternalUrls(map["App.cssAllowExternalUrls"] === "true");
       // Speech settings
       if (map["Speech.mode"]) setTtsMode(map["Speech.mode"] as TtsMode);
@@ -4896,6 +5048,28 @@ export default function App() {
       .then((fn) => { if (disposed) fn(); else unlisten = fn; }).catch((e) => console.warn("compose-popup-closed listen failed", e));
     return () => { disposed = true; if (unlisten) unlisten(); };
   }, []);
+  // OBS連携ウィンドウが (Alt+F4等で) 閉じられたときにツールバーの状態を合わせる
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void listen("broadcast-closed", () => { setBroadcastVisible(false); })
+      .then((fn) => { if (disposed) fn(); else unlisten = fn; }).catch((e) => console.warn("broadcast-closed listen failed", e));
+    return () => { disposed = true; if (unlisten) unlisten(); };
+  }, []);
+  // OBSが終了する等でOBS連携が自動的にオフになったときにフロント側の状態を合わせる
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void listen("obs-integration-auto-disabled", () => {
+      setObsIntegrationEnabled(false);
+      setBroadcastVisible(false);
+      setObsToggleError("OBSが起動していないため、OBS連携を自動的にオフにしました。");
+      if (isTauriRuntime()) void invoke("broadcast_hide").catch(() => {});
+    }).then((fn) => { if (disposed) fn(); else unlisten = fn; }).catch((e) => console.warn("obs-integration-auto-disabled listen failed", e));
+    return () => { disposed = true; if (unlisten) unlisten(); };
+  }, []);
   // 字幕ヘッダに一時停止状態と残りキュー数を表示
   useEffect(() => {
     if (!isTauriRuntime() || !subtitleVisible) return;
@@ -4929,6 +5103,17 @@ export default function App() {
       "App.maxOpenTabs": String(maxOpenTabs),
       "App.logRetentionDays": String(logRetentionDays),
       "App.imageSaveFolder": imageSaveFolder,
+      "App.bbsmenuUrl": bbsmenuUrl,
+      "App.shitarabaHost": shitarabaHost,
+      "App.jpnknHost": jpnknHost,
+      "App.obsTabRevealed": String(obsTabRevealed),
+      "App.broadcastFontFamily": broadcastFontFamily,
+      "App.broadcastFontSize": String(broadcastFontSize),
+      "App.broadcastTextColor": broadcastTextColor,
+      "App.broadcastOutlineColor": broadcastOutlineColor,
+      "App.broadcastOutlineWidth": String(broadcastOutlineWidth),
+      "App.broadcastBgColor": broadcastBgColor,
+      "App.broadcastDisplaySeconds": String(broadcastDisplaySeconds),
       "App.cssAllowExternalUrls": String(cssAllowExternalUrls),
       "Speech.mode": ttsMode,
       "Speech.enabled": String(ttsEnabled),
@@ -4956,7 +5141,8 @@ export default function App() {
   useEffect(() => {
     if (!isTauriRuntime() || !appSettingsLoadedRef.current || settingsOpenRef.current) return;
     void invoke("save_app_settings", { settings: buildAppSettingsMap() }).catch(() => {});
-  }, [responsesFontSize, responseGap, autoRefreshInterval, autoRefreshEnabled, autoScrollEnabled, smoothScroll, maxOpenTabs, logRetentionDays, imageSaveFolder, cssAllowExternalUrls,
+  }, [responsesFontSize, responseGap, autoRefreshInterval, autoRefreshEnabled, autoScrollEnabled, smoothScroll, maxOpenTabs, logRetentionDays, imageSaveFolder, bbsmenuUrl, shitarabaHost, jpnknHost,
+      obsTabRevealed, broadcastFontFamily, broadcastFontSize, broadcastTextColor, broadcastOutlineColor, broadcastOutlineWidth, broadcastBgColor, broadcastDisplaySeconds, cssAllowExternalUrls,
       ttsMode, ttsEnabled, ttsMaxReadLength, sapiVoiceIndex, sapiRate, sapiVolume,
       voicevoxEndpoint, voicevoxSpeakerId, voicevoxSpeedScale, voicevoxPitchScale, voicevoxIntonationScale, voicevoxVolumeScale,
       composeName, composeMail, composeSage, composeFontSize, composeOpen]);
@@ -4994,6 +5180,7 @@ export default function App() {
       subtitleCardsEnabled,
       arrivalTiming,
       subtitleTiming,
+      broadcastTiming,
       subtitleSyncEnabled,
       mainHeaderVis,
       arrivalHeaderVis,
@@ -5029,7 +5216,7 @@ export default function App() {
     if (isTauriRuntime()) {
       void invoke("save_layout_prefs", { prefs: JSON.stringify(buildLayoutPrefsPayload()) }).catch(() => {});
     }
-  }, [boardPaneVisible, boardPanePx, threadPanePx, responseTopRatio, boardsFontSize, threadsFontSize, responsesFontSize, responsesHeaderFontSize, darkMode, fontFamily, fontBold, threadColWidths, showBoardButtons, keepSortOnRefresh, composeSubmitKey, imageSizeLimit, showImagePreview, hoverPreviewEnabled, ogpCardsEnabled, tweetCardsEnabled, arrivalCardsEnabled, subtitleCardsEnabled, arrivalTiming, subtitleTiming, subtitleSyncEnabled, mainHeaderVis, arrivalHeaderVis, subtitleHeaderVis, responseDividerAlways, settingsSearchHistory, selectedBoard, hoverPreviewDelay, thumbSize, restoreSession, autoRefreshInterval, autoScrollEnabled, newArrivalPaneOpen, newArrivalPaneHeight, newArrivalFontSize, resIdFontSize, resIdFontFamily, newArrivalIdFontSize, newArrivalIdFontFamily, subtitleIdFontSize, subtitleIdFontFamily, popupFontSize, popupMaxWidth, popupMaxHeight, composePanelPx, subtitleBodyFontSize, subtitleMetaFontSize, subtitleOpacity, subtitleAlwaysOnTop]);
+  }, [boardPaneVisible, boardPanePx, threadPanePx, responseTopRatio, boardsFontSize, threadsFontSize, responsesFontSize, responsesHeaderFontSize, darkMode, fontFamily, fontBold, threadColWidths, showBoardButtons, keepSortOnRefresh, composeSubmitKey, imageSizeLimit, showImagePreview, hoverPreviewEnabled, ogpCardsEnabled, tweetCardsEnabled, arrivalCardsEnabled, subtitleCardsEnabled, arrivalTiming, subtitleTiming, broadcastTiming, subtitleSyncEnabled, mainHeaderVis, arrivalHeaderVis, subtitleHeaderVis, responseDividerAlways, settingsSearchHistory, selectedBoard, hoverPreviewDelay, thumbSize, restoreSession, autoRefreshInterval, autoScrollEnabled, newArrivalPaneOpen, newArrivalPaneHeight, newArrivalFontSize, resIdFontSize, resIdFontFamily, newArrivalIdFontSize, newArrivalIdFontFamily, subtitleIdFontSize, subtitleIdFontFamily, popupFontSize, popupMaxWidth, popupMaxHeight, composePanelPx, subtitleBodyFontSize, subtitleMetaFontSize, subtitleOpacity, subtitleAlwaysOnTop]);
 
   // ===== 設定画面の保存 / 復元 / リセット / プリセット =====
   // 値の設定は変更した時点で画面に反映される (プレビュー) が、ファイルへの保存は「設定を保存」を押したときだけ行う。
@@ -5246,6 +5433,11 @@ export default function App() {
   useEffect(() => {
     if (isTauriRuntime()) {
       invoke("set_window_theme", { dark: darkMode }).catch(() => {});
+    }
+    // 書き込みの浮遊ウィンドウが開いている間にライト/ダークを切り替えた場合も、
+    // その場で基本配色を追従させる
+    if (isTauriRuntime() && composePopupOpenRef.current) {
+      invoke("compose_popup_update", { data: { darkMode } }).catch(() => {});
     }
   }, [darkMode]);
 
@@ -6144,17 +6336,17 @@ export default function App() {
             </thead>
             <tbody ref={threadTbodyRef}>
               {visibleThreadItems.map((t) => {
-                const isUnread = !threadReadMap[t.id];
+                const isUnread = !threadReadMap[t.threadUrl];
                 const hasUnread = t.got > 0 && t.res - t.got > 0;
                 return (
                   <tr
-                    key={t.id}
-                    className={`bcon${t.id % 2 === 0 ? " odd" : ""} ${selectedThread === t.id ? "selected-row cursor" : ""} ${isUnread ? "unread-row" : ""} ${hasUnread ? "has-unread-row" : ""} ${"datOchi" in t && t.datOchi ? "dat-ochi-row" : ""}`}
+                    key={t.threadUrl}
+                    className={`bcon${t.id % 2 === 0 ? " odd" : ""} ${selectedThread === t.threadUrl ? "selected-row cursor" : ""} ${isUnread ? "unread-row" : ""} ${hasUnread ? "has-unread-row" : ""} ${"datOchi" in t && t.datOchi ? "dat-ochi-row" : ""}`}
                     onClick={() => {
-                      setSelectedThread(t.id);
+                      setSelectedThread(t.threadUrl);
                       setSelectedResponse(1);
-                      setThreadReadMap((prev) => ({ ...prev, [t.id]: true }));
-                      setThreadLastReadCount((prev) => ({ ...prev, [t.id]: t.res }));
+                      setThreadReadMap((prev) => ({ ...prev, [t.threadUrl]: true }));
+                      setThreadLastReadCount((prev) => ({ ...prev, [t.threadUrl]: t.res }));
                       if ("threadUrl" in t && typeof t.threadUrl === "string") {
                         const alreadyOpen = threadTabs.some((tab) => tab.threadUrl === t.threadUrl);
                         openThreadInTab(t.threadUrl, t.title);
@@ -6170,7 +6362,7 @@ export default function App() {
                             void persistReadStatus(boardUrl, threadKey, t.res);
                           }
                         } else {
-                          const ft = fetchedThreads[t.id - 1];
+                          const ft = fetchedThreads.find((f) => f.threadUrl === t.threadUrl);
                           if (ft) {
                             const boardUrl = getBoardUrlFromThreadUrl(t.threadUrl);
                             void persistReadStatus(boardUrl, ft.threadKey, ft.responseCount);
@@ -6189,7 +6381,7 @@ export default function App() {
                     }}
                     onContextMenu={(e) => onThreadContextMenu(e, t.id)}
                   >
-                    <td className="thread-fetched-cell">{showFavoritesOnly ? (hasUnread ? "\u25CF" : "") : (hasUnread || threadReadMap[t.id] ? "\u25CF" : "")}</td>
+                    <td className="thread-fetched-cell">{showFavoritesOnly ? (hasUnread ? "\u25CF" : "") : (hasUnread || threadReadMap[t.threadUrl] ? "\u25CF" : "")}</td>
                     <td>{t.id}</td>
                     <td
                       className={`thread-title-cell${customTitles[selectedBoard]?.[t.threadKey] ? " has-custom-title" : ""}`}
@@ -6293,6 +6485,13 @@ export default function App() {
                   }}
                   title="字幕"
                 ><Subtitles size={14} /></button>
+                {obsIntegrationEnabled && (
+                  <button
+                    className={`title-action-btn ${broadcastVisible ? "active" : ""}`}
+                    onClick={toggleBroadcastWindow}
+                    title="OBS連携ウィンドウ"
+                  ><Cast size={14} /></button>
+                )}
                 <button
                   className={`title-action-btn ${ttsEnabled ? "active" : ""}`}
                   onClick={() => setTtsEnabled(!ttsEnabled)}
@@ -6395,6 +6594,14 @@ export default function App() {
                     if (/\/(test|bbs)\/read\.cgi\/[^/]+\/[^/]+/.test(_p)) {
                       const title = url.split("/").pop() || url;
                       openThreadInTab(url, title);
+                      return;
+                    }
+                    // 板トップURL(スレ一覧ページ)は上のスレURL判定には一致しないため、
+                    // 自サイト(5ch/したらば/JPNKN)のURLであれば内部で板として開く。
+                    // これに一致しない他サイトのURLは従来どおり外部ブラウザで開く
+                    if (isSameSiteBoardUrl(url)) {
+                      const slug = _p.replace(/\/+$/, "").split("/").filter(Boolean).pop() || url;
+                      selectBoard({ boardName: slug, url });
                       return;
                     }
                   }
@@ -6918,7 +7125,7 @@ export default function App() {
         </div>
       )}
       {responseMenu && (
-        <div className="thread-menu response-menu" style={{ left: responseMenu.x, top: responseMenu.y }}
+        <div ref={responseMenuRef} className="thread-menu response-menu" style={{ left: responseMenu.x, top: responseMenu.y }}
           onClick={(e) => e.stopPropagation()}
           onMouseLeave={() => setHlSubMenu(null)}
         >
@@ -7000,6 +7207,18 @@ export default function App() {
               }}>ハイライト解除</button>
             );
           })()}
+          {/* ----- 配信ホワイトリスト (OBS連携が有効なときだけ表示) ----- */}
+          {obsIntegrationEnabled && responseMenu.resId && (
+            <button onClick={() => {
+              const id = responseMenu.resId!;
+              setBroadcastWhitelist((prev) => {
+                const next = { ...prev };
+                if (next[id]) delete next[id]; else next[id] = true;
+                return next;
+              });
+              setResponseMenu(null);
+            }}>{broadcastWhitelist[responseMenu.resId] ? `ID:${responseMenu.resId} を配信ホワイトリストから解除` : `ID:${responseMenu.resId} を配信ホワイトリストに追加`}</button>
+          )}
           {/* ----- 画像保存 / URLコピー ----- */}
           {responseMenu.imageUrl && isTauriRuntime() && (
             <button onClick={() => { void saveImage(responseMenu.imageUrl!); setResponseMenu(null); }}>画像を保存</button>
@@ -7057,6 +7276,7 @@ export default function App() {
                   const queueWasEmpty = arrivalQueueRef.current.length === 0;
                   arrivalQueueRef.current.push(...arrivals);
                   setArrivalQueueCount(arrivalQueueRef.current.length);
+                  pushBroadcastArrivals(arrivals);
                   if (!arrivalPausedRef.current && !arrivalTimerRef.current && (currentArrivalItemRef.current === null || queueWasEmpty)) {
                     advanceToNextArrival();
                   }
@@ -7672,6 +7892,80 @@ export default function App() {
                   <input type="checkbox" checked={restoreSession} onChange={(e) => setRestoreSession(e.target.checked)} />
                   <span>起動時に前回のタブと板を復元</span>
                 </label>
+              </fieldset>
+              <fieldset>
+                <legend>板一覧 (bbsmenu) の取得元</legend>
+                <div className="settings-row">
+                  <span>取得元URL</span>
+                  <input
+                    type="text"
+                    style={{ flex: 1 }}
+                    value={bbsmenuUrl}
+                    onChange={(e) => setBbsmenuUrl(e.target.value)}
+                    placeholder={DEFAULT_BBSMENU_URL}
+                  />
+                  {bbsmenuUrl !== DEFAULT_BBSMENU_URL && (
+                    <button onClick={() => setBbsmenuUrl(DEFAULT_BBSMENU_URL)}>デフォルトに戻す</button>
+                  )}
+                </div>
+                <p className="settings-hint">
+                  板一覧(bbsmenu)の取得先です。5ch側でbbsmenu.jsonの置き場所が変わった場合などに、ここを書き換えることで対応できます。
+                  変更後にここへ載っている板へアクセスできるよう、通信先の許可リストにもこの取得元の内容が自動的に反映されます。
+                </p>
+              </fieldset>
+              <fieldset>
+                <legend>したらば・JPNKNの現在のドメイン</legend>
+                <div className="settings-row">
+                  <span>したらば</span>
+                  <input
+                    type="text"
+                    style={{ flex: 1 }}
+                    value={shitarabaHost}
+                    onChange={(e) => setShitarabaHost(e.target.value)}
+                    onBlur={() => {
+                      const v = shitarabaHost.trim();
+                      if (v && v !== DEFAULT_SHITARABA_HOST) {
+                        const ok = window.confirm(
+                          `"${v}" への投稿・Cookie送信が許可されるようになります。したらば公式の新しいドメインであることを確認してから変更してください。続けますか？`
+                        );
+                        if (!ok) setShitarabaHost(DEFAULT_SHITARABA_HOST);
+                      } else if (!v) {
+                        setShitarabaHost(DEFAULT_SHITARABA_HOST);
+                      }
+                    }}
+                    placeholder={DEFAULT_SHITARABA_HOST}
+                  />
+                  {shitarabaHost !== DEFAULT_SHITARABA_HOST && (
+                    <button onClick={() => setShitarabaHost(DEFAULT_SHITARABA_HOST)}>デフォルトに戻す</button>
+                  )}
+                </div>
+                <div className="settings-row">
+                  <span>JPNKN</span>
+                  <input
+                    type="text"
+                    style={{ flex: 1 }}
+                    value={jpnknHost}
+                    onChange={(e) => setJpnknHost(e.target.value)}
+                    onBlur={() => {
+                      const v = jpnknHost.trim();
+                      if (v && v !== DEFAULT_JPNKN_HOST) {
+                        const ok = window.confirm(
+                          `"${v}" への投稿・Cookie送信が許可されるようになります。JPNKN公式の新しいドメインであることを確認してから変更してください。続けますか？`
+                        );
+                        if (!ok) setJpnknHost(DEFAULT_JPNKN_HOST);
+                      } else if (!v) {
+                        setJpnknHost(DEFAULT_JPNKN_HOST);
+                      }
+                    }}
+                    placeholder={DEFAULT_JPNKN_HOST}
+                  />
+                  {jpnknHost !== DEFAULT_JPNKN_HOST && (
+                    <button onClick={() => setJpnknHost(DEFAULT_JPNKN_HOST)}>デフォルトに戻す</button>
+                  )}
+                </div>
+                <p className="settings-hint">
+                  したらば・JPNKNが将来ドメインを変更した場合に、ここを書き換えることで対応できます。通常は変更する必要はありません。
+                </p>
               </fieldset>
               </section>
               <section className="settings-section" data-section="response">
@@ -8741,6 +9035,134 @@ export default function App() {
                   <span>GitHub</span>
                   <button onClick={() => { const url = "https://github.com/kaedekiku/LiveFakeTauri2"; if (isTauriRuntime()) void invoke("open_external_url", { url }).catch(() => window.open(url, "_blank")); else window.open(url, "_blank"); }}>GitHubページを開く</button>
                 </div>
+              </fieldset>
+              {!obsTabRevealed && (
+                <fieldset>
+                  <legend>隠しタブ</legend>
+                  <div className="settings-row">
+                    <span>OBS連携タブを表示する</span>
+                    <button onClick={() => setObsTabRevealed(true)}>表示する</button>
+                  </div>
+                  <p className="settings-hint">配信ソフト(OBS)と連携するための、ごく一部の人向けの機能を追加で表示します。</p>
+                </fieldset>
+              )}
+              </section>
+              </div>
+              )}
+              {(settingsSearching || settingsCategory === "obs") && obsTabRevealed && (
+              <div className="settings-cat" data-cat="obs">
+              <section className="settings-section" data-section="main">
+                {settingsSectionHeading("obs", "main")}
+              <p className="settings-hint">
+                この機能はホワイトリストに登録したレスを専用ウィンドウに表示し、それをOBSでキャプチャして配信に載せる機能です。
+              </p>
+              <fieldset>
+                <legend>有効/無効</legend>
+                <div className="settings-row">
+                  <span>OBS連携を有効にする</span>
+                  <label className="switch">
+                    <input type="checkbox" checked={obsIntegrationEnabled} onChange={toggleObsIntegration} />
+                    <span className="track"><span className="knob"></span></span>
+                  </label>
+                </div>
+                {obsToggleError && <p className="settings-hint" style={{ color: "#c44" }}>{obsToggleError}</p>}
+                <p className="settings-hint">オンにするにはOBSが起動している必要があります。OBSが終了すると自動的にオフに戻ります。</p>
+              </fieldset>
+              <fieldset>
+                <legend>ウィンドウ</legend>
+                <div className="settings-row">
+                  <span>ウィンドウ位置</span>
+                  <button onClick={() => { if (isTauriRuntime()) void invoke("broadcast_reset_position").catch((e) => console.warn("broadcast_reset_position:", e)); }}>中央に戻す</button>
+                </div>
+                <div className="settings-row">
+                  <span>背景色 (クロマキー用)</span>
+                  <input type="color" className="color-swatch" value={broadcastBgColor} onChange={(e) => setBroadcastBgColor(e.target.value)} />
+                </div>
+              </fieldset>
+              <fieldset>
+                <legend>文字の見た目</legend>
+                <div className="settings-row" style={{ alignItems: "flex-start" }}>
+                  <span style={{ paddingTop: 4 }}>フォント</span>
+                  <div className="font-picker">
+                    <div style={{ display: "flex", gap: 4 }}>
+                      <input type="text" className="font-picker-input" value={broadcastFontPickerInput}
+                        onChange={(e) => { setBroadcastFontPickerInput(e.target.value); setBroadcastFontPickerOpen(true); }}
+                        onFocus={() => setBroadcastFontPickerOpen(true)}
+                        onBlur={() => setTimeout(() => setBroadcastFontPickerOpen(false), 150)}
+                        placeholder="デフォルト (入力またはクリック)" style={{ flex: 1, minWidth: 0 }} />
+                      {broadcastFontFamily && <button style={{ flexShrink: 0 }} onClick={() => {
+                        setBroadcastFontFamily(""); setBroadcastFontPickerInput("");
+                      }}>×</button>}
+                    </div>
+                    {broadcastFontPickerOpen && (() => {
+                      const q = broadcastFontPickerInput.toLowerCase();
+                      const filtered = q ? systemFonts.filter((f) => f.toLowerCase().includes(q)) : systemFonts;
+                      return filtered.length > 0 ? (
+                        <div className="font-picker-dropdown">
+                          {filtered.slice(0, 120).map((f) => (
+                            <div key={f} className={`font-picker-option${f === broadcastFontFamily ? " selected" : ""}`} style={{ fontFamily: `"${f}", sans-serif` }}
+                              onMouseDown={(e) => {
+                                e.preventDefault();
+                                setBroadcastFontFamily(f); setBroadcastFontPickerInput(f); setBroadcastFontPickerOpen(false);
+                              }}>{f}</div>
+                          ))}
+                        </div>
+                      ) : null;
+                    })()}
+                  </div>
+                </div>
+                <div className="settings-row">
+                  <span>文字サイズ</span>
+                  <input type="number" min={10} max={80} step={1} value={broadcastFontSize} onChange={(e) => setBroadcastFontSize(Math.max(10, Math.min(80, Number(e.target.value))))} style={{ width: 70 }} />
+                  <span>px</span>
+                </div>
+                <div className="settings-row">
+                  <span>文字色</span>
+                  <input type="color" className="color-swatch" value={broadcastTextColor} onChange={(e) => setBroadcastTextColor(e.target.value)} />
+                </div>
+                <div className="settings-row">
+                  <span>縁取りの色</span>
+                  <input type="color" className="color-swatch" value={broadcastOutlineColor} onChange={(e) => setBroadcastOutlineColor(e.target.value)} />
+                </div>
+                <div className="settings-row">
+                  <span>縁取りの太さ</span>
+                  <input type="number" min={0} max={10} step={1} value={broadcastOutlineWidth} onChange={(e) => setBroadcastOutlineWidth(Math.max(0, Math.min(10, Number(e.target.value))))} style={{ width: 70 }} />
+                  <span>px</span>
+                </div>
+              </fieldset>
+              <fieldset>
+                <legend>表示時間・スクロール</legend>
+                <div className="settings-row">
+                  <span>表示秒数</span>
+                  <input type="number" min={0.5} max={60} step={0.1} value={broadcastDisplaySeconds} onChange={(e) => setBroadcastDisplaySeconds(Math.max(0.5, Math.min(60, Number(e.target.value))))} style={{ width: 70 }} />
+                  <span>秒</span>
+                </div>
+                <p className="settings-hint">この秒数のあいだ表示し、次のレスが来なければ空にします(自動スクロールが終わった時点から数えます)。</p>
+                <div className="settings-row">
+                  <span>スクロール開始までの待ち時間</span>
+                  <input type="number" min={0} max={10} step={0.1} value={broadcastTiming.waitSec} onChange={(e) => setBroadcastTiming({ ...broadcastTiming, waitSec: Math.max(0, Math.min(10, Number(e.target.value))) })} style={{ width: 70 }} />
+                  <span>秒</span>
+                </div>
+                <div className="settings-row">
+                  <span>スクロール速度 (1pxあたり)</span>
+                  <input type="number" min={1} max={50} step={1} value={broadcastTiming.msPerPx} onChange={(e) => setBroadcastTiming({ ...broadcastTiming, msPerPx: Math.max(1, Math.min(50, Number(e.target.value))) })} style={{ width: 70 }} />
+                  <span>ms</span>
+                </div>
+              </fieldset>
+              <fieldset>
+                <legend>配信ホワイトリスト（本日分・{Object.keys(broadcastWhitelist).length}件）</legend>
+                {Object.keys(broadcastWhitelist).length === 0 ? (
+                  <p className="settings-hint">レスを右クリックして「配信ホワイトリストに追加」で登録できます。</p>
+                ) : (
+                  <ul className="ng-list">
+                    {Object.keys(broadcastWhitelist).map((id) => (
+                      <li key={id}>
+                        <span>ID:{id}</span>
+                        <button className="ng-remove" onClick={() => setBroadcastWhitelist((prev) => { const next = { ...prev }; delete next[id]; return next; })} title="削除">×</button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </fieldset>
               </section>
               </div>

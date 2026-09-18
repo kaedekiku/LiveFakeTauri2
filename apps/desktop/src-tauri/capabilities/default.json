@@ -1,6 +1,6 @@
 {
   "identifier": "default",
   "description": "Default desktop capability",
-  "windows": ["main", "subtitle", "image_popup", "compose_popup"],
+  "windows": ["main", "subtitle", "image_popup", "compose_popup", "broadcast"],
   "permissions": ["core:default", "core:window:allow-start-dragging"]
 }

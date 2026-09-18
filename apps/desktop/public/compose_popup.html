@@ -5,30 +5,48 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>LiveFake - 書き込み</title>
 <style>
+  :root {
+    --bg: #f5f5f5;
+    --panel: #e8e8e8;
+    --line: #c0c0c0;
+    --ink: #1b1b1b;
+    --sub: #555555;
+    --accent: #0066cc;
+    --input-bg: #ffffff;
+  }
+  body.dark {
+    --bg: #1e1e1e;
+    --panel: #252526;
+    --line: #3c3c3c;
+    --ink: #d4d4d4;
+    --sub: #9e9e9e;
+    --accent: #4da6ff;
+    --input-bg: #2d2d30;
+  }
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { width: 100%; height: 100%; background: #f5f5f5; color: #1b1b1b; font-family: "Meiryo", "Segoe UI", sans-serif; font-size: 12px; }
+  html, body { width: 100%; height: 100%; background: var(--bg); color: var(--ink); font-family: "Meiryo", "Segoe UI", sans-serif; font-size: 12px; }
   body { display: flex; flex-direction: column; overflow: hidden; }
-  #header { padding: 6px 8px; border-bottom: 1px solid #c0c0c0; background: #e8e8e8; flex-shrink: 0; }
+  #header { padding: 6px 8px; border-bottom: 1px solid var(--line); background: var(--panel); flex-shrink: 0; }
   #mode-row { display: flex; gap: 6px; margin-bottom: 4px; }
-  .mode-btn { flex: 1; padding: 4px 6px; border: 1px solid #c0c0c0; background: #f0f0f0; cursor: pointer; font-size: 12px; }
-  .mode-btn.active { background: #0066cc; color: #fff; border-color: #0066cc; }
-  #target { font-size: 11px; color: #555; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mode-btn { flex: 1; padding: 4px 6px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); cursor: pointer; font-size: 12px; }
+  .mode-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+  #target { font-size: 11px; color: var(--sub); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #form { flex: 1; display: flex; flex-direction: column; min-height: 0; padding: 6px 8px; gap: 6px; }
   .row { display: flex; align-items: center; gap: 6px; }
-  .label { flex-shrink: 0; color: #555; }
-  input[type="text"] { flex: 1; min-width: 0; padding: 3px 5px; border: 1px solid #c0c0c0; font-size: 12px; }
+  .label { flex-shrink: 0; color: var(--sub); }
+  input[type="text"] { flex: 1; min-width: 0; padding: 3px 5px; border: 1px solid var(--line); background: var(--input-bg); color: var(--ink); font-size: 12px; }
   #subject-row { display: none; }
   #subject-row.show { display: flex; }
-  #body { flex: 1; min-height: 80px; padding: 5px; border: 1px solid #c0c0c0; font-size: 13px; resize: none; font-family: inherit; }
-  #meta { font-size: 11px; color: #777; display: flex; gap: 10px; }
-  #actions { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-top: 1px solid #c0c0c0; background: #e8e8e8; flex-shrink: 0; }
-  #submit { padding: 5px 14px; border: 1px solid #0066cc; background: #0066cc; color: #fff; cursor: pointer; font-size: 12px; }
+  #body { flex: 1; min-height: 80px; padding: 5px; border: 1px solid var(--line); background: var(--input-bg); color: var(--ink); font-size: 13px; resize: none; font-family: inherit; }
+  #meta { font-size: 11px; color: var(--sub); display: flex; gap: 10px; }
+  #actions { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-top: 1px solid var(--line); background: var(--panel); flex-shrink: 0; }
+  #submit { padding: 5px 14px; border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer; font-size: 12px; }
   #submit:disabled { opacity: 0.5; cursor: default; }
-  #close { margin-left: auto; padding: 5px 10px; border: 1px solid #c0c0c0; background: #f0f0f0; cursor: pointer; font-size: 12px; }
+  #close { margin-left: auto; padding: 5px 10px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); cursor: pointer; font-size: 12px; }
   #result { font-size: 11px; padding: 4px 8px; white-space: pre-wrap; }
   #result.ok { color: #227722; }
   #result.err { color: #cc3333; }
-  .check { display: flex; align-items: center; gap: 3px; white-space: nowrap; }
+  .check { display: flex; align-items: center; gap: 3px; white-space: nowrap; color: var(--ink); }
 </style>
 </head>
 <body>
@@ -103,7 +121,9 @@
   }
 
   // メインウィンドウから: スレ情報・既定の名前などを (部分的に) 反映する。
-  // appendQuote が指定されたときは本文へ追記する (置き換えない)
+  // appendQuote が指定されたときは本文へ追記する (置き換えない)。
+  // darkMode が指定されたときは、メイン画面の現在のライト/ダーク設定に基本配色を合わせる
+  // (カスタムCSS (theme/compose.css) はこの上にさらに重ねて適用される)
   window.__composeUpdate = function(data) {
     data = data || {};
     if (typeof data.threadTitle === "string") {
@@ -120,6 +140,9 @@
       body.value = body.value.trim().length === 0 ? (data.appendQuote + "\n") : (body.value + "\n" + data.appendQuote + "\n");
       updateMeta();
       body.focus();
+    }
+    if (typeof data.darkMode === "boolean") {
+      document.body.classList.toggle("dark", data.darkMode);
     }
   };
 
@@ -151,6 +174,36 @@
     });
   }
 
+  // ユーザーカスタムCSS (data/theme/compose.css) — Rust側でサニタイズ済みの内容を
+  // textContent で注入する (innerHTML は使わない)
+  window.__setUserCss = function(css) {
+    var el = document.getElementById("user-theme-css");
+    if (!el) {
+      el = document.createElement("style");
+      el.id = "user-theme-css";
+      document.head.appendChild(el);
+    }
+    el.textContent = String(css || "");
+  };
+  function loadUserCss() {
+    if (!window.__TAURI_INTERNALS__) { setTimeout(loadUserCss, 100); return; }
+    window.__TAURI_INTERNALS__.invoke("load_theme_css").then(function(files) {
+      for (var i = 0; i < files.length; i++) {
+        if (files[i].name === "compose.css") window.__setUserCss(files[i].content);
+      }
+    }).catch(function(e) { console.warn("theme css load error", e); });
+  }
+
+  // ウィンドウのサイズを変更したら記憶し、次回開いたときに同じ大きさで復元する
+  var resizeSaveTimer = null;
+  function scheduleSaveSize() {
+    if (!invoke) return;
+    if (resizeSaveTimer) clearTimeout(resizeSaveTimer);
+    resizeSaveTimer = setTimeout(function() {
+      invoke("compose_popup_save_size", { width: window.innerWidth, height: window.innerHeight }).catch(function() {});
+    }, 400);
+  }
+
   function setup() {
     invoke = window.__TAURI_INTERNALS__.invoke;
 
@@ -164,6 +217,7 @@
     });
     $("submit").addEventListener("click", doSubmit);
     $("close").addEventListener("click", function() { window.close(); });
+    window.addEventListener("resize", scheduleSaveSize);
 
     setMode("reply");
     updateMeta();
@@ -171,6 +225,7 @@
   }
 
   waitForTauri();
+  loadUserCss();
 </script>
 </body>
 </html>

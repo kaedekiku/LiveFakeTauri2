@@ -2,8 +2,9 @@ use reqwest::cookie::{CookieStore, Jar};
 use reqwest::{redirect::Policy, Client};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashSet;
 use std::process::Command;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock, RwLock};
 use thiserror::Error;
 use url::Url;
 use core_parse::{parse_dat_line, parse_subject_line};
@@ -218,13 +219,107 @@ pub fn normalize_5ch_url(input: &str) -> String {
     input.replace("5ch.net", "5ch.io")
 }
 
-pub async fn fetch_bbsmenu_json(client: &Client) -> Result<Value, FetchError> {
-    let response = client.get(BBSMENU_URL).send().await?;
+pub async fn fetch_bbsmenu_json(client: &Client, url: &str) -> Result<Value, FetchError> {
+    let parsed = Url::parse(url)?;
+    // bbsmenu 取得元はユーザー設定で変更できるため、OGP 取得と同じ検証
+    // (http/https 限定・私有アドレスやループバックへの接続を拒否) を先に通す。
+    validate_ogp_target(&parsed).await?;
+    let response = client.get(parsed).send().await?;
     let status = response.status();
     if !status.is_success() {
         return Err(FetchError::HttpStatus(status));
     }
     Ok(response.json::<Value>().await?)
+}
+
+/// 取得した bbsmenu JSON (`menu_list[].category_content[].url`) に実際に登場するホスト名を集める。
+/// ユーザーが bbsmenu 取得元 URL を変更した場合に、掲示板へのアクセスを許可するドメインを
+/// 自動的に追従させるために使う。既存のハードコードされた許可リスト (`is_allowed_url`) を
+/// 置き換えるのではなく、`set_extra_allowed_hosts` で上乗せするためのものであり、
+/// 取得した bbsmenu が空/異常でも既存ドメインへのアクセスは失われない。
+pub fn extract_bbsmenu_hosts(menu: &Value) -> HashSet<String> {
+    let mut hosts = HashSet::new();
+    let Some(menu_list) = menu.get("menu_list").and_then(|v| v.as_array()) else {
+        return hosts;
+    };
+    for cat in menu_list {
+        let Some(content) = cat.get("category_content").and_then(|v| v.as_array()) else {
+            continue;
+        };
+        for item in content {
+            let Some(url_str) = item.get("url").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            if let Ok(parsed) = Url::parse(url_str) {
+                if matches!(parsed.scheme(), "http" | "https") {
+                    if let Some(host) = parsed.host_str() {
+                        hosts.insert(host.to_ascii_lowercase());
+                    }
+                }
+            }
+        }
+    }
+    hosts
+}
+
+/// bbsmenu から動的に導出された、追加で許可するホスト名の集合 (常に 5ch 系として扱う)。
+/// `is_allowed_url` はこれをハードコードされた許可リストに上乗せして参照する (置き換えではない)。
+static EXTRA_ALLOWED_HOSTS: OnceLock<RwLock<HashSet<String>>> = OnceLock::new();
+
+/// 追加許可ホスト一覧を丸ごと置き換える。bbsmenu を正常に取得するたびに呼び出す想定。
+pub fn set_extra_allowed_hosts(hosts: HashSet<String>) {
+    let lock = EXTRA_ALLOWED_HOSTS.get_or_init(|| RwLock::new(HashSet::new()));
+    if let Ok(mut w) = lock.write() {
+        *w = hosts;
+    }
+}
+
+fn is_extra_allowed_host(host: &str) -> bool {
+    EXTRA_ALLOWED_HOSTS
+        .get()
+        .and_then(|lock| lock.read().ok())
+        .map(|set| set.contains(host))
+        .unwrap_or(false)
+}
+
+/// したらば・JPNKN それぞれ「現在のドメイン」をユーザー設定で1つだけ上書きできるようにするための
+/// 状態。既定のハードコードされたドメイン (`jbbs.shitaraba.net` / `bbs.jpnkn.com`) を置き換える
+/// のではなく、これらのサイトが将来ドメイン移転した場合に、ユーザー自身が1箇所だけ書き換えれば
+/// 追従できるようにするためのもの。任意のドメインを何個でも追加できる一般的な許可リストとは異なり、
+/// サイトごとに1つの値しか持てない (新しいサイト種別を追加する手段ではない)。
+static SHITARABA_HOST_OVERRIDE: OnceLock<RwLock<Option<String>>> = OnceLock::new();
+static JPNKN_HOST_OVERRIDE: OnceLock<RwLock<Option<String>>> = OnceLock::new();
+
+pub fn set_shitaraba_host_override(host: Option<String>) {
+    let lock = SHITARABA_HOST_OVERRIDE.get_or_init(|| RwLock::new(None));
+    if let Ok(mut w) = lock.write() {
+        *w = host.map(|h| h.to_ascii_lowercase());
+    }
+}
+
+pub fn set_jpnkn_host_override(host: Option<String>) {
+    let lock = JPNKN_HOST_OVERRIDE.get_or_init(|| RwLock::new(None));
+    if let Ok(mut w) = lock.write() {
+        *w = host.map(|h| h.to_ascii_lowercase());
+    }
+}
+
+fn shitaraba_override_matches(host: &str) -> bool {
+    SHITARABA_HOST_OVERRIDE
+        .get()
+        .and_then(|lock| lock.read().ok())
+        .and_then(|guard| guard.clone())
+        .map(|h| h == host)
+        .unwrap_or(false)
+}
+
+fn jpnkn_override_matches(host: &str) -> bool {
+    JPNKN_HOST_OVERRIDE
+        .get()
+        .and_then(|lock| lock.read().ok())
+        .and_then(|guard| guard.clone())
+        .map(|h| h == host)
+        .unwrap_or(false)
 }
 
 pub fn seed_cookie(jar: &Jar, url: &str, cookie: &str) -> Result<(), FetchError> {
@@ -1268,7 +1363,8 @@ pub enum SiteType {
 
 /// Return true if the URL is in the allowed backend access list.
 /// Allowed: *.5ch.io, *.5ch.net, *.2ch.net, jbbs.shitaraba.net, bbs.jpnkn.com,
-///          menu.5ch.io (BBS menu), *.uplift.5ch.io (auth).
+///          menu.5ch.io (BBS menu), *.uplift.5ch.io (auth),
+///          加えて `set_extra_allowed_hosts` で登録された bbsmenu 由来のホスト。
 pub fn is_allowed_url(url: &str) -> bool {
     let Ok(parsed) = Url::parse(url) else { return false; };
     let host = match parsed.host_str() {
@@ -1280,16 +1376,27 @@ pub fn is_allowed_url(url: &str) -> bool {
         || host.ends_with(".2ch.net")
         || host == "jbbs.shitaraba.net"
         || host == "bbs.jpnkn.com"
+        || is_extra_allowed_host(host)
+        || shitaraba_override_matches(host)
+        || jpnkn_override_matches(host)
 }
 
 /// Detect the BBS site type from a URL string.
+/// ホスト名の完全一致/末尾一致で判定する (部分一致だと `bbs.jpnkn.com.evil.example` のような
+/// 偽装ドメインも誤って本家と判定してしまうため)。呼び出し側はいずれも事前に `is_allowed_url`
+/// を通しているため、ここに来る時点でホストは許可済みのいずれかと一致するはずだが、念のため
+/// 厳密な判定にしておく。
 pub fn detect_site_type(url: &str) -> Option<SiteType> {
-    if url.contains(".5ch.io") || url.contains(".5ch.net") || url.contains(".2ch.net") {
+    let host = Url::parse(url).ok()?.host_str()?.to_ascii_lowercase();
+    if host.ends_with(".5ch.io") || host.ends_with(".5ch.net") || host.ends_with(".2ch.net") {
         Some(SiteType::FiveCh)
-    } else if url.contains("jbbs.shitaraba.net") {
+    } else if host == "jbbs.shitaraba.net" || shitaraba_override_matches(&host) {
         Some(SiteType::Shitaraba)
-    } else if url.contains("bbs.jpnkn.com") {
+    } else if host == "bbs.jpnkn.com" || jpnkn_override_matches(&host) {
         Some(SiteType::Jpnkn)
+    } else if is_extra_allowed_host(&host) {
+        // bbsmenu 由来の追加許可ホストは 5ch 系として扱う
+        Some(SiteType::FiveCh)
     } else {
         None
     }
@@ -2468,12 +2575,14 @@ pub async fn submit_post_finalize_from_confirm(
 #[cfg(test)]
 mod tests {
     use super::{
-        content_type_is_html, cookie_names_for_url, decode_html_entities, detect_meta_charset, extract_tweet_id,
-        is_public_ip, normalize_5ch_url, parse_confirm_submit_form, parse_ogp, parse_post_form_tokens, parse_tweet,
+        content_type_is_html, cookie_names_for_url, decode_html_entities, detect_meta_charset,
+        detect_site_type, extract_bbsmenu_hosts, extract_tweet_id, is_allowed_url, is_public_ip,
+        normalize_5ch_url, parse_confirm_submit_form, parse_ogp, parse_post_form_tokens, parse_tweet,
         probe_post_cookie_scope, resolve_dat_url_from_thread_url, resolve_subject_url_from_thread_url, seed_cookie,
-        syndication_token, Value,
+        set_extra_allowed_hosts, syndication_token, SiteType, Value,
     };
     use reqwest::cookie::Jar;
+    use std::collections::HashSet;
     use std::net::IpAddr;
 
     fn ip(s: &str) -> IpAddr {
@@ -2844,6 +2953,64 @@ mod tests {
         let url = "https://uplift.5ch.net/some/path";
         let normalized = normalize_5ch_url(url);
         assert_eq!(normalized, "https://uplift.5ch.io/some/path");
+    }
+
+    #[test]
+    fn is_allowed_url_accepts_known_sites_and_rejects_others() {
+        assert!(is_allowed_url("https://greta.5ch.io/poverty/"));
+        assert!(is_allowed_url("https://jbbs.shitaraba.net/game/12345/"));
+        assert!(is_allowed_url("https://bbs.jpnkn.com/board/"));
+        assert!(!is_allowed_url("https://example.com/"));
+        // 部分一致で誤って許可してしまわないこと (ドメイン偽装対策)
+        assert!(!is_allowed_url("https://bbs.jpnkn.com.evil.example/"));
+        assert!(!is_allowed_url("https://evil.example/?u=bbs.jpnkn.com"));
+    }
+
+    #[test]
+    fn detect_site_type_uses_exact_host_match_not_substring() {
+        assert_eq!(detect_site_type("https://bbs.jpnkn.com/board/"), Some(SiteType::Jpnkn));
+        assert_eq!(
+            detect_site_type("https://jbbs.shitaraba.net/game/12345/"),
+            Some(SiteType::Shitaraba)
+        );
+        assert_eq!(detect_site_type("https://greta.5ch.io/poverty/"), Some(SiteType::FiveCh));
+        // 偽装ドメイン (ホスト名の一部に本家ドメインを含むだけ) は一致しない
+        assert_eq!(detect_site_type("https://bbs.jpnkn.com.evil.example/"), None);
+        assert_eq!(detect_site_type("https://evil.example/bbs.jpnkn.com"), None);
+    }
+
+    #[test]
+    fn extract_bbsmenu_hosts_collects_hosts_from_menu_list() {
+        let menu: Value = serde_json::json!({
+            "menu_list": [
+                {
+                    "category_name": "ニュース",
+                    "category_content": [
+                        { "board_name": "ニュース速報+", "url": "https://newsplus.5ch.io/" },
+                        { "board_name": "壊れたエントリ" }
+                    ]
+                },
+                {
+                    "category_name": "趣味",
+                    "category_content": [
+                        { "board_name": "貧困", "url": "https://greta.5ch.io/poverty/" }
+                    ]
+                }
+            ]
+        });
+        let hosts = extract_bbsmenu_hosts(&menu);
+        assert_eq!(hosts, HashSet::from(["newsplus.5ch.io".to_string(), "greta.5ch.io".to_string()]));
+    }
+
+    #[test]
+    fn extra_allowed_hosts_are_additive_not_a_replacement() {
+        set_extra_allowed_hosts(HashSet::from(["bbs.5ch-successor.example".to_string()]));
+        // 新たに追加されたホストは許可される
+        assert!(is_allowed_url("https://bbs.5ch-successor.example/board/"));
+        // 既存のハードコードされた許可リストは引き続き有効 (置き換えではなく上乗せ)
+        assert!(is_allowed_url("https://greta.5ch.io/poverty/"));
+        // 追加リストに無いホストは相変わらず拒否される
+        assert!(!is_allowed_url("https://totally-unrelated.example/"));
     }
 
     #[test]

@@ -5,7 +5,9 @@
 };
 use core_fetch::{
     create_thread, create_shitaraba_thread, create_jpnkn_thread,
-    detect_site_type, is_allowed_url, fetch_bbsmenu_json, fetch_post_form_tokens,
+    detect_site_type, is_allowed_url, fetch_bbsmenu_json, extract_bbsmenu_hosts,
+    set_extra_allowed_hosts, set_shitaraba_host_override, set_jpnkn_host_override,
+    BBSMENU_URL, fetch_post_form_tokens,
     fetch_subject_threads, fetch_thread_responses,
     fetch_shitaraba_thread_list, fetch_shitaraba_responses, post_shitaraba_reply,
     fetch_jpnkn_thread_list, fetch_jpnkn_responses, post_jpnkn_reply, post_5ch_reply,
@@ -15,7 +17,7 @@ use core_fetch::{
     PostSubmitResult, SiteType, TweetCard,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::process::Command;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri::webview::WebviewWindowBuilder;
@@ -35,6 +37,10 @@ struct ImagePopupState(Mutex<Vec<PopupImageEntry>>);
 
 /// Saved subtitle window position before moving off-screen
 static SUBTITLE_SAVED_POS: Mutex<Option<(i32, i32)>> = Mutex::new(None);
+/// 書き込みの浮遊ウィンドウのサイズ。ユーザーがリサイズするたびに更新され、閉じて
+/// 再度開いたときに同じ大きさで復元される (アプリを再起動すると初期化される、字幕ウィンドウの
+/// 位置記憶と同じ扱い)。
+static COMPOSE_POPUP_SAVED_SIZE: Mutex<Option<(f64, f64)>> = Mutex::new(None);
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -121,6 +127,11 @@ struct FetchResponsesResult {
 }
 
 /// Fetch BBS menu JSON, save to `bbs-menu.json`, fall back to cache on error.
+///
+/// 取得元 URL は設定 (`App.bbsmenuUrl`) でユーザーが変更できる — 5ch 側で bbsmenu.json の
+/// 置き場所やファイル形式が変わった場合に、アプリの更新を待たずユーザー自身で対応できるように
+/// するため。取得に成功した bbsmenu の中身に実際に登場するホスト名は `set_extra_allowed_hosts`
+/// で許可リストに追加登録される (既存のハードコードされた許可リストを置き換えるのではなく上乗せ)。
 async fn fetch_bbsmenu_cached() -> Result<serde_json::Value, String> {
     let client = reqwest::Client::builder()
         .user_agent("Monazilla/1.00 LiveFake/0.1")
@@ -128,9 +139,17 @@ async fn fetch_bbsmenu_cached() -> Result<serde_json::Value, String> {
         .build()
         .map_err(|e| e.to_string())?;
 
-    match fetch_bbsmenu_json(&client).await {
+    let configured_url = core_store::load_settings_ini()
+        .ok()
+        .and_then(|m| m.get("App.bbsmenuUrl").cloned())
+        .filter(|u| !u.trim().is_empty())
+        .filter(|u| u.starts_with("http://") || u.starts_with("https://"))
+        .unwrap_or_else(|| BBSMENU_URL.to_string());
+
+    match fetch_bbsmenu_json(&client, &configured_url).await {
         Ok(menu) => {
             let _ = core_store::save_json("bbs-menu.json", &menu);
+            set_extra_allowed_hosts(extract_bbsmenu_hosts(&menu));
             Ok(menu)
         }
         Err(e) => {
@@ -208,8 +227,13 @@ async fn fetch_thread_list(thread_url: String, limit: Option<usize>) -> Result<V
         e.to_string()
     })?;
     let _ = core_store::append_log(&format!("fetch_thread_list ok: {} threads", rows.len()));
+    // 板側のsubject.txtが同じスレを重複して載せていることがある(したらばで確認済み)。
+    // 同じスレが一覧に複数行出ると、番号や既読状態がどちらの行を指すか曖昧になるため、
+    // スレURL基準で最初の1件だけ残す
+    let mut seen = HashSet::new();
     Ok(rows
         .into_iter()
+        .filter(|r| seen.insert(r.thread_url.clone()))
         .map(|r| ThreadListItem {
             thread_key: r.thread_key,
             title: r.title,
@@ -1519,6 +1543,8 @@ const THEME_CSS_FILES: &[(&str, &str)] = &[
     ("dark.css", "ダークモード時のみ適用"),
     ("floating.css", "字幕ウィンドウ用"),
     ("mediaviewer.css", "画像ポップアップウィンドウ用"),
+    ("compose.css", "書き込みの浮遊ウィンドウ用"),
+    ("broadcast.css", "OBS連携ウィンドウ用"),
     ("postform.css", "書き込み欄用 (書き込みパネル内に限定適用)"),
     ("setting.css", "設定画面用 (設定パネル内に限定適用)"),
 ];
@@ -1731,7 +1757,12 @@ fn refresh_window_css(app: AppHandle, allow_external: Option<bool>) -> Result<()
     let dir = core_store::portable_data_dir().map_err(|e| e.to_string())?;
     let theme_dir = dir.join("theme");
     let allow = allow_external.unwrap_or_else(css_external_urls_allowed);
-    for (label, file) in [("subtitle", "floating.css"), ("image_popup", "mediaviewer.css")] {
+    for (label, file) in [
+        ("subtitle", "floating.css"),
+        ("image_popup", "mediaviewer.css"),
+        ("compose_popup", "compose.css"),
+        ("broadcast", "broadcast.css"),
+    ] {
         if let Some(win) = app.get_webview_window(label) {
             let f = read_theme_css_file(file, &theme_dir.join(file), allow);
             let js = format!(
@@ -1744,8 +1775,24 @@ fn refresh_window_css(app: AppHandle, allow_external: Option<bool>) -> Result<()
     Ok(())
 }
 
+/// したらば・JPNKN のドメイン上書き設定をアプリ内部の状態に反映する。
+/// 空文字列/未設定/既定値と同じ場合は上書きしない (既定のハードコードされたドメインのまま)。
+fn apply_domain_overrides_from_settings(settings: &HashMap<String, String>) {
+    let shitaraba = settings
+        .get("App.shitarabaHost")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty() && s != "jbbs.shitaraba.net");
+    let jpnkn = settings
+        .get("App.jpnknHost")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty() && s != "bbs.jpnkn.com");
+    set_shitaraba_host_override(shitaraba);
+    set_jpnkn_host_override(jpnkn);
+}
+
 #[tauri::command]
 fn save_app_settings(settings: HashMap<String, String>) -> Result<(), String> {
+    apply_domain_overrides_from_settings(&settings);
     core_store::save_settings_ini(&settings).map_err(|e| e.to_string())
 }
 
@@ -2274,6 +2321,9 @@ struct ComposePopupUpdate {
     default_mail: Option<String>,
     /// 指定時は本文欄に追記する (引用 `>>N` など)。置き換えではなく追記
     append_quote: Option<String>,
+    /// メイン画面の現在のライト/ダーク設定。基本配色をそれに合わせて切り替える
+    /// (カスタムCSSはこの上にさらに重ねて適用される)
+    dark_mode: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -2292,20 +2342,37 @@ async fn compose_popup_show(app: AppHandle) -> Result<(), String> {
         let _ = win.set_focus();
         return Ok(());
     }
+    let saved_size = *COMPOSE_POPUP_SAVED_SIZE.lock().unwrap_or_else(|e| e.into_inner());
+    let (init_w, init_h) = saved_size.unwrap_or_else(|| {
+        // 保存済みサイズが無い初回は、画面サイズの一定割合を初期値にする (4K 等の高解像度
+        // モニタでも常に420x420固定という見合わない大きさで開かないようにするため)。
+        if let Ok(Some(monitor)) = app.primary_monitor() {
+            let scale = monitor.scale_factor();
+            let logical_w = monitor.size().width as f64 / scale;
+            let logical_h = monitor.size().height as f64 / scale;
+            let w = (logical_w * 0.28).clamp(420.0, 900.0);
+            let h = (logical_h * 0.5).clamp(420.0, 900.0);
+            (w, h)
+        } else {
+            (420.0, 420.0)
+        }
+    });
     let win = WebviewWindowBuilder::new(
         &app,
         "compose_popup",
         tauri::WebviewUrl::App("compose_popup.html".into()),
     )
     .title("LiveFake - 書き込み")
-    .inner_size(420.0, 420.0)
+    .inner_size(init_w, init_h)
     .min_inner_size(320.0, 320.0)
     .resizable(true)
     .build()
     .map_err(|e| e.to_string())?;
     if let Ok(Some(monitor)) = app.primary_monitor() {
         let ms = monitor.size();
-        let ws = win.outer_size().unwrap_or(tauri::PhysicalSize::new(420, 420));
+        let ws = win
+            .outer_size()
+            .unwrap_or(tauri::PhysicalSize::new(init_w as u32, init_h as u32));
         let x = (ms.width as i32 - ws.width as i32) / 2;
         let y = (ms.height as i32 - ws.height as i32) / 2;
         let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
@@ -2318,6 +2385,17 @@ async fn compose_popup_show(app: AppHandle) -> Result<(), String> {
             let _ = handle.emit_to("main", "compose-popup-closed", ());
         }
     });
+    Ok(())
+}
+
+/// 書き込みの浮遊ウィンドウがリサイズされるたびにフロント側から呼ばれ、大きさを記憶する。
+/// 次に開いたときにこのサイズで復元する
+#[tauri::command]
+fn compose_popup_save_size(width: f64, height: f64) -> Result<(), String> {
+    if width >= 200.0 && height >= 200.0 && width <= 10000.0 && height <= 10000.0 {
+        let mut guard = COMPOSE_POPUP_SAVED_SIZE.lock().unwrap_or_else(|e| e.into_inner());
+        *guard = Some((width, height));
+    }
     Ok(())
 }
 
@@ -2373,6 +2451,188 @@ fn compose_popup_result(app: AppHandle, ok: bool, message: String) -> Result<(),
 fn compose_popup_hide(app: AppHandle) -> Result<(), String> {
     if let Some(win) = app.get_webview_window("compose_popup") {
         let _ = win.close();
+    }
+    Ok(())
+}
+
+// ===== Broadcast (OBS 連携) Overlay Window Commands =====
+// 配信ホワイトリストに登録されたレスだけを表示する専用ウィンドウ。OBS 側は「ウィンドウ
+// キャプチャ」でこのウィンドウを取り込む想定で、アプリから OBS へ直接データを送る通信は
+// 一切行わない (プロセスが起動しているかどうかの確認のみ行う)。
+
+/// ウィンドウ位置はセッション内のみ記憶 (字幕ウィンドウの位置記憶と同じ扱い。「中央に戻す」が
+/// あるためアプリ再起動時は初期化してよい)。
+static BROADCAST_SAVED_POS: Mutex<Option<(i32, i32)>> = Mutex::new(None);
+/// ウィンドウサイズは設定ファイル (`App.broadcastWindowWidth/Height`) にも保存し、アプリを
+/// 再起動しても復元されるようにする。ブラウザを閉じる・OBS検知不能で自動オフになる・手動で
+/// スイッチ/ウィンドウをオフにする、いずれの経路でも `capture_broadcast_geometry` を通す。
+static BROADCAST_SAVED_SIZE: Mutex<Option<(f64, f64)>> = Mutex::new(None);
+
+/// 配信ウィンドウの現在位置・サイズを記憶する。サイズは設定ファイルへも保存し、次回起動時に
+/// 復元できるようにする (位置はセッション内のみ)。ウィンドウを閉じる直前に必ず呼ぶこと —
+/// 閉じた後 (Destroyed イベント内) では位置・サイズを取得できないため。
+fn capture_broadcast_geometry(win: &tauri::WebviewWindow) {
+    let (Ok(pos), Ok(size)) = (win.outer_position(), win.inner_size()) else { return };
+    {
+        let mut guard = BROADCAST_SAVED_POS.lock().unwrap_or_else(|e| e.into_inner());
+        *guard = Some((pos.x, pos.y));
+    }
+    let (w, h) = (size.width as f64, size.height as f64);
+    {
+        let mut guard = BROADCAST_SAVED_SIZE.lock().unwrap_or_else(|e| e.into_inner());
+        *guard = Some((w, h));
+    }
+    if let Ok(mut settings) = core_store::load_settings_ini() {
+        settings.insert("App.broadcastWindowWidth".to_string(), w.to_string());
+        settings.insert("App.broadcastWindowHeight".to_string(), h.to_string());
+        let _ = core_store::save_settings_ini(&settings);
+    }
+}
+static OBS_INTEGRATION_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static OBS_POLL_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// OBS Studio (`obs64.exe`) が起動しているかを確認する。管理者権限は不要で、同じユーザー
+/// 権限内のプロセス一覧を見るだけ。OBS 自体のデータや設定を読んだり、OBS と直接通信したり
+/// はしない。
+#[cfg(target_os = "windows")]
+fn is_obs_running() -> bool {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    let output = Command::new("tasklist")
+        .args(["/FI", "IMAGENAME eq obs64.exe", "/NH"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+    match output {
+        Ok(o) => String::from_utf8_lossy(&o.stdout).to_ascii_lowercase().contains("obs64.exe"),
+        Err(_) => false,
+    }
+}
+#[cfg(not(target_os = "windows"))]
+fn is_obs_running() -> bool {
+    false
+}
+
+/// OBS連携の大元スイッチを切り替える。オンにする際はOBSが起動している必要がある。
+/// オンの間はバックグラウンドで5秒おきにOBSの起動状態を確認し、2回連続 (約10秒) で
+/// 見つからなくなったら自動的にオフへ戻し、`obs-integration-auto-disabled` イベントで
+/// メインウィンドウへ知らせる。
+#[tauri::command]
+async fn obs_integration_set_enabled(app: AppHandle, enabled: bool) -> Result<bool, String> {
+    use std::sync::atomic::Ordering;
+    if enabled {
+        if !is_obs_running() {
+            return Err(
+                "OBSが起動していないため、OBS連携をオンにできません。OBSを起動してから再度お試しください。"
+                    .to_string(),
+            );
+        }
+        OBS_INTEGRATION_ENABLED.store(true, Ordering::SeqCst);
+        let generation = OBS_POLL_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+        let handle = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let mut misses: u32 = 0;
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                if OBS_POLL_GENERATION.load(Ordering::SeqCst) != generation {
+                    return; // 手動で切り替え済み (別世代の監視ループがすでに動いている)
+                }
+                if is_obs_running() {
+                    misses = 0;
+                    continue;
+                }
+                misses += 1;
+                if misses >= 2 {
+                    OBS_INTEGRATION_ENABLED.store(false, Ordering::SeqCst);
+                    OBS_POLL_GENERATION.fetch_add(1, Ordering::SeqCst);
+                    let _ = handle.emit_to("main", "obs-integration-auto-disabled", ());
+                    return;
+                }
+            }
+        });
+    } else {
+        OBS_INTEGRATION_ENABLED.store(false, Ordering::SeqCst);
+        OBS_POLL_GENERATION.fetch_add(1, Ordering::SeqCst);
+    }
+    Ok(OBS_INTEGRATION_ENABLED.load(Ordering::SeqCst))
+}
+
+#[tauri::command]
+async fn broadcast_show(app: AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("broadcast") {
+        let _ = win.set_focus();
+        return Ok(());
+    }
+    let saved_size = *BROADCAST_SAVED_SIZE.lock().unwrap_or_else(|e| e.into_inner());
+    let saved_pos = *BROADCAST_SAVED_POS.lock().unwrap_or_else(|e| e.into_inner());
+    let (init_w, init_h) = saved_size.unwrap_or((480.0, 160.0));
+    let win = WebviewWindowBuilder::new(&app, "broadcast", tauri::WebviewUrl::App("broadcast.html".into()))
+        .title("LiveFake - OBS連携")
+        .inner_size(init_w, init_h)
+        .min_inner_size(240.0, 100.0)
+        .decorations(false)
+        .resizable(true)
+        .build()
+        .map_err(|e| e.to_string())?;
+    if let Some((x, y)) = saved_pos {
+        let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
+    } else if let Ok(Some(monitor)) = app.primary_monitor() {
+        let ms = monitor.size();
+        let ws = win
+            .outer_size()
+            .unwrap_or(tauri::PhysicalSize::new(init_w as u32, init_h as u32));
+        let x = (ms.width as i32 - ws.width as i32) / 2;
+        let y = (ms.height as i32 - ws.height as i32) / 2;
+        let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
+    }
+    let handle = app.clone();
+    win.on_window_event(move |event| {
+        if let tauri::WindowEvent::Destroyed = event {
+            let _ = handle.emit_to("main", "broadcast-closed", ());
+        }
+    });
+    Ok(())
+}
+
+#[tauri::command]
+async fn broadcast_hide(app: AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("broadcast") {
+        capture_broadcast_geometry(&win);
+        app.run_on_main_thread(move || {
+            if win.close().is_err() {
+                let _ = win.destroy();
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn broadcast_reset_position(app: AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("broadcast") {
+        if let Ok(Some(monitor)) = app.primary_monitor() {
+            let ms = monitor.size();
+            let ws = win.outer_size().unwrap_or(tauri::PhysicalSize::new(480, 160));
+            let x = (ms.width as i32 - ws.width as i32) / 2;
+            let y = (ms.height as i32 - ws.height as i32) / 2;
+            let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
+        }
+    }
+    Ok(())
+}
+
+/// 配信ウィンドウへ表示内容またはスタイル設定を送る。ペイロードの形はフロント側で組み立てる
+/// (`{ style: {...} }` / `{ item: {...} }` / `{ clearQueue: true }`)。Rust 側は中身を検証せず
+/// そのままウィンドウの JS へ転送するだけ (このウィンドウはローカルの表示専用で、外部通信は
+/// 発生しない)。
+#[tauri::command]
+fn broadcast_update(app: AppHandle, data: serde_json::Value) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("broadcast") {
+        let js = format!(
+            "if(window.__broadcastUpdate)window.__broadcastUpdate({})",
+            serde_json::to_string(&data).unwrap_or_else(|_| "null".to_string())
+        );
+        let _ = win.eval(&js);
     }
     Ok(())
 }
@@ -2775,11 +3035,27 @@ pub fn run() {
         }))
         .setup(|app| {
             // Purge old event logs based on retention setting (default 7 days)
-            let retention: u32 = core_store::load_settings_ini()
-                .ok()
+            let startup_settings = core_store::load_settings_ini().ok();
+            let retention: u32 = startup_settings
+                .as_ref()
                 .and_then(|m| m.get("App.logRetentionDays").and_then(|v| v.parse().ok()))
                 .unwrap_or(7);
             let _ = core_store::purge_old_logs(retention);
+            // したらば/JPNKN のドメイン上書き設定を起動時に反映
+            if let Some(m) = startup_settings.as_ref() {
+                apply_domain_overrides_from_settings(m);
+            }
+            // OBS連携ウィンドウの直前のサイズを起動時に復元 (位置はセッション内のみの記憶)
+            if let Some(m) = startup_settings.as_ref() {
+                let w: Option<f64> = m.get("App.broadcastWindowWidth").and_then(|v| v.parse().ok());
+                let h: Option<f64> = m.get("App.broadcastWindowHeight").and_then(|v| v.parse().ok());
+                if let (Some(w), Some(h)) = (w, h) {
+                    if w >= 200.0 && h >= 200.0 {
+                        let mut guard = BROADCAST_SAVED_SIZE.lock().unwrap_or_else(|e| e.into_inner());
+                        *guard = Some((w, h));
+                    }
+                }
+            }
             let _ = core_store::append_log("App started");
             if let Ok(state) = core_store::load_json::<WindowState>("window_size.json") {
                 if let Some(win) = app.get_webview_window("main") {
@@ -2801,6 +3077,7 @@ pub fn run() {
                         if let Some(w) = handle.get_webview_window("subtitle") { let _ = w.close(); }
                         if let Some(w) = handle.get_webview_window("image_popup") { let _ = w.close(); }
                         if let Some(w) = handle.get_webview_window("compose_popup") { let _ = w.close(); }
+                        if let Some(w) = handle.get_webview_window("broadcast") { capture_broadcast_geometry(&w); let _ = w.close(); }
                     }
                 });
             }
@@ -2895,6 +3172,12 @@ pub fn run() {
             compose_popup_submit,
             compose_popup_result,
             compose_popup_hide,
+            compose_popup_save_size,
+            obs_integration_set_enabled,
+            broadcast_show,
+            broadcast_hide,
+            broadcast_reset_position,
+            broadcast_update,
             subtitle_show,
             subtitle_hide,
             subtitle_reset_position,

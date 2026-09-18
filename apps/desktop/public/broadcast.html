@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>LiveFake - OBS連携</title>
+<style>
+  :root {
+    --bc-bg: #00ff00;
+    --bc-font: "Meiryo", "Segoe UI", sans-serif;
+    --bc-font-size: 22px;
+    --bc-color: #ffffff;
+    --bc-outline-color: #000000;
+    --bc-outline-width: 2px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: var(--bc-bg);
+    user-select: none;
+  }
+  #root {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    padding: 10px;
+    overflow: hidden;
+  }
+  #meta {
+    flex-shrink: 0;
+    margin-bottom: 4px;
+    font-family: var(--bc-font);
+    font-size: calc(var(--bc-font-size) * 0.55);
+    color: var(--bc-color);
+    -webkit-text-stroke: var(--bc-outline-width) var(--bc-outline-color);
+    paint-order: stroke fill;
+    white-space: normal;
+    word-break: break-word;
+  }
+  #bodyWrap {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+  }
+  #body {
+    height: 100%;
+    overflow-y: hidden;
+    font-family: var(--bc-font);
+    font-size: var(--bc-font-size);
+    line-height: 1.35;
+    color: var(--bc-color);
+    -webkit-text-stroke: var(--bc-outline-width) var(--bc-outline-color);
+    paint-order: stroke fill;
+    white-space: pre-wrap;
+    word-break: break-word;
+    transform-origin: top left;
+  }
+</style>
+</head>
+<body>
+<div id="root">
+  <div id="meta"></div>
+  <div id="bodyWrap"><div id="body"></div></div>
+</div>
+<script>
+  var rootEl = document.getElementById("root");
+  var metaEl = document.getElementById("meta");
+  var bodyEl = document.getElementById("body");
+  var invoke = null;
+
+  // ===== 表示キュー =====
+  // ホワイトリスト対象のレスを1件ずつ表示する。表示 → (収まらなければ自動スクロール) →
+  // 設定秒数のあいだ保持 → 次があれば次を表示、無ければ空にする。
+  // 「設定秒数」のカウントはスクロールが終わった時点から始まる (長文が読み終わる前に
+  // 消えてしまわないようにするため)。
+  var queue = [];
+  var displaying = false;
+  var runId = 0;
+  var holdTimer = null;
+  var waitTimer = null;
+  var scrollRaf = null;
+
+  var cfg = { displaySeconds: 12, waitSec: 1, msPerPx: 8 };
+  function clampNum(x, def, min, max) {
+    x = Number(x);
+    if (!isFinite(x)) return def;
+    return Math.min(max, Math.max(min, x));
+  }
+
+  function stopTimers() {
+    if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
+    if (waitTimer) { clearTimeout(waitTimer); waitTimer = null; }
+    if (scrollRaf) { cancelAnimationFrame(scrollRaf); scrollRaf = null; }
+  }
+
+  function clearDisplay() {
+    metaEl.textContent = "";
+    bodyEl.textContent = "";
+    bodyEl.style.transform = "";
+    bodyEl.style.whiteSpace = "pre-wrap";
+    bodyEl.style.fontFamily = "";
+    displaying = false;
+  }
+
+  function showNext() {
+    stopTimers();
+    runId++;
+    if (queue.length === 0) { clearDisplay(); return; }
+    displaying = true;
+    var item = queue.shift();
+    renderItem(item, runId);
+  }
+
+  function renderItem(item, run) {
+    var metaParts = [];
+    if (item.name) metaParts.push(String(item.name));
+    if (item.id) metaParts.push("ID:" + String(item.id));
+    if (item.date) metaParts.push(String(item.date));
+    metaEl.textContent = metaParts.join("　");
+
+    bodyEl.style.transform = "";
+    bodyEl.scrollTop = 0;
+    bodyEl.textContent = item.body || "";
+
+    if (item.isAa) {
+      // アスキーアート: 横スクロールにはせず、幅に収まるよう自動で縮小する
+      bodyEl.style.whiteSpace = "pre";
+      bodyEl.style.fontFamily = '"Saitamaar", "IPAMonaPGothic", "MS PGothic", monospace';
+      requestAnimationFrame(function() {
+        if (run !== runId) return;
+        var naturalWidth = bodyEl.scrollWidth;
+        var avail = bodyEl.parentElement.clientWidth;
+        var scale = naturalWidth > avail && naturalWidth > 0 ? Math.max(0.15, avail / naturalWidth) : 1;
+        bodyEl.style.transform = "scale(" + scale + ")";
+        afterLayout(run);
+      });
+    } else {
+      bodyEl.style.whiteSpace = "pre-wrap";
+      bodyEl.style.fontFamily = "";
+      afterLayout(run);
+    }
+  }
+
+  function afterLayout(run) {
+    waitTimer = setTimeout(function() {
+      waitTimer = null;
+      if (run !== runId) return;
+      var dist = Math.max(0, bodyEl.scrollHeight - bodyEl.parentElement.clientHeight);
+      if (dist > 2) {
+        var dur = Math.max(500, dist * cfg.msPerPx);
+        var start = performance.now();
+        var step = function(now) {
+          if (run !== runId) return;
+          var p = Math.min((now - start) / dur, 1);
+          bodyEl.scrollTop = dist * p;
+          if (p < 1) { scrollRaf = requestAnimationFrame(step); }
+          else { scrollRaf = null; startHold(run); }
+        };
+        scrollRaf = requestAnimationFrame(step);
+      } else {
+        startHold(run);
+      }
+    }, cfg.waitSec * 1000);
+  }
+
+  function startHold(run) {
+    holdTimer = setTimeout(function() {
+      holdTimer = null;
+      if (run !== runId) return;
+      showNext();
+    }, cfg.displaySeconds * 1000);
+  }
+
+  function pushItem(item) {
+    queue.push(item);
+    if (!displaying) showNext();
+  }
+
+  function applyStyle(s) {
+    s = s || {};
+    var root = document.documentElement;
+    if (s.fontFamily) root.style.setProperty("--bc-font", s.fontFamily);
+    if (s.fontSize != null) root.style.setProperty("--bc-font-size", clampNum(s.fontSize, 22, 8, 200) + "px");
+    if (s.textColor) root.style.setProperty("--bc-color", s.textColor);
+    if (s.outlineColor) root.style.setProperty("--bc-outline-color", s.outlineColor);
+    if (s.outlineWidth != null) root.style.setProperty("--bc-outline-width", clampNum(s.outlineWidth, 2, 0, 20) + "px");
+    if (s.bgColor) root.style.setProperty("--bc-bg", s.bgColor);
+    if (s.displaySeconds != null) cfg.displaySeconds = clampNum(s.displaySeconds, 12, 1, 600);
+    if (s.msPerPx != null) cfg.msPerPx = clampNum(s.msPerPx, 8, 1, 100);
+    if (s.waitSec != null) cfg.waitSec = clampNum(s.waitSec, 1, 0, 20);
+  }
+
+  // メインウィンドウから呼ばれる唯一の入口。
+  // { style: {...} } / { item: {...} } / { items: [...] } / { clearQueue: true } のいずれか (併用も可)。
+  // 複数件が同時に来る場合は必ず items (配列) にまとめて渡してもらう — 1件ずつ別々の呼び出しに
+  // すると、呼び出し側の非同期処理の完了順によってはここに届く順序が入れ替わることがあるため
+  window.__broadcastUpdate = function(data) {
+    data = data || {};
+    if (data.style) applyStyle(data.style);
+    if (data.clearQueue) { queue = []; }
+    if (data.item) pushItem(data.item);
+    if (data.items && data.items.length) {
+      for (var i = 0; i < data.items.length; i++) pushItem(data.items[i]);
+    }
+  };
+
+  // ユーザーカスタムCSS (data/theme/broadcast.css)
+  window.__setUserCss = function(css) {
+    var el = document.getElementById("user-theme-css");
+    if (!el) {
+      el = document.createElement("style");
+      el.id = "user-theme-css";
+      document.head.appendChild(el);
+    }
+    el.textContent = String(css || "");
+  };
+  function loadUserCss() {
+    if (!window.__TAURI_INTERNALS__) { setTimeout(loadUserCss, 100); return; }
+    window.__TAURI_INTERNALS__.invoke("load_theme_css").then(function(files) {
+      for (var i = 0; i < files.length; i++) {
+        if (files[i].name === "broadcast.css") window.__setUserCss(files[i].content);
+      }
+    }).catch(function(e) { console.warn("theme css load error", e); });
+  }
+
+  // ウィンドウ内のどこをドラッグしてもモニタ上の好きな位置に移動できる (字幕ウィンドウと同じ)
+  rootEl.addEventListener("mousedown", function(e) {
+    if (e.button === 0 && window.__TAURI_INTERNALS__) {
+      window.__TAURI_INTERNALS__.invoke("plugin:window|start_dragging").catch(function() {});
+    }
+  });
+
+  function waitForTauri() {
+    if (window.__TAURI_INTERNALS__) { invoke = window.__TAURI_INTERNALS__.invoke; return; }
+    setTimeout(waitForTauri, 100);
+  }
+
+  waitForTauri();
+  loadUserCss();
+</script>
+</body>
+</html>
