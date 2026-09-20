@@ -2747,6 +2747,16 @@ fn subtitle_topmost(app: AppHandle, enabled: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// メインウィンドウを常に最背面(他の全ウィンドウの下)に表示する。「常に最前面」の逆。
+/// 書き込みの浮遊ウィンドウ・OBS連携ウィンドウ・字幕ウィンドウには適用しない(メインウィンドウのみ)。
+#[tauri::command]
+fn main_set_always_on_bottom(app: AppHandle, enabled: bool) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("main") {
+        win.set_always_on_bottom(enabled).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// 字幕ウィンドウからの表示時間の報告をメインウィンドウへイベントで中継する。
 /// `bottom_in_ms` = 最下行に達するまでの時間、`hold_ms` = 達した後の表示時間、`total_ms` = その合計 (旧形式互換)。
 /// メイン側は「新着レスペインと字幕の次レス表示を同期する」設定の判断に使う。
@@ -3194,6 +3204,7 @@ pub fn run() {
             load_settings_backup,
             subtitle_opacity,
             subtitle_topmost,
+            main_set_always_on_bottom,
             subtitle_font_size,
             subtitle_meta_font_size,
             subtitle_id_font_size,

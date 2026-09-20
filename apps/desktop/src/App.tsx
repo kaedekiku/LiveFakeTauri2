@@ -692,6 +692,11 @@ export default function App() {
   const [locationInput, setLocationInput] = useState("https://mao.5ch.io/test/read.cgi/ngt/9240230711/");
   const [diagnosticsEnabled, setDiagnosticsEnabled] = useState(false);
   const [cssAllowExternalUrls, setCssAllowExternalUrls] = useState(false);
+  // 登録項目のマスク: NG・読み上げない辞書・読み上げ許可リストなど、画面共有時に見せたくない
+  // 登録内容を隠す。既定でON(安全側)。値そのものは変更せず表示だけを隠す
+  const [streamMaskEnabled, setStreamMaskEnabled] = useState(true);
+  const maskInputType: "password" | "text" = streamMaskEnabled ? "password" : "text";
+  const maskDisplay = (v: string) => streamMaskEnabled ? "••••••••" : v;
   const [metadataUrl, setMetadataUrl] = useState("https://raw.githubusercontent.com/kaedekiku/LiveFakeTauri2/main/apps/landing/public/latest.json");
   const [currentVersion, setCurrentVersion] = useState(typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "0.0.0");
   const [updateResult, setUpdateResult] = useState<UpdateCheckResult | null>(null);
@@ -761,6 +766,8 @@ export default function App() {
   const [thumbSize, setThumbSize] = useState(200);
   const [restoreSession, setRestoreSession] = useState(true);
   const restoreSessionRef = useRef(true);
+  // メインウィンドウを常に最背面に表示する(「常に最前面」の逆)。浮遊ウィンドウ・OBS連携ウィンドウ・字幕には適用しない
+  const [mainAlwaysOnBottom, setMainAlwaysOnBottom] = useState(false);
   const hoverPreviewEnabledRef = useRef(hoverPreviewEnabled);
   hoverPreviewEnabledRef.current = hoverPreviewEnabled;
   const [boardPaneTab, setBoardPaneTab] = useState<"boards" | "fav-threads">("boards");
@@ -4745,6 +4752,7 @@ export default function App() {
       if (map["App.bbsmenuUrl"] !== undefined && map["App.bbsmenuUrl"].trim()) setBbsmenuUrl(map["App.bbsmenuUrl"]);
       if (map["App.shitarabaHost"] !== undefined && map["App.shitarabaHost"].trim()) setShitarabaHost(map["App.shitarabaHost"]);
       if (map["App.jpnknHost"] !== undefined && map["App.jpnknHost"].trim()) setJpnknHost(map["App.jpnknHost"]);
+      if (map["App.mainAlwaysOnBottom"]) setMainAlwaysOnBottom(map["App.mainAlwaysOnBottom"] === "true");
       if (map["App.obsTabRevealed"]) setObsTabRevealed(map["App.obsTabRevealed"] === "true");
       if (map["App.broadcastFontFamily"] !== undefined) { setBroadcastFontFamily(map["App.broadcastFontFamily"]); setBroadcastFontPickerInput(map["App.broadcastFontFamily"]); }
       if (map["App.broadcastFontSize"]) { const n = parseInt(map["App.broadcastFontSize"], 10); if (!isNaN(n)) setBroadcastFontSize(n); }
@@ -4754,6 +4762,7 @@ export default function App() {
       if (map["App.broadcastBgColor"]) setBroadcastBgColor(map["App.broadcastBgColor"]);
       if (map["App.broadcastDisplaySeconds"]) { const n = parseFloat(map["App.broadcastDisplaySeconds"]); if (!isNaN(n)) setBroadcastDisplaySeconds(n); }
       if (map["App.cssAllowExternalUrls"]) setCssAllowExternalUrls(map["App.cssAllowExternalUrls"] === "true");
+      if (map["App.streamMaskEnabled"] !== undefined) setStreamMaskEnabled(map["App.streamMaskEnabled"] === "true");
       // Speech settings
       if (map["Speech.mode"]) setTtsMode(map["Speech.mode"] as TtsMode);
       if (map["Speech.enabled"]) setTtsEnabled(map["Speech.enabled"] === "true");
@@ -5106,6 +5115,7 @@ export default function App() {
       "App.bbsmenuUrl": bbsmenuUrl,
       "App.shitarabaHost": shitarabaHost,
       "App.jpnknHost": jpnknHost,
+      "App.mainAlwaysOnBottom": String(mainAlwaysOnBottom),
       "App.obsTabRevealed": String(obsTabRevealed),
       "App.broadcastFontFamily": broadcastFontFamily,
       "App.broadcastFontSize": String(broadcastFontSize),
@@ -5115,6 +5125,7 @@ export default function App() {
       "App.broadcastBgColor": broadcastBgColor,
       "App.broadcastDisplaySeconds": String(broadcastDisplaySeconds),
       "App.cssAllowExternalUrls": String(cssAllowExternalUrls),
+      "App.streamMaskEnabled": String(streamMaskEnabled),
       "Speech.mode": ttsMode,
       "Speech.enabled": String(ttsEnabled),
       "Speech.maxReadLength": String(ttsMaxReadLength),
@@ -5142,7 +5153,7 @@ export default function App() {
     if (!isTauriRuntime() || !appSettingsLoadedRef.current || settingsOpenRef.current) return;
     void invoke("save_app_settings", { settings: buildAppSettingsMap() }).catch(() => {});
   }, [responsesFontSize, responseGap, autoRefreshInterval, autoRefreshEnabled, autoScrollEnabled, smoothScroll, maxOpenTabs, logRetentionDays, imageSaveFolder, bbsmenuUrl, shitarabaHost, jpnknHost,
-      obsTabRevealed, broadcastFontFamily, broadcastFontSize, broadcastTextColor, broadcastOutlineColor, broadcastOutlineWidth, broadcastBgColor, broadcastDisplaySeconds, cssAllowExternalUrls,
+      mainAlwaysOnBottom, obsTabRevealed, broadcastFontFamily, broadcastFontSize, broadcastTextColor, broadcastOutlineColor, broadcastOutlineWidth, broadcastBgColor, broadcastDisplaySeconds, cssAllowExternalUrls, streamMaskEnabled,
       ttsMode, ttsEnabled, ttsMaxReadLength, sapiVoiceIndex, sapiRate, sapiVolume,
       voicevoxEndpoint, voicevoxSpeakerId, voicevoxSpeedScale, voicevoxPitchScale, voicevoxIntonationScale, voicevoxVolumeScale,
       composeName, composeMail, composeSage, composeFontSize, composeOpen]);
@@ -5421,6 +5432,7 @@ export default function App() {
     setStatus("設定を初期値に戻しました (直前の設定は自動バックアップに保存)");
     void refreshSettingsFiles();
   };
+  useEffect(() => { if (isTauriRuntime()) invoke("main_set_always_on_bottom", { enabled: mainAlwaysOnBottom }).catch((e) => console.warn("main_set_always_on_bottom:", e)); }, [mainAlwaysOnBottom]);
   // 字幕ウィンドウへの反映は state から行う (onChange では送らない)。「保存しない」で値が戻ったときも自動で反映される
   useEffect(() => { if (isTauriRuntime() && subtitleVisibleRef.current) invoke("subtitle_font_size", { size: subtitleBodyFontSize }).catch((e) => console.warn("subtitle_font_size:", e)); }, [subtitleBodyFontSize]);
   useEffect(() => { if (isTauriRuntime() && subtitleVisibleRef.current) invoke("subtitle_meta_font_size", { size: subtitleMetaFontSize }).catch((e) => console.warn("subtitle_meta_font_size:", e)); }, [subtitleMetaFontSize]);
@@ -7036,7 +7048,7 @@ export default function App() {
                           </span>
                           {scope !== "global" && <span className="ng-mode-label" style={{ background: scope === "board" ? "#2a7a2a" : "#2a5a9a", color: "#fff" }}>{scope === "board" ? "板" : "スレ"}</span>}
                           {isRegex && <span className="ng-mode-label" style={{ background: "#6b4c9a", color: "#fff" }}>正規表現</span>}
-                          <span>{v}</span>
+                          <span>{maskDisplay(v)}</span>
                           <button className="ng-remove" onClick={() => removeNgEntry(type, v)}>×</button>
                         </li>
                       );
@@ -7860,6 +7872,10 @@ export default function App() {
                     }}
                   />
                 </label>
+                <label className="settings-row" title="NG・読み上げない辞書・読み上げ許可リストなどの登録内容の表示を隠します。値は変更されず、表示だけを隠します">
+                  <input type="checkbox" checked={streamMaskEnabled} onChange={(e) => setStreamMaskEnabled(e.target.checked)} />
+                  <span>登録項目のマスク</span>
+                </label>
                 <label className="settings-row">
                   <span>自動更新間隔 (秒)</span>
                   <input type="number" value={autoRefreshInterval} min={10} max={300} step={1} onChange={(e) => {
@@ -7891,6 +7907,10 @@ export default function App() {
                 <label className="settings-row">
                   <input type="checkbox" checked={restoreSession} onChange={(e) => setRestoreSession(e.target.checked)} />
                   <span>起動時に前回のタブと板を復元</span>
+                </label>
+                <label className="settings-row" title="このブラウザ本体のウィンドウを常に他の全ウィンドウの下に表示します(常に最前面の逆)。書き込みの浮遊ウィンドウ・OBS連携ウィンドウ・字幕ウィンドウには適用されません">
+                  <input type="checkbox" checked={mainAlwaysOnBottom} onChange={(e) => setMainAlwaysOnBottom(e.target.checked)} />
+                  <span>常に最背面に表示</span>
                 </label>
               </fieldset>
               <fieldset>
@@ -8446,6 +8466,10 @@ export default function App() {
               )}
               {(settingsSearching || settingsCategory === "tts-dict") && (
               <div className="settings-cat" data-cat="tts-dict">
+              <label className="settings-row" style={{ marginBottom: 8 }} title="登録内容の表示を隠します(読み上げ辞書には影響しません)">
+                <input type="checkbox" checked={streamMaskEnabled} onChange={(e) => setStreamMaskEnabled(e.target.checked)} />
+                <span>登録項目のマスク</span>
+              </label>
               <section className="settings-section" data-section="dict">
                 {settingsSectionHeading("tts-dict", "dict")}
               <fieldset>
@@ -8521,10 +8545,10 @@ export default function App() {
                     {ttsIpAllow.map((entry, i) => ({ entry, i })).filter(({ entry }) => settingsListMatch(entry.host, entry.to)).map(({ entry, i }) => (
                       <tr key={i} style={{ borderBottom: "1px solid var(--border-light, #eee)" }}>
                         <td style={{ padding: "3px 6px" }}>
-                          <input type="text" value={entry.host} onChange={(e) => setTtsIpAllow((prev) => prev.map((x, j) => j === i ? { ...x, host: e.target.value } : x))} style={{ width: 220 }} />
+                          <input type={maskInputType} value={entry.host} onChange={(e) => setTtsIpAllow((prev) => prev.map((x, j) => j === i ? { ...x, host: e.target.value } : x))} style={{ width: 220 }} />
                         </td>
                         <td style={{ padding: "3px 6px" }}>
-                          <input type="text" value={entry.to} onChange={(e) => setTtsIpAllow((prev) => prev.map((x, j) => j === i ? { ...x, to: e.target.value } : x))} style={{ width: 220 }} />
+                          <input type={maskInputType} value={entry.to} onChange={(e) => setTtsIpAllow((prev) => prev.map((x, j) => j === i ? { ...x, to: e.target.value } : x))} style={{ width: 220 }} />
                         </td>
                         <td style={{ padding: "3px 6px" }}>
                           <button onClick={() => setTtsIpAllow((prev) => prev.filter((_, j) => j !== i))}>削除</button>
@@ -8570,7 +8594,7 @@ export default function App() {
                       <tr key={`${kind}-${i}`} style={{ borderBottom: "1px solid var(--border-light, #eee)" }}>
                         <td style={{ padding: "3px 6px", whiteSpace: "nowrap" }}>{kind === "names" ? "名前・ワッチョイ" : kind === "words" ? "レス本文ワード" : "ID"}</td>
                         <td style={{ padding: "3px 6px" }}>
-                          <input type="text" value={entry.value} onChange={(e) => setTtsMuteDict((prev) => ({ ...prev, [kind]: prev[kind].map((x, j) => j === i ? { ...x, value: e.target.value } : x) }))} style={{ width: 220 }} />
+                          <input type={maskInputType} value={entry.value} onChange={(e) => setTtsMuteDict((prev) => ({ ...prev, [kind]: prev[kind].map((x, j) => j === i ? { ...x, value: e.target.value } : x) }))} style={{ width: 220 }} />
                         </td>
                         <td style={{ padding: "3px 6px", textAlign: "center" }}>
                           {kind === "words"
@@ -8822,6 +8846,10 @@ export default function App() {
               )}
               {(settingsSearching || settingsCategory === "ng") && (
               <div className="settings-cat" data-cat="ng">
+              <label className="settings-row" style={{ marginBottom: 8 }} title="登録内容の表示を隠します">
+                <input type="checkbox" checked={streamMaskEnabled} onChange={(e) => setStreamMaskEnabled(e.target.checked)} />
+                <span>登録項目のマスク</span>
+              </label>
               <section className="settings-section" data-section="words">
                 {settingsSectionHeading("ng", "words")}
               <fieldset>
@@ -8841,7 +8869,7 @@ export default function App() {
                           <span className={`ng-mode-label ${mode === "hide-images" ? "ng-mode-img" : "ng-mode-hide"}`}>{mode === "hide-images" ? "画像" : "非表示"}</span>
                           {scope !== "global" && <span className="ng-mode-label" style={{ background: scope === "board" ? "#2a7a2a" : "#2a5a9a", color: "#fff" }}>{scope === "board" ? "板" : "スレ"}</span>}
                           {isRegex && <span className="ng-mode-label" style={{ background: "#6b4c9a", color: "#fff" }}>正規表現</span>}
-                          <span>{v}</span>
+                          <span>{maskDisplay(v)}</span>
                           <button className="ng-remove" onClick={() => removeNgEntry("words", v)}>×</button>
                         </li>
                       );
@@ -8870,7 +8898,7 @@ export default function App() {
                           <span className={`ng-mode-label ${mode === "hide-images" ? "ng-mode-img" : "ng-mode-hide"}`}>{mode === "hide-images" ? "画像" : "非表示"}</span>
                           {scope !== "global" && <span className="ng-mode-label" style={{ background: scope === "board" ? "#2a7a2a" : "#2a5a9a", color: "#fff" }}>{scope === "board" ? "板" : "スレ"}</span>}
                           {isRegex && <span className="ng-mode-label" style={{ background: "#6b4c9a", color: "#fff" }}>正規表現</span>}
-                          <span>{v}</span>
+                          <span>{maskDisplay(v)}</span>
                           <button className="ng-remove" onClick={() => removeNgEntry("ids", v)}>×</button>
                         </li>
                       );
@@ -8899,7 +8927,7 @@ export default function App() {
                           <span className={`ng-mode-label ${mode === "hide-images" ? "ng-mode-img" : "ng-mode-hide"}`}>{mode === "hide-images" ? "画像" : "非表示"}</span>
                           {scope !== "global" && <span className="ng-mode-label" style={{ background: scope === "board" ? "#2a7a2a" : "#2a5a9a", color: "#fff" }}>{scope === "board" ? "板" : "スレ"}</span>}
                           {isRegex && <span className="ng-mode-label" style={{ background: "#6b4c9a", color: "#fff" }}>正規表現</span>}
-                          <span>{v}</span>
+                          <span>{maskDisplay(v)}</span>
                           <button className="ng-remove" onClick={() => removeNgEntry("names", v)}>×</button>
                         </li>
                       );
