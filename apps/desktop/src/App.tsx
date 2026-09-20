@@ -52,10 +52,11 @@ type BoardCategory = { categoryName: string; boards: BoardEntry[] };
 type FavoriteBoard = { boardName: string; url: string };
 type FavoriteThread = { threadUrl: string; title: string; boardUrl: string };
 type FavoritesData = { boards: FavoriteBoard[]; threads: FavoriteThread[] };
-type NgEntry = { value: string; mode: "hide" | "hide-images"; scope?: "global" | "board" | "thread"; scopeUrl?: string };
-type NgFilters = { words: (string | NgEntry)[]; ids: (string | NgEntry)[]; names: (string | NgEntry)[]; thread_words: string[] };
+type NgMode = "hide" | "hide-images" | "abone";
+type NgEntry = { value: string; mode: NgMode; scope?: "global" | "board" | "thread"; scopeUrl?: string };
+type NgFilters = { words: (string | NgEntry)[]; ids: (string | NgEntry)[]; names: (string | NgEntry)[]; mails: (string | NgEntry)[]; thread_words: (string | NgEntry)[] };
 const ngVal = (e: string | NgEntry): string => typeof e === "string" ? e : e.value;
-const ngEntryMode = (e: string | NgEntry): "hide" | "hide-images" => typeof e === "string" ? "hide" : e.mode;
+const ngEntryMode = (e: string | NgEntry): NgMode => typeof e === "string" ? "hide" : e.mode;
 const ngEntryScope = (e: string | NgEntry): "global" | "board" | "thread" => typeof e === "string" ? "global" : (e.scope ?? "global");
 const ngEntryScopeUrl = (e: string | NgEntry): string | undefined => typeof e === "string" ? undefined : e.scopeUrl;
 const ngScopeMatches = (entry: string | NgEntry, boardUrl: string, threadUrl: string): boolean => {
@@ -743,11 +744,13 @@ export default function App() {
   const [externalBoardName, setExternalBoardName] = useState("");
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
   const [favorites, setFavorites] = useState<FavoritesData>({ boards: [], threads: [] });
-  const [ngFilters, setNgFilters] = useState<NgFilters>({ words: [], ids: [], names: [], thread_words: [] });
+  const [ngFilters, setNgFilters] = useState<NgFilters>({ words: [], ids: [], names: [], mails: [], thread_words: [] });
   // customTitles: boardUrl -> threadKey -> customTitle
   const [customTitles, setCustomTitles] = useState<Record<string, Record<string, string>>>({});
-  const [ngAddMode, setNgAddMode] = useState<"hide" | "hide-images">("hide");
+  const [ngAddMode, setNgAddMode] = useState<NgMode>("hide");
   const [ngAddScope, setNgAddScope] = useState<"global" | "board" | "thread">("global");
+  // 通常あぼ～んのレスを読み上げる際、「あぼーん」と読むか、前置き含め完全にスキップするか
+  const [ngAboneSpeakEnabled, setNgAboneSpeakEnabled] = useState(true);
   const [threadNgOpen, setThreadNgOpen] = useState(false);
   const [threadNgInput, setThreadNgInput] = useState("");
   const [ngPanelOpen, setNgPanelOpen] = useState(false);
@@ -780,7 +783,7 @@ export default function App() {
   const [boardSearchQuery, setBoardSearchQuery] = useState("");
   const [responsesLoading, setResponsesLoading] = useState(false);
   const [ngInput, setNgInput] = useState("");
-  const [ngInputType, setNgInputType] = useState<"words" | "ids" | "names" | "regex">("words");
+  const [ngInputType, setNgInputType] = useState<"words" | "ids" | "names" | "mails" | "thread_words" | "regex">("words");
   const [threadSearchQuery, setThreadSearchQuery] = useState("");
   const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(false);
   const [autoRefreshInterval, setAutoRefreshInterval] = useState(15);
@@ -969,7 +972,7 @@ export default function App() {
     "tts-dict": [{ id: "dict", label: "辞書" }, { id: "allow", label: "許可リスト" }, { id: "mute", label: "読み上げない辞書" }],
     subtitle: [{ id: "view", label: "表示" }, { id: "cards", label: "カード" }, { id: "scroll", label: "スクロール" }],
     proxy: [],
-    ng: [{ id: "words", label: "ワード" }, { id: "ids", label: "ID" }, { id: "names", label: "名前" }],
+    ng: [{ id: "words", label: "ワード" }, { id: "ids", label: "ID" }, { id: "names", label: "名前" }, { id: "mails", label: "メール" }, { id: "thread_words", label: "スレタイ" }],
     highlights: [{ id: "word", label: "ワード" }, { id: "name", label: "名前" }, { id: "id", label: "ID" }],
     presets: [],
     reset: [],
@@ -1110,17 +1113,20 @@ export default function App() {
     const idMatch = r.dateAndId.match(/ID:(\S+)/);
     const id = idMatch ? idMatch[1] : "";
     const stats = idStatsFor(threadUrlForItem, r.responseNo, id, rows);
+    const ngHit = getNgResult({ name: r.name, mail: r.mail, time: r.dateAndId, text: r.body.replace(/<[^>]*>/g, "") }, threadUrlForItem);
+    const isAbone = ngHit?.mode === "abone";
     return {
       threadTitle,
       responseNo: r.responseNo,
-      name: r.name.replace(/<[^>]+>/g, ""),
-      mail: r.mail || "",
+      name: isAbone ? "あぼ～ん" : r.name.replace(/<[^>]+>/g, ""),
+      mail: isAbone ? "あぼ～ん" : (r.mail || ""),
       id,
-      time: r.dateAndId.replace(/\s+ID:\S+/g, "").replace(/\s+BE[:：]\d+[^\s]*/gi, "").trim(),
-      text: arrivalBodyText(r.body),
+      time: isAbone ? "あぼ～ん" : r.dateAndId.replace(/\s+ID:\S+/g, "").replace(/\s+BE[:：]\d+[^\s]*/gi, "").trim(),
+      text: isAbone ? "あぼ～ん" : arrivalBodyText(r.body),
       threadUrl: threadUrlForItem,
       idSeq: stats.seq,
       idCount: stats.count,
+      isAbone,
     };
   };
   const arrivalBodyText = (body: string): string => body.replace(/<[^>]*>/g, "").slice(0, (arrivalCardsEnabledRef.current || subtitleCardsEnabledRef.current) ? 2000 : 200);
@@ -1422,7 +1428,7 @@ export default function App() {
   const [newArrivalPaneHeight, setNewArrivalPaneHeight] = useState(DEFAULT_NEW_ARRIVAL_PX);
   const [newArrivalFontSize, setNewArrivalFontSize] = useState(13);
   const newArrivalScrollRef = useRef<HTMLDivElement | null>(null);
-  type ArrivalItem = { threadTitle: string; responseNo: number; name: string; mail: string; id: string; time: string; text: string; threadUrl: string; idSeq: number; idCount: number };
+  type ArrivalItem = { threadTitle: string; responseNo: number; name: string; mail: string; id: string; time: string; text: string; threadUrl: string; idSeq: number; idCount: number; isAbone?: boolean };
   const arrivalQueueRef = useRef<ArrivalItem[]>([]);
   const [currentArrivalItem, setCurrentArrivalItem] = useState<ArrivalItem | null>(null);
   const currentArrivalItemRef = useRef<ArrivalItem | null>(null);
@@ -1731,7 +1737,7 @@ export default function App() {
     if (!isTauriRuntime()) return;
     try {
       const data = await invoke<NgFilters>("load_ng_filters");
-      setNgFilters({ ...data, thread_words: data.thread_words ?? [] });
+      setNgFilters({ ...data, mails: data.mails ?? [], thread_words: data.thread_words ?? [] });
     } catch {
       // no saved NG filters yet
     }
@@ -1747,24 +1753,20 @@ export default function App() {
     }
   };
 
-  const addNgEntry = (type: "words" | "ids" | "names" | "thread_words", value: string, mode?: "hide" | "hide-images", scope?: "global" | "board" | "thread") => {
+  const addNgEntry = (type: "words" | "ids" | "names" | "mails" | "thread_words", value: string, mode?: NgMode, scope?: "global" | "board" | "thread") => {
     const trimmed = value.trim();
     if (!trimmed) return;
     if (ngFilters[type].some((e) => ngVal(e) === trimmed)) {
       setStatus(`already in NG ${type}: ${trimmed}`);
       return;
     }
-    if (type === "thread_words") {
-      void persistNgFilters({ ...ngFilters, [type]: [...ngFilters[type], trimmed] });
-    } else {
-      const s = scope ?? ngAddScope;
-      const entry: NgEntry = {
-        value: trimmed,
-        mode: mode ?? ngAddMode,
-        ...(s !== "global" ? { scope: s, scopeUrl: s === "board" ? getBoardUrlFromThreadUrl(threadUrl.trim()) : threadUrl.trim() } : {}),
-      };
-      void persistNgFilters({ ...ngFilters, [type]: [...ngFilters[type], entry] });
-    }
+    const s = scope ?? ngAddScope;
+    const entry: NgEntry = {
+      value: trimmed,
+      mode: mode ?? ngAddMode,
+      ...(s !== "global" ? { scope: s, scopeUrl: s === "board" ? getBoardUrlFromThreadUrl(threadUrl.trim()) : threadUrl.trim() } : {}),
+    };
+    void persistNgFilters({ ...ngFilters, [type]: [...ngFilters[type], entry] });
     setStatus(`added NG ${type}: ${trimmed}`);
   };
 
@@ -1780,34 +1782,52 @@ export default function App() {
     setNgInput("");
   };
 
-  const removeNgEntry = (type: "words" | "ids" | "names" | "thread_words", value: string) => {
+  const removeNgEntry = (type: "words" | "ids" | "names" | "mails" | "thread_words", value: string) => {
     void persistNgFilters({ ...ngFilters, [type]: ngFilters[type].filter((v) => ngVal(v) !== value) });
     setStatus(`removed NG ${type}: ${value}`);
   };
 
-  // 設定 > NG の各節 (ワード / ID / 名前) で共通の追加フォーム
+  // 登録済みのNGエントリのモード(透明あぼ～ん/画像のみ非表示/通常あぼ～ん)を後から変更する
+  const updateNgEntryMode = (type: "words" | "ids" | "names" | "mails" | "thread_words", value: string, mode: NgMode) => {
+    void persistNgFilters({
+      ...ngFilters,
+      [type]: ngFilters[type].map((e) => {
+        if (ngVal(e) !== value) return e;
+        return typeof e === "string" ? { value: e, mode } : { ...e, mode };
+      }),
+    });
+  };
+
+  const NG_TYPE_LABELS: Record<"words" | "ids" | "names" | "mails" | "thread_words", string> = {
+    words: "ワード", ids: "ID", names: "名前", mails: "メール", thread_words: "スレタイ",
+  };
+
+  // 設定 > NG の各節 (ワード / ID / 名前 / メール / スレタイ) で共通の追加フォーム
   const ngAddForm = (
     <div className="ng-panel-add">
-      <select value={ngInputType} onChange={(e) => setNgInputType(e.target.value as "words" | "ids" | "names" | "regex")}>
+      <select value={ngInputType} onChange={(e) => setNgInputType(e.target.value as "words" | "ids" | "names" | "mails" | "thread_words" | "regex")}>
         <option value="words">ワード</option>
         <option value="ids">ID</option>
         <option value="names">名前</option>
+        <option value="mails">メール</option>
+        <option value="thread_words">スレタイ</option>
         <option value="regex">正規表現</option>
       </select>
       <input
         value={ngInput}
         onChange={(e) => setNgInput(e.target.value)}
         onKeyDown={(e) => { if (e.key === "Enter") addNgFromInput(); }}
-        placeholder={ngInputType === "regex" ? "正規表現パターンを入力" : ngInputType === "words" ? "NGワードを入力" : ngInputType === "ids" ? "NG IDを入力" : "NG名前を入力"}
+        placeholder={ngInputType === "regex" ? "正規表現パターンを入力" : `NG${NG_TYPE_LABELS[ngInputType]}を入力`}
       />
-      <select value={ngAddMode} onChange={(e) => setNgAddMode(e.target.value as "hide" | "hide-images")} className="ng-mode-select">
-        <option value="hide">非表示</option>
-        <option value="hide-images">画像NG</option>
+      <select value={ngAddMode} onChange={(e) => setNgAddMode(e.target.value as NgMode)} className="ng-mode-select">
+        <option value="hide">透明あぼ～ん</option>
+        {ngInputType !== "thread_words" && <option value="hide-images">画像のみ非表示</option>}
+        <option value="abone">通常あぼ～ん</option>
       </select>
       <select value={ngAddScope} onChange={(e) => setNgAddScope(e.target.value as "global" | "board" | "thread")} className="ng-mode-select">
         <option value="global">全体</option>
         <option value="board">この板</option>
-        <option value="thread">このスレ</option>
+        {ngInputType !== "thread_words" && <option value="thread">このスレ</option>}
       </select>
       <button onClick={() => addNgFromInput()}>追加</button>
     </div>
@@ -1825,25 +1845,41 @@ export default function App() {
     return target.toLowerCase().includes(pattern.toLowerCase());
   };
 
-  const getNgResult = (resp: { name: string; time: string; text: string }, threadUrlForScope?: string): null | "hide" | "hide-images" => {
-    if (ngFilters.words.length === 0 && ngFilters.ids.length === 0 && ngFilters.names.length === 0) return null;
+  // 一致した際の詳細 (通常あぼ～んのマウスオーバー理由に使う)
+  type NgHit = { mode: NgMode; reason: string };
+  const NG_MODE_RANK: Record<NgMode, number> = { "hide-images": 0, abone: 1, hide: 2 };
+  const getNgResult = (resp: { name: string; mail?: string; time: string; text: string }, threadUrlForScope?: string): NgHit | null => {
+    if (ngFilters.words.length === 0 && ngFilters.ids.length === 0 && ngFilters.names.length === 0 && ngFilters.mails.length === 0) return null;
     const curThread = (threadUrlForScope ?? threadUrl).trim();
     const curBoard = getBoardUrlFromThreadUrl(curThread);
-    let result: null | "hide" | "hide-images" = null;
+    let best: NgHit | null = null;
+    // 透明あぼ～んに一致した時点で即確定 (他の一致より常に優先)。それ以外は優先度の高いモードを残す
+    const consider = (mode: NgMode, reason: string): NgHit | null => {
+      if (mode === "hide") { best = { mode, reason }; return best; }
+      if (!best || NG_MODE_RANK[mode] > NG_MODE_RANK[best.mode]) best = { mode, reason };
+      return null;
+    };
     for (const w of ngFilters.words) {
       if (!ngScopeMatches(w, curBoard, curThread)) continue;
       if (ngMatch(ngVal(w), resp.text)) {
-        const m = ngEntryMode(w);
-        if (m === "hide") return "hide";
-        result = "hide-images";
+        const hit = consider(ngEntryMode(w), `NGワード: ${ngVal(w)}`);
+        if (hit) return hit;
       }
     }
     for (const n of ngFilters.names) {
       if (!ngScopeMatches(n, curBoard, curThread)) continue;
       if (ngMatch(ngVal(n), resp.name)) {
-        const m = ngEntryMode(n);
-        if (m === "hide") return "hide";
-        result = "hide-images";
+        const hit = consider(ngEntryMode(n), `NG名前: ${ngVal(n)}`);
+        if (hit) return hit;
+      }
+    }
+    if (ngFilters.mails.length > 0 && resp.mail) {
+      for (const m of ngFilters.mails) {
+        if (!ngScopeMatches(m, curBoard, curThread)) continue;
+        if (ngMatch(ngVal(m), resp.mail)) {
+          const hit = consider(ngEntryMode(m), `NGメール: ${ngVal(m)}`);
+          if (hit) return hit;
+        }
       }
     }
     if (ngFilters.ids.length > 0) {
@@ -1852,16 +1888,15 @@ export default function App() {
         for (const entry of ngFilters.ids) {
           if (!ngScopeMatches(entry, curBoard, curThread)) continue;
           if (idMatch[1] === ngVal(entry)) {
-            const m = ngEntryMode(entry);
-            if (m === "hide") return "hide";
-            result = "hide-images";
+            const hit = consider(ngEntryMode(entry), `NG ID: ${ngVal(entry)}`);
+            if (hit) return hit;
           }
         }
       }
     }
-    return result;
+    return best;
   };
-  const isNgFiltered = (resp: { name: string; time: string; text: string }): boolean => getNgResult(resp) !== null;
+  const isNgFiltered = (resp: { name: string; mail?: string; time: string; text: string }): boolean => getNgResult(resp) !== null;
 
   const bookmarkCacheRef = useRef<Record<string, number>>({});
   const saveBookmark = (url: string, responseNo: number) => {
@@ -2422,7 +2457,7 @@ export default function App() {
         const timeStr = `${now.getFullYear()}/${String(now.getMonth() + 1).padStart(2, "0")}/${String(now.getDate()).padStart(2, "0")} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
         threadFetchTimesRef.current[tabUrl] = timeStr;
         const arrivals = newRows
-          .filter((r) => getNgResult({ name: r.name, time: r.dateAndId, text: r.body.replace(/<[^>]*>/g, "") }, tabUrl) !== "hide")
+          .filter((r) => getNgResult({ name: r.name, mail: r.mail, time: r.dateAndId, text: r.body.replace(/<[^>]*>/g, "") }, tabUrl)?.mode !== "hide")
           .map((r) => makeArrival(r, tabTitle, tabUrl, rows));
         if (autoRefreshEnabled && arrivals.length > 0) {
           const queueWasEmpty = arrivalQueueRef.current.length === 0;
@@ -2440,7 +2475,7 @@ export default function App() {
             const prefix = site === "shitaraba" ? `したらば${a.responseNo}番さん`
               : site === "jpnkn" ? `ジャパンくん${a.responseNo}番さん`
               : `レス${a.responseNo}番さん`;
-            ttsSpeak(a.text, prefix, undefined, { name: a.name, id: a.id });
+            ttsSpeakArrival(a, prefix);
           }
         }
       }
@@ -2620,7 +2655,7 @@ export default function App() {
           ?? url;
         const newRows = rows.slice(prevCount);
         const arrivals = newRows
-          .filter((r) => getNgResult({ name: r.name, time: r.dateAndId, text: r.body.replace(/<[^>]*>/g, "") }, url) !== "hide")
+          .filter((r) => getNgResult({ name: r.name, mail: r.mail, time: r.dateAndId, text: r.body.replace(/<[^>]*>/g, "") }, url)?.mode !== "hide")
           .map((r) => makeArrival(r, arrivalTitle, url, rows));
         // Add to new arrivals pane when autoReload is ON
         if (autoRefreshEnabled && arrivals.length > 0) {
@@ -2645,7 +2680,7 @@ export default function App() {
             const prefix = site === "shitaraba" ? `したらば${a.responseNo}番さん`
               : site === "jpnkn" ? `ジャパンくん${a.responseNo}番さん`
               : `レス${a.responseNo}番さん`;
-            ttsSpeak(a.text, prefix, undefined, { name: a.name, id: a.id });
+            ttsSpeakArrival(a, prefix);
           }
         }
       } else {
@@ -2934,6 +2969,17 @@ export default function App() {
     const full = prefix ? `${prefix} ${truncatedBody}` : truncatedBody;
     ttsQueueRef.current.push(full);
     void processTtsQueue();
+  };
+
+  // 新着レス (通常あぼ～ん考慮) の読み上げ。あぼ～ん該当時は設定次第で
+  // 「あぼーん」とだけ読むか、前置き含め完全にスキップする
+  const ttsSpeakArrival = (a: ArrivalItem, prefix: string) => {
+    if (a.isAbone) {
+      if (!ngAboneSpeakEnabled) return;
+      ttsSpeak("あぼーん", prefix, undefined, { name: a.name, id: a.id });
+      return;
+    }
+    ttsSpeak(a.text, prefix, undefined, { name: a.name, id: a.id });
   };
 
   // TTS: stop playback and clear queue; returns a promise so callers can await full stop
@@ -3276,10 +3322,30 @@ export default function App() {
         })
       : fallbackThreadItems
   );
+  // スレタイNGの一致状況 (透明あぼ～ん該当のスレは一覧からも除外、通常あぼ～んは一覧に残しつつタイトルを置き換える)
+  const threadNgResultMap = new Map<string, NgHit>();
+  if (ngFilters.thread_words.length > 0) {
+    const curBoardForThreadNg = activeBoardUrlRef.current;
+    for (const t of threadItems) {
+      let hit: NgHit | null = null;
+      for (const w of ngFilters.thread_words) {
+        // スレ一覧の画面には「今見ているスレ」が無いため、thisスレ限定スコープは常に不一致扱いにする
+        const scope = ngEntryScope(w);
+        if (scope === "thread") continue;
+        if (scope === "board" && ngEntryScopeUrl(w) !== curBoardForThreadNg) continue;
+        if (!ngMatch(ngVal(w), t.title)) continue;
+        const mode = ngEntryMode(w);
+        const reason = `NGスレタイ: ${ngVal(w)}`;
+        if (mode === "hide") { hit = { mode, reason }; break; }
+        if (!hit) hit = { mode, reason };
+      }
+      if (hit) threadNgResultMap.set(t.threadUrl, hit);
+    }
+  }
   const filteredThreadItems = threadItems
     .filter((t) => {
       if (ngFilters.words.some((w) => ngMatch(ngVal(w), t.title))) return false;
-      if (ngFilters.thread_words.some((w) => ngMatch(ngVal(w), t.title))) return false;
+      if (threadNgResultMap.get(t.threadUrl)?.mode === "hide") return false;
       if (threadSearchQuery.trim()) {
         return t.title.toLowerCase().includes(threadSearchQuery.trim().toLowerCase());
       }
@@ -3410,7 +3476,7 @@ export default function App() {
     return map;
   })();
 
-  const ngResultMap = new Map<number, "hide" | "hide-images">();
+  const ngResultMap = new Map<number, NgHit>();
   for (const r of responseItems) {
     const result = getNgResult(r);
     if (result) ngResultMap.set(r.id, result);
@@ -3418,7 +3484,7 @@ export default function App() {
   const ngFilteredCount = ngResultMap.size;
   const visibleResponseItems = responseItems.filter((r) => {
     const ngResult = ngResultMap.get(r.id);
-    if (ngResult === "hide") return false;
+    if (ngResult?.mode === "hide") return false;
     if (responseSearchMode === "extract" && responseSearchQuery) {
       const q = responseSearchQuery.toLowerCase();
       const plainText = r.text.replace(/<[^>]+>/g, "").toLowerCase();
@@ -4763,6 +4829,7 @@ export default function App() {
       if (map["App.broadcastDisplaySeconds"]) { const n = parseFloat(map["App.broadcastDisplaySeconds"]); if (!isNaN(n)) setBroadcastDisplaySeconds(n); }
       if (map["App.cssAllowExternalUrls"]) setCssAllowExternalUrls(map["App.cssAllowExternalUrls"] === "true");
       if (map["App.streamMaskEnabled"] !== undefined) setStreamMaskEnabled(map["App.streamMaskEnabled"] === "true");
+      if (map["App.ngAboneSpeakEnabled"] !== undefined) setNgAboneSpeakEnabled(map["App.ngAboneSpeakEnabled"] === "true");
       // Speech settings
       if (map["Speech.mode"]) setTtsMode(map["Speech.mode"] as TtsMode);
       if (map["Speech.enabled"]) setTtsEnabled(map["Speech.enabled"] === "true");
@@ -5126,6 +5193,7 @@ export default function App() {
       "App.broadcastDisplaySeconds": String(broadcastDisplaySeconds),
       "App.cssAllowExternalUrls": String(cssAllowExternalUrls),
       "App.streamMaskEnabled": String(streamMaskEnabled),
+      "App.ngAboneSpeakEnabled": String(ngAboneSpeakEnabled),
       "Speech.mode": ttsMode,
       "Speech.enabled": String(ttsEnabled),
       "Speech.maxReadLength": String(ttsMaxReadLength),
@@ -5153,7 +5221,7 @@ export default function App() {
     if (!isTauriRuntime() || !appSettingsLoadedRef.current || settingsOpenRef.current) return;
     void invoke("save_app_settings", { settings: buildAppSettingsMap() }).catch(() => {});
   }, [responsesFontSize, responseGap, autoRefreshInterval, autoRefreshEnabled, autoScrollEnabled, smoothScroll, maxOpenTabs, logRetentionDays, imageSaveFolder, bbsmenuUrl, shitarabaHost, jpnknHost,
-      mainAlwaysOnBottom, obsTabRevealed, broadcastFontFamily, broadcastFontSize, broadcastTextColor, broadcastOutlineColor, broadcastOutlineWidth, broadcastBgColor, broadcastDisplaySeconds, cssAllowExternalUrls, streamMaskEnabled,
+      mainAlwaysOnBottom, obsTabRevealed, broadcastFontFamily, broadcastFontSize, broadcastTextColor, broadcastOutlineColor, broadcastOutlineWidth, broadcastBgColor, broadcastDisplaySeconds, cssAllowExternalUrls, streamMaskEnabled, ngAboneSpeakEnabled,
       ttsMode, ttsEnabled, ttsMaxReadLength, sapiVoiceIndex, sapiRate, sapiVolume,
       voicevoxEndpoint, voicevoxSpeakerId, voicevoxSpeedScale, voicevoxPitchScale, voicevoxIntonationScale, voicevoxVolumeScale,
       composeName, composeMail, composeSage, composeFontSize, composeOpen]);
@@ -5381,7 +5449,8 @@ export default function App() {
           words: Array.isArray(ng.words) ? ng.words : [],
           ids: Array.isArray(ng.ids) ? ng.ids : [],
           names: Array.isArray(ng.names) ? ng.names : [],
-          thread_words: Array.isArray(ng.thread_words) ? ng.thread_words.filter((x): x is string => typeof x === "string") : [],
+          mails: Array.isArray(ng.mails) ? ng.mails : [],
+          thread_words: Array.isArray(ng.thread_words) ? ng.thread_words : [],
         });
       }
       if (isStringMap(l.idHighlights)) persistIdHighlights(l.idHighlights);
@@ -5421,7 +5490,7 @@ export default function App() {
     applyLayoutPrefs(JSON.stringify(layout));
     persistSettingsNow(layout, defaultsApp);
     if (resetIncludeLists) {
-      void persistNgFilters({ words: [], ids: [], names: [], thread_words: [] });
+      void persistNgFilters({ words: [], ids: [], names: [], mails: [], thread_words: [] });
       persistIdHighlights({});
       persistTextHighlights([]);
       setTtsDictEntries(DEFAULT_TTS_DICT);
@@ -6292,23 +6361,26 @@ export default function App() {
                   onChange={(e) => setThreadNgInput(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && threadNgInput.trim()) {
-                      addNgEntry("thread_words", threadNgInput);
+                      addNgEntry("thread_words", threadNgInput, "hide");
                       setThreadNgInput("");
                     }
                   }}
                   placeholder="NGワード (例: BE:12345)"
                   style={{ flex: 1 }}
                 />
-                <button onClick={() => { addNgEntry("thread_words", threadNgInput); setThreadNgInput(""); }}>追加</button>
+                <button onClick={() => { addNgEntry("thread_words", threadNgInput, "hide"); setThreadNgInput(""); }}>追加</button>
               </div>
               {ngFilters.thread_words.length > 0 && (
                 <ul className="thread-ng-list">
-                  {ngFilters.thread_words.map((w) => (
-                    <li key={w}>
-                      <span>{w}</span>
-                      <button className="ng-remove" onClick={() => removeNgEntry("thread_words", w)}>×</button>
-                    </li>
-                  ))}
+                  {ngFilters.thread_words.map((w) => {
+                    const v = ngVal(w);
+                    return (
+                      <li key={v}>
+                        <span>{maskDisplay(v)}</span>
+                        <button className="ng-remove" onClick={() => removeNgEntry("thread_words", v)}>×</button>
+                      </li>
+                    );
+                  })}
                 </ul>
               )}
             </div>
@@ -6350,6 +6422,8 @@ export default function App() {
               {visibleThreadItems.map((t) => {
                 const isUnread = !threadReadMap[t.threadUrl];
                 const hasUnread = t.got > 0 && t.res - t.got > 0;
+                const threadNgHit = threadNgResultMap.get(t.threadUrl);
+                const isThreadAbone = threadNgHit?.mode === "abone";
                 return (
                   <tr
                     key={t.threadUrl}
@@ -6395,10 +6469,16 @@ export default function App() {
                   >
                     <td className="thread-fetched-cell">{showFavoritesOnly ? (hasUnread ? "\u25CF" : "") : (hasUnread || threadReadMap[t.threadUrl] ? "\u25CF" : "")}</td>
                     <td>{t.id}</td>
-                    <td
-                      className={`thread-title-cell${customTitles[selectedBoard]?.[t.threadKey] ? " has-custom-title" : ""}`}
-                      dangerouslySetInnerHTML={renderHighlightedPlainText(customTitles[selectedBoard]?.[t.threadKey] ?? t.title, threadSearchQuery)}
-                    />
+                    {isThreadAbone ? (
+                      <td className="thread-title-cell">
+                        <span className="ng-abone-text" title={threadNgHit?.reason ?? "あぼ～ん"}>あぼ～ん</span>
+                      </td>
+                    ) : (
+                      <td
+                        className={`thread-title-cell${customTitles[selectedBoard]?.[t.threadKey] ? " has-custom-title" : ""}`}
+                        dangerouslySetInnerHTML={renderHighlightedPlainText(customTitles[selectedBoard]?.[t.threadKey] ?? t.title, threadSearchQuery)}
+                      />
+                    )}
                     <td>{t.res >= 0 ? t.res : "-"}</td>
                     <td>{t.got > 0 ? t.got : "-"}</td>
                     <td className={`new-count ${t.got > 0 && t.res > 0 && t.res - t.got > 0 ? "has-new" : ""}`}>
@@ -6722,6 +6802,8 @@ export default function App() {
                 const isNew = newResponseStart !== null && r.id >= newResponseStart;
                 const isFirstNew = isNew && r.id === newResponseStart;
                 const isAa = aaOverrides.has(r.id) ? aaOverrides.get(r.id) : isAsciiArt(r.text);
+                const ngHit = ngResultMap.get(r.id);
+                const isAbone = ngHit?.mode === "abone";
                 return (
                   <Fragment key={r.id}>
                   {isFirstNew && (
@@ -6746,18 +6828,22 @@ export default function App() {
                       {mainHeaderVis.name && (
                         <>
                           <span className="response-label">名前：</span>
-                          <span
-                            className="response-name res-name mname"
-                            style={(() => {
-                              const hl = textHighlights.find((h) => h.type === "name" && h.pattern === r.nameWithoutWatchoi);
-                              return hl ? { background: hl.color } : undefined;
-                            })()}
-                            dangerouslySetInnerHTML={renderHighlightedPlainText(r.nameWithoutWatchoi, responseSearchQuery)}
-                          />
+                          {isAbone ? (
+                            <span className="response-name res-name mname">あぼ～ん</span>
+                          ) : (
+                            <span
+                              className="response-name res-name mname"
+                              style={(() => {
+                                const hl = textHighlights.find((h) => h.type === "name" && h.pattern === r.nameWithoutWatchoi);
+                                return hl ? { background: hl.color } : undefined;
+                              })()}
+                              dangerouslySetInnerHTML={renderHighlightedPlainText(r.nameWithoutWatchoi, responseSearchQuery)}
+                            />
+                          )}
                         </>
                       )}
-                      {mainHeaderVis.mail && r.mail && (
-                        <span className={`response-mail res-mail${r.mail === "sage" ? " response-mail-sage sage" : ""}`}>[{r.mail}]</span>
+                      {mainHeaderVis.mail && (isAbone || r.mail) && (
+                        <span className={`response-mail res-mail${r.mail === "sage" ? " response-mail-sage sage" : ""}`}>[{isAbone ? "あぼ～ん" : r.mail}]</span>
                       )}
                       {mainHeaderVis.watchoi && r.watchoi && (
                         <span
@@ -6787,10 +6873,14 @@ export default function App() {
                         {mainHeaderVis.date && (
                           <>
                             <span className="response-label">投稿日：</span>
-                            <span
-                              className="response-date res-date"
-                              dangerouslySetInnerHTML={renderHighlightedPlainText(formatResponseDate(r.time), responseSearchQuery)}
-                            />
+                            {isAbone ? (
+                              <span className="response-date res-date">あぼ～ん</span>
+                            ) : (
+                              <span
+                                className="response-date res-date"
+                                dangerouslySetInnerHTML={renderHighlightedPlainText(formatResponseDate(r.time), responseSearchQuery)}
+                              />
+                            )}
                           </>
                         )}
                         {id && (mainHeaderVis.id || mainHeaderVis.count) && (
@@ -6842,7 +6932,13 @@ export default function App() {
                         )}
                       </span>
                     </div>
-                    <div className={`response-body rb${isAa ? " aa" : ""}`} dangerouslySetInnerHTML={renderResponseBodyHighlighted(r.text, responseSearchQuery, { hideImages: !showImagePreview || ngResultMap.get(r.id) === "hide-images", imageSizeLimitKb: imageSizeLimit, urlRules: imageUrlRules, ogpCards: ogpCardsEnabled, tweetCards: tweetCardsEnabled, ogpAllow: ogpDomainFilters.allow, ogpBlock: ogpDomainFilters.block }, textHighlights.filter((h) => h.type === "word"))} />
+                    {isAbone ? (
+                      <div className="response-body rb">
+                        <span className="ng-abone-text" title={ngHit?.reason ?? "あぼ～ん"}>あぼ～ん</span>
+                      </div>
+                    ) : (
+                      <div className={`response-body rb${isAa ? " aa" : ""}`} dangerouslySetInnerHTML={renderResponseBodyHighlighted(r.text, responseSearchQuery, { hideImages: !showImagePreview || ngHit?.mode === "hide-images", imageSizeLimitKb: imageSizeLimit, urlRules: imageUrlRules, ogpCards: ogpCardsEnabled, tweetCards: tweetCardsEnabled, ogpAllow: ogpDomainFilters.allow, ogpBlock: ogpDomainFilters.block }, textHighlights.filter((h) => h.type === "word"))} />
+                    )}
                   </div>
                   </Fragment>
                 );
@@ -6996,15 +7092,17 @@ export default function App() {
           <header className="ng-panel-header">
             <strong>NGフィルタ</strong>
             <span className="ng-panel-count">
-              {ngFilters.words.length}語 / {ngFilters.ids.length}ID / {ngFilters.names.length}名
+              {ngFilters.words.length}語 / {ngFilters.ids.length}ID / {ngFilters.names.length}名 / {ngFilters.mails.length}メール / {ngFilters.thread_words.length}スレタイ
             </span>
             <button onClick={() => setNgPanelOpen(false)}>閉じる</button>
           </header>
           <div className="ng-panel-add">
-            <select value={ngInputType} onChange={(e) => setNgInputType(e.target.value as "words" | "ids" | "names" | "regex")}>
+            <select value={ngInputType} onChange={(e) => setNgInputType(e.target.value as "words" | "ids" | "names" | "mails" | "thread_words" | "regex")}>
               <option value="words">ワード</option>
               <option value="ids">ID</option>
               <option value="names">名前</option>
+              <option value="mails">メール</option>
+              <option value="thread_words">スレタイ</option>
               <option value="regex">正規表現</option>
             </select>
             <input
@@ -7015,23 +7113,24 @@ export default function App() {
                   addNgFromInput();
                 }
               }}
-              placeholder={ngInputType === "regex" ? "正規表現パターンを入力" : ngInputType === "words" ? "NGワードを入力" : ngInputType === "ids" ? "NG IDを入力" : "NG名前を入力"}
+              placeholder={ngInputType === "regex" ? "正規表現パターンを入力" : `NG${NG_TYPE_LABELS[ngInputType]}を入力`}
             />
-            <select value={ngAddMode} onChange={(e) => setNgAddMode(e.target.value as "hide" | "hide-images")} className="ng-mode-select">
-              <option value="hide">非表示</option>
-              <option value="hide-images">画像NG</option>
+            <select value={ngAddMode} onChange={(e) => setNgAddMode(e.target.value as NgMode)} className="ng-mode-select">
+              <option value="hide">透明あぼ～ん</option>
+              {ngInputType !== "thread_words" && <option value="hide-images">画像のみ非表示</option>}
+              <option value="abone">通常あぼ～ん</option>
             </select>
             <select value={ngAddScope} onChange={(e) => setNgAddScope(e.target.value as "global" | "board" | "thread")} className="ng-mode-select">
               <option value="global">全体</option>
               <option value="board">この板</option>
-              <option value="thread">このスレ</option>
+              {ngInputType !== "thread_words" && <option value="thread">このスレ</option>}
             </select>
             <button onClick={() => addNgFromInput()}>追加</button>
           </div>
           <div className="ng-panel-lists">
-            {(["words", "ids", "names"] as const).map((type) => (
+            {(["words", "ids", "names", "mails", "thread_words"] as const).map((type) => (
               <div key={type} className="ng-list-section">
-                <h4>{type === "words" ? "ワード" : type === "ids" ? "ID" : "名前"} ({ngFilters[type].length})</h4>
+                <h4>{NG_TYPE_LABELS[type]} ({ngFilters[type].length})</h4>
                 {ngFilters[type].length === 0 ? (
                   <span className="ng-empty">(なし)</span>
                 ) : (
@@ -7043,9 +7142,15 @@ export default function App() {
                       const isRegex = v.startsWith("/") && v.endsWith("/") && v.length > 2;
                       return (
                         <li key={v}>
-                          <span className={`ng-mode-label ${mode === "hide-images" ? "ng-mode-img" : "ng-mode-hide"}`}>
-                            {mode === "hide-images" ? "画像" : "非表示"}
-                          </span>
+                          <select
+                            className="ng-mode-select"
+                            value={mode}
+                            onChange={(e) => updateNgEntryMode(type, v, e.target.value as NgMode)}
+                          >
+                            <option value="hide">透明あぼ～ん</option>
+                            {type !== "thread_words" && <option value="hide-images">画像のみ非表示</option>}
+                            <option value="abone">通常あぼ～ん</option>
+                          </select>
                           {scope !== "global" && <span className="ng-mode-label" style={{ background: scope === "board" ? "#2a7a2a" : "#2a5a9a", color: "#fff" }}>{scope === "board" ? "板" : "スレ"}</span>}
                           {isRegex && <span className="ng-mode-label" style={{ background: "#6b4c9a", color: "#fff" }}>正規表現</span>}
                           <span>{maskDisplay(v)}</span>
@@ -7303,6 +7408,10 @@ export default function App() {
                     : site === "jpnkn" ? `ジャパンくん${item.id}番さん`
                     : `レス${item.id}番さん`;
                   const idMatch = item.time.match(/ID:([^\s]+)/);
+                  if (ngResultMap.get(item.id)?.mode === "abone") {
+                    if (ngAboneSpeakEnabled) ttsSpeak("あぼーん", prefix, undefined, { name: item.name, id: idMatch ? idMatch[1] : "" });
+                    continue;
+                  }
                   ttsSpeak(item.text, prefix, undefined, { name: item.name, id: idMatch ? idMatch[1] : "" });
                 }
               })();
@@ -7771,7 +7880,7 @@ export default function App() {
               {!settingsSearching && settingsSectionsFor(settingsCategory).length > 1 && (
                 <div className="settings-section-tabs">
                   {settingsSectionsFor(settingsCategory).map((sec) => (
-                    <button key={sec.id} className={`settings-section-tab${settingsActiveSection === sec.id ? " active" : ""}`} onClick={() => { setSettingsSection(sec.id); setSettingsListFilter(""); if (settingsCategory === "ng" && (sec.id === "words" || sec.id === "ids" || sec.id === "names")) setNgInputType(sec.id); }}>{sec.label}</button>
+                    <button key={sec.id} className={`settings-section-tab${settingsActiveSection === sec.id ? " active" : ""}`} onClick={() => { setSettingsSection(sec.id); setSettingsListFilter(""); if (settingsCategory === "ng" && (sec.id === "words" || sec.id === "ids" || sec.id === "names" || sec.id === "mails" || sec.id === "thread_words")) setNgInputType(sec.id); }}>{sec.label}</button>
                   ))}
                 </div>
               )}
@@ -8850,93 +8959,49 @@ export default function App() {
                 <input type="checkbox" checked={streamMaskEnabled} onChange={(e) => setStreamMaskEnabled(e.target.checked)} />
                 <span>登録項目のマスク</span>
               </label>
-              <section className="settings-section" data-section="words">
-                {settingsSectionHeading("ng", "words")}
-              <fieldset>
-                <legend>NG ワード ({ngFilters["words"].length}件)</legend>
-                {ngAddForm}
-                {settingsListFilterRow()}
-                <div data-search-exclude="1">
-                {ngFilters["words"].length === 0 ? (
-                  <span className="ng-empty">(なし)</span>
-                ) : (
-                  <ul className="ng-list">
-                    {ngFilters["words"].filter((entry) => settingsListMatch(ngVal(entry))).map((entry) => {
-                      const v = ngVal(entry); const mode = ngEntryMode(entry); const scope = ngEntryScope(entry);
-                      const isRegex = v.startsWith("/") && v.endsWith("/") && v.length > 2;
-                      return (
-                        <li key={v}>
-                          <span className={`ng-mode-label ${mode === "hide-images" ? "ng-mode-img" : "ng-mode-hide"}`}>{mode === "hide-images" ? "画像" : "非表示"}</span>
-                          {scope !== "global" && <span className="ng-mode-label" style={{ background: scope === "board" ? "#2a7a2a" : "#2a5a9a", color: "#fff" }}>{scope === "board" ? "板" : "スレ"}</span>}
-                          {isRegex && <span className="ng-mode-label" style={{ background: "#6b4c9a", color: "#fff" }}>正規表現</span>}
-                          <span>{maskDisplay(v)}</span>
-                          <button className="ng-remove" onClick={() => removeNgEntry("words", v)}>×</button>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                )}
-                </div>
-              </fieldset>
-              </section>
-              <section className="settings-section" data-section="ids">
-                {settingsSectionHeading("ng", "ids")}
-              <fieldset>
-                <legend>NG ID ({ngFilters["ids"].length}件)</legend>
-                {ngAddForm}
-                {settingsListFilterRow()}
-                <div data-search-exclude="1">
-                {ngFilters["ids"].length === 0 ? (
-                  <span className="ng-empty">(なし)</span>
-                ) : (
-                  <ul className="ng-list">
-                    {ngFilters["ids"].filter((entry) => settingsListMatch(ngVal(entry))).map((entry) => {
-                      const v = ngVal(entry); const mode = ngEntryMode(entry); const scope = ngEntryScope(entry);
-                      const isRegex = v.startsWith("/") && v.endsWith("/") && v.length > 2;
-                      return (
-                        <li key={v}>
-                          <span className={`ng-mode-label ${mode === "hide-images" ? "ng-mode-img" : "ng-mode-hide"}`}>{mode === "hide-images" ? "画像" : "非表示"}</span>
-                          {scope !== "global" && <span className="ng-mode-label" style={{ background: scope === "board" ? "#2a7a2a" : "#2a5a9a", color: "#fff" }}>{scope === "board" ? "板" : "スレ"}</span>}
-                          {isRegex && <span className="ng-mode-label" style={{ background: "#6b4c9a", color: "#fff" }}>正規表現</span>}
-                          <span>{maskDisplay(v)}</span>
-                          <button className="ng-remove" onClick={() => removeNgEntry("ids", v)}>×</button>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                )}
-                </div>
-              </fieldset>
-              </section>
-              <section className="settings-section" data-section="names">
-                {settingsSectionHeading("ng", "names")}
-              <fieldset>
-                <legend>NG 名前 ({ngFilters["names"].length}件)</legend>
-                {ngAddForm}
-                {settingsListFilterRow()}
-                <div data-search-exclude="1">
-                {ngFilters["names"].length === 0 ? (
-                  <span className="ng-empty">(なし)</span>
-                ) : (
-                  <ul className="ng-list">
-                    {ngFilters["names"].filter((entry) => settingsListMatch(ngVal(entry))).map((entry) => {
-                      const v = ngVal(entry); const mode = ngEntryMode(entry); const scope = ngEntryScope(entry);
-                      const isRegex = v.startsWith("/") && v.endsWith("/") && v.length > 2;
-                      return (
-                        <li key={v}>
-                          <span className={`ng-mode-label ${mode === "hide-images" ? "ng-mode-img" : "ng-mode-hide"}`}>{mode === "hide-images" ? "画像" : "非表示"}</span>
-                          {scope !== "global" && <span className="ng-mode-label" style={{ background: scope === "board" ? "#2a7a2a" : "#2a5a9a", color: "#fff" }}>{scope === "board" ? "板" : "スレ"}</span>}
-                          {isRegex && <span className="ng-mode-label" style={{ background: "#6b4c9a", color: "#fff" }}>正規表現</span>}
-                          <span>{maskDisplay(v)}</span>
-                          <button className="ng-remove" onClick={() => removeNgEntry("names", v)}>×</button>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                )}
-                </div>
-              </fieldset>
-              </section>
+              <label className="settings-row" style={{ marginBottom: 8 }} title="OFFにすると、通常あぼ～んのレスは前置き含め完全に読み上げをスキップします(透明あぼ～んと同じ扱い)">
+                <input type="checkbox" checked={ngAboneSpeakEnabled} onChange={(e) => setNgAboneSpeakEnabled(e.target.checked)} />
+                <span>通常あぼ～んを「あぼーん」と読み上げる</span>
+              </label>
+              {(["words", "ids", "names", "mails", "thread_words"] as const).map((type) => (
+                <section key={type} className="settings-section" data-section={type}>
+                  {settingsSectionHeading("ng", type)}
+                  <fieldset>
+                    <legend>NG {NG_TYPE_LABELS[type]} ({ngFilters[type].length}件)</legend>
+                    {ngAddForm}
+                    {settingsListFilterRow()}
+                    <div data-search-exclude="1">
+                    {ngFilters[type].length === 0 ? (
+                      <span className="ng-empty">(なし)</span>
+                    ) : (
+                      <ul className="ng-list">
+                        {ngFilters[type].filter((entry) => settingsListMatch(ngVal(entry))).map((entry) => {
+                          const v = ngVal(entry); const mode = ngEntryMode(entry); const scope = ngEntryScope(entry);
+                          const isRegex = v.startsWith("/") && v.endsWith("/") && v.length > 2;
+                          return (
+                            <li key={v}>
+                              <select
+                                className="ng-mode-select"
+                                value={mode}
+                                onChange={(e) => updateNgEntryMode(type, v, e.target.value as NgMode)}
+                              >
+                                <option value="hide">透明あぼ～ん</option>
+                                {type !== "thread_words" && <option value="hide-images">画像のみ非表示</option>}
+                                <option value="abone">通常あぼ～ん</option>
+                              </select>
+                              {scope !== "global" && <span className="ng-mode-label" style={{ background: scope === "board" ? "#2a7a2a" : "#2a5a9a", color: "#fff" }}>{scope === "board" ? "板" : "スレ"}</span>}
+                              {isRegex && <span className="ng-mode-label" style={{ background: "#6b4c9a", color: "#fff" }}>正規表現</span>}
+                              <span>{maskDisplay(v)}</span>
+                              <button className="ng-remove" onClick={() => removeNgEntry(type, v)}>×</button>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+                    </div>
+                  </fieldset>
+                </section>
+              ))}
               </div>
               )}
               {(settingsSearching || settingsCategory === "presets") && (

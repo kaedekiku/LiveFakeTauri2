@@ -1216,6 +1216,14 @@ li.fav-drag-over {
   word-break: break-word;
 }
 
+/* 通常あぼ～ん: 本文プレースホルダー。下線でマウスオーバー可能なことを示す */
+.ng-abone-text {
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+  cursor: help;
+  color: var(--sub, #888);
+}
+
 .response-body.aa {
   font-family: "Saitamaar", "IPAMonaPGothic", "Mona", "MS PGothic", "ＭＳ Ｐゴシック", monospace;
   line-height: 1.2;

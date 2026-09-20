@@ -1138,7 +1138,14 @@ fn load_generic_json(filename: String) -> Result<serde_json::Value, String> {
 #[serde(untagged)]
 enum NgEntry {
     Simple(String),
-    WithMode { value: String, mode: String },
+    WithMode {
+        value: String,
+        mode: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none", rename = "scopeUrl")]
+        scope_url: Option<String>,
+    },
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -1150,7 +1157,9 @@ struct NgFilters {
     #[serde(default)]
     names: Vec<NgEntry>,
     #[serde(default)]
-    thread_words: Vec<String>,
+    mails: Vec<NgEntry>,
+    #[serde(default)]
+    thread_words: Vec<NgEntry>,
 }
 
 #[tauri::command]
