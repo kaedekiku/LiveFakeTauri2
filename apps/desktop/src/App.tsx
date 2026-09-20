@@ -3253,7 +3253,7 @@ export default function App() {
         };
       })
     : (
-    fetchedThreads.length > 0
+    fetchedThreads.length > 0 || isTauriRuntime()
       ? fetchedThreads.map((t, i) => {
           const created = Number(t.threadKey) * 1000;
           const elapsedDays = Math.max((Date.now() - created) / 86400000, 0.01);
@@ -3324,7 +3324,7 @@ export default function App() {
   const unreadThreadCount = visibleThreadItems.filter((t) => !threadReadMap[t.threadUrl]).length;
   const selectedThreadLabel = selectedThreadItem ? `#${selectedThreadItem.id}` : "-";
   const responseItems = [
-    ...(fetchedResponses.length > 0
+    ...(fetchedResponses.length > 0 || isTauriRuntime()
       ? fetchedResponses.map((r) => {
           const rawName = r.name || "Anonymous";
           // Real dat examples include BE:123456789-2BP(...) and javascript:be(123456789)
