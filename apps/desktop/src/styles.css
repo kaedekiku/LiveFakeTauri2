@@ -2020,14 +2020,6 @@ button.search-history-btn:hover {
   border-radius: 3px;
   font-weight: bold;
 }
-.ng-mode-hide {
-  background: #e04040;
-  color: #fff;
-}
-.ng-mode-img {
-  background: #d0a020;
-  color: #fff;
-}
 .ng-remove {
   flex: none !important;
   padding: 0 4px;

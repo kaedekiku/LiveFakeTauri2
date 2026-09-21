@@ -187,6 +187,9 @@ LiveFake の配色は以下の CSS 変数で構成されており、これを上
 │       │   └─ .response-id-count      (n/総数) ID出現回数 (.cnt)
 │       └─ .response-be-link       BE:xxxx
 └─ .response-body          ← 本文 (rb。AA 表示時は .aa が付く)
+    ├─ .ng-abone-text          「通常あぼ～ん」でNG判定されたレスの本文プレースホルダー
+    │                            （マウスオーバーでNG理由を表示。名前・メール・投稿日は
+    │                             同じ「あぼ～ん」文字列に置き換わるが専用クラスは付かない）
     ├─ .body-link              本文中の URL リンク
     ├─ .anchor-ref             本文中の `>>N` アンカーリンク
     ├─ .response-thumbs-row    サムネイル行
