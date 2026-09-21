@@ -1,15 +1,12 @@
 import { useEffect, useState } from "react";
 import appIcon from "./assets/images/icon.png";
-import bmcButton from "./assets/images/bmc-button.png";
 import screenshot1 from "./assets/images/screen_shot_1.jpg";
 import screenshot2 from "./assets/images/screen_shot_2.jpg";
 import screenshot3 from "./assets/images/screen_shot_3.jpg";
 
-const REPO_RELEASES_URL = "https://github.com/kiyohken2000/5ch-browser-template/releases";
-const GITHUB_URL = "https://github.com/kiyohken2000/5ch-browser-template";
-const ISSUES_URL = "https://github.com/kiyohken2000/5ch-browser-template/issues";
-const X_URL = "https://x.com/votepurchase";
-const BMC_URL = "https://buymeacoffee.com/votepurchase";
+const REPO_RELEASES_URL = "https://github.com/kaedekiku/LiveFakeTauri2/releases";
+const GITHUB_URL = "https://github.com/kaedekiku/LiveFakeTauri2";
+const ISSUES_URL = "https://github.com/kaedekiku/LiveFakeTauri2/issues";
 
 type PlatformAsset = {
   sha256: string;
@@ -57,7 +54,6 @@ export default function App() {
   const [metaStatus, setMetaStatus] = useState("loading...");
   const [zoomedImage, setZoomedImage] = useState<ZoomImage | null>(null);
   const windowsAsset = meta?.platforms["windows-x64"] ?? null;
-  const macAsset = meta?.platforms["macos-arm64"] ?? null;
   const primaryDownloadUrl = meta?.download_page_url || REPO_RELEASES_URL;
 
   useEffect(() => {
@@ -110,9 +106,6 @@ export default function App() {
               <a className="btn" href={GITHUB_URL} target="_blank" rel="noreferrer">
                 GitHub
               </a>
-              <a className="btn" href={X_URL} target="_blank" rel="noreferrer">
-                X
-              </a>
               <a className="btn" href="/latest.json" target="_blank" rel="noreferrer">
                 latest.json を見る
               </a>
@@ -120,9 +113,6 @@ export default function App() {
             <p className="lead" style={{ marginTop: 12 }}>
               不具合報告・要望は <a href={ISSUES_URL} target="_blank" rel="noreferrer">GitHub Issues</a> へお願いします。
             </p>
-            <a className="bmc-link" href={BMC_URL} target="_blank" rel="noreferrer">
-              <img src={bmcButton} alt="Buy Me a Coffee" />
-            </a>
           </div>
           <div className="hero-visual">
             <img className="app-icon" src={appIcon} alt="5ch Browser icon" />
@@ -177,45 +167,6 @@ export default function App() {
               更新時はアプリ終了後、`LiveFake.exe` を新しいものに上書きしてください。
             </p>
           </div>
-          <div className="install-platform">
-            <h3>Mac版</h3>
-            <ol className="install-steps">
-              <li>「最新版をダウンロード」から `livefake-mac-arm64.zip` を取得します。</li>
-              <li>ZIPを展開し、`LiveFake_0.0.1_aarch64.dmg` を開きます。</li>
-              <li>アプリをApplicationsへ移動して起動します。</li>
-            </ol>
-            <p className="lead" style={{ marginTop: 8 }}>
-              更新時は新しいDMGを開き、`LiveFake.app` を Applications に上書きしてください。
-            </p>
-            <p className="lead" style={{ marginTop: 8 }}>
-              「壊れているため開けません」と表示される場合は、ターミナルで以下のコマンドを実行してから再度起動してください。
-            </p>
-            <div className="cmd-block">
-              <code>xattr -dr com.apple.quarantine /Applications/LiveFake.app</code>
-              <button className="cmd-copy" onClick={(e) => {
-                void navigator.clipboard.writeText("xattr -dr com.apple.quarantine /Applications/LiveFake.app");
-                const btn = e.currentTarget;
-                btn.textContent = "コピーしました";
-                setTimeout(() => { btn.textContent = "コピー"; }, 2000);
-              }}>コピー</button>
-            </div>
-          </div>
-          <div className="install-platform">
-            <h3>Linux版 (x64 / AArch64)</h3>
-            <p className="lead">Linux版はGitHub Releasesからビルド済みバイナリをダウンロードできます。</p>
-            <ol className="install-steps">
-              <li><a href="https://github.com/kiyohken2000/5ch-browser-template/releases/latest" target="_blank" rel="noreferrer">最新リリースページ</a>から AppImage, deb, または rpm をダウンロードします。</li>
-              <li>AppImage: `chmod +x` して実行。deb: `sudo dpkg -i` でインストール。rpm: `sudo rpm -i` でインストール。</li>
-              <li>初回起動後、板一覧を取得して利用開始します。</li>
-            </ol>
-            <p className="lead" style={{ marginTop: 8 }}>
-              x64 と AArch64 の両アーキテクチャに対応しています。ファイル名のサフィックスで判別してください。
-            </p>
-            <p className="lead" style={{ marginTop: 8 }}>
-              Raspberry Pi (AArch64) では画面描画に問題がある場合、環境変数
-              `LIBGL_ALWAYS_SOFTWARE=1` を設定して起動してください。
-            </p>
-          </div>
         </section>
 
         <section className="card download-panel">
@@ -237,26 +188,6 @@ export default function App() {
               </strong>
               <em>{windowsAsset ? formatBytes(windowsAsset.size) : "-"}</em>
             </li>
-            <li>
-              <span>macOS ARM64</span>
-              <strong>
-                {macAsset ? (
-                  <a href={buildAssetUrl(primaryDownloadUrl, macAsset.filename)} target="_blank" rel="noreferrer">
-                    {macAsset.filename}
-                  </a>
-                ) : (
-                  "-"
-                )}
-              </strong>
-              <em>{macAsset ? formatBytes(macAsset.size) : "-"}</em>
-            </li>
-            <li>
-              <span>Linux (x64 / AArch64)</span>
-              <strong>
-                <a href="https://github.com/kiyohken2000/5ch-browser-template/releases/latest" target="_blank" rel="noreferrer">GitHub Releases</a>
-              </strong>
-              <em>AppImage / deb / rpm</em>
-            </li>
           </ul>
         </section>
 
@@ -266,10 +197,6 @@ export default function App() {
             <div className="system-req-item">
               <h3>Windows</h3>
               <p>Windows 11 x64 で動作確認しています。</p>
-            </div>
-            <div className="system-req-item">
-              <h3>macOS</h3>
-              <p>macOS 26 (Apple Silicon) で動作確認しています。</p>
             </div>
           </div>
           <p className="system-req-note">
