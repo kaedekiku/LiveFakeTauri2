@@ -9,7 +9,7 @@
 │   ├── desktop/          # Tauri + Reactデスクトップアプリ (メインプロダクト)
 │   │   ├── src/          # フロントエンド (App.tsx単一ファイル + styles.css)
 │   │   └── src-tauri/    # Rustバックエンド (Tauriコマンド定義)
-│   └── landing/          # 公式サイト (Cloudflare Pages)
+│   └── landing/          # 紹介ページ用ソース (未デプロイ、公開はGitHub Releasesのみ)
 ├── crates/
 │   ├── core-fetch/       # HTTP取得・投稿フロー (core-parseに依存)
 │   ├── core-parse/       # dat / subject.txt / bbsmenuパーサ (依存なし)
