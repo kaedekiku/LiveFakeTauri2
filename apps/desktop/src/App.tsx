@@ -54,7 +54,8 @@ type FavoriteThread = { threadUrl: string; title: string; boardUrl: string };
 type FavoritesData = { boards: FavoriteBoard[]; threads: FavoriteThread[] };
 type NgMode = "hide" | "hide-images" | "abone";
 type NgEntry = { value: string; mode: NgMode; scope?: "global" | "board" | "thread"; scopeUrl?: string };
-type NgFilters = { words: (string | NgEntry)[]; ids: (string | NgEntry)[]; names: (string | NgEntry)[]; mails: (string | NgEntry)[]; thread_words: (string | NgEntry)[] };
+type NgFilters = { words: (string | NgEntry)[]; ids: (string | NgEntry)[]; names: (string | NgEntry)[]; mails: (string | NgEntry)[]; thread_words: (string | NgEntry)[]; image_words: (string | NgEntry)[] };
+type NgCategory = "words" | "ids" | "names" | "mails" | "thread_words" | "image_words";
 const ngVal = (e: string | NgEntry): string => typeof e === "string" ? e : e.value;
 const ngEntryMode = (e: string | NgEntry): NgMode => typeof e === "string" ? "hide" : e.mode;
 const ngEntryScope = (e: string | NgEntry): "global" | "board" | "thread" => typeof e === "string" ? "global" : (e.scope ?? "global");
@@ -744,7 +745,7 @@ export default function App() {
   const [externalBoardName, setExternalBoardName] = useState("");
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
   const [favorites, setFavorites] = useState<FavoritesData>({ boards: [], threads: [] });
-  const [ngFilters, setNgFilters] = useState<NgFilters>({ words: [], ids: [], names: [], mails: [], thread_words: [] });
+  const [ngFilters, setNgFilters] = useState<NgFilters>({ words: [], ids: [], names: [], mails: [], thread_words: [], image_words: [] });
   // customTitles: boardUrl -> threadKey -> customTitle
   const [customTitles, setCustomTitles] = useState<Record<string, Record<string, string>>>({});
   const [ngAddMode, setNgAddMode] = useState<NgMode>("hide");
@@ -783,7 +784,8 @@ export default function App() {
   const [boardSearchQuery, setBoardSearchQuery] = useState("");
   const [responsesLoading, setResponsesLoading] = useState(false);
   const [ngInput, setNgInput] = useState("");
-  const [ngInputType, setNgInputType] = useState<"words" | "ids" | "names" | "mails" | "thread_words" | "regex">("words");
+  const [ngInputType, setNgInputType] = useState<"words" | "ids" | "names" | "mails" | "thread_words" | "image_words" | "regex">("words");
+  const [ngWordRegexInput, setNgWordRegexInput] = useState(false);
   const [threadSearchQuery, setThreadSearchQuery] = useState("");
   const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(false);
   const [autoRefreshInterval, setAutoRefreshInterval] = useState(15);
@@ -972,7 +974,7 @@ export default function App() {
     "tts-dict": [{ id: "dict", label: "辞書" }, { id: "allow", label: "許可リスト" }, { id: "mute", label: "読み上げない辞書" }],
     subtitle: [{ id: "view", label: "表示" }, { id: "cards", label: "カード" }, { id: "scroll", label: "スクロール" }],
     proxy: [],
-    ng: [{ id: "words", label: "ワード" }, { id: "ids", label: "ID" }, { id: "names", label: "名前" }, { id: "mails", label: "メール" }, { id: "thread_words", label: "スレタイ" }],
+    ng: [{ id: "words", label: "ワード" }, { id: "ids", label: "ID" }, { id: "names", label: "名前" }, { id: "mails", label: "メール" }, { id: "thread_words", label: "スレタイ" }, { id: "image_words", label: "画像NG" }],
     highlights: [{ id: "word", label: "ワード" }, { id: "name", label: "名前" }, { id: "id", label: "ID" }],
     presets: [],
     reset: [],
@@ -1753,7 +1755,7 @@ export default function App() {
     }
   };
 
-  const addNgEntry = (type: "words" | "ids" | "names" | "mails" | "thread_words", value: string, mode?: NgMode, scope?: "global" | "board" | "thread") => {
+  const addNgEntry = (type: NgCategory, value: string, mode?: NgMode, scope?: "global" | "board" | "thread") => {
     const trimmed = value.trim();
     if (!trimmed) return;
     if (ngFilters[type].some((e) => ngVal(e) === trimmed)) {
@@ -1763,32 +1765,36 @@ export default function App() {
     const s = scope ?? ngAddScope;
     const entry: NgEntry = {
       value: trimmed,
-      mode: mode ?? ngAddMode,
+      mode: mode ?? (type === "image_words" ? "hide-images" : ngAddMode),
       ...(s !== "global" ? { scope: s, scopeUrl: s === "board" ? getBoardUrlFromThreadUrl(threadUrl.trim()) : threadUrl.trim() } : {}),
     };
     void persistNgFilters({ ...ngFilters, [type]: [...ngFilters[type], entry] });
     setStatus(`added NG ${type}: ${trimmed}`);
   };
 
-  const addNgFromInput = () => {
+  // type を渡した場合はその種類に固定して追加 (設定タブの節ごとのフォーム用)。
+  // 渡さない場合は共通の ngInputType (ツールバーの簡易NGパネル用、正規表現込み) を使う
+  const addNgFromInput = (type?: NgCategory) => {
     if (!ngInput.trim()) return;
-    if (ngInputType === "regex") {
+    const asRegex = type ? (type === "words" && ngWordRegexInput) : ngInputType === "regex";
+    const effectiveType: NgCategory = type ?? (ngInputType === "regex" ? "words" : ngInputType);
+    if (asRegex) {
       const pattern = ngInput.trim();
       const wrapped = pattern.startsWith("/") && pattern.endsWith("/") ? pattern : `/${pattern}/`;
-      addNgEntry("words", wrapped);
+      addNgEntry(effectiveType, wrapped);
     } else {
-      addNgEntry(ngInputType, ngInput);
+      addNgEntry(effectiveType, ngInput);
     }
     setNgInput("");
   };
 
-  const removeNgEntry = (type: "words" | "ids" | "names" | "mails" | "thread_words", value: string) => {
+  const removeNgEntry = (type: NgCategory, value: string) => {
     void persistNgFilters({ ...ngFilters, [type]: ngFilters[type].filter((v) => ngVal(v) !== value) });
     setStatus(`removed NG ${type}: ${value}`);
   };
 
-  // 登録済みのNGエントリのモード(透明あぼ～ん/画像のみ非表示/通常あぼ～ん)を後から変更する
-  const updateNgEntryMode = (type: "words" | "ids" | "names" | "mails" | "thread_words", value: string, mode: NgMode) => {
+  // 登録済みのNGエントリのモード(透明あぼ～ん/通常あぼ～ん)を後から変更する (画像NGは対象外、常に画像のみ非表示)
+  const updateNgEntryMode = (type: NgCategory, value: string, mode: NgMode) => {
     void persistNgFilters({
       ...ngFilters,
       [type]: ngFilters[type].map((e) => {
@@ -1798,38 +1804,39 @@ export default function App() {
     });
   };
 
-  const NG_TYPE_LABELS: Record<"words" | "ids" | "names" | "mails" | "thread_words", string> = {
-    words: "ワード", ids: "ID", names: "名前", mails: "メール", thread_words: "スレタイ",
+  const NG_TYPE_LABELS: Record<NgCategory, string> = {
+    words: "ワード", ids: "ID", names: "名前", mails: "メール", thread_words: "スレタイ", image_words: "画像NG",
   };
 
-  // 設定 > NG の各節 (ワード / ID / 名前 / メール / スレタイ) で共通の追加フォーム
-  const ngAddForm = (
+  // 設定 > NG の各節 (ワード / ID / 名前 / メール / スレタイ / 画像NG) で使う追加フォーム。
+  // 節タブごとに種類が決まっているため、種類を選ぶプルダウンは持たず type に固定する
+  // (ワード節のみ、通常入力/正規表現を切り替える入力形式プルダウンを別途持つ)
+  const ngAddFormFor = (type: NgCategory) => (
     <div className="ng-panel-add">
-      <select value={ngInputType} onChange={(e) => setNgInputType(e.target.value as "words" | "ids" | "names" | "mails" | "thread_words" | "regex")}>
-        <option value="words">ワード</option>
-        <option value="ids">ID</option>
-        <option value="names">名前</option>
-        <option value="mails">メール</option>
-        <option value="thread_words">スレタイ</option>
-        <option value="regex">正規表現</option>
-      </select>
+      {type === "words" && (
+        <select value={ngWordRegexInput ? "regex" : "plain"} onChange={(e) => setNgWordRegexInput(e.target.value === "regex")}>
+          <option value="plain">通常</option>
+          <option value="regex">正規表現</option>
+        </select>
+      )}
       <input
         value={ngInput}
         onChange={(e) => setNgInput(e.target.value)}
-        onKeyDown={(e) => { if (e.key === "Enter") addNgFromInput(); }}
-        placeholder={ngInputType === "regex" ? "正規表現パターンを入力" : `NG${NG_TYPE_LABELS[ngInputType]}を入力`}
+        onKeyDown={(e) => { if (e.key === "Enter") addNgFromInput(type); }}
+        placeholder={type === "words" && ngWordRegexInput ? "正規表現パターンを入力" : `NG${NG_TYPE_LABELS[type]}を入力`}
       />
-      <select value={ngAddMode} onChange={(e) => setNgAddMode(e.target.value as NgMode)} className="ng-mode-select">
-        <option value="hide">透明あぼ～ん</option>
-        {ngInputType !== "thread_words" && <option value="hide-images">画像のみ非表示</option>}
-        <option value="abone">通常あぼ～ん</option>
-      </select>
+      {type !== "image_words" && (
+        <select value={ngAddMode} onChange={(e) => setNgAddMode(e.target.value as NgMode)} className="ng-mode-select">
+          <option value="hide">透明あぼ～ん</option>
+          <option value="abone">通常あぼ～ん</option>
+        </select>
+      )}
       <select value={ngAddScope} onChange={(e) => setNgAddScope(e.target.value as "global" | "board" | "thread")} className="ng-mode-select">
         <option value="global">全体</option>
         <option value="board">この板</option>
-        {ngInputType !== "thread_words" && <option value="thread">このスレ</option>}
+        {type !== "thread_words" && <option value="thread">このスレ</option>}
       </select>
-      <button onClick={() => addNgFromInput()}>追加</button>
+      <button onClick={() => addNgFromInput(type)}>追加</button>
     </div>
   );
 
@@ -1897,6 +1904,15 @@ export default function App() {
     return best;
   };
   const isNgFiltered = (resp: { name: string; mail?: string; time: string; text: string }): boolean => getNgResult(resp) !== null;
+
+  // 画像NG (image_words): 本文中の単語に一致したレスの画像だけを非表示にする。
+  // 透明/通常あぼ～んの判定とは独立して評価する (あぼ～ん済みのレスに重ねてかけても実害はない)
+  const matchesImageWords = (text: string, threadUrlForScope?: string): boolean => {
+    if (ngFilters.image_words.length === 0) return false;
+    const curThread = (threadUrlForScope ?? threadUrl).trim();
+    const curBoard = getBoardUrlFromThreadUrl(curThread);
+    return ngFilters.image_words.some((w) => ngScopeMatches(w, curBoard, curThread) && ngMatch(ngVal(w), text));
+  };
 
   const bookmarkCacheRef = useRef<Record<string, number>>({});
   const saveBookmark = (url: string, responseNo: number) => {
@@ -5451,6 +5467,7 @@ export default function App() {
           names: Array.isArray(ng.names) ? ng.names : [],
           mails: Array.isArray(ng.mails) ? ng.mails : [],
           thread_words: Array.isArray(ng.thread_words) ? ng.thread_words : [],
+          image_words: Array.isArray(ng.image_words) ? ng.image_words : [],
         });
       }
       if (isStringMap(l.idHighlights)) persistIdHighlights(l.idHighlights);
@@ -5490,7 +5507,7 @@ export default function App() {
     applyLayoutPrefs(JSON.stringify(layout));
     persistSettingsNow(layout, defaultsApp);
     if (resetIncludeLists) {
-      void persistNgFilters({ words: [], ids: [], names: [], mails: [], thread_words: [] });
+      void persistNgFilters({ words: [], ids: [], names: [], mails: [], thread_words: [], image_words: [] });
       persistIdHighlights({});
       persistTextHighlights([]);
       setTtsDictEntries(DEFAULT_TTS_DICT);
@@ -6937,7 +6954,7 @@ export default function App() {
                         <span className="ng-abone-text" title={ngHit?.reason ?? "あぼ～ん"}>あぼ～ん</span>
                       </div>
                     ) : (
-                      <div className={`response-body rb${isAa ? " aa" : ""}`} dangerouslySetInnerHTML={renderResponseBodyHighlighted(r.text, responseSearchQuery, { hideImages: !showImagePreview || ngHit?.mode === "hide-images", imageSizeLimitKb: imageSizeLimit, urlRules: imageUrlRules, ogpCards: ogpCardsEnabled, tweetCards: tweetCardsEnabled, ogpAllow: ogpDomainFilters.allow, ogpBlock: ogpDomainFilters.block }, textHighlights.filter((h) => h.type === "word"))} />
+                      <div className={`response-body rb${isAa ? " aa" : ""}`} dangerouslySetInnerHTML={renderResponseBodyHighlighted(r.text, responseSearchQuery, { hideImages: !showImagePreview || ngHit?.mode === "hide-images" || matchesImageWords(r.text), imageSizeLimitKb: imageSizeLimit, urlRules: imageUrlRules, ogpCards: ogpCardsEnabled, tweetCards: tweetCardsEnabled, ogpAllow: ogpDomainFilters.allow, ogpBlock: ogpDomainFilters.block }, textHighlights.filter((h) => h.type === "word"))} />
                     )}
                   </div>
                   </Fragment>
@@ -7092,17 +7109,18 @@ export default function App() {
           <header className="ng-panel-header">
             <strong>NGフィルタ</strong>
             <span className="ng-panel-count">
-              {ngFilters.words.length}語 / {ngFilters.ids.length}ID / {ngFilters.names.length}名 / {ngFilters.mails.length}メール / {ngFilters.thread_words.length}スレタイ
+              {ngFilters.words.length}語 / {ngFilters.ids.length}ID / {ngFilters.names.length}名 / {ngFilters.mails.length}メール / {ngFilters.thread_words.length}スレタイ / {ngFilters.image_words.length}画像
             </span>
             <button onClick={() => setNgPanelOpen(false)}>閉じる</button>
           </header>
           <div className="ng-panel-add">
-            <select value={ngInputType} onChange={(e) => setNgInputType(e.target.value as "words" | "ids" | "names" | "mails" | "thread_words" | "regex")}>
+            <select value={ngInputType} onChange={(e) => setNgInputType(e.target.value as "words" | "ids" | "names" | "mails" | "thread_words" | "image_words" | "regex")}>
               <option value="words">ワード</option>
               <option value="ids">ID</option>
               <option value="names">名前</option>
               <option value="mails">メール</option>
               <option value="thread_words">スレタイ</option>
+              <option value="image_words">画像NG</option>
               <option value="regex">正規表現</option>
             </select>
             <input
@@ -7115,11 +7133,12 @@ export default function App() {
               }}
               placeholder={ngInputType === "regex" ? "正規表現パターンを入力" : `NG${NG_TYPE_LABELS[ngInputType]}を入力`}
             />
-            <select value={ngAddMode} onChange={(e) => setNgAddMode(e.target.value as NgMode)} className="ng-mode-select">
-              <option value="hide">透明あぼ～ん</option>
-              {ngInputType !== "thread_words" && <option value="hide-images">画像のみ非表示</option>}
-              <option value="abone">通常あぼ～ん</option>
-            </select>
+            {ngInputType !== "image_words" && (
+              <select value={ngAddMode} onChange={(e) => setNgAddMode(e.target.value as NgMode)} className="ng-mode-select">
+                <option value="hide">透明あぼ～ん</option>
+                <option value="abone">通常あぼ～ん</option>
+              </select>
+            )}
             <select value={ngAddScope} onChange={(e) => setNgAddScope(e.target.value as "global" | "board" | "thread")} className="ng-mode-select">
               <option value="global">全体</option>
               <option value="board">この板</option>
@@ -7128,9 +7147,10 @@ export default function App() {
             <button onClick={() => addNgFromInput()}>追加</button>
           </div>
           <div className="ng-panel-lists">
-            {(["words", "ids", "names", "mails", "thread_words"] as const).map((type) => (
+            {(["words", "ids", "names", "mails", "thread_words", "image_words"] as const).map((type) => (
               <div key={type} className="ng-list-section">
                 <h4>{NG_TYPE_LABELS[type]} ({ngFilters[type].length})</h4>
+                {type === "image_words" && <p className="ng-hint">本文に指定した単語を含むレスの画像だけを非表示にします。レス自体や本文は表示されたままです。</p>}
                 {ngFilters[type].length === 0 ? (
                   <span className="ng-empty">(なし)</span>
                 ) : (
@@ -7142,15 +7162,16 @@ export default function App() {
                       const isRegex = v.startsWith("/") && v.endsWith("/") && v.length > 2;
                       return (
                         <li key={v}>
-                          <select
-                            className="ng-mode-select"
-                            value={mode}
-                            onChange={(e) => updateNgEntryMode(type, v, e.target.value as NgMode)}
-                          >
-                            <option value="hide">透明あぼ～ん</option>
-                            {type !== "thread_words" && <option value="hide-images">画像のみ非表示</option>}
-                            <option value="abone">通常あぼ～ん</option>
-                          </select>
+                          {type !== "image_words" && (
+                            <select
+                              className="ng-mode-select"
+                              value={mode}
+                              onChange={(e) => updateNgEntryMode(type, v, e.target.value as NgMode)}
+                            >
+                              <option value="hide">透明あぼ～ん</option>
+                              <option value="abone">通常あぼ～ん</option>
+                            </select>
+                          )}
                           {scope !== "global" && <span className="ng-mode-label" style={{ background: scope === "board" ? "#2a7a2a" : "#2a5a9a", color: "#fff" }}>{scope === "board" ? "板" : "スレ"}</span>}
                           {isRegex && <span className="ng-mode-label" style={{ background: "#6b4c9a", color: "#fff" }}>正規表現</span>}
                           <span>{maskDisplay(v)}</span>
@@ -8963,12 +8984,13 @@ export default function App() {
                 <input type="checkbox" checked={ngAboneSpeakEnabled} onChange={(e) => setNgAboneSpeakEnabled(e.target.checked)} />
                 <span>通常あぼ～んを「あぼーん」と読み上げる</span>
               </label>
-              {(["words", "ids", "names", "mails", "thread_words"] as const).map((type) => (
+              {(["words", "ids", "names", "mails", "thread_words", "image_words"] as const).map((type) => (
                 <section key={type} className="settings-section" data-section={type}>
                   {settingsSectionHeading("ng", type)}
                   <fieldset>
                     <legend>NG {NG_TYPE_LABELS[type]} ({ngFilters[type].length}件)</legend>
-                    {ngAddForm}
+                    {type === "image_words" && <p className="settings-hint">本文に指定した単語を含むレスの画像だけを非表示にします。レス自体や本文は通常どおり表示されます。レス全体を隠したい場合はワードNGなどで「透明あぼ～ん」「通常あぼ～ん」を選んでください。</p>}
+                    {ngAddFormFor(type)}
                     {settingsListFilterRow()}
                     <div data-search-exclude="1">
                     {ngFilters[type].length === 0 ? (
@@ -8980,15 +9002,16 @@ export default function App() {
                           const isRegex = v.startsWith("/") && v.endsWith("/") && v.length > 2;
                           return (
                             <li key={v}>
-                              <select
-                                className="ng-mode-select"
-                                value={mode}
-                                onChange={(e) => updateNgEntryMode(type, v, e.target.value as NgMode)}
-                              >
-                                <option value="hide">透明あぼ～ん</option>
-                                {type !== "thread_words" && <option value="hide-images">画像のみ非表示</option>}
-                                <option value="abone">通常あぼ～ん</option>
-                              </select>
+                              {type !== "image_words" && (
+                                <select
+                                  className="ng-mode-select"
+                                  value={mode}
+                                  onChange={(e) => updateNgEntryMode(type, v, e.target.value as NgMode)}
+                                >
+                                  <option value="hide">透明あぼ～ん</option>
+                                  <option value="abone">通常あぼ～ん</option>
+                                </select>
+                              )}
                               {scope !== "global" && <span className="ng-mode-label" style={{ background: scope === "board" ? "#2a7a2a" : "#2a5a9a", color: "#fff" }}>{scope === "board" ? "板" : "スレ"}</span>}
                               {isRegex && <span className="ng-mode-label" style={{ background: "#6b4c9a", color: "#fff" }}>正規表現</span>}
                               <span>{maskDisplay(v)}</span>

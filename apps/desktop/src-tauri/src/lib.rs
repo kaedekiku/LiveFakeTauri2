@@ -1160,6 +1160,8 @@ struct NgFilters {
     mails: Vec<NgEntry>,
     #[serde(default)]
     thread_words: Vec<NgEntry>,
+    #[serde(default)]
+    image_words: Vec<NgEntry>,
 }
 
 #[tauri::command]

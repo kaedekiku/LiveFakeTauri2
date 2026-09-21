@@ -1992,6 +1992,12 @@ button.search-history-btn:hover {
   color: #999999;
 }
 
+.ng-hint {
+  margin: 0 0 6px;
+  font-size: 11px;
+  color: #888888;
+}
+
 .ng-list {
   margin: 0;
   padding: 0;
