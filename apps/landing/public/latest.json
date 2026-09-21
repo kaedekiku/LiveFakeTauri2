@@ -1,11 +1,11 @@
 {
-  "version": "0.0.106",
-  "released_at": "2026-09-20T10:20:11Z",
-  "download_page_url": "https://github.com/kaedekiku/LiveFakeTauri2/releases/tag/v0.0.106",
+  "version": "0.0.107",
+  "released_at": "2026-09-21T00:11:34Z",
+  "download_page_url": "https://github.com/kaedekiku/LiveFakeTauri2/releases/tag/v0.0.107",
   "platforms": {
     "windows-x64": {
-      "sha256": "c71edbc721aac441c613646c945191422a0c15cd8fe206c1df3992460a21b032",
-      "size": 6045612,
+      "sha256": "a79205db991dee09967b2d3ccc360f10ad11fa3145f9d4432bbdc01e120bf97f",
+      "size": 6050228,
       "filename": "livefake-win-x64.zip"
     }
   }
