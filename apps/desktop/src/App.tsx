@@ -1150,6 +1150,9 @@ export default function App() {
   const [broadcastTiming, setBroadcastTiming] = useState<ScrollTiming>(DEFAULT_SCROLL_TIMING);
   const broadcastTimingRef = useRef<ScrollTiming>(DEFAULT_SCROLL_TIMING);
   broadcastTimingRef.current = broadcastTiming;
+  const [broadcastHeaderVis, setBroadcastHeaderVis] = useState<HeaderVis>(DEFAULT_HEADER_VIS);
+  const broadcastHeaderVisRef = useRef<HeaderVis>(DEFAULT_HEADER_VIS);
+  broadcastHeaderVisRef.current = broadcastHeaderVis;
 
   // 配信ホワイトリスト表示ウィンドウへ、見た目設定をまとめて送る
   const pushBroadcastStyle = () => {
@@ -1166,6 +1169,7 @@ export default function App() {
           displaySeconds: broadcastDisplaySeconds,
           msPerPx: broadcastTiming.msPerPx,
           waitSec: broadcastTiming.waitSec,
+          headerVis: broadcastHeaderVis,
         },
       },
     }).catch(() => {});
@@ -1203,7 +1207,7 @@ export default function App() {
   useEffect(() => {
     if (broadcastVisible) pushBroadcastStyle();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [broadcastVisible, broadcastFontFamily, broadcastFontSize, broadcastTextColor, broadcastOutlineColor, broadcastOutlineWidth, broadcastBgColor, broadcastDisplaySeconds, broadcastTiming]);
+  }, [broadcastVisible, broadcastFontFamily, broadcastFontSize, broadcastTextColor, broadcastOutlineColor, broadcastOutlineWidth, broadcastBgColor, broadcastDisplaySeconds, broadcastTiming, broadcastHeaderVis]);
   // 新着レスのうち、配信ホワイトリストに登録されているIDのものだけをOBS連携ウィンドウへ送る。
   // カード化・サムネイル化はせず、本文はプレーンな文字列のまま渡す (リンク先の安全性が
   // 保証できないものを配信画面に自動表示しないため)
@@ -1213,7 +1217,11 @@ export default function App() {
     // 送信順と一致する保証が無く、配信ウィンドウ側での表示順が入れ替わることがあったため)
     const items = arrivals
       .filter((a) => broadcastWhitelistRef.current[a.id])
-      .map((a) => ({ name: a.name, id: a.id, date: a.time, body: a.text, isAa: isAsciiArt(a.text) }));
+      .map((a) => ({
+        threadTitle: a.threadTitle, responseNo: a.responseNo, name: a.name, mail: a.mail,
+        id: a.id, date: a.time, idSeq: a.idSeq, idCount: a.idCount,
+        body: a.text, isAa: isAsciiArt(a.text),
+      }));
     if (items.length === 0) return;
     void invoke("broadcast_update", { data: { items } }).catch(() => {});
   };
@@ -4195,6 +4203,7 @@ export default function App() {
           mainHeaderVis?: unknown;
           arrivalHeaderVis?: unknown;
           subtitleHeaderVis?: unknown;
+          broadcastHeaderVis?: unknown;
           responseDividerAlways?: boolean;
           settingsSearchHistory?: unknown;
           lastBoard?: { boardName: string; url: string };
@@ -4273,6 +4282,7 @@ export default function App() {
         if (parsed.mainHeaderVis !== undefined) setMainHeaderVis(sanitizeHeaderVis(parsed.mainHeaderVis));
         if (parsed.arrivalHeaderVis !== undefined) setArrivalHeaderVis(sanitizeHeaderVis(parsed.arrivalHeaderVis));
         if (parsed.subtitleHeaderVis !== undefined) setSubtitleHeaderVis(sanitizeHeaderVis(parsed.subtitleHeaderVis));
+        if (parsed.broadcastHeaderVis !== undefined) setBroadcastHeaderVis(sanitizeHeaderVis(parsed.broadcastHeaderVis));
         if (typeof parsed.responseDividerAlways === "boolean") setResponseDividerAlways(parsed.responseDividerAlways);
         if (Array.isArray(parsed.settingsSearchHistory)) setSettingsSearchHistory(parsed.settingsSearchHistory.filter((x): x is string => typeof x === "string").slice(0, 20));
         if (parsed.lastBoard && typeof parsed.lastBoard.boardName === "string" && typeof parsed.lastBoard.url === "string") {
@@ -5280,6 +5290,7 @@ export default function App() {
       mainHeaderVis,
       arrivalHeaderVis,
       subtitleHeaderVis,
+      broadcastHeaderVis,
       responseDividerAlways,
       settingsSearchHistory,
       lastBoard: lastBoardUrlRef.current ? { boardName: selectedBoard, url: lastBoardUrlRef.current } : undefined,
@@ -5311,7 +5322,7 @@ export default function App() {
     if (isTauriRuntime()) {
       void invoke("save_layout_prefs", { prefs: JSON.stringify(buildLayoutPrefsPayload()) }).catch(() => {});
     }
-  }, [boardPaneVisible, boardPanePx, threadPanePx, responseTopRatio, boardsFontSize, threadsFontSize, responsesFontSize, responsesHeaderFontSize, darkMode, fontFamily, fontBold, threadColWidths, showBoardButtons, keepSortOnRefresh, composeSubmitKey, imageSizeLimit, showImagePreview, hoverPreviewEnabled, ogpCardsEnabled, tweetCardsEnabled, arrivalCardsEnabled, subtitleCardsEnabled, arrivalTiming, subtitleTiming, broadcastTiming, subtitleSyncEnabled, mainHeaderVis, arrivalHeaderVis, subtitleHeaderVis, responseDividerAlways, settingsSearchHistory, selectedBoard, hoverPreviewDelay, thumbSize, restoreSession, autoRefreshInterval, autoScrollEnabled, newArrivalPaneOpen, newArrivalPaneHeight, newArrivalFontSize, resIdFontSize, resIdFontFamily, newArrivalIdFontSize, newArrivalIdFontFamily, subtitleIdFontSize, subtitleIdFontFamily, popupFontSize, popupMaxWidth, popupMaxHeight, composePanelPx, subtitleBodyFontSize, subtitleMetaFontSize, subtitleOpacity, subtitleAlwaysOnTop]);
+  }, [boardPaneVisible, boardPanePx, threadPanePx, responseTopRatio, boardsFontSize, threadsFontSize, responsesFontSize, responsesHeaderFontSize, darkMode, fontFamily, fontBold, threadColWidths, showBoardButtons, keepSortOnRefresh, composeSubmitKey, imageSizeLimit, showImagePreview, hoverPreviewEnabled, ogpCardsEnabled, tweetCardsEnabled, arrivalCardsEnabled, subtitleCardsEnabled, arrivalTiming, subtitleTiming, broadcastTiming, subtitleSyncEnabled, mainHeaderVis, arrivalHeaderVis, subtitleHeaderVis, broadcastHeaderVis, responseDividerAlways, settingsSearchHistory, selectedBoard, hoverPreviewDelay, thumbSize, restoreSession, autoRefreshInterval, autoScrollEnabled, newArrivalPaneOpen, newArrivalPaneHeight, newArrivalFontSize, resIdFontSize, resIdFontFamily, newArrivalIdFontSize, newArrivalIdFontFamily, subtitleIdFontSize, subtitleIdFontFamily, popupFontSize, popupMaxWidth, popupMaxHeight, composePanelPx, subtitleBodyFontSize, subtitleMetaFontSize, subtitleOpacity, subtitleAlwaysOnTop]);
 
   // ===== 設定画面の保存 / 復元 / リセット / プリセット =====
   // 値の設定は変更した時点で画面に反映される (プレビュー) が、ファイルへの保存は「設定を保存」を押したときだけ行う。
@@ -9193,6 +9204,10 @@ export default function App() {
                 <div className="settings-row">
                   <span>背景色 (クロマキー用)</span>
                   <input type="color" className="color-swatch" value={broadcastBgColor} onChange={(e) => setBroadcastBgColor(e.target.value)} />
+                </div>
+                <div className="settings-row" style={{ flexDirection: "column", alignItems: "stretch", gap: 4 }}>
+                  <span>ヘッダに表示する項目(すべて非表示にすると本文のみ表示)</span>
+                  {headerVisRows(broadcastHeaderVis, setBroadcastHeaderVis, { threadTitle: true })}
                 </div>
               </fieldset>
               <fieldset>

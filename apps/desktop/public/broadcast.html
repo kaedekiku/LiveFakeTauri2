@@ -84,6 +84,10 @@
   var scrollRaf = null;
 
   var cfg = { displaySeconds: 12, waitSec: 1, msPerPx: 8 };
+  // ヘッダに表示する項目。false の項目のみ非表示にし、すべて非表示なら #meta 自体を隠して
+  // 本文だけ表示する (未指定キーは表示する側に倒す)
+  var headerVis = {};
+  function headerOn(k) { return headerVis[k] !== false; }
   function clampNum(x, def, min, max) {
     x = Number(x);
     if (!isFinite(x)) return def;
@@ -98,6 +102,7 @@
 
   function clearDisplay() {
     metaEl.textContent = "";
+    metaEl.style.display = "none";
     bodyEl.textContent = "";
     bodyEl.style.transform = "";
     bodyEl.style.whiteSpace = "pre-wrap";
@@ -116,10 +121,16 @@
 
   function renderItem(item, run) {
     var metaParts = [];
-    if (item.name) metaParts.push(String(item.name));
-    if (item.id) metaParts.push("ID:" + String(item.id));
-    if (item.date) metaParts.push(String(item.date));
+    if (headerOn("threadTitle") && item.threadTitle) metaParts.push(String(item.threadTitle));
+    if (headerOn("resNo") && item.responseNo != null) metaParts.push(String(item.responseNo));
+    if (headerOn("name") && item.name) metaParts.push(String(item.name));
+    if (headerOn("mail") && item.mail) metaParts.push("[" + String(item.mail) + "]");
+    if (headerOn("date") && item.date) metaParts.push(String(item.date));
+    if (headerOn("id") && item.id) metaParts.push("ID:" + String(item.id));
+    var idCount = Number(item.idCount) || 0;
+    if (headerOn("count") && idCount > 0) metaParts.push("(" + (Number(item.idSeq) || 1) + "/" + idCount + ")");
     metaEl.textContent = metaParts.join("　");
+    metaEl.style.display = metaParts.length ? "" : "none";
 
     bodyEl.style.transform = "";
     bodyEl.scrollTop = 0;
@@ -191,6 +202,7 @@
     if (s.displaySeconds != null) cfg.displaySeconds = clampNum(s.displaySeconds, 12, 1, 600);
     if (s.msPerPx != null) cfg.msPerPx = clampNum(s.msPerPx, 8, 1, 100);
     if (s.waitSec != null) cfg.waitSec = clampNum(s.waitSec, 1, 0, 20);
+    if (s.headerVis && typeof s.headerVis === "object") headerVis = s.headerVis;
   }
 
   // メインウィンドウから呼ばれる唯一の入口。
