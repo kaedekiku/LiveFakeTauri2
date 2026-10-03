@@ -203,6 +203,21 @@ const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 // ReDoS mitigation: user-supplied regex patterns (NG filters, URL replace rules)
 // are rejected beyond this length
 const MAX_USER_REGEX_LEN = 512;
+// NG判定の正規表現をパターンごとに1回だけ生成して使い回す (書式エラーは null = 一致しない)。
+// "i" フラグのみで g を付けないため、使い回しても lastIndex の状態は持ち越されない
+const NG_REGEX_CACHE_MAX = 1000;
+const ngRegexCache = new Map<string, RegExp | null>();
+const getNgRegex = (source: string): RegExp | null => {
+  const hit = ngRegexCache.get(source);
+  if (hit !== undefined) return hit;
+  let re: RegExp | null;
+  try { re = new RegExp(source, "i"); } catch { re = null; }
+  if (ngRegexCache.size >= NG_REGEX_CACHE_MAX) ngRegexCache.clear();
+  ngRegexCache.set(source, re);
+  return re;
+};
+// ハイライト色は本文HTMLの style 属性に文字列で埋め込むため、#RGB〜#RRGGBBAA の16進表記以外は使わない
+const isSafeHexColor = (c: string): boolean => /^#[0-9a-fA-F]{3,8}$/.test(c);
 const highlightHtmlPreservingTags = (html: string, query: string) => {
   const q = query.trim();
   if (!q) return html;
@@ -643,7 +658,7 @@ const renderResponseBody = (html: string, opts?: RenderBodyOpts): { __html: stri
   return { __html: safe };
 };
 const applyWordHighlight = (html: string, pattern: string, color: string): string => {
-  if (!pattern) return html;
+  if (!pattern || !isSafeHexColor(color)) return html;
   const re = new RegExp(escapeRegExp(pattern), "gi");
   return html
     .split(/(<[^>]+>)/g)
@@ -1851,11 +1866,8 @@ export default function App() {
   const ngMatch = (pattern: string, target: string): boolean => {
     if (pattern.startsWith("/") && pattern.endsWith("/") && pattern.length > 2) {
       if (pattern.length > MAX_USER_REGEX_LEN) return false;
-      try {
-        return new RegExp(pattern.slice(1, -1), "i").test(target);
-      } catch {
-        return false;
-      }
+      const re = getNgRegex(pattern.slice(1, -1));
+      return re ? re.test(target) : false;
     }
     return target.toLowerCase().includes(pattern.toLowerCase());
   };
@@ -3413,7 +3425,10 @@ export default function App() {
   const selectedThreadItem = visibleThreadItems.find((t) => t.threadUrl === selectedThread) ?? null;
   const unreadThreadCount = visibleThreadItems.filter((t) => !threadReadMap[t.threadUrl]).length;
   const selectedThreadLabel = selectedThreadItem ? `#${selectedThreadItem.id}` : "-";
-  const responseItems = [
+  // 以下のレス一覧まわりの集計は、描画のたびに作り直すと大きなスレで重くなるため useMemo で
+  // 元データが変わったときだけ計算し直す。依存配列に漏れがあると NG やハイライトの変更が
+  // 画面に反映されなくなるので、計算中に参照する state はすべて列挙すること
+  const responseItems = useMemo(() => [
     ...(fetchedResponses.length > 0 || isTauriRuntime()
       ? fetchedResponses.map((r) => {
           const rawName = r.name || "Anonymous";
@@ -3439,7 +3454,7 @@ export default function App() {
           { id: 4, name: "名無しさん", mail: "", nameWithoutWatchoi: "名無しさん", time: "2026/03/07 10:06", text: "参考 https://example.com/page を参照", beNumber: null, watchoi: null },
           { id: 5, name: "名無しさん", mail: "", nameWithoutWatchoi: "名無しさん", time: "2026/03/07 10:08", text: "テスト完了", beNumber: null, watchoi: null },
         ]),
-  ];
+  ], [fetchedResponses]);
   const extractId = (time: string) => {
     const m = time.match(/ID:(\S+)/);
     return m ? m[1] : "";
@@ -3451,7 +3466,7 @@ export default function App() {
       .trim();
 
   // Build ID count map for highlighting frequent posters
-  const { idCountMap, idSeqMap } = (() => {
+  const { idCountMap, idSeqMap } = useMemo(() => {
     const countMap = new Map<string, number>();
     const seqMap = new Map<number, number>();
     const running = new Map<string, number>();
@@ -3465,7 +3480,8 @@ export default function App() {
       }
     }
     return { idCountMap: countMap, idSeqMap: seqMap };
-  })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [responseItems]);
 
   const activeThreadUrl = activeTabIndex >= 0 && activeTabIndex < threadTabs.length ? threadTabs[activeTabIndex].threadUrl : threadUrl.trim();
   const myPostNos = useMemo(() => new Set(myPosts[activeThreadUrl] ?? []), [myPosts, activeThreadUrl]);
@@ -3492,21 +3508,26 @@ export default function App() {
     return set;
   }, [responseItems, myPostNos]);
 
-  const watchoiCountMap = (() => {
+  const watchoiCountMap = useMemo(() => {
     const map = new Map<string, number>();
     for (const r of responseItems) {
       if (r.watchoi) map.set(r.watchoi, (map.get(r.watchoi) ?? 0) + 1);
     }
     return map;
-  })();
+  }, [responseItems]);
 
-  const ngResultMap = new Map<number, NgHit>();
-  for (const r of responseItems) {
-    const result = getNgResult(r);
-    if (result) ngResultMap.set(r.id, result);
-  }
+  // getNgResult は ngFilters と threadUrl (この板のみ/このスレのみのスコープ判定) を参照する
+  const ngResultMap = useMemo(() => {
+    const map = new Map<number, NgHit>();
+    for (const r of responseItems) {
+      const result = getNgResult(r);
+      if (result) map.set(r.id, result);
+    }
+    return map;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [responseItems, ngFilters, threadUrl]);
   const ngFilteredCount = ngResultMap.size;
-  const visibleResponseItems = responseItems.filter((r) => {
+  const visibleResponseItems = useMemo(() => responseItems.filter((r) => {
     const ngResult = ngResultMap.get(r.id);
     if (ngResult?.mode === "hide") return false;
     if (responseSearchMode === "extract" && responseSearchQuery) {
@@ -3530,7 +3551,7 @@ export default function App() {
       }
     }
     return true;
-  });
+  }), [responseItems, ngResultMap, responseSearchMode, responseSearchQuery, responseLinkFilter]);
   const activeResponse = visibleResponseItems.find((r) => r.id === selectedResponse) ?? visibleResponseItems[0];
   const selectedResponseLabel = activeResponse ? `#${activeResponse.id}` : "-";
 
@@ -3564,7 +3585,7 @@ export default function App() {
   }, [responseSearchMode, responseSearchQuery]);
 
   // Build back-reference map: responseNo → list of responseNos that reference it
-  const backRefMap = (() => {
+  const backRefMap = useMemo(() => {
     const map = new Map<number, number[]>();
     const addRef = (target: number, from: number) => {
       if (!map.has(target)) map.set(target, []);
@@ -3583,7 +3604,29 @@ export default function App() {
       }
     }
     return map;
-  })();
+  }, [responseItems]);
+
+  // 各レスの本文HTML (安全化・リンク化・ハイライト済み)。通常あぼ～んのレスは本文の代わりに
+  // プレースホルダを出すので作らない。matchesImageWords は ngFilters と threadUrl を参照する
+  const responseBodyHtmlMap = useMemo(() => {
+    const wordHighlights = textHighlights.filter((h) => h.type === "word");
+    const map = new Map<number, { __html: string }>();
+    for (const r of visibleResponseItems) {
+      const ngHit = ngResultMap.get(r.id);
+      if (ngHit?.mode === "abone") continue;
+      map.set(r.id, renderResponseBodyHighlighted(r.text, responseSearchQuery, {
+        hideImages: !showImagePreview || ngHit?.mode === "hide-images" || matchesImageWords(r.text),
+        imageSizeLimitKb: imageSizeLimit,
+        urlRules: imageUrlRules,
+        ogpCards: ogpCardsEnabled,
+        tweetCards: tweetCardsEnabled,
+        ogpAllow: ogpDomainFilters.allow,
+        ogpBlock: ogpDomainFilters.block,
+      }, wordHighlights));
+    }
+    return map;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visibleResponseItems, ngResultMap, responseSearchQuery, showImagePreview, ngFilters, threadUrl, imageSizeLimit, imageUrlRules, ogpCardsEnabled, tweetCardsEnabled, ogpDomainFilters, textHighlights]);
 
   const goFromLocationInput = () => goToLocation(locationInput);
   // URL バーの文字列 (手入力・貼り付け) で移動する。Enter と「貼り付けて移動」は同じ経路
@@ -4166,7 +4209,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [selectedThread, selectedResponse, visibleThreadItems, responseItems, activeTabIndex, threadTabs, responseReloadMenuOpen]);
+  }, [selectedThread, selectedResponse, visibleThreadItems, responseItems, activeTabIndex, threadTabs, responseReloadMenuOpen, responseMenu, aboutOpen, searchModeMenuOpen, openMenu]);
 
   // 保存済み設定 (layout_prefs.json の JSON 文字列) を state に反映する。起動時の読み込みのほか、
   // 設定画面の「保存しない」「リセット」「プリセット読み込み」からも使う
@@ -6965,7 +7008,7 @@ export default function App() {
                         <span className="ng-abone-text" title={ngHit?.reason ?? "あぼ～ん"}>あぼ～ん</span>
                       </div>
                     ) : (
-                      <div className={`response-body rb${isAa ? " aa" : ""}`} dangerouslySetInnerHTML={renderResponseBodyHighlighted(r.text, responseSearchQuery, { hideImages: !showImagePreview || ngHit?.mode === "hide-images" || matchesImageWords(r.text), imageSizeLimitKb: imageSizeLimit, urlRules: imageUrlRules, ogpCards: ogpCardsEnabled, tweetCards: tweetCardsEnabled, ogpAllow: ogpDomainFilters.allow, ogpBlock: ogpDomainFilters.block }, textHighlights.filter((h) => h.type === "word"))} />
+                      <div className={`response-body rb${isAa ? " aa" : ""}`} dangerouslySetInnerHTML={responseBodyHtmlMap.get(r.id) ?? { __html: "" }} />
                     )}
                   </div>
                   </Fragment>
