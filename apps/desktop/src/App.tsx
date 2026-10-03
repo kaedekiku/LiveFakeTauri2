@@ -3516,13 +3516,24 @@ export default function App() {
     return map;
   }, [responseItems]);
 
-  // getNgResult は ngFilters と threadUrl (この板のみ/このスレのみのスコープ判定) を参照する
+  // getNgResult は ngFilters と threadUrl (この板のみ/このスレのみのスコープ判定) を参照する。
+  // 新着受信時に全レスを判定し直さないよう、レスごとの結果を保存し、判定材料 (本文・名前・
+  // メール・日時ID) が同じレスは再利用する。NG設定か開いているスレが変わったら全部捨てる
+  const ngCacheRef = useRef<{ filters: NgFilters | null; thread: string; byId: Map<number, { text: string; name: string; mail: string; time: string; hit: NgHit | null }> }>({ filters: null, thread: "", byId: new Map() });
   const ngResultMap = useMemo(() => {
+    const cache = ngCacheRef.current;
+    const reusable = cache.filters === ngFilters && cache.thread === threadUrl;
+    const nextById = new Map<number, { text: string; name: string; mail: string; time: string; hit: NgHit | null }>();
     const map = new Map<number, NgHit>();
     for (const r of responseItems) {
-      const result = getNgResult(r);
-      if (result) map.set(r.id, result);
+      const prev = reusable ? cache.byId.get(r.id) : undefined;
+      const hit = prev && prev.text === r.text && prev.name === r.name && prev.mail === r.mail && prev.time === r.time
+        ? prev.hit
+        : getNgResult(r);
+      nextById.set(r.id, { text: r.text, name: r.name, mail: r.mail, time: r.time, hit });
+      if (hit) map.set(r.id, hit);
     }
+    ngCacheRef.current = { filters: ngFilters, thread: threadUrl, byId: nextById };
     return map;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [responseItems, ngFilters, threadUrl]);
@@ -3607,23 +3618,37 @@ export default function App() {
   }, [responseItems]);
 
   // 各レスの本文HTML (安全化・リンク化・ハイライト済み)。通常あぼ～んのレスは本文の代わりに
-  // プレースホルダを出すので作らない。matchesImageWords は ngFilters と threadUrl を参照する
+  // プレースホルダを出すので作らない。matchesImageWords は ngFilters と threadUrl を参照する。
+  // 新着受信時に全レスを変換し直さないよう、レスごとの結果を保存し、本文と画像非表示の有無が
+  // 同じレスは再利用する。表示に関わる設定 (下の bodySig) が1つでも変わったら全部捨てる
+  const bodyCacheRef = useRef<{ sig: unknown[]; byId: Map<number, { text: string; hideImages: boolean; html: { __html: string } }> }>({ sig: [], byId: new Map() });
   const responseBodyHtmlMap = useMemo(() => {
+    const bodySig: unknown[] = [responseSearchQuery, showImagePreview, ngFilters, threadUrl, imageSizeLimit, imageUrlRules, ogpCardsEnabled, tweetCardsEnabled, ogpDomainFilters, textHighlights];
+    const cache = bodyCacheRef.current;
+    const reusable = cache.sig.length === bodySig.length && cache.sig.every((v, i) => Object.is(v, bodySig[i]));
     const wordHighlights = textHighlights.filter((h) => h.type === "word");
+    const nextById = new Map<number, { text: string; hideImages: boolean; html: { __html: string } }>();
     const map = new Map<number, { __html: string }>();
     for (const r of visibleResponseItems) {
       const ngHit = ngResultMap.get(r.id);
       if (ngHit?.mode === "abone") continue;
-      map.set(r.id, renderResponseBodyHighlighted(r.text, responseSearchQuery, {
-        hideImages: !showImagePreview || ngHit?.mode === "hide-images" || matchesImageWords(r.text),
-        imageSizeLimitKb: imageSizeLimit,
-        urlRules: imageUrlRules,
-        ogpCards: ogpCardsEnabled,
-        tweetCards: tweetCardsEnabled,
-        ogpAllow: ogpDomainFilters.allow,
-        ogpBlock: ogpDomainFilters.block,
-      }, wordHighlights));
+      const hideImages = !showImagePreview || ngHit?.mode === "hide-images" || matchesImageWords(r.text);
+      const prev = reusable ? cache.byId.get(r.id) : undefined;
+      const html = prev && prev.text === r.text && prev.hideImages === hideImages
+        ? prev.html
+        : renderResponseBodyHighlighted(r.text, responseSearchQuery, {
+          hideImages,
+          imageSizeLimitKb: imageSizeLimit,
+          urlRules: imageUrlRules,
+          ogpCards: ogpCardsEnabled,
+          tweetCards: tweetCardsEnabled,
+          ogpAllow: ogpDomainFilters.allow,
+          ogpBlock: ogpDomainFilters.block,
+        }, wordHighlights);
+      nextById.set(r.id, { text: r.text, hideImages, html });
+      map.set(r.id, html);
     }
+    bodyCacheRef.current = { sig: bodySig, byId: nextById };
     return map;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visibleResponseItems, ngResultMap, responseSearchQuery, showImagePreview, ngFilters, threadUrl, imageSizeLimit, imageUrlRules, ogpCardsEnabled, tweetCardsEnabled, ogpDomainFilters, textHighlights]);
