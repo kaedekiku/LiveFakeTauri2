@@ -17,7 +17,7 @@
 3. **CSS** — クラス名やセレクタを変更する場合:  
    - `apps/desktop/src/styles.css` での定義
    - `App.tsx` での `className` 参照
-   - スモークテストのセレクタ (`scripts/smoke_ui_playwright.mjs`)
+   - E2Eテストのセレクタ (`scripts/e2e_playwright.mjs`)
 
 4. **ワークスペース依存** — crateの公開APIを変更する場合:  
    - 他のcrateからの参照 (`use core_xxx::...`)

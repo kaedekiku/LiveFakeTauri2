@@ -43,5 +43,7 @@ globs: "**/*.tsx,**/*.ts"
 - ユーザー設定由来の値 (ハイライト色・URL置換ルール) も属性へ挿入する際はエスケープする
 
 ### テスト
-- Playwrightスモークテストは静的 `dist/index.html` を検証 (Tauri不要)
-- 新規UI機能は `scripts/smoke_ui_playwright.mjs` に対応するアサーションを追加
+- 新規UI機能・UIの変更は、開発サーバー (`npx vite --port 1420`) をブラウザで開いて実際に操作し確認する
+  (Tauri外ではフォールバックのダミーデータで動くため、IPCが必要な機能は `npx tauri dev` の実機で確認する)
+- E2Eテスト (`scripts/e2e_playwright.mjs`、`npm run test:e2e`) はTauriアプリを起動し実際の5chサーバーと
+  通信して検証する。クラス名を変更したときはこのテストのセレクタも合わせて更新する

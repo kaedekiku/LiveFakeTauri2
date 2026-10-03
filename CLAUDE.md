@@ -45,7 +45,7 @@ cargo check --workspace                       # Rust型チェック
 # --- テスト ---
 cargo test --workspace                    # Rustユニットテスト
 cargo test --workspace -- --ignored       # ネットワーク接続テスト含む
-cd apps/desktop && npx playwright test scripts/smoke_ui_playwright.mjs  # UIスモークテスト
+cd apps/desktop && npm run test:e2e       # E2E (Tauriアプリを起動し実際の5chサーバーと通信)
 
 # --- Lint ---
 cargo clippy --workspace -- -D warnings  # Rust lint
@@ -58,11 +58,10 @@ cd apps/desktop && npx tsc --noEmit      # TypeScript型チェック
 |---------|------|
 | `/build` | フルビルド (Rust + フロントエンド + Tauri) |
 | `/dev` | 開発サーバー起動 |
-| `/test` | テスト実行 (`rust\|smoke\|e2e\|landing\|all`) |
+| `/test` | テスト実行 (`rust\|e2e\|landing\|all`) |
 | `/lint` | Lint一括実行 (`rust\|ts\|all`) |
 | `/ci` | CI再現 (チェック一括実行) |
 | `/deps` | 依存関係の更新・監査 |
-| `/smoke` | Playwright スモークテスト |
 | `/probe` | 5ch.io 接続プローブ |
 | `/release` | リリース準備 (バージョン更新・検証) |
 | `/stats` | プロジェクト統計表示 |
@@ -73,7 +72,6 @@ cd apps/desktop && npx tsc --noEmit      # TypeScript型チェック
 | コマンド | 用途 |
 |---------|------|
 | `/add-command` | 新規Tauriコマンド追加ガイド |
-| `/add-smoke-test` | スモークテストケース追加ガイド |
 | `/debug-5ch` | 5ch.io接続問題デバッグ |
 | `/explain-crate` | Rustクレート構造解説 |
 | `/find-handler` | Tauriコマンド/機能の実装箇所特定 |
