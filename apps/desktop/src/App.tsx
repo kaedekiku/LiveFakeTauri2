@@ -7400,17 +7400,23 @@ export default function App() {
             );
           })()}
           {/* ----- 配信ホワイトリスト (OBS連携が有効なときだけ表示) ----- */}
-          {obsIntegrationEnabled && responseMenu.resId && (
-            <button onClick={() => {
-              const id = responseMenu.resId!;
-              setBroadcastWhitelist((prev) => {
-                const next = { ...prev };
-                if (next[id]) delete next[id]; else next[id] = true;
-                return next;
-              });
-              setResponseMenu(null);
-            }}>{broadcastWhitelist[responseMenu.resId] ? `ID:${responseMenu.resId} を配信ホワイトリストから解除` : `ID:${responseMenu.resId} を配信ホワイトリストに追加`}</button>
-          )}
+          {obsIntegrationEnabled && (() => {
+            // ID欄を右クリックしたときはそのID、本文などを右クリックしたときはそのレスのID
+            // (レス表示欄でIDを非表示にしていても登録できるようにするため)
+            const wlId = responseMenu.resId
+              ?? extractId(responseItems.find((r) => r.id === responseMenu.responseId)?.time ?? "");
+            if (!wlId) return null;
+            return (
+              <button onClick={() => {
+                setBroadcastWhitelist((prev) => {
+                  const next = { ...prev };
+                  if (next[wlId]) delete next[wlId]; else next[wlId] = true;
+                  return next;
+                });
+                setResponseMenu(null);
+              }}>{broadcastWhitelist[wlId] ? `ID:${wlId} を配信ホワイトリストから解除` : `ID:${wlId} を配信ホワイトリストに追加`}</button>
+            );
+          })()}
           {/* ----- 画像保存 / URLコピー ----- */}
           {responseMenu.imageUrl && isTauriRuntime() && (
             <button onClick={() => { void saveImage(responseMenu.imageUrl!); setResponseMenu(null); }}>画像を保存</button>
