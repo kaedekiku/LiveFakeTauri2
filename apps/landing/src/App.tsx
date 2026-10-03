@@ -196,11 +196,11 @@ export default function App() {
           <div className="system-req-grid">
             <div className="system-req-item">
               <h3>Windows</h3>
-              <p>Windows 11 x64 で動作確認しています。</p>
+              <p>Windows 10 / 11 (64bit) に対応しています。動作確認は Windows 11 x64 で行っています。</p>
             </div>
           </div>
           <p className="system-req-note">
-            Windows 10、32bit版Windows、Intel Mac での動作はサポート対象外であり、対応予定もありません。
+            WebView2 Runtime が必要です(Windows 10 / 11 には通常インストール済みです)。32bit版Windowsはサポート対象外です。
           </p>
         </section>
       </main>

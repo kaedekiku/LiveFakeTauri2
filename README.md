@@ -27,6 +27,7 @@ ZIP を展開するだけでインストール不要で使えます。
 | Windows 10/11 (64bit) | `livefake-win-x64.zip` |
 
 > **必須ランタイム:** WebView2 Runtime — Windows 10/11 には通常プリインストール済みです。
+> 動作確認は Windows 11 で行っています。
 
 ---
 

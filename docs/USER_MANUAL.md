@@ -13,7 +13,7 @@
 
 ### 1.2 動作環境
 
-- Windows 10 / 11 (64bit)
+- Windows 10 / 11 (64bit) (動作確認は Windows 11 で実施)
 - WebView2 Runtime (通常はプリインストール済み)
 
 ---
