@@ -1314,6 +1314,10 @@ export default function App() {
   const [ttsMode, setTtsMode] = useState<TtsMode>("off");
   const [ttsEnabled, setTtsEnabled] = useState(false);
   const [ttsMaxReadLength, setTtsMaxReadLength] = useState(100);
+  // 辞書・許可リストに一致せず読まないURLを、黙って飛ばす代わりに「URL省略」と読むか
+  const [ttsUrlOmitEnabled, setTtsUrlOmitEnabled] = useState(true);
+  const ttsUrlOmitEnabledRef = useRef(true);
+  ttsUrlOmitEnabledRef.current = ttsUrlOmitEnabled;
   const [sapiVoices, setSapiVoices] = useState<{ index: number; name: string }[]>([]);
   const [sapiVoiceIndex, setSapiVoiceIndex] = useState(0);
   const [sapiRate, setSapiRate] = useState(0);
@@ -2984,7 +2988,7 @@ export default function App() {
     if (meta?.id && ttsMuteMatches(mute.ids, meta.id)) return;
     // Strip HTML tags, then decode HTML entities to get true character count
     let plain = bodyText.replace(/<[^>]*>/g, "");
-    plain = decodeHtmlEntities(plain).replace(/ /g, " ");
+    plain = decodeHtmlEntities(plain).replace(/\u00A0/g, " ");
     // 読み上げない辞書 (本文ワード): レス全体スキップ指定なら読まない、そうでなければ語句だけ除去
     for (const e of mute.words) {
       const v = e.value.trim();
@@ -3009,10 +3013,22 @@ export default function App() {
       }
       return out;
     };
+    // 辞書・許可リストに一致しない URL は、設定が ON ならその位置で「URL省略」と読む
+    // (URL 自体は読まない)。続けて並んだ URL は1回にまとめる。目印に使う制御文字が本文に
+    // 元から含まれていても誤動作しないよう、先に取り除いておく
+    const URL_OMIT_MARK = "\u0001";
+    const urlOmit = ttsUrlOmitEnabledRef.current;
     plain = plain
+      .replace(/\u0001/g, "")
       .split(/((?:https?|ttps?):\/\/[^\s]+)/gi)
-      .map((part, i) => (i % 2 === 1 ? ttsUrlReading(part) : applyDict(part)))
+      .map((part, i) => {
+        if (i % 2 === 0) return applyDict(part);
+        const reading = ttsUrlReading(part);
+        if (reading) return reading;
+        return urlOmit ? URL_OMIT_MARK : "";
+      })
       .join("");
+    if (urlOmit) plain = plain.replace(/\u0001(?:\s*\u0001)*/g, " URL省略 ");
     plain = plain.replace(/[ \t]{2,}/g, " ").trim();
     if (!plain) return;
     const maxLen = ttsMaxReadLengthRef.current;
@@ -4946,6 +4962,7 @@ export default function App() {
       if (map["Speech.mode"]) setTtsMode(map["Speech.mode"] as TtsMode);
       if (map["Speech.enabled"]) setTtsEnabled(map["Speech.enabled"] === "true");
       if (map["Speech.maxReadLength"]) { const n = parseInt(map["Speech.maxReadLength"], 10); if (!isNaN(n) && n >= 0) setTtsMaxReadLength(n); }
+      if (map["Speech.urlOmit"] !== undefined) setTtsUrlOmitEnabled(map["Speech.urlOmit"] !== "false");
       if (map["Speech.sapiVoiceIndex"]) { const n = parseInt(map["Speech.sapiVoiceIndex"], 10); if (!isNaN(n)) setSapiVoiceIndex(n); }
       if (map["Speech.sapiRate"]) { const n = parseInt(map["Speech.sapiRate"], 10); if (!isNaN(n)) setSapiRate(n); }
       if (map["Speech.sapiVolume"]) { const n = parseInt(map["Speech.sapiVolume"], 10); if (!isNaN(n)) setSapiVolume(n); }
@@ -5310,6 +5327,7 @@ export default function App() {
       "Speech.mode": ttsMode,
       "Speech.enabled": String(ttsEnabled),
       "Speech.maxReadLength": String(ttsMaxReadLength),
+      "Speech.urlOmit": String(ttsUrlOmitEnabled),
       "Speech.sapiVoiceIndex": String(sapiVoiceIndex),
       "Speech.sapiRate": String(sapiRate),
       "Speech.sapiVolume": String(sapiVolume),
@@ -5335,7 +5353,7 @@ export default function App() {
     void invoke("save_app_settings", { settings: buildAppSettingsMap() }).catch(() => {});
   }, [responsesFontSize, responseGap, autoRefreshInterval, autoRefreshEnabled, autoScrollEnabled, smoothScroll, maxOpenTabs, logRetentionDays, imageSaveFolder, bbsmenuUrl, shitarabaHost, jpnknHost,
       mainAlwaysOnBottom, obsTabRevealed, broadcastFontFamily, broadcastFontSize, broadcastTextColor, broadcastOutlineColor, broadcastOutlineWidth, broadcastEmojiOutline, broadcastBgColor, broadcastDisplaySeconds, cssAllowExternalUrls, streamMaskEnabled, ngAboneSpeakEnabled,
-      ttsMode, ttsEnabled, ttsMaxReadLength, sapiVoiceIndex, sapiRate, sapiVolume,
+      ttsMode, ttsEnabled, ttsMaxReadLength, ttsUrlOmitEnabled, sapiVoiceIndex, sapiRate, sapiVolume,
       voicevoxEndpoint, voicevoxSpeakerId, voicevoxSpeedScale, voicevoxPitchScale, voicevoxIntonationScale, voicevoxVolumeScale,
       composeName, composeMail, composeSage, composeFontSize, composeOpen]);
 
@@ -8619,6 +8637,10 @@ export default function App() {
                   <span>最大文字数 (0=無制限)</span>
                   <input type="number" min={0} max={300} step={1} value={ttsMaxReadLength} onChange={(e) => setTtsMaxReadLength(Number(e.target.value))} style={{ width: 70 }} />
                 </div>
+                <label className="settings-row" title="読み上げ辞書・読み上げ許可リストに一致しないURLを、黙って飛ばす代わりに「URL省略」と読みます。URLが続けて並んでいる場合は1回だけ読みます">
+                  <input type="checkbox" checked={ttsUrlOmitEnabled} onChange={(e) => setTtsUrlOmitEnabled(e.target.checked)} />
+                  <span>読まないURLを「URL省略」と読む</span>
+                </label>
                 {ttsMode === "sapi" && (
                   <>
                     <div className="settings-row">
