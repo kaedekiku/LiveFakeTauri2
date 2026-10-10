@@ -1125,6 +1125,8 @@ fn save_generic_json(filename: String, data: serde_json::Value) -> Result<(), St
         "thread-fetch-times.json",
         "expanded-categories.json",
         "ui-state.json",
+        // TchViewer連携 (TCVホワイトリスト) の書き出し先。書き込みのみで読み込みはしない
+        "broadcast-whitelist.json",
     ];
     if !ALLOWED.contains(&filename.as_str()) {
         return Err(format!("Filename not allowed: {}", filename));
@@ -3028,6 +3030,116 @@ fn subtitle_id_font_family(app: AppHandle, family: String) -> Result<(), String>
     Ok(())
 }
 
+// --- TchViewer連携: TCV再送 ---
+// 「このレスから読み上げ」を実行したとき、同じ指定を TchViewer にも送り、
+// TchViewer 側でホワイトリスト・ワードNGを通したうえで OBS に流してもらう。
+// 送り先はこの PC 内の固定アドレスだけ (設定やレス内容で変わらない)。送るのはスレ URL とレス番号だけ。
+
+const TCV_REPLAY_URL: &str = "http://127.0.0.1:11280/api/replay";
+const TCV_REPLAY_MAX_RESPONSE_BYTES: usize = 64 * 1024;
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct TchViewerReplayResult {
+    passed: u32,
+    blocked_whitelist: u32,
+    blocked_ng: u32,
+    truncated: bool,
+}
+
+/// TchViewer が返した理由の文字列を、ステータスバーに出せる短さ・形に整える
+fn tcv_reason_text(bytes: &[u8]) -> String {
+    let raw = String::from_utf8_lossy(bytes);
+    // JSON で { "error": "..." } / { "message": "..." } の形なら中身を、そうでなければ本文をそのまま使う
+    let text = serde_json::from_str::<serde_json::Value>(&raw)
+        .ok()
+        .and_then(|v| {
+            ["error", "message", "reason"]
+                .iter()
+                .find_map(|k| v.get(*k).and_then(|x| x.as_str()).map(|x| x.to_string()))
+        })
+        .unwrap_or_else(|| raw.into_owned());
+    let cleaned: String = text
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let trimmed = cleaned.trim();
+    if trimmed.chars().count() > 120 {
+        format!("{}…", trimmed.chars().take(119).collect::<String>())
+    } else {
+        trimmed.to_string()
+    }
+}
+
+#[tauri::command]
+async fn tchviewer_replay(
+    thread_url: String,
+    from_no: u32,
+    to_no: Option<u32>,
+) -> Result<TchViewerReplayResult, String> {
+    tcv_replay_request(TCV_REPLAY_URL, thread_url, from_no, to_no).await
+}
+
+/// 送信本体 (テストで送り先を差し替えられるよう分けている。アプリからは TCV_REPLAY_URL 固定)
+async fn tcv_replay_request(
+    endpoint: &str,
+    thread_url: String,
+    from_no: u32,
+    to_no: Option<u32>,
+) -> Result<TchViewerReplayResult, String> {
+    let thread_url = thread_url.trim().to_string();
+    let parsed = reqwest::Url::parse(&thread_url).map_err(|_| "スレッドの URL が不正です".to_string())?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("スレッドの URL が不正です".to_string());
+    }
+    if from_no == 0 || to_no.is_some_and(|t| t < from_no) {
+        return Err("レス番号が不正です".to_string());
+    }
+    let client = reqwest::Client::builder()
+        // localhost 宛てがシステムのプロキシ設定に流れないようにする
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(std::time::Duration::from_secs(1))
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let body = serde_json::json!({ "threadUrl": thread_url, "fromNo": from_no, "toNo": to_no });
+    let response = client
+        .post(endpoint)
+        .header("X-TchViewer-Replay", "1")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| {
+            if e.is_connect() {
+                "TchViewer が起動していません".to_string()
+            } else if e.is_timeout() {
+                "TchViewer の応答がありませんでした (タイムアウト)".to_string()
+            } else {
+                format!("送信に失敗しました: {}", e.without_url())
+            }
+        })?;
+    let status = response.status().as_u16();
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| format!("応答を読めませんでした: {}", e.without_url()))?;
+    if bytes.len() > TCV_REPLAY_MAX_RESPONSE_BYTES {
+        return Err("TchViewer の応答が大きすぎます".to_string());
+    }
+    match status {
+        200 => serde_json::from_slice::<TchViewerReplayResult>(&bytes)
+            .map_err(|_| "TchViewer の応答の形式が違います".to_string()),
+        404 => Err("TchViewer が再送に対応していません (再送に対応した TchViewer が必要です)".to_string()),
+        403 => Err("TchViewer に拒否されました (403)".to_string()),
+        400 => {
+            let reason = tcv_reason_text(&bytes);
+            Err(if reason.is_empty() { "TchViewer がエラーを返しました (400)".to_string() } else { reason })
+        }
+        other => Err(format!("TchViewer が HTTP {} を返しました", other)),
+    }
+}
+
 /// WebView2 のユーザーデータ (HTTP キャッシュ・Cookie・GPU キャッシュ等) の保存先 (data\webview)。
 /// 指定しないと Tauri が %LOCALAPPDATA%\<identifier> に作るため、全ウィンドウの作成時に必ずこれを通す。
 /// (同じフォルダを使う WebView は起動オプションも揃える必要がある。オプションは run() で環境変数に一括設定している)
@@ -3216,6 +3328,7 @@ pub fn run() {
             probe_post_finalize_submit_from_input,
             check_for_updates,
             get_data_dir,
+            tchviewer_replay,
             open_file_dialog,
             open_folder_dialog,
             save_image_to_folder,
@@ -3373,5 +3486,87 @@ mod settings_name_tests {
 
         std::env::remove_var("EMBER_DATA_DIR");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod tcv_replay_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    /// 1回だけ応答する模擬 TchViewer。受け取ったリクエスト全体を返す
+    fn mock_server(status: &str, body: &str) -> (String, std::thread::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let url = format!("http://{}/api/replay", listener.local_addr().expect("addr"));
+        let response = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).ok();
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 4096];
+            loop {
+                let n = stream.read(&mut chunk).unwrap_or(0);
+                if n == 0 { break; }
+                buf.extend_from_slice(&chunk[..n]);
+                let text = String::from_utf8_lossy(&buf);
+                if let Some(pos) = text.find("\r\n\r\n") {
+                    let len = text.lines()
+                        .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap_or(0)))
+                        .unwrap_or(0);
+                    if buf.len() >= pos + 4 + len { break; }
+                }
+            }
+            stream.write_all(response.as_bytes()).ok();
+            String::from_utf8_lossy(&buf).into_owned()
+        });
+        (url, handle)
+    }
+
+    #[test]
+    fn tcv_replay_sends_header_and_body_and_parses_result() {
+        let (url, server) = mock_server("200 OK", r#"{"passed":12,"blockedWhitelist":38,"blockedNg":1,"truncated":true}"#);
+        let result = tauri::async_runtime::block_on(tcv_replay_request(
+            &url, " https://mi.5ch.io/test/read.cgi/news4vip/1791512525/ ".into(), 350, None,
+        )).expect("ok");
+        assert_eq!((result.passed, result.blocked_whitelist, result.blocked_ng, result.truncated), (12, 38, 1, true));
+        let request = server.join().expect("join");
+        let lower = request.to_ascii_lowercase();
+        assert!(request.starts_with("POST /api/replay "));
+        assert!(lower.contains("x-tchviewer-replay: 1"));
+        assert!(lower.contains("content-type: application/json"));
+        let body: serde_json::Value = serde_json::from_str(request.split("\r\n\r\n").nth(1).expect("body")).expect("json");
+        assert_eq!(body, serde_json::json!({
+            "threadUrl": "https://mi.5ch.io/test/read.cgi/news4vip/1791512525/", "fromNo": 350, "toNo": null
+        }));
+    }
+
+    #[test]
+    fn tcv_replay_maps_error_statuses() {
+        let (url, server) = mock_server("404 Not Found", "");
+        let err = tauri::async_runtime::block_on(tcv_replay_request(&url, "https://a.5ch.io/test/read.cgi/x/1/".into(), 1, None)).unwrap_err();
+        assert!(err.contains("再送に対応していません"), "{err}");
+        server.join().ok();
+
+        let (url, server) = mock_server("400 Bad Request", r#"{"error":"対応していないURLです\n(テスト)"}"#);
+        let err = tauri::async_runtime::block_on(tcv_replay_request(&url, "https://a.5ch.io/test/read.cgi/x/1/".into(), 1, None)).unwrap_err();
+        assert_eq!(err, "対応していないURLです (テスト)");
+        server.join().ok();
+    }
+
+    #[test]
+    fn tcv_replay_reports_not_running_and_rejects_bad_input() {
+        // 使われていないポートを確保してすぐ閉じ、そこへ送る (= 起動していない状態)
+        let port = TcpListener::bind("127.0.0.1:0").expect("bind").local_addr().expect("addr").port();
+        let url = format!("http://127.0.0.1:{port}/api/replay");
+        let err = tauri::async_runtime::block_on(tcv_replay_request(&url, "https://a.5ch.io/test/read.cgi/x/1/".into(), 1, None)).unwrap_err();
+        assert!(err.contains("起動していません"), "{err}");
+        let err = tauri::async_runtime::block_on(tcv_replay_request(&url, "https://a.5ch.io/test/read.cgi/x/1/".into(), 0, None)).unwrap_err();
+        assert!(err.contains("レス番号"), "{err}");
+        let err = tauri::async_runtime::block_on(tcv_replay_request(&url, "javascript:alert(1)".into(), 1, None)).unwrap_err();
+        assert!(err.contains("URL"), "{err}");
     }
 }

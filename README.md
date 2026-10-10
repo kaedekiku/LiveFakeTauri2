@@ -80,6 +80,12 @@ ZIP を展開するだけでインストール不要で使えます。
 - **ハイライト**: 15色パレットでワード・名前・ID を色分け (ID ハイライトは当日限り有効)。字幕ウィンドウにも同期。
 - 右クリックメニューから NG 追加・ハイライト設定を即時適用
 
+### 外部ソフトとの連携 (既定オフ・隠しタブ)
+
+- **TchViewer 連携**: 配信ホワイトリストを `data/broadcast-whitelist.json` に書き出す「TCVホワイトリスト」と、
+  「このレスから読み上げ」の指定を TchViewer へ送る「TCV再送」(送り先はこの PC 内の `127.0.0.1:11280` のみ)。
+  詳細は [docs/USER_MANUAL.md](docs/USER_MANUAL.md) 11.5 節
+
 ### 設定・カスタマイズ
 
 - ライト / ダークモード
@@ -144,6 +150,7 @@ AppData (`%APPDATA%` / `%LOCALAPPDATA%` / `%TEMP%`) にはファイルを作ら�
 | `cache.db` | スレッドレスキャッシュ / リンクカードキャッシュ (SQLite) — dat 落ちスレの閲覧に利用 |
 | `ImageViewURLReplace.txt` | 画像 URL 置換ルール (TSV) |
 | `eventlog/` | ログファイル (デフォルト7日保持) |
+| `broadcast-whitelist.json` | TchViewer 連携用の配信ホワイトリスト (設定の TchViewer連携 で「TCVホワイトリスト」をオンにしたときだけ書き出し) |
 | `webview/` | 画面部分 (WebView2) のキャッシュ等。上限は設定で変更可 (既定 100MB)。いつ削除してもよく、移行時のコピーも不要 |
 | `tmp/` | 一時ファイル (終了時・次回起動時に削除) |
 
