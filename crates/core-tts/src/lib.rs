@@ -544,23 +544,17 @@ pub async fn voicevox_speak(
 }
 
 /// Play WAV bytes via Win32 PlaySoundW (Windows only).
-/// Writes to a fixed temp file and plays synchronously (blocks until playback completes).
+/// メモリ上の WAV をそのまま同期再生する (再生が終わるまでブロック)。
+/// 以前は %TEMP% に一時ファイルを書いていたが、AppData 配下にファイルを作らないため SND_MEMORY を使う。
 #[cfg(windows)]
 pub fn play_wav_from_bytes(wav: &[u8]) -> Result<(), TtsError> {
-    use windows::Win32::Media::Audio::{PlaySoundW, SND_FILENAME, SND_NODEFAULT, SND_SYNC};
+    use windows::Win32::Media::Audio::{PlaySoundW, SND_MEMORY, SND_NODEFAULT, SND_SYNC};
     use windows::core::PCWSTR;
 
-    let tmp_path = std::env::temp_dir().join("livefake_voicevox.wav");
-    std::fs::write(&tmp_path, wav)?;
-
-    let wide: Vec<u16> = tmp_path
-        .to_string_lossy()
-        .encode_utf16()
-        .chain(std::iter::once(0u16))
-        .collect();
-
+    // SND_MEMORY のときは第1引数に WAV データ (RIFF ヘッダ付き) の先頭アドレスを渡す。
+    // SND_SYNC なので再生が終わるまで戻らず、その間 `wav` は借用されたまま有効。
     unsafe {
-        let _ = PlaySoundW(PCWSTR(wide.as_ptr()), None, SND_SYNC | SND_FILENAME | SND_NODEFAULT);
+        let _ = PlaySoundW(PCWSTR(wav.as_ptr() as *const u16), None, SND_SYNC | SND_MEMORY | SND_NODEFAULT);
     }
 
     Ok(())

@@ -933,6 +933,27 @@ fn get_data_dir() -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
+/// 起動時に data\tmp へ向ける前の TEMP / TMP (外部アプリを起動するときに戻すため)
+#[cfg(target_os = "windows")]
+static ORIGINAL_TEMP: std::sync::OnceLock<(Option<std::ffi::OsString>, Option<std::ffi::OsString>)> =
+    std::sync::OnceLock::new();
+
+/// 外部アプリ (既定のブラウザ等) を起動する Command の TEMP / TMP を、LiveFake 起動前の値に戻す。
+/// LiveFake 自身は TEMP を data\tmp に向けているため、そのままだと起動したブラウザの一時ファイルまで
+/// data\tmp に作られてしまう
+#[cfg(target_os = "windows")]
+fn restore_original_temp(cmd: &mut Command) -> &mut Command {
+    if let Some((temp, tmp)) = ORIGINAL_TEMP.get() {
+        if let Some(v) = temp {
+            cmd.env("TEMP", v);
+        }
+        if let Some(v) = tmp {
+            cmd.env("TMP", v);
+        }
+    }
+    cmd
+}
+
 #[tauri::command]
 fn open_external_url(url: String) -> Result<(), String> {
     // Only allow http(s). Without this, the Windows FileProtocolHandler below would
@@ -944,7 +965,7 @@ fn open_external_url(url: String) -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     {
-        Command::new("rundll32")
+        restore_original_temp(&mut Command::new("rundll32"))
             .args(["url.dll,FileProtocolHandler", &url])
             .spawn()
             .map_err(|e| e.to_string())?;
@@ -2277,11 +2298,11 @@ async fn open_image_popup(
     }
 
     // Create new popup window
-    WebviewWindowBuilder::new(
+    portable_webview(WebviewWindowBuilder::new(
         &app,
         "image_popup",
         tauri::WebviewUrl::App("image_popup.html".into()),
-    )
+    ))
     .title("LiveFake - 画像")
     .inner_size(900.0, 700.0)
     .resizable(true)
@@ -2368,11 +2389,11 @@ async fn compose_popup_show(app: AppHandle) -> Result<(), String> {
             (420.0, 420.0)
         }
     });
-    let win = WebviewWindowBuilder::new(
+    let win = portable_webview(WebviewWindowBuilder::new(
         &app,
         "compose_popup",
         tauri::WebviewUrl::App("compose_popup.html".into()),
-    )
+    ))
     .title("LiveFake - 書き込み")
     .inner_size(init_w, init_h)
     .min_inner_size(320.0, 320.0)
@@ -2576,7 +2597,7 @@ async fn broadcast_show(app: AppHandle) -> Result<(), String> {
     let saved_size = *BROADCAST_SAVED_SIZE.lock().unwrap_or_else(|e| e.into_inner());
     let saved_pos = *BROADCAST_SAVED_POS.lock().unwrap_or_else(|e| e.into_inner());
     let (init_w, init_h) = saved_size.unwrap_or((480.0, 160.0));
-    let win = WebviewWindowBuilder::new(&app, "broadcast", tauri::WebviewUrl::App("broadcast.html".into()))
+    let win = portable_webview(WebviewWindowBuilder::new(&app, "broadcast", tauri::WebviewUrl::App("broadcast.html".into())))
         .title("LiveFake - OBS連携")
         .inner_size(init_w, init_h)
         .min_inner_size(240.0, 100.0)
@@ -2662,7 +2683,7 @@ async fn subtitle_show(app: AppHandle) -> Result<(), String> {
     let _ = core_store::append_log("subtitle_show: before lock");
     let saved = SUBTITLE_SAVED_POS.lock().unwrap_or_else(|e| e.into_inner()).take();
     let _ = core_store::append_log("subtitle_show: before build");
-    let win = WebviewWindowBuilder::new(&app, "subtitle", tauri::WebviewUrl::App("subtitle.html".into()))
+    let win = portable_webview(WebviewWindowBuilder::new(&app, "subtitle", tauri::WebviewUrl::App("subtitle.html".into())))
         .title("LiveFake - 字幕")
         .inner_size(800.0, 200.0)
         .decorations(false)
@@ -3007,6 +3028,34 @@ fn subtitle_id_font_family(app: AppHandle, family: String) -> Result<(), String>
     Ok(())
 }
 
+/// WebView2 のユーザーデータ (HTTP キャッシュ・Cookie・GPU キャッシュ等) の保存先 (data\webview)。
+/// 指定しないと Tauri が %LOCALAPPDATA%\<identifier> に作るため、全ウィンドウの作成時に必ずこれを通す。
+/// (同じフォルダを使う WebView は起動オプションも揃える必要がある。オプションは run() で環境変数に一括設定している)
+fn portable_webview<'a, R: tauri::Runtime, M: tauri::Manager<R>>(
+    builder: WebviewWindowBuilder<'a, R, M>,
+) -> WebviewWindowBuilder<'a, R, M> {
+    match core_store::portable_data_dir() {
+        Ok(dir) => builder.data_directory(dir.join("webview")),
+        Err(e) => {
+            let _ = core_store::append_log(&format!("webview data dir unresolved: {e}"));
+            builder
+        }
+    }
+}
+
+/// ブラウザ (WebView2) のディスクキャッシュ上限 (MB)。settings.ini の App.webviewCacheMb。
+const WEBVIEW_CACHE_MB_DEFAULT: u64 = 100;
+const WEBVIEW_CACHE_MB_MIN: u64 = 10;
+const WEBVIEW_CACHE_MB_MAX: u64 = 1000;
+
+fn webview_cache_mb(settings: Option<&std::collections::HashMap<String, String>>) -> u64 {
+    settings
+        .and_then(|m| m.get("App.webviewCacheMb"))
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .map(|v| v.clamp(WEBVIEW_CACHE_MB_MIN, WEBVIEW_CACHE_MB_MAX))
+        .unwrap_or(WEBVIEW_CACHE_MB_DEFAULT)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Disable WebKit2GTK's DMA-BUF renderer and GPU compositing on Wayland
@@ -3026,22 +3075,62 @@ pub fn run() {
     let _ = core_store::init_portable_layout();
     let _ = core_store::append_log("app started");
 
-    // Disable Chromium smooth scrolling if settings.ini App.smoothScroll=false
-    // Must be set BEFORE WebView2 controller creation (i.e. before Tauri Builder)
+    // WebView2 の起動オプション。WebView2 Controller の作成前 (= Tauri Builder より前) に設定する必要がある。
+    // 環境変数で渡すと全ウィンドウに同じ値が効く (同じデータフォルダを使う WebView はオプションを揃える必要がある)。
+    // 環境変数は API で渡す値より優先されるため、wry の既定値 (msWebOOUI 等の無効化) も含めて組み立てる。
     #[cfg(target_os = "windows")]
     {
-        let smooth = core_store::load_settings_ini()
-            .ok()
-            .and_then(|m| m.get("App.smoothScroll").cloned())
-            .unwrap_or_else(|| "true".to_string());
-        if smooth == "false" {
-            let existing = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").unwrap_or_default();
-            let args = if existing.is_empty() {
-                "--disable-smooth-scrolling".to_string()
-            } else {
-                format!("{existing} --disable-smooth-scrolling")
-            };
-            std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", args);
+        let settings = core_store::load_settings_ini().ok();
+        let mut args = String::from("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection");
+        let existing = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").unwrap_or_default();
+        if !existing.trim().is_empty() {
+            args.push(' ');
+            args.push_str(existing.trim());
+        }
+        // settings.ini App.smoothScroll=false なら Chromium のスムーススクロールを無効化
+        if settings.as_ref().and_then(|m| m.get("App.smoothScroll")).map(|v| v == "false").unwrap_or(false) {
+            args.push_str(" --disable-smooth-scrolling");
+        }
+        // ディスクキャッシュの上限 (data\webview が際限なく大きくならないように)
+        args.push_str(&format!(" --disk-cache-size={}", webview_cache_mb(settings.as_ref()) * 1024 * 1024));
+        std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", args);
+        // ユーザーデータフォルダも環境変数で data\webview に揃える (portable_webview と同じ場所)
+        if let Ok(dir) = core_store::portable_data_dir() {
+            std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", dir.join("webview"));
+        }
+    }
+
+    // 一時ファイルは AppData 配下の OS 一時フォルダではなく data\tmp に作る。
+    // - 投稿時の一時 Cookie ファイル (core-fetch) の置き場所を設定する
+    // - このプロセスと子プロセス (WebView2 等) の TEMP / TMP も data\tmp に向ける
+    //   (WebView2 は実行中に TEMP へ一時ファイルを作るため。外部ブラウザを開くときは元の値に戻す)
+    // 前回の異常終了などで消し残した古いファイル (1時間以上前) は起動時に消す。投稿の Cookie を含むことがあるため残さない。
+    // 使用中のファイルは削除に失敗するだけで影響しない (二重起動時の実行中インスタンスのファイル等)
+    if let Ok(dir) = core_store::portable_data_dir() {
+        let tmp = dir.join("tmp");
+        if std::fs::create_dir_all(&tmp).is_ok() {
+            if let Ok(entries) = std::fs::read_dir(&tmp) {
+                let cutoff = std::time::SystemTime::now() - std::time::Duration::from_secs(60 * 60);
+                for entry in entries.flatten() {
+                    let old = entry
+                        .metadata()
+                        .ok()
+                        .filter(|m| m.is_file())
+                        .and_then(|m| m.modified().ok())
+                        .map(|t| t < cutoff)
+                        .unwrap_or(false);
+                    if old {
+                        let _ = std::fs::remove_file(entry.path());
+                    }
+                }
+            }
+            #[cfg(target_os = "windows")]
+            {
+                let _ = ORIGINAL_TEMP.set((std::env::var_os("TEMP"), std::env::var_os("TMP")));
+                std::env::set_var("TEMP", &tmp);
+                std::env::set_var("TMP", &tmp);
+            }
+            core_fetch::set_work_dir(tmp);
         }
     }
 
@@ -3055,6 +3144,13 @@ pub fn run() {
             }
         }))
         .setup(|app| {
+            // メインウィンドウは tauri.conf.json で "create": false にしておき、ここで作る。
+            // 設定ファイルからでは WebView2 のデータフォルダを AppData 配下にしか指定できないため
+            if app.get_webview_window("main").is_none() {
+                if let Some(config) = app.config().app.windows.iter().find(|w| w.label == "main").cloned() {
+                    portable_webview(WebviewWindowBuilder::from_config(app.handle(), &config)?).build()?;
+                }
+            }
             // Purge old event logs based on retention setting (default 7 days)
             let startup_settings = core_store::load_settings_ini().ok();
             let retention: u32 = startup_settings

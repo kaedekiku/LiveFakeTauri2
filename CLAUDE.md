@@ -150,7 +150,11 @@ cd apps/desktop && npx tsc --noEmit      # TypeScript型チェック
 
 ### 設定ファイル方針
 
-- Portable 形式: 全設定ファイルは EXE 同梱フォルダに保存
+- Portable 形式: 全設定ファイルは EXE 同梱フォルダの `data/` に保存 (作業フォルダ基準にしない)
+- **AppData (`%APPDATA%` / `%LOCALAPPDATA%` / `%TEMP%`) にファイルを作らない**。WebView2 のデータは `data/webview/`、
+  一時ファイルは `data/tmp/`。新しいウィンドウを作るときは必ず `portable_webview()` を通す (通さないと AppData に作られる)。
+  `std::env::temp_dir()` は起動時に `data/tmp/` を指すようにしてある
+- **レジストリに書き込まない** (読み取りはフォント一覧・SAPI 音声一覧のみ)。`winreg` で書き込み系 API を使わないこと
 - 既存の localStorage 依存は段階的にファイルベース（INI/JSON）に移行
 - INI ファイル（`settings.ini`）: App / Speech / Proxy / Posting / Window セクション
 - JSON ファイル: ng-settings / id-highlights / text-highlights / cookies / board-catalog / thread-history

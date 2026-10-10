@@ -25,7 +25,12 @@
 - `THIRD_PARTY_LICENSES.txt` は `scripts/generate_third_party_licenses.py` で生成する (exe に組み込まれる Rust / npm 依存のライセンス本文)。
   依存を追加・更新したら生成し直してコミットする。release ワークフローは `--check` で最新か確認し、古ければ失敗する
 - タグ `v*` の push で GitHub Actions (`.github/workflows/release.yml`) が自動ビルド・添付
-- Portable 形式: インストーラ不要。データはすべて実行フォルダ配下 `data/` に保存
+- Portable 形式: インストーラ不要。データはすべて exe と同じフォルダの `data/` に保存 (作業フォルダ基準ではない)
+  - AppData / `%TEMP%` には作らない: WebView2 のユーザーデータは `data/webview/` (全ウィンドウで `data_directory` を指定。
+    メインウィンドウも tauri.conf.json では `"create": false` にして setup で作成)、TEMP / TMP は起動時に `data/tmp/` へ向ける
+  - WebView2 の起動オプションは環境変数 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` で全ウィンドウ共通に渡す
+    (`--disk-cache-size` = `App.webviewCacheMb`、スムーススクロール無効化など)
+  - レジストリは読み取りのみ (フォント一覧 `HKLM\...\Fonts`、SAPI 音声一覧)。書き込みはしない
 
 ### 2.2 必須ランタイム
 

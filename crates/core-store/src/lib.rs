@@ -39,7 +39,23 @@ fn default_data_dir() -> Result<PathBuf, StoreError> {
 
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
-        Ok(std::env::current_dir()?.join("data"))
+        // Portable 形式: 実行ファイル (livefake.exe) と同じフォルダの data\ に保存する。
+        // 以前は起動時の作業フォルダ基準だったため、ショートカットの「作業フォルダー」などが
+        // exe と別の場所だと data\ もそちらに作られていた。その環境の設定を失わないよう、
+        // exe 側に data\ が無く作業フォルダ側にある場合だけは作業フォルダ側を使い続ける。
+        static RESOLVED: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+        if let Some(dir) = RESOLVED.get() {
+            return Ok(dir.clone());
+        }
+        let cwd_data = std::env::current_dir()?.join("data");
+        let exe_data = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|dir| dir.join("data")));
+        let dir = match exe_data {
+            Some(exe_data) if exe_data.is_dir() || !cwd_data.is_dir() => exe_data,
+            _ => cwd_data,
+        };
+        Ok(RESOLVED.get_or_init(|| dir).clone())
     }
 }
 

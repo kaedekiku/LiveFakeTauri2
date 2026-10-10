@@ -2037,6 +2037,19 @@ fn build_sjis_form_body(fields: &[(&str, &str)]) -> String {
         .join("&")
 }
 
+/// 投稿時に curl へ渡す一時 Cookie ファイルの置き場所。アプリは起動時に data\tmp を設定する
+/// (AppData 配下の OS 一時フォルダにファイルを作らないため)。未設定のとき (テスト等) は OS の一時フォルダ。
+static WORK_DIR: OnceLock<std::path::PathBuf> = OnceLock::new();
+
+/// 一時ファイルの置き場所を設定する (アプリ起動時に1回だけ)。
+pub fn set_work_dir(dir: std::path::PathBuf) {
+    let _ = WORK_DIR.set(dir);
+}
+
+fn work_dir() -> std::path::PathBuf {
+    WORK_DIR.get().cloned().unwrap_or_else(std::env::temp_dir)
+}
+
 /// POST to 5ch with cookie jar, handling redirects manually (normalizing .5ch.net → .5ch.io).
 /// Steps: 1) GET thread page for cookies, 2) POST, 3) follow redirects, 4) retry POST if needed.
 pub fn curl_post_5ch(
@@ -2045,7 +2058,9 @@ pub fn curl_post_5ch(
     fields: &[(&str, &str)],
     extra_cookies: Option<&str>,
 ) -> Result<(u16, Option<String>, String), FetchError> {
-    let cookie_file = std::env::temp_dir().join(format!(
+    let dir = work_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let cookie_file = dir.join(format!(
         "livefake_post_{}_{}.txt",
         std::process::id(),
         std::time::SystemTime::now()

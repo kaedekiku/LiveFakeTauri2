@@ -824,6 +824,8 @@ export default function App() {
   const [smoothScroll, setSmoothScroll] = useState(true);
   const [maxOpenTabs, setMaxOpenTabs] = useState(20);
   const [logRetentionDays, setLogRetentionDays] = useState(7);
+  // ブラウザ (WebView2) のディスクキャッシュ上限 (MB)。起動時に Rust 側が settings.ini から読むため再起動後に反映
+  const [webviewCacheMb, setWebviewCacheMb] = useState(100);
   const smoothScrollRef = useRef(true);
   smoothScrollRef.current = smoothScroll;
   const maxOpenTabsRef = useRef(20);
@@ -4952,6 +4954,7 @@ export default function App() {
       if (map["App.smoothScroll"]) setSmoothScroll(map["App.smoothScroll"] === "true");
       if (map["App.maxOpenTabs"]) { const n = parseInt(map["App.maxOpenTabs"], 10); if (!isNaN(n) && n >= 1) setMaxOpenTabs(n); }
       if (map["App.logRetentionDays"]) { const n = parseInt(map["App.logRetentionDays"], 10); if (!isNaN(n) && n >= 0) setLogRetentionDays(n); }
+      if (map["App.webviewCacheMb"]) { const n = parseInt(map["App.webviewCacheMb"], 10); if (!isNaN(n)) setWebviewCacheMb(Math.max(10, Math.min(1000, n))); }
       if (map["App.imageSaveFolder"] !== undefined) setImageSaveFolder(map["App.imageSaveFolder"]);
       if (map["App.bbsmenuUrl"] !== undefined && map["App.bbsmenuUrl"].trim()) setBbsmenuUrl(map["App.bbsmenuUrl"]);
       if (map["App.shitarabaHost"] !== undefined && map["App.shitarabaHost"].trim()) setShitarabaHost(map["App.shitarabaHost"]);
@@ -5318,6 +5321,7 @@ export default function App() {
       "App.smoothScroll": String(smoothScroll),
       "App.maxOpenTabs": String(maxOpenTabs),
       "App.logRetentionDays": String(logRetentionDays),
+      "App.webviewCacheMb": String(webviewCacheMb),
       "App.imageSaveFolder": imageSaveFolder,
       "App.bbsmenuUrl": bbsmenuUrl,
       "App.shitarabaHost": shitarabaHost,
@@ -5362,7 +5366,7 @@ export default function App() {
   useEffect(() => {
     if (!isTauriRuntime() || !appSettingsLoadedRef.current || settingsOpenRef.current) return;
     void invoke("save_app_settings", { settings: buildAppSettingsMap() }).catch(() => {});
-  }, [responsesFontSize, responseGap, autoRefreshInterval, autoRefreshEnabled, autoScrollEnabled, smoothScroll, maxOpenTabs, logRetentionDays, imageSaveFolder, bbsmenuUrl, shitarabaHost, jpnknHost,
+  }, [responsesFontSize, responseGap, autoRefreshInterval, autoRefreshEnabled, autoScrollEnabled, smoothScroll, maxOpenTabs, logRetentionDays, webviewCacheMb, imageSaveFolder, bbsmenuUrl, shitarabaHost, jpnknHost,
       mainAlwaysOnBottom, obsTabRevealed, broadcastFontFamily, broadcastFontSize, broadcastTextColor, broadcastOutlineColor, broadcastOutlineWidth, broadcastEmojiOutline, broadcastBgColor, broadcastDisplaySeconds, cssAllowExternalUrls, streamMaskEnabled, ngAboneSpeakEnabled,
       ttsMode, ttsEnabled, ttsMaxReadLength, ttsUrlOmitEnabled, sapiVoiceIndex, sapiRate, sapiVolume,
       voicevoxEndpoint, voicevoxSpeakerId, voicevoxSpeedScale, voicevoxPitchScale, voicevoxIntonationScale, voicevoxVolumeScale,
@@ -8169,6 +8173,11 @@ export default function App() {
                   <span>ログ保持日数</span>
                   <input type="number" value={logRetentionDays} min={0} max={365} step={1} onChange={(e) => setLogRetentionDays(Math.max(0, Math.min(365, Number(e.target.value))))} />
                   <span className="settings-hint">0 = 無制限</span>
+                </label>
+                <label className="settings-row" title="画像・リンクカードなどを表示したときにブラウザ部分が保存するキャッシュの上限です。data\webview フォルダに保存されます">
+                  <span>ブラウザのキャッシュ上限 (MB)</span>
+                  <input type="number" value={webviewCacheMb} min={10} max={1000} step={1} onChange={(e) => setWebviewCacheMb(Math.max(10, Math.min(1000, Math.round(Number(e.target.value)) || 10)))} />
+                  <span className="settings-hint">10〜1000 (再起動後に反映)</span>
                 </label>
                 <label className="settings-row">
                   <input type="checkbox" checked={showBoardButtons} onChange={(e) => setShowBoardButtons(e.target.checked)} />

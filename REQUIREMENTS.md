@@ -251,7 +251,18 @@ UTF-8 / Shift_JIS / EUC-JP のスコアリングによる自動判定を行う�
 
 ## 12. 設定ファイル (Portable 形式)
 
-- 保存先: 実行フォルダ配下 `data/` (環境変数 `EMBER_DATA_DIR` で上書き可)
+- 保存先: 実行ファイル (`livefake.exe`) と同じフォルダの `data/`。起動時の作業フォルダには依存しない
+  (環境変数 `EMBER_DATA_DIR` は開発・テスト用の上書き。互換のため、exe 側に `data/` が無く作業フォルダ側にある場合はそちらを使う)
+- **AppData に置かない**: `%APPDATA%` / `%LOCALAPPDATA%` / `AppData\LocalLow` / `%TEMP%` に LiveFake がファイル・フォルダを作らないこと。
+  データはすべて Portable を展開したフォルダの `data/` に格納する
+  - 画面部分 (WebView2) のユーザーデータ (HTTP キャッシュ・Cookie・GPU キャッシュ等) は `data/webview/` に置く
+    (Tauri の既定では `%LOCALAPPDATA%\<identifier>` に作られるため、全ウィンドウでデータフォルダを明示する)
+  - 一時ファイルは `data/tmp/` に作る (LiveFake と子プロセスの TEMP / TMP を起動時に `data/tmp/` へ向ける。
+    外部ブラウザを開くときは元の値に戻す)。1時間以上前の消し残しは起動時に削除する
+  - VOICEVOX の音声はファイルに書かずメモリから再生する
+  - ブラウザのディスクキャッシュ上限は設定可能 (10〜1000MB、既定 100MB、再起動後に反映。`settings.ini` の `App.webviewCacheMb`)
+- **レジストリに書き込まない**。読み取りは OS の情報取得 (インストール済みフォントの一覧・SAPI 音声の一覧) に限る
+  - Windows や WebView2 Runtime 自体が OS として記録するもの (起動履歴など) はアプリ側で制御できないため対象外
 - `settings.ini`: [App] / [Speech] / [Posting] / [Proxy] セクション
 - JSON: ng-settings / id-highlights / text-highlights / cookies / board-catalog / external-boards / thread-history / read_status / bookmarks / scroll-positions / session_tabs / session_board_tabs / layout_prefs / window_size / tts-dict / name-history / my-posts / search-history ほか
 - SQLite: `cache.db` (thread_cache テーブル、スレのレス JSON を丸ごとキャッシュ)
