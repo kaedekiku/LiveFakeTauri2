@@ -144,6 +144,9 @@ cd apps/desktop && npx tsc --noEmit      # TypeScript型チェック
 - Rust crate 追加時は `cargo deny check licenses` で確認
 - npm パッケージ追加時は `npx license-checker --excludePrivatePackages --failOn "GPL-2.0;GPL-3.0;AGPL-3.0"` で確認
   (`--excludePrivatePackages` は `"private": true` の livefake 自身を除外するために必要)
+- 依存 (Rust crate / npm パッケージ) を追加・更新したら `python scripts/generate_third_party_licenses.py` で
+  `apps/desktop/public/THIRD_PARTY_LICENSES.txt` を生成し直してコミットする (配布 ZIP・アプリ内表示に使用。
+  release ワークフローが `--check` で検証し、古いままだとリリースが失敗する)
 
 ### 設定ファイル方針
 

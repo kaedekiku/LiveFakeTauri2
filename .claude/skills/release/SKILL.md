@@ -28,6 +28,8 @@ LiveFake の指定バージョンでリリース準備を行う。
 4. 3ファイルのバージョンを更新
 5. `README.md` の「## 最新の更新」セクションを `NEW.md` の要約で更新し、見出しのバージョン番号も新しいものに変える
 6. `cargo check --workspace` で検証
+   あわせて `python scripts/generate_third_party_licenses.py --check` を実行し、失敗したら生成し直してコミットする
+   (release ワークフローでも同じ確認をしており、古いままタグを push するとビルドが失敗する)
 7. `cd apps/desktop && npm run build` で検証
 8. `git diff` を表示してレビュー用に提示
 

@@ -25,7 +25,7 @@ ZIP を展開するだけでインストール不要で使えます。
 
 | プラットフォーム | ファイル |
 |----------------|---------|
-| Windows 10/11 (64bit) | `livefake-win-x64.zip` |
+| Windows 10/11 (64bit) | `livefake-win-x64.zip` (`livefake.exe` / `LICENSE.txt` / `THIRD_PARTY_LICENSES.txt`) |
 
 > **必須ランタイム:** WebView2 Runtime — Windows 10/11 には通常プリインストール済みです。
 > 動作確認は Windows 11 で行っています。
@@ -165,9 +165,13 @@ SIKI のカスタム CSS レシピの多くをそのまま流用できます。
 
 ## ライセンス
 
-MIT License
+LiveFake 本体は **MIT License** です ([LICENSE](LICENSE))。
 
-GPL ライセンスのライブラリは使用していません。
+配布物 (`livefake.exe`) には、第三者が作成したライブラリが組み込まれています。
+これらは MIT / Apache-2.0 / BSD-3-Clause / ISC / MPL-2.0 / Unicode-3.0 / CDLA-Permissive-2.0 などの、
+自由な再配布を認めるライセンスで提供されています (GPL 系のライブラリは使用していません)。
+各ライブラリのライセンス本文と著作権表示は [THIRD_PARTY_LICENSES.txt](apps/desktop/public/THIRD_PARTY_LICENSES.txt) にまとめています。
+このファイルは配布 ZIP にも同梱しており、アプリ内の **設定 > 情報 > サードパーティライセンス** からも確認できます。
 
 ---
 

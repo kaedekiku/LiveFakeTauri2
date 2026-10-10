@@ -470,4 +470,7 @@ EXE と同じフォルダの `data/` をまるごとコピーしてください�
 
 ## 18. ライセンス
 
-MIT License。[kiyohken2000](https://github.com/kiyohken2000) 氏の [Ember (5ch-browser-template)](https://github.com/kiyohken2000/5ch-browser-template) をベースにしています。
+LiveFake 本体は MIT License です。[kiyohken2000](https://github.com/kiyohken2000) 氏の [Ember (5ch-browser-template)](https://github.com/kiyohken2000/5ch-browser-template) をベースにしています。
+
+LiveFake に組み込まれている第三者製ライブラリのライセンス本文・著作権表示は、配布 ZIP に同梱の `THIRD_PARTY_LICENSES.txt`、
+または **設定 > 情報 > サードパーティライセンス** から確認できます (GPL 系のライブラリは使用していません)。

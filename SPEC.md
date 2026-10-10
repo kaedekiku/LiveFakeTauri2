@@ -13,7 +13,7 @@
 | 種別 | デスクトップ掲示板ブラウザ (実況向け) |
 | 対応サイト | 5ch.io / したらば (jbbs.shitaraba.net) / JPNKN (bbs.jpnkn.com) |
 | 対応 OS | Windows 10/11 x64 (配布対象) |
-| ライセンス | MIT (GPL 系ライブラリ不使用) |
+| ライセンス | 本体 MIT。同梱ライブラリは MIT / Apache-2.0 / BSD / ISC / MPL-2.0 / Unicode-3.0 / CDLA-Permissive-2.0 等 (GPL 系不使用)。一覧は `apps/desktop/public/THIRD_PARTY_LICENSES.txt` |
 
 ---
 
@@ -21,7 +21,9 @@
 
 ### 2.1 配布形式
 
-- GitHub Releases に `livefake-win-x64.zip` (単一 EXE) を添付
+- GitHub Releases に `livefake-win-x64.zip` を添付 (中身: `livefake.exe` / `LICENSE.txt` / `THIRD_PARTY_LICENSES.txt`)
+- `THIRD_PARTY_LICENSES.txt` は `scripts/generate_third_party_licenses.py` で生成する (exe に組み込まれる Rust / npm 依存のライセンス本文)。
+  依存を追加・更新したら生成し直してコミットする。release ワークフローは `--check` で最新か確認し、古ければ失敗する
 - タグ `v*` の push で GitHub Actions (`.github/workflows/release.yml`) が自動ビルド・添付
 - Portable 形式: インストーラ不要。データはすべて実行フォルダ配下 `data/` に保存
 

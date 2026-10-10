@@ -23,6 +23,9 @@ jobs:
         run: npm ci
         working-directory: apps/desktop
 
+      - name: Check third-party license list is up to date
+        run: python scripts/generate_third_party_licenses.py --check
+
       - name: Build Windows exe
         working-directory: apps/desktop
         run: npx tauri build --config '{"bundle":{"active":false}}'
@@ -30,8 +33,11 @@ jobs:
       - name: Package as ZIP
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path out
-          Compress-Archive -Path target/release/livefake.exe -DestinationPath out/livefake-win-x64.zip
+          New-Item -ItemType Directory -Force -Path out/package
+          Copy-Item target/release/livefake.exe out/package/
+          Copy-Item LICENSE out/package/LICENSE.txt
+          Copy-Item apps/desktop/public/THIRD_PARTY_LICENSES.txt out/package/
+          Compress-Archive -Path out/package/* -DestinationPath out/livefake-win-x64.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

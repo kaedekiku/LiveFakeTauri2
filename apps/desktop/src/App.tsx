@@ -988,6 +988,17 @@ export default function App() {
   const defaultAppSettingsRef = useRef<Record<string, string> | null>(null);
   type AppConfirm = { title?: string; message: string; buttons: { label: string; onClick: () => void; primary?: boolean; danger?: boolean }[] };
   const [appConfirm, setAppConfirm] = useState<AppConfirm | null>(null);
+  // 「情報」タブのサードパーティライセンス表示。本文 (public/THIRD_PARTY_LICENSES.txt、約600KB) は初回に開いたときだけ読み込む
+  const [licensesOpen, setLicensesOpen] = useState(false);
+  const [licensesText, setLicensesText] = useState<string | null>(null);
+  const openThirdPartyLicenses = () => {
+    setLicensesOpen(true);
+    if (licensesText !== null) return;
+    fetch("/THIRD_PARTY_LICENSES.txt")
+      .then((r) => (r.ok ? r.text() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((text) => setLicensesText(text))
+      .catch((e) => { console.warn("third-party licenses load failed", e); setLicensesText("ライセンス一覧を読み込めませんでした。配布ZIPに同梱の THIRD_PARTY_LICENSES.txt を参照してください。"); });
+  };
   // 分類内の節タブ (項目が多い分類だけ)。1 頁を短く保ち、関連する設定を同じ場所にまとめる (REQUIREMENTS 13 章)
   const SETTINGS_SECTIONS: Record<SettingsCategory, { id: string; label: string }[]> = {
     display: [
@@ -7985,6 +7996,17 @@ export default function App() {
           </div>
         </div>
       )}
+      {licensesOpen && (
+        <div className="app-confirm-overlay" onClick={() => setLicensesOpen(false)}>
+          <div className="app-confirm app-licenses" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+            <div className="app-confirm-title">サードパーティライセンス</div>
+            <pre className="app-licenses-text">{licensesText ?? "読み込み中…"}</pre>
+            <div className="app-confirm-buttons">
+              <button className="primary" onClick={() => setLicensesOpen(false)}>閉じる</button>
+            </div>
+          </div>
+        </div>
+      )}
       {settingsOpen && (
         <div className="lightbox-overlay" onClick={requestCloseSettings}>
           <div className="settings-panel settings-panel-wide" onClick={(e) => e.stopPropagation()}>
@@ -9276,6 +9298,14 @@ export default function App() {
                 <div className="settings-row">
                   <span>GitHub</span>
                   <button onClick={() => { const url = "https://github.com/kaedekiku/LiveFakeTauri2"; if (isTauriRuntime()) void invoke("open_external_url", { url }).catch(() => window.open(url, "_blank")); else window.open(url, "_blank"); }}>GitHubページを開く</button>
+                </div>
+                <div className="settings-row">
+                  <span>ライセンス</span>
+                  <span>MIT License</span>
+                </div>
+                <div className="settings-row" title="LiveFakeに組み込まれている第三者製ライブラリのライセンス本文と著作権表示を表示します">
+                  <span>サードパーティライセンス</span>
+                  <button onClick={openThirdPartyLicenses}>表示する</button>
                 </div>
               </fieldset>
               {!obsTabRevealed && (

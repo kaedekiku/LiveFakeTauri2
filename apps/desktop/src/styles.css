@@ -2508,6 +2508,32 @@ button.search-history-btn:hover {
 .dark .app-confirm-buttons button:not(.primary):not(.danger):hover {
   background: #4a4a4a;
 }
+/* サードパーティライセンスの表示 (設定 > 情報) */
+.app-confirm.app-licenses {
+  width: min(820px, 94vw);
+  height: min(80vh, 760px);
+  display: flex;
+  flex-direction: column;
+}
+.app-licenses-text {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  margin: 0 0 12px;
+  padding: 8px;
+  border: 1px solid #ccc;
+  background: #fafafa;
+  font-family: Consolas, "MS Gothic", monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.dark .app-licenses-text {
+  background: #1f1f22;
+  border-color: #555;
+}
 /* プリセット / バックアップの一覧 */
 .settings-file-list {
   display: flex;
