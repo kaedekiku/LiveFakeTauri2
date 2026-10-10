@@ -238,8 +238,17 @@ UTF-8 / Shift_JIS / EUC-JP のスコアリングによる自動判定を行う�
 - 表示要素: スレタイ・レス番・名前・ID・時刻・本文 (200文字まで)。クリックでジャンプ
 - NG (非表示) レスは表示しない
 
-### 10.1 TchViewer 連携 (隠しタブ)
+### 10.1 OBS 連携 (隠しタブ)
 
+- 設定 > 情報 の「隠しタブ」から「OBS連携」タブを表示する (`App.obsTabRevealed`)。機能自体も既定オフ
+- オンにするには OBS Studio (`obs64.exe`) の起動が必要 (Rust 側で確認)。OBS が終了したら自動的にオフに戻す
+- 配信ホワイトリスト (当日限り・再起動で空) に登録した ID の新着レスだけを、枠なしの専用ウィンドウ (`broadcast.html`) に表示する。
+  本文は textContent で表示し HTML として解釈しない。文字参照は送る前に文字へ戻す
+- 背景色 (クロマキー)・フォント・文字サイズ/色・縁取り・絵文字の縁取り・表示秒数・スクロール・ヘッダ項目を設定可能
+
+### 10.2 TchViewer 連携 (隠しタブ)
+
+- 連携ソフト: [TchViewer](https://github.com/kaedekiku/TchViewer)
 - 設定 > 情報 の「隠しタブ」から「TchViewer連携」タブを表示する (OBS連携と同じ出し方)。設定は `settings.ini` の
   `App.tcvTabRevealed` / `App.tcvWhitelist` / `App.tcvReplay` (いずれも既定 false)
 - **TCVホワイトリスト**: オンの間はレス右クリックに配信ホワイトリストの追加/解除を常に表示し、一覧が変わるたびに
