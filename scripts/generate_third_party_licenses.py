@@ -21,6 +21,7 @@ apps/desktop/public/THIRD_PARTY_LICENSES.txt を生成する。
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
 import re
 import subprocess
@@ -233,6 +234,10 @@ def render(packages: list[dict]) -> str:
 
 
 def main() -> int:
+    # GitHub Actions の Windows ランナーなどコンソールが cp1252 の環境でも日本語の表示で落ちないようにする
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--check", action="store_true", help="生成結果が既存ファイルと一致するか確認するだけ")
     args = parser.parse_args()
@@ -242,6 +247,10 @@ def main() -> int:
         current = OUT.read_text(encoding="utf-8").replace("\r\n", "\n") if OUT.is_file() else ""
         if current != text:
             print(f"{OUT.relative_to(ROOT)} が最新ではありません。生成し直してください。", file=sys.stderr)
+            # どこが違うかをログに残す (CI で原因を追えるように、最初の差分の周辺だけ)
+            diff = list(difflib.unified_diff(current.split("\n"), text.split("\n"), "committed", "generated", n=2, lineterm=""))
+            for line in diff[:40]:
+                print(line, file=sys.stderr)
             return 1
         print(f"{OUT.relative_to(ROOT)} は最新です。")
         return 0
