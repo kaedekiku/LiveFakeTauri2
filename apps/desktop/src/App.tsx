@@ -153,6 +153,11 @@ const detectSiteType = (url: string): SiteType => {
   if (host === "bbs.jpnkn.com") return "jpnkn";
   return "fiveCh";
 };
+// 5ch はレス1000で埋まり、1001番はサーバーが付ける「このスレッドは1000を超えました」の定型文。
+// 新着ペイン・字幕にはスレが埋まったことが分かるよう1001番まで流し、読み上げは1000番まで。
+// したらば・JPNKN は板によって1000を超えて書き込めるため、番号では除外しない
+const showsArrivalResNo = (url: string, no: number) => detectSiteType(url) !== "fiveCh" || no <= 1001;
+const speaksResNo = (url: string, no: number) => detectSiteType(url) !== "fiveCh" || no <= 1000;
 // レス本文中のリンクが自サイト(5ch/したらば/JPNKN)の板・スレURLかどうかを、
 // ホスト名の完全一致/末尾一致で厳密に判定する。クリック時に「内部の板として開く」か
 // 「外部ブラウザで開く」かを振り分けるのに使う
@@ -182,16 +187,19 @@ const ENTITY_MAP: Record<string, string> = {
   "&#44;": ",",
   "&nbsp;": "\u00A0",
 };
+// Unicode の範囲外 (0x10FFFF 超) を String.fromCodePoint に渡すと例外になり、描画中だと
+// 画面全体が落ちるため、範囲外の文字参照は変換せず元の文字列のまま残す
+const isValidCodePoint = (cp: number) => Number.isFinite(cp) && cp > 0 && cp <= 0x10ffff;
 const decodeHtmlEntities = (s: string) =>
   s
     .replace(/&(?:amp|lt|gt|quot|nbsp|#39|#44);/g, (m) => ENTITY_MAP[m] ?? m)
     .replace(/&#(\d+);/g, (_m, dec: string) => {
       const cp = Number.parseInt(dec, 10);
-      return Number.isFinite(cp) && cp > 0 ? String.fromCodePoint(cp) : _m;
+      return isValidCodePoint(cp) ? String.fromCodePoint(cp) : _m;
     })
     .replace(/&#x([0-9a-fA-F]+);/g, (_m, hex: string) => {
       const cp = Number.parseInt(hex, 16);
-      return Number.isFinite(cp) && cp > 0 ? String.fromCodePoint(cp) : _m;
+      return isValidCodePoint(cp) ? String.fromCodePoint(cp) : _m;
     });
 const escapeHtml = (s: string) =>
   s
@@ -945,6 +953,8 @@ export default function App() {
   const [broadcastTextColor, setBroadcastTextColor] = useState("#ffffff");
   const [broadcastOutlineColor, setBroadcastOutlineColor] = useState("#000000");
   const [broadcastOutlineWidth, setBroadcastOutlineWidth] = useState(2);
+  // カラー絵文字にも縁取りをかけるか (OFF なら絵文字の部分だけ縁取りを外す)
+  const [broadcastEmojiOutline, setBroadcastEmojiOutline] = useState(true);
   const [broadcastBgColor, setBroadcastBgColor] = useState("#00ff00");
   const [broadcastDisplaySeconds, setBroadcastDisplaySeconds] = useState(12);
   const hoverPreviewRef = useRef<HTMLDivElement | null>(null);
@@ -1175,11 +1185,13 @@ export default function App() {
     void invoke("broadcast_update", {
       data: {
         style: {
-          fontFamily: broadcastFontFamily || undefined,
+          // 空文字はフォント未指定 (配信ウィンドウ側で既定のフォントに戻す)
+          fontFamily: broadcastFontFamily,
           fontSize: broadcastFontSize,
           textColor: broadcastTextColor,
           outlineColor: broadcastOutlineColor,
           outlineWidth: broadcastOutlineWidth,
+          emojiOutline: broadcastEmojiOutline,
           bgColor: broadcastBgColor,
           displaySeconds: broadcastDisplaySeconds,
           msPerPx: broadcastTiming.msPerPx,
@@ -1222,7 +1234,7 @@ export default function App() {
   useEffect(() => {
     if (broadcastVisible) pushBroadcastStyle();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [broadcastVisible, broadcastFontFamily, broadcastFontSize, broadcastTextColor, broadcastOutlineColor, broadcastOutlineWidth, broadcastBgColor, broadcastDisplaySeconds, broadcastTiming, broadcastHeaderVis]);
+  }, [broadcastVisible, broadcastFontFamily, broadcastFontSize, broadcastTextColor, broadcastOutlineColor, broadcastOutlineWidth, broadcastEmojiOutline, broadcastBgColor, broadcastDisplaySeconds, broadcastTiming, broadcastHeaderVis]);
   // 新着レスのうち、配信ホワイトリストに登録されているIDのものだけをOBS連携ウィンドウへ送る。
   // カード化・サムネイル化はせず、本文はプレーンな文字列のまま渡す (リンク先の安全性が
   // 保証できないものを配信画面に自動表示しないため)
@@ -1232,10 +1244,13 @@ export default function App() {
     // 送信順と一致する保証が無く、配信ウィンドウ側での表示順が入れ替わることがあったため)
     const items = arrivals
       .filter((a) => broadcastWhitelistRef.current[a.id])
+      // 5ch のデータは Shift_JIS のため絵文字などは &#128512; のような文字参照で届く。配信ウィンドウは
+      // textContent で表示するので、ここで文字に戻してから送る (戻した結果が < などでもHTMLとしては解釈されない)
       .map((a) => ({
-        threadTitle: a.threadTitle, responseNo: a.responseNo, name: a.name, mail: a.mail,
+        threadTitle: decodeHtmlEntities(a.threadTitle), responseNo: a.responseNo,
+        name: decodeHtmlEntities(a.name), mail: decodeHtmlEntities(a.mail),
         id: a.id, date: a.time, idSeq: a.idSeq, idCount: a.idCount,
-        body: a.text, isAa: isAsciiArt(a.text),
+        body: decodeHtmlEntities(a.text), isAa: isAsciiArt(a.text),
       }));
     if (items.length === 0) return;
     void invoke("broadcast_update", { data: { items } }).catch(() => {});
@@ -2493,6 +2508,7 @@ export default function App() {
         const timeStr = `${now.getFullYear()}/${String(now.getMonth() + 1).padStart(2, "0")}/${String(now.getDate()).padStart(2, "0")} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
         threadFetchTimesRef.current[tabUrl] = timeStr;
         const arrivals = newRows
+          .filter((r) => showsArrivalResNo(tabUrl, r.responseNo))
           .filter((r) => getNgResult({ name: r.name, mail: r.mail, time: r.dateAndId, text: r.body.replace(/<[^>]*>/g, "") }, tabUrl)?.mode !== "hide")
           .map((r) => makeArrival(r, tabTitle, tabUrl, rows));
         if (autoRefreshEnabled && arrivals.length > 0) {
@@ -2507,7 +2523,7 @@ export default function App() {
         if (ttsEnabled && ttsMode !== "off") {
           const site = detectSiteType(tabUrl);
           for (const a of arrivals) {
-            if (a.responseNo >= 1001) continue;
+            if (!speaksResNo(tabUrl, a.responseNo)) continue;
             const prefix = site === "shitaraba" ? `したらば${a.responseNo}番さん`
               : site === "jpnkn" ? `ジャパンくん${a.responseNo}番さん`
               : `レス${a.responseNo}番さん`;
@@ -2691,6 +2707,7 @@ export default function App() {
           ?? url;
         const newRows = rows.slice(prevCount);
         const arrivals = newRows
+          .filter((r) => showsArrivalResNo(url, r.responseNo))
           .filter((r) => getNgResult({ name: r.name, mail: r.mail, time: r.dateAndId, text: r.body.replace(/<[^>]*>/g, "") }, url)?.mode !== "hide")
           .map((r) => makeArrival(r, arrivalTitle, url, rows));
         // Add to new arrivals pane when autoReload is ON
@@ -2708,11 +2725,11 @@ export default function App() {
           const latest = arrivals[arrivals.length - 1];
           subtitleUpdate({ threadTitle: latest.threadTitle, responseNo: latest.responseNo, name: latest.name, mail: latest.mail, id: latest.id, date: latest.time, body: latest.text, idSeq: latest.idSeq, idCount: latest.idCount });
         }
-        // TTS: read new responses (skip 1001/1002)
+        // TTS: 5ch の1001番 (定型文) は読まない。したらば・JPNKN は番号で除外しない
         if (ttsEnabled && ttsMode !== "off") {
           const site = detectSiteType(url);
           for (const a of arrivals) {
-            if (a.responseNo >= 1001) continue;
+            if (!speaksResNo(url, a.responseNo)) continue;
             const prefix = site === "shitaraba" ? `したらば${a.responseNo}番さん`
               : site === "jpnkn" ? `ジャパンくん${a.responseNo}番さん`
               : `レス${a.responseNo}番さん`;
@@ -2967,7 +2984,7 @@ export default function App() {
     if (meta?.id && ttsMuteMatches(mute.ids, meta.id)) return;
     // Strip HTML tags, then decode HTML entities to get true character count
     let plain = bodyText.replace(/<[^>]*>/g, "");
-    plain = plain.replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16))).replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)));
+    plain = decodeHtmlEntities(plain).replace(/ /g, " ");
     // 読み上げない辞書 (本文ワード): レス全体スキップ指定なら読まない、そうでなければ語句だけ除去
     for (const e of mute.words) {
       const v = e.value.trim();
@@ -4919,6 +4936,7 @@ export default function App() {
       if (map["App.broadcastTextColor"]) setBroadcastTextColor(map["App.broadcastTextColor"]);
       if (map["App.broadcastOutlineColor"]) setBroadcastOutlineColor(map["App.broadcastOutlineColor"]);
       if (map["App.broadcastOutlineWidth"]) { const n = parseInt(map["App.broadcastOutlineWidth"], 10); if (!isNaN(n)) setBroadcastOutlineWidth(n); }
+      if (map["App.broadcastEmojiOutline"] !== undefined) setBroadcastEmojiOutline(map["App.broadcastEmojiOutline"] !== "false");
       if (map["App.broadcastBgColor"]) setBroadcastBgColor(map["App.broadcastBgColor"]);
       if (map["App.broadcastDisplaySeconds"]) { const n = parseFloat(map["App.broadcastDisplaySeconds"]); if (!isNaN(n)) setBroadcastDisplaySeconds(n); }
       if (map["App.cssAllowExternalUrls"]) setCssAllowExternalUrls(map["App.cssAllowExternalUrls"] === "true");
@@ -5283,6 +5301,7 @@ export default function App() {
       "App.broadcastTextColor": broadcastTextColor,
       "App.broadcastOutlineColor": broadcastOutlineColor,
       "App.broadcastOutlineWidth": String(broadcastOutlineWidth),
+      "App.broadcastEmojiOutline": String(broadcastEmojiOutline),
       "App.broadcastBgColor": broadcastBgColor,
       "App.broadcastDisplaySeconds": String(broadcastDisplaySeconds),
       "App.cssAllowExternalUrls": String(cssAllowExternalUrls),
@@ -5315,7 +5334,7 @@ export default function App() {
     if (!isTauriRuntime() || !appSettingsLoadedRef.current || settingsOpenRef.current) return;
     void invoke("save_app_settings", { settings: buildAppSettingsMap() }).catch(() => {});
   }, [responsesFontSize, responseGap, autoRefreshInterval, autoRefreshEnabled, autoScrollEnabled, smoothScroll, maxOpenTabs, logRetentionDays, imageSaveFolder, bbsmenuUrl, shitarabaHost, jpnknHost,
-      mainAlwaysOnBottom, obsTabRevealed, broadcastFontFamily, broadcastFontSize, broadcastTextColor, broadcastOutlineColor, broadcastOutlineWidth, broadcastBgColor, broadcastDisplaySeconds, cssAllowExternalUrls, streamMaskEnabled, ngAboneSpeakEnabled,
+      mainAlwaysOnBottom, obsTabRevealed, broadcastFontFamily, broadcastFontSize, broadcastTextColor, broadcastOutlineColor, broadcastOutlineWidth, broadcastEmojiOutline, broadcastBgColor, broadcastDisplaySeconds, cssAllowExternalUrls, streamMaskEnabled, ngAboneSpeakEnabled,
       ttsMode, ttsEnabled, ttsMaxReadLength, sapiVoiceIndex, sapiRate, sapiVolume,
       voicevoxEndpoint, voicevoxSpeakerId, voicevoxSpeedScale, voicevoxPitchScale, voicevoxIntonationScale, voicevoxVolumeScale,
       composeName, composeMail, composeSage, composeFontSize, composeOpen]);
@@ -6143,7 +6162,7 @@ export default function App() {
                       {arrivalCardsEnabled && (ogpCardsEnabled || tweetCardsEnabled)
                         ? /* カード付き描画: 本文は renderResponseBody でサニタイズ済み (画像は非表示のまま) */
                           <div className="new-arrival-body" ref={newArrivalBodyRef} style={{ fontSize: `${newArrivalFontSize}px` }} dangerouslySetInnerHTML={renderResponseBody(currentArrivalItem.text, { hideImages: true, ogpCards: ogpCardsEnabled, tweetCards: tweetCardsEnabled, ogpAllow: ogpDomainFilters.allow, ogpBlock: ogpDomainFilters.block })} />
-                        : <div className="new-arrival-body" ref={newArrivalBodyRef} style={{ fontSize: `${newArrivalFontSize}px` }}>{currentArrivalItem.text}</div>}
+                        : <div className="new-arrival-body" ref={newArrivalBodyRef} style={{ fontSize: `${newArrivalFontSize}px` }}>{decodeHtmlEntities(currentArrivalItem.text)}</div>}
                     </div>
                   )}
                 </div>
@@ -7493,7 +7512,7 @@ export default function App() {
               if (diagnosticsEnabled) {
                 const tabTitle = threadTabs[activeTabIndex]?.title ?? "";
                 const arrivals: ArrivalItem[] = items
-                  .filter((item) => item.id < 1001)
+                  .filter((item) => showsArrivalResNo(curThreadUrl, item.id))
                   .map((item) => makeArrival({ responseNo: item.id, name: item.name, mail: item.mail, dateAndId: item.time, body: item.text }, tabTitle, curThreadUrl, fetchedResponses));
                 if (arrivals.length > 0) {
                   const queueWasEmpty = arrivalQueueRef.current.length === 0;
@@ -7509,7 +7528,7 @@ export default function App() {
               void (async () => {
                 await ttsStop();
                 for (const item of items) {
-                  if (item.id >= 1001) continue;
+                  if (!speaksResNo(curThreadUrl, item.id)) continue;
                   const prefix = site === "shitaraba" ? `したらば${item.id}番さん`
                     : site === "jpnkn" ? `ジャパンくん${item.id}番さん`
                     : `レス${item.id}番さん`;
@@ -9334,6 +9353,10 @@ export default function App() {
                   <input type="number" min={0} max={10} step={1} value={broadcastOutlineWidth} onChange={(e) => setBroadcastOutlineWidth(Math.max(0, Math.min(10, Number(e.target.value))))} style={{ width: 70 }} />
                   <span>px</span>
                 </div>
+                <label className="settings-row" title="OFFにすると、絵文字の部分だけ縁取りを外して表示します">
+                  <input type="checkbox" checked={broadcastEmojiOutline} onChange={(e) => setBroadcastEmojiOutline(e.target.checked)} />
+                  <span>絵文字に縁取りをつける</span>
+                </label>
               </fieldset>
               <fieldset>
                 <legend>表示時間・スクロール</legend>

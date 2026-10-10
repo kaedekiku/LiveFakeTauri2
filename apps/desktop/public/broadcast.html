@@ -7,7 +7,7 @@
 <style>
   :root {
     --bc-bg: #00ff00;
-    --bc-font: "Meiryo", "Segoe UI", sans-serif;
+    --bc-font: "Meiryo", "Segoe UI", "Segoe UI Emoji", sans-serif;
     --bc-font-size: 22px;
     --bc-color: #ffffff;
     --bc-outline-color: #000000;
@@ -58,6 +58,10 @@
     word-break: break-word;
     transform-origin: top left;
   }
+  /* 「絵文字に縁取りをつける」が OFF のとき、絵文字の部分だけ縁取りを外す */
+  .bc-emoji {
+    -webkit-text-stroke: 0;
+  }
 </style>
 </head>
 <body>
@@ -83,7 +87,30 @@
   var waitTimer = null;
   var scrollRaf = null;
 
-  var cfg = { displaySeconds: 12, waitSec: 1, msPerPx: 8 };
+  var cfg = { displaySeconds: 12, waitSec: 1, msPerPx: 8, emojiOutline: true };
+  var DEFAULT_FONT = '"Meiryo", "Segoe UI", "Segoe UI Emoji", sans-serif';
+  // 絵文字1文字分 (国旗・キーキャップ・肌色や異体字の修飾・ZWJ連結を含む)。各部分の先頭の文字が
+  // 重ならないため、どんな長さの文字列でも線形時間で終わる
+  var EMOJI_RE = /\p{Regional_Indicator}{2}|[#*0-9]️?⃣|\p{Extended_Pictographic}(?:️|\p{Emoji_Modifier})*(?:‍\p{Extended_Pictographic}(?:️|\p{Emoji_Modifier})*)*/gu;
+  // 文字列を表示する。HTMLとしては解釈させないため、絵文字を分ける場合もテキストノードと
+  // textContent を設定した span だけで組み立てる (innerHTML は使わない)
+  function setText(el, text) {
+    text = String(text == null ? "" : text);
+    if (cfg.emojiOutline) { el.textContent = text; return; }
+    el.textContent = "";
+    var last = 0;
+    var m;
+    EMOJI_RE.lastIndex = 0;
+    while ((m = EMOJI_RE.exec(text)) !== null) {
+      if (m.index > last) el.appendChild(document.createTextNode(text.slice(last, m.index)));
+      var span = document.createElement("span");
+      span.className = "bc-emoji";
+      span.textContent = m[0];
+      el.appendChild(span);
+      last = m.index + m[0].length;
+    }
+    if (last < text.length) el.appendChild(document.createTextNode(text.slice(last)));
+  }
   // ヘッダに表示する項目。false の項目のみ非表示にし、すべて非表示なら #meta 自体を隠して
   // 本文だけ表示する (未指定キーは表示する側に倒す)
   var headerVis = {};
@@ -129,12 +156,12 @@
     if (headerOn("id") && item.id) metaParts.push("ID:" + String(item.id));
     var idCount = Number(item.idCount) || 0;
     if (headerOn("count") && idCount > 0) metaParts.push("(" + (Number(item.idSeq) || 1) + "/" + idCount + ")");
-    metaEl.textContent = metaParts.join("　");
+    setText(metaEl, metaParts.join("　"));
     metaEl.style.display = metaParts.length ? "" : "none";
 
     bodyEl.style.transform = "";
     bodyEl.scrollTop = 0;
-    bodyEl.textContent = item.body || "";
+    setText(bodyEl, item.body);
 
     if (item.isAa) {
       // アスキーアート: 横スクロールにはせず、幅に収まるよう自動で縮小する
@@ -193,7 +220,12 @@
   function applyStyle(s) {
     s = s || {};
     var root = document.documentElement;
-    if (s.fontFamily) root.style.setProperty("--bc-font", s.fontFamily);
+    if (s.fontFamily !== undefined) {
+      // 選択したフォントに絵文字の字形がなくても表示できるよう、末尾に絵文字用フォントを付ける。
+      // フォント名は引用符で囲むため、引用符・記号・制御文字は取り除く
+      var name = String(s.fontFamily || "").replace(/["'\\;{}<>]/g, "").replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 100);
+      root.style.setProperty("--bc-font", name ? '"' + name + '", "Segoe UI Emoji", sans-serif' : DEFAULT_FONT);
+    }
     if (s.fontSize != null) root.style.setProperty("--bc-font-size", clampNum(s.fontSize, 22, 8, 200) + "px");
     if (s.textColor) root.style.setProperty("--bc-color", s.textColor);
     if (s.outlineColor) root.style.setProperty("--bc-outline-color", s.outlineColor);
@@ -203,6 +235,7 @@
     if (s.msPerPx != null) cfg.msPerPx = clampNum(s.msPerPx, 8, 1, 100);
     if (s.waitSec != null) cfg.waitSec = clampNum(s.waitSec, 1, 0, 20);
     if (s.headerVis && typeof s.headerVis === "object") headerVis = s.headerVis;
+    if (s.emojiOutline !== undefined) cfg.emojiOutline = s.emojiOutline !== false;
   }
 
   // メインウィンドウから呼ばれる唯一の入口。
