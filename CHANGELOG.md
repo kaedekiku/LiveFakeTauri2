@@ -16,19 +16,6 @@
 
 ## 設定ファイルの互換性
 
----
-
-## 前回 (v0.0.116) の更新内容
-
-### 変更
-
-- v0.0.115 で追加した TchViewer 連携 (TCVホワイトリスト・TCV再送) を削除しました。TchViewer が単体で動作するようになったため、
-  LiveFake 側の連携機能は不要になりました。`data` フォルダに `broadcast-whitelist.json` が残っている場合は削除してかまいません
-
-### 設定ファイルの互換性
-
-- `settings.ini` の `App.tcvTabRevealed` / `App.tcvWhitelist` / `App.tcvReplay` は使われなくなりました (残っていても影響はありません)
-
 ## v0.0.116 (2026/10/11)
 
 ## 新機能
