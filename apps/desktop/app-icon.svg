@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#22305a"/>
+      <stop offset="1" stop-color="#121a33"/>
+    </linearGradient>
+    <linearGradient id="v" gradientUnits="userSpaceOnUse" x1="150" y1="190" x2="400" y2="880">
+      <stop offset="0" stop-color="#ff2d55"/>
+      <stop offset="1" stop-color="#ff7a1a"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="1024" height="1024" rx="224" fill="url(#bg)"/>
+  <!-- LiveFake アプリアイコン: 吹き出し(赤〜オレンジ)の中に紺色の「V」。npx tauri icon app-icon.svg で各サイズを生成する -->
+  <rect x="150" y="190" width="724" height="560" rx="150" fill="url(#v)"/>
+  <path fill="url(#v)" d="M 286 720 L 236 880 L 446 740 Z"/>
+  <path fill="#16203f" d="M 292 290 H 440 L 512 520 L 584 290 H 732 L 576 680 H 448 Z"/>
+</svg>
