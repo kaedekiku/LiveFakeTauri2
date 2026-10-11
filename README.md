@@ -11,8 +11,7 @@ ZIP を展開するだけでインストール不要で使えます。
 
 <!-- リリースのたびに NEW.md の内容をここへ差し替えます。過去分は CHANGELOG.md を参照してください。 -->
 
-- 連携ソフト [TchViewer](https://github.com/kaedekiku/TchViewer) との連携機能 (TCVホワイトリスト・TCV再送) を追加 (隠しタブ・既定オフ)
-- README・ユーザーマニュアルに OBS連携の使い方と、連携ソフト TchViewer の説明を追加
+- README・ユーザーマニュアルに OBS連携 (隠しタブ) の使い方を追加
 
 詳しくは [NEW.md](NEW.md)、過去の更新は [CHANGELOG.md](CHANGELOG.md) を参照してください。
 
@@ -79,22 +78,15 @@ ZIP を展開するだけでインストール不要で使えます。
 - **ハイライト**: 15色パレットでワード・名前・ID を色分け (ID ハイライトは当日限り有効)。字幕ウィンドウにも同期。
 - 右クリックメニューから NG 追加・ハイライト設定を即時適用
 
-### 配信ソフト・外部ソフトとの連携 (既定オフ・隠しタブ)
+### 配信ソフトとの連携 (既定オフ・隠しタブ)
 
-設定 > 情報 の「隠しタブ」から、それぞれの設定タブを表示して使います。
+設定 > 情報 の「隠しタブ」から設定タブを表示して使います。
 
 | 機能 | 説明 |
 |------|------|
 | **OBS連携** | 「配信ホワイトリスト」に登録した ID の新着レスだけを専用ウィンドウに表示し、OBS でキャプチャして配信に載せます。背景色 (クロマキー用)・フォント・文字色・縁取り・表示秒数・ヘッダ項目を設定可。OBS が起動しているときだけオンにできます |
-| **TchViewer 連携** | 連携ソフト [TchViewer](https://github.com/kaedekiku/TchViewer) と連携します。配信ホワイトリストを `data/broadcast-whitelist.json` に書き出す「TCVホワイトリスト」と、「このレスから読み上げ」の指定を TchViewer へ送る「TCV再送」(送り先はこの PC 内の `127.0.0.1:11280` のみ) |
 
-詳細は [docs/USER_MANUAL.md](docs/USER_MANUAL.md) 11.5〜11.6 節を参照してください。
-
-#### 連携ソフト
-
-| ソフト | 内容 |
-|--------|------|
-| [TchViewer](https://github.com/kaedekiku/TchViewer) | 配信用ビュワー。LiveFake の配信ホワイトリストを読み取り、指定した ID のレスを OBS に表示・読み上げます |
+詳細は [docs/USER_MANUAL.md](docs/USER_MANUAL.md) 11.5 節を参照してください。
 
 ### 設定・カスタマイズ
 
@@ -160,7 +152,6 @@ AppData (`%APPDATA%` / `%LOCALAPPDATA%` / `%TEMP%`) にはファイルを作ら�
 | `cache.db` | スレッドレスキャッシュ / リンクカードキャッシュ (SQLite) — dat 落ちスレの閲覧に利用 |
 | `ImageViewURLReplace.txt` | 画像 URL 置換ルール (TSV) |
 | `eventlog/` | ログファイル (デフォルト7日保持) |
-| `broadcast-whitelist.json` | TchViewer 連携用の配信ホワイトリスト (設定の TchViewer連携 で「TCVホワイトリスト」をオンにしたときだけ書き出し) |
 | `webview/` | 画面部分 (WebView2) のキャッシュ等。上限は設定で変更可 (既定 100MB)。いつ削除してもよく、移行時のコピーも不要 |
 | `tmp/` | 一時ファイル (終了時・次回起動時に削除) |
 

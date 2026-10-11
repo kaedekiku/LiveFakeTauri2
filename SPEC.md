@@ -233,9 +233,6 @@ Tauri App (livefake)
 ### ウィンドウ・アプリ
 `set_window_theme` `save/load_window_size` `quit_app` `open_external_url` `open_file_dialog` `open_folder_dialog` `get_data_dir` `list_system_fonts` `check_for_updates`
 
-### TchViewer 連携
-`tchviewer_replay` (`POST http://127.0.0.1:11280/api/replay` 固定)。TCVホワイトリストの書き出しは `save_generic_json` (`broadcast-whitelist.json`、書き込みのみ許可)
-
 ---
 
 ## 6. データ永続化仕様

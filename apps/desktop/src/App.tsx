@@ -936,29 +936,6 @@ export default function App() {
   // 想定利用者がごく一部のため、設定タブは既定で隠しておき、「情報」タブのボタンで表示する。
   // 機能自体も既定でオフで、オンにするにはOBSの起動が必要 (Rust側でチェック)。
   const [obsTabRevealed, setObsTabRevealed] = useState(false);
-  // ===== TchViewer連携 =====
-  // TCVホワイトリストがオンの間は、レス右クリックメニューに配信ホワイトリストの追加/解除を常に表示し、
-  // 配信ホワイトリストが変わるたびに data/broadcast-whitelist.json へ書き出す (TchViewer が読み取り専用で参照する)。
-  // 設定タブは OBS連携と同じく既定で隠しておき、「情報」タブのボタンで表示する。
-  const [tcvTabRevealed, setTcvTabRevealed] = useState(false);
-  const [tcvWhitelistEnabled, setTcvWhitelistEnabled] = useState(false);
-  const [tcvDataDir, setTcvDataDir] = useState("");
-  // TCV再送: 「このレスから読み上げ」の指定を TchViewer にも送る (既定オフ)。
-  // LiveFake 側の読み上げ・表示はそのまま行う (どちらで読むかは TchViewer の「読み上げ」設定で切り替える)
-  const [tcvReplayEnabled, setTcvReplayEnabled] = useState(false);
-  // 連打対策: 同じスレ・同じ番号の指定は 0.5 秒以内なら送り直さない
-  const tcvReplayLastRef = useRef<{ key: string; at: number } | null>(null);
-  const sendTcvReplay = (url: string, fromNo: number) => {
-    if (!isTauriRuntime() || !url || fromNo < 1) return;
-    const key = `${url}#${fromNo}`;
-    const now = Date.now();
-    const last = tcvReplayLastRef.current;
-    if (last && last.key === key && now - last.at < 500) return;
-    tcvReplayLastRef.current = { key, at: now };
-    invoke<{ passed: number; blockedWhitelist: number; blockedNg: number; truncated: boolean }>("tchviewer_replay", { threadUrl: url, fromNo, toNo: null })
-      .then((r) => setStatus(`TchViewerへ送信: 表示${r.passed}件 / ホワイトリスト外${r.blockedWhitelist}件 / NG ${r.blockedNg}件${r.truncated ? " (50件で打ち切り)" : ""}`))
-      .catch((e) => { console.warn("tchviewer_replay failed", e); setStatus(`TchViewerに送れませんでした (${String(e)})`); });
-  };
   const [obsIntegrationEnabled, setObsIntegrationEnabled] = useState(false);
   const obsIntegrationEnabledRef = useRef(false);
   obsIntegrationEnabledRef.current = obsIntegrationEnabled;
@@ -1002,9 +979,9 @@ export default function App() {
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  type SettingsCategory = "display" | "posting" | "tts" | "tts-dict" | "proxy" | "ng" | "subtitle" | "highlights" | "presets" | "reset" | "info" | "obs" | "tcv";
-  const SETTINGS_CATEGORIES: SettingsCategory[] = ["display", "posting", "tts", "tts-dict", "subtitle", "proxy", "ng", "highlights", "presets", "reset", "info", ...(obsTabRevealed ? (["obs"] as const) : []), ...(tcvTabRevealed ? (["tcv"] as const) : [])];
-  const SETTINGS_CATEGORY_LABELS: Record<SettingsCategory, string> = { display: "表示", posting: "書き込み", tts: "読み上げ", "tts-dict": "読み上げ辞書", subtitle: "字幕", proxy: "プロキシ", ng: "NG", highlights: "ハイライト", presets: "プリセット", reset: "リセット", info: "情報", obs: "OBS連携", tcv: "TchViewer連携" };
+  type SettingsCategory = "display" | "posting" | "tts" | "tts-dict" | "proxy" | "ng" | "subtitle" | "highlights" | "presets" | "reset" | "info" | "obs";
+  const SETTINGS_CATEGORIES: SettingsCategory[] = ["display", "posting", "tts", "tts-dict", "subtitle", "proxy", "ng", "highlights", "presets", "reset", "info", ...(obsTabRevealed ? (["obs"] as const) : [])];
+  const SETTINGS_CATEGORY_LABELS: Record<SettingsCategory, string> = { display: "表示", posting: "書き込み", tts: "読み上げ", "tts-dict": "読み上げ辞書", subtitle: "字幕", proxy: "プロキシ", ng: "NG", highlights: "ハイライト", presets: "プリセット", reset: "リセット", info: "情報", obs: "OBS連携" };
   // 設定画面の保存まわりの状態 (詳細は「設定画面の保存 / 復元 / リセット / プリセット」の節)
   const settingsOpenRef = useRef(false);
   settingsOpenRef.current = settingsOpen;
@@ -1041,7 +1018,6 @@ export default function App() {
     reset: [],
     info: [],
     obs: [],
-    tcv: [],
   };
   const [settingsCategory, setSettingsCategory] = useState<SettingsCategory>("display");
   const [settingsSection, setSettingsSection] = useState("");
@@ -1292,26 +1268,6 @@ export default function App() {
     if (items.length === 0) return;
     void invoke("broadcast_update", { data: { items } }).catch(() => {});
   };
-  // TCVホワイトリスト: 配信ホワイトリストを TchViewer 用に書き出す。
-  // 形式は { date: 日本時間の日付 (YYYY-MM-DD), ids: [...] }。5ch の ID は日本時間の0時に切り替わるため、
-  // TchViewer 側は date が今日でなければ無視する。オンにした時点 (起動時の設定読み込みを含む) で現在の一覧を、
-  // オフにしたときは空の一覧を書き出し、前回起動時や無効化前のIDが残らないようにする。
-  const tcvWhitelistWasEnabledRef = useRef(false);
-  useEffect(() => {
-    if (!isTauriRuntime()) return;
-    const wasEnabled = tcvWhitelistWasEnabledRef.current;
-    tcvWhitelistWasEnabledRef.current = tcvWhitelistEnabled;
-    if (!tcvWhitelistEnabled && !wasEnabled) return;
-    const date = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
-    const ids = tcvWhitelistEnabled ? Object.keys(broadcastWhitelist) : [];
-    void invoke("save_generic_json", { filename: "broadcast-whitelist.json", data: { date, ids } })
-      .catch((e) => console.warn("save broadcast-whitelist.json failed", e));
-  }, [broadcastWhitelist, tcvWhitelistEnabled]);
-  // TchViewer連携タブに書き出し先を表示するため、データフォルダの場所を取得する
-  useEffect(() => {
-    if (!isTauriRuntime() || !tcvTabRevealed || tcvDataDir) return;
-    invoke<string>("get_data_dir").then(setTcvDataDir).catch((e) => console.warn("get_data_dir failed", e));
-  }, [tcvTabRevealed, tcvDataDir]);
   // OBS連携がオフになったら、レス右クリックメニューを開いていても表示されないよう
   // ホワイトリストは残したままでよい (当日限りで自然に意味を失う運用)
   // 字幕の表示が終わるまで次のレスを待つ (同期)。字幕ウィンドウが閉じている・報告が無いときは新着ペインの時間だけで進む
@@ -5005,9 +4961,6 @@ export default function App() {
       if (map["App.jpnknHost"] !== undefined && map["App.jpnknHost"].trim()) setJpnknHost(map["App.jpnknHost"]);
       if (map["App.mainAlwaysOnBottom"]) setMainAlwaysOnBottom(map["App.mainAlwaysOnBottom"] === "true");
       if (map["App.obsTabRevealed"]) setObsTabRevealed(map["App.obsTabRevealed"] === "true");
-      if (map["App.tcvTabRevealed"]) setTcvTabRevealed(map["App.tcvTabRevealed"] === "true");
-      if (map["App.tcvWhitelist"]) setTcvWhitelistEnabled(map["App.tcvWhitelist"] === "true");
-      if (map["App.tcvReplay"]) setTcvReplayEnabled(map["App.tcvReplay"] === "true");
       if (map["App.broadcastFontFamily"] !== undefined) { setBroadcastFontFamily(map["App.broadcastFontFamily"]); setBroadcastFontPickerInput(map["App.broadcastFontFamily"]); }
       if (map["App.broadcastFontSize"]) { const n = parseInt(map["App.broadcastFontSize"], 10); if (!isNaN(n)) setBroadcastFontSize(n); }
       if (map["App.broadcastTextColor"]) setBroadcastTextColor(map["App.broadcastTextColor"]);
@@ -5375,9 +5328,6 @@ export default function App() {
       "App.jpnknHost": jpnknHost,
       "App.mainAlwaysOnBottom": String(mainAlwaysOnBottom),
       "App.obsTabRevealed": String(obsTabRevealed),
-      "App.tcvTabRevealed": String(tcvTabRevealed),
-      "App.tcvWhitelist": String(tcvWhitelistEnabled),
-      "App.tcvReplay": String(tcvReplayEnabled),
       "App.broadcastFontFamily": broadcastFontFamily,
       "App.broadcastFontSize": String(broadcastFontSize),
       "App.broadcastTextColor": broadcastTextColor,
@@ -5417,7 +5367,7 @@ export default function App() {
     if (!isTauriRuntime() || !appSettingsLoadedRef.current || settingsOpenRef.current) return;
     void invoke("save_app_settings", { settings: buildAppSettingsMap() }).catch(() => {});
   }, [responsesFontSize, responseGap, autoRefreshInterval, autoRefreshEnabled, autoScrollEnabled, smoothScroll, maxOpenTabs, logRetentionDays, webviewCacheMb, imageSaveFolder, bbsmenuUrl, shitarabaHost, jpnknHost,
-      mainAlwaysOnBottom, obsTabRevealed, tcvTabRevealed, tcvWhitelistEnabled, tcvReplayEnabled, broadcastFontFamily, broadcastFontSize, broadcastTextColor, broadcastOutlineColor, broadcastOutlineWidth, broadcastEmojiOutline, broadcastBgColor, broadcastDisplaySeconds, cssAllowExternalUrls, streamMaskEnabled, ngAboneSpeakEnabled,
+      mainAlwaysOnBottom, obsTabRevealed, broadcastFontFamily, broadcastFontSize, broadcastTextColor, broadcastOutlineColor, broadcastOutlineWidth, broadcastEmojiOutline, broadcastBgColor, broadcastDisplaySeconds, cssAllowExternalUrls, streamMaskEnabled, ngAboneSpeakEnabled,
       ttsMode, ttsEnabled, ttsMaxReadLength, ttsUrlOmitEnabled, sapiVoiceIndex, sapiRate, sapiVolume,
       voicevoxEndpoint, voicevoxSpeakerId, voicevoxSpeedScale, voicevoxPitchScale, voicevoxIntonationScale, voicevoxVolumeScale,
       composeName, composeMail, composeSage, composeFontSize, composeOpen]);
@@ -7526,8 +7476,8 @@ export default function App() {
               }}>ハイライト解除</button>
             );
           })()}
-          {/* ----- 配信ホワイトリスト (OBS連携 か TCVホワイトリストが有効なときだけ表示) ----- */}
-          {(obsIntegrationEnabled || tcvWhitelistEnabled) && (() => {
+          {/* ----- 配信ホワイトリスト (OBS連携が有効なときだけ表示) ----- */}
+          {obsIntegrationEnabled && (() => {
             // ID欄を右クリックしたときはそのID、本文などを右クリックしたときはそのレスのID
             // (レス表示欄でIDを非表示にしていても登録できるようにするため)
             const wlId = responseMenu.resId
@@ -7581,7 +7531,7 @@ export default function App() {
           {/* ----- セパレーター ----- */}
           <hr className="menu-sep" />
           {/* このレスから読み上げ（レス番号上のみ） */}
-          {responseMenu.isOnResNo && responseMenu.responseId > 0 && (ttsMode !== "off" || diagnosticsEnabled || tcvReplayEnabled) && (
+          {responseMenu.isOnResNo && responseMenu.responseId > 0 && (ttsMode !== "off" || diagnosticsEnabled) && (
             <button onClick={() => {
               const startNo = responseMenu.responseId;
               const items = visibleResponseItems.filter((r) => r.id >= startNo);
@@ -7589,8 +7539,6 @@ export default function App() {
               const site = detectSiteType(curThreadUrl);
               setResponseMenu(null);
               setStatus(`レス ${startNo} から読み上げ開始 (${items.length}件)`);
-              // TCV再送: 同じ指定を TchViewer にも送る (失敗してもこの後の処理は通常どおり)
-              if (tcvReplayEnabled) sendTcvReplay(curThreadUrl, startNo);
               // テスト機能 (診断モード: debug ビルドまたは LIVEFAKE_DIAG=1 のときのみ):
               // 該当レスを「新着レス」として扱い、自動更新時と同じ経路で新着レスペイン・字幕ウィンドウへ流す。
               // 新着ペイン・字幕でのカード表示などの見え方を、実際の新着を待たずに検証するためのもの。
@@ -9369,27 +9317,14 @@ export default function App() {
                   <button onClick={openThirdPartyLicenses}>表示する</button>
                 </div>
               </fieldset>
-              {(!obsTabRevealed || !tcvTabRevealed) && (
+              {!obsTabRevealed && (
                 <fieldset>
                   <legend>隠しタブ</legend>
-                  {!obsTabRevealed && (
-                    <>
-                      <div className="settings-row">
-                        <span>OBS連携タブを表示する</span>
-                        <button onClick={() => setObsTabRevealed(true)}>表示する</button>
-                      </div>
-                      <p className="settings-hint">配信ソフト(OBS)と連携するための、ごく一部の人向けの機能を追加で表示します。</p>
-                    </>
-                  )}
-                  {!tcvTabRevealed && (
-                    <>
-                      <div className="settings-row">
-                        <span>TchViewer連携タブを表示する</span>
-                        <button onClick={() => setTcvTabRevealed(true)}>表示する</button>
-                      </div>
-                      <p className="settings-hint">TchViewerと連携するための機能を追加で表示します。</p>
-                    </>
-                  )}
+                  <div className="settings-row">
+                    <span>OBS連携タブを表示する</span>
+                    <button onClick={() => setObsTabRevealed(true)}>表示する</button>
+                  </div>
+                  <p className="settings-hint">配信ソフト(OBS)と連携するための、ごく一部の人向けの機能を追加で表示します。</p>
                 </fieldset>
               )}
               </section>
@@ -9502,72 +9437,6 @@ export default function App() {
                   <input type="number" min={1} max={50} step={1} value={broadcastTiming.msPerPx} onChange={(e) => setBroadcastTiming({ ...broadcastTiming, msPerPx: Math.max(1, Math.min(50, Number(e.target.value))) })} style={{ width: 70 }} />
                   <span>ms</span>
                 </div>
-              </fieldset>
-              <fieldset>
-                <legend>配信ホワイトリスト（本日分・{Object.keys(broadcastWhitelist).length}件）</legend>
-                {Object.keys(broadcastWhitelist).length === 0 ? (
-                  <p className="settings-hint">レスを右クリックして「配信ホワイトリストに追加」で登録できます。</p>
-                ) : (
-                  <ul className="ng-list">
-                    {Object.keys(broadcastWhitelist).map((id) => (
-                      <li key={id}>
-                        <span>ID:{id}</span>
-                        <button className="ng-remove" onClick={() => setBroadcastWhitelist((prev) => { const next = { ...prev }; delete next[id]; return next; })} title="削除">×</button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </fieldset>
-              </section>
-              </div>
-              )}
-              {(settingsSearching || settingsCategory === "tcv") && tcvTabRevealed && (
-              <div className="settings-cat" data-cat="tcv">
-              <section className="settings-section" data-section="main">
-                {settingsSectionHeading("tcv", "main")}
-              <p className="settings-hint">
-                配信ホワイトリストに登録したIDの一覧をファイルに書き出し、TchViewerから参照できるようにする機能です。
-              </p>
-              <fieldset>
-                <legend>有効/無効</legend>
-                <div className="settings-row">
-                  <span>TCVホワイトリスト</span>
-                  <label className="switch">
-                    <input type="checkbox" checked={tcvWhitelistEnabled} onChange={(e) => setTcvWhitelistEnabled(e.target.checked)} />
-                    <span className="track"><span className="knob"></span></span>
-                  </label>
-                </div>
-                <p className="settings-hint">
-                  オンの間は、レスの右クリックメニューに「配信ホワイトリストに追加」を常に表示し、配信ホワイトリストが変わるたびに書き出します
-                  (OBS連携の配信ホワイトリストと同じ一覧です)。オンにしたとき・LiveFakeの起動時は現在の一覧を、オフにしたときは空の一覧を書き出します。
-                </p>
-              </fieldset>
-              <fieldset>
-                <legend>TCV再送</legend>
-                <div className="settings-row">
-                  <span>TCV再送</span>
-                  <label className="switch">
-                    <input type="checkbox" checked={tcvReplayEnabled} onChange={(e) => setTcvReplayEnabled(e.target.checked)} />
-                    <span className="track"><span className="knob"></span></span>
-                  </label>
-                </div>
-                <p className="settings-hint">
-                  オンの間は、レス番号の右クリック「このレスから読み上げ」を実行したとき、同じ指定をTchViewerにも送ります(TchViewer側が再送に対応している必要があります)
-                  (送り先はこのPC内の 127.0.0.1:11280 だけです。送るのはスレのURLとレス番号です)。
-                  TchViewer側でホワイトリストとワードNGを通したレスがOBSに流れます(1回に最大50件)。
-                  LiveFake側の読み上げ・表示もこれまでどおり行うため、どちらで読み上げるかはTchViewerの「読み上げ」設定で切り替えてください。
-                  結果はステータスバーに表示します。
-                </p>
-              </fieldset>
-              <fieldset>
-                <legend>書き出し先</legend>
-                <div className="settings-row">
-                  <input type="text" readOnly value={tcvDataDir ? `${tcvDataDir}\\broadcast-whitelist.json` : "(取得できませんでした)"} style={{ flex: 1, minWidth: 0 }} onFocus={(e) => e.currentTarget.select()} />
-                  <button disabled={!tcvDataDir} onClick={() => { void navigator.clipboard.writeText(`${tcvDataDir}\\broadcast-whitelist.json`); setStatus("書き出し先のパスをコピーしました"); }}>コピー</button>
-                </div>
-                <p className="settings-hint">
-                  形式: {`{"date": "YYYY-MM-DD", "ids": ["ID", ...]}`}。date は日本時間の日付です。5chのIDが切り替わる0時を過ぎても、一覧が次に変わるまでは前日の日付のままになります(TchViewer側で今日の日付以外は無視してください)。
-                </p>
               </fieldset>
               <fieldset>
                 <legend>配信ホワイトリスト（本日分・{Object.keys(broadcastWhitelist).length}件）</legend>
