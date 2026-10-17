@@ -203,7 +203,7 @@ const decodeHtmlEntities = (s: string) =>
       const cp = Number.parseInt(hex, 16);
       return isValidCodePoint(cp) ? String.fromCodePoint(cp) : _m;
     });
-// NG「見えない文字を含むレス」の対象 (TchViewer の判定と同じ文字)。幅ゼロの空白・単語結合子・BOM、
+// NG「見えない文字を含むレス」の対象。幅ゼロの空白・単語結合子・BOM、
 // 文字の向きを変える制御文字 (LRM/RLM・埋め込み/上書き・分離)、空白に見えるハングルの埋め文字。
 // U+200D (合成絵文字の接合子) と U+FE00〜FE0F (異体字セレクタ) は絵文字に普通に使われるので対象にしない
 const INVISIBLE_CHAR_RE = /[\u200B\u200C\u2060\uFEFF\u200E\u200F\u202A-\u202E\u2066-\u2069\u115F\u1160\u3164\uFFA0]/;
