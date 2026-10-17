@@ -34,6 +34,16 @@ type UpdateCheckResult = {
     | { key: string; sha256: string; size: number; filename: string }
     | null;
 };
+// "1.2.3" 形式のバージョンを比べる (a が新しければ正)
+const compareVersions = (a: string, b: string) => {
+  const pa = a.replace(/^v/i, "").split(".").map((x) => parseInt(x, 10) || 0);
+  const pb = b.replace(/^v/i, "").split(".").map((x) => parseInt(x, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (d !== 0) return d;
+  }
+  return 0;
+};
 type ThreadListItem = {
   threadKey: string;
   title: string;
@@ -748,6 +758,11 @@ export default function App() {
   const maskDisplay = (v: string) => streamMaskEnabled ? "••••••••" : v;
   const [metadataUrl, setMetadataUrl] = useState("https://raw.githubusercontent.com/kaedekiku/LiveFakeTauri2/main/apps/landing/public/latest.json");
   const [currentVersion, setCurrentVersion] = useState(typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "0.0.0");
+  // 起動時の更新確認: オンなら1日1回だけ latest.json (数百バイト) を取りに行く。前回確認した日と、
+  // そのとき見つけた新しい版の番号を settings.ini に残し、同じ日は通信せずにその結果で告知する
+  const [autoUpdateCheck, setAutoUpdateCheck] = useState(true);
+  const [lastUpdateCheck, setLastUpdateCheck] = useState("");
+  const [knownLatestVersion, setKnownLatestVersion] = useState("");
   const [updateResult, setUpdateResult] = useState<UpdateCheckResult | null>(null);
   const [updateProbe, setUpdateProbe] = useState("not run");
   const [composeOpen, setComposeOpen] = useState(false);
@@ -3366,6 +3381,7 @@ export default function App() {
       setUpdateProbe(
         `current=${r.currentVersion} latest=${r.latestVersion} hasUpdate=${r.hasUpdate} platform=${r.currentPlatformKey} asset=${r.currentPlatformAsset?.filename ?? "(none)"}`
       );
+      setKnownLatestVersion(r.latestVersion);
       if (r.hasUpdate) {
         setStatus(`新しいバージョンがあります: v${r.latestVersion}`);
       } else {
@@ -3376,6 +3392,25 @@ export default function App() {
       setStatus(`更新確認に失敗しました: ${String(error)}`);
     }
   };
+
+  const runStartupUpdateCheck = (map: Record<string, string>) => {
+    const d = new Date();
+    const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    const known = map["App.knownLatestVersion"] ?? "";
+    if (known && compareVersions(known, currentVersion) > 0) {
+      setStatus(`新しいバージョンがあります: v${known} (ヘルプ > バージョン情報)`);
+    }
+    if (map["App.autoUpdateCheck"] === "false" || map["App.lastUpdateCheck"] === today) return;
+    setLastUpdateCheck(today);
+    invoke<UpdateCheckResult>("check_for_updates", { metadataUrl: metadataUrl.trim() || null, currentVersion: currentVersion.trim() || null })
+      .then((r) => {
+        setUpdateResult(r);
+        setKnownLatestVersion(r.latestVersion);
+        if (r.hasUpdate) setStatus(`新しいバージョンがあります: v${r.latestVersion} (ヘルプ > バージョン情報)`);
+      })
+      .catch((e) => console.warn("startup update check failed", e));
+  };
+  const updateAvailable = !!updateResult?.hasUpdate || (!!knownLatestVersion && compareVersions(knownLatestVersion, currentVersion) > 0);
 
   const openDownloadPage = async () => {
     if (!updateResult?.downloadPageUrl) return;
@@ -5029,6 +5064,9 @@ export default function App() {
       if (map["App.smoothScroll"]) setSmoothScroll(map["App.smoothScroll"] === "true");
       if (map["App.maxOpenTabs"]) { const n = parseInt(map["App.maxOpenTabs"], 10); if (!isNaN(n) && n >= 1) setMaxOpenTabs(n); }
       if (map["App.tabSiteColors"]) setTabSiteColors(map["App.tabSiteColors"] !== "false");
+      if (map["App.autoUpdateCheck"]) setAutoUpdateCheck(map["App.autoUpdateCheck"] !== "false");
+      if (map["App.lastUpdateCheck"] !== undefined) setLastUpdateCheck(map["App.lastUpdateCheck"]);
+      if (map["App.knownLatestVersion"] !== undefined) setKnownLatestVersion(map["App.knownLatestVersion"]);
       if (map["App.logRetentionDays"]) { const n = parseInt(map["App.logRetentionDays"], 10); if (!isNaN(n) && n >= 0) setLogRetentionDays(n); }
       if (map["App.webviewCacheMb"]) { const n = parseInt(map["App.webviewCacheMb"], 10); if (!isNaN(n)) setWebviewCacheMb(Math.max(10, Math.min(1000, n))); }
       if (map["App.imageSaveFolder"] !== undefined) setImageSaveFolder(map["App.imageSaveFolder"]);
@@ -5074,7 +5112,7 @@ export default function App() {
   useEffect(() => {
     if (!isTauriRuntime()) { appSettingsLoadedRef.current = true; return; }
     invoke<Record<string, string>>("load_app_settings")
-      .then((map) => applyAppSettings(map))
+      .then((map) => { applyAppSettings(map); runStartupUpdateCheck(map); })
       .catch(() => {})
       .finally(() => { appSettingsLoadedRef.current = true; });
   }, []);
@@ -5398,6 +5436,9 @@ export default function App() {
       "App.maxOpenTabs": String(maxOpenTabs),
       "App.logRetentionDays": String(logRetentionDays),
       "App.tabSiteColors": String(tabSiteColors),
+      "App.autoUpdateCheck": String(autoUpdateCheck),
+      "App.lastUpdateCheck": lastUpdateCheck,
+      "App.knownLatestVersion": knownLatestVersion,
       "App.webviewCacheMb": String(webviewCacheMb),
       "App.imageSaveFolder": imageSaveFolder,
       "App.bbsmenuUrl": bbsmenuUrl,
@@ -5443,7 +5484,7 @@ export default function App() {
   useEffect(() => {
     if (!isTauriRuntime() || !appSettingsLoadedRef.current || settingsOpenRef.current) return;
     void invoke("save_app_settings", { settings: buildAppSettingsMap() }).catch(() => {});
-  }, [responsesFontSize, responseGap, autoRefreshInterval, autoRefreshEnabled, autoScrollEnabled, smoothScroll, maxOpenTabs, logRetentionDays, tabSiteColors, webviewCacheMb, imageSaveFolder, bbsmenuUrl, shitarabaHost, jpnknHost,
+  }, [responsesFontSize, responseGap, autoRefreshInterval, autoRefreshEnabled, autoScrollEnabled, smoothScroll, maxOpenTabs, logRetentionDays, tabSiteColors, autoUpdateCheck, lastUpdateCheck, knownLatestVersion, webviewCacheMb, imageSaveFolder, bbsmenuUrl, shitarabaHost, jpnknHost,
       mainAlwaysOnBottom, obsTabRevealed, broadcastFontFamily, broadcastFontSize, broadcastTextColor, broadcastOutlineColor, broadcastOutlineWidth, broadcastEmojiOutline, broadcastBgColor, broadcastDisplaySeconds, cssAllowExternalUrls, streamMaskEnabled, ngAboneSpeakEnabled,
       ttsMode, ttsEnabled, ttsMaxReadLength, ttsUrlOmitEnabled, sapiVoiceIndex, sapiRate, sapiVolume,
       voicevoxEndpoint, voicevoxSpeakerId, voicevoxSpeedScale, voicevoxPitchScale, voicevoxIntonationScale, voicevoxVolumeScale,
@@ -5872,7 +5913,7 @@ export default function App() {
             } },
           ]},
           { label: "ヘルプ", items: [
-            { text: "バージョン情報", action: () => requestAnimationFrame(() => { setAboutOpen(true); void checkForUpdates(); }) },
+            { text: updateAvailable ? "バージョン情報 (新しいバージョンがあります)" : "バージョン情報", action: () => requestAnimationFrame(() => { setAboutOpen(true); void checkForUpdates(); }) },
           ]},
         ].map(({ label, items }) => (
           <div key={label} className="menu-item-wrap" onClick={(e) => e.stopPropagation()}>
@@ -5882,6 +5923,7 @@ export default function App() {
               onMouseEnter={() => { if (openMenu) setOpenMenu(label); }}
             >
               {label}
+              {label === "ヘルプ" && updateAvailable && <span className="menu-badge" title="新しいバージョンがあります">●</span>}
             </span>
             {openMenu === label && (
               <div className="menu-dropdown">
@@ -9404,7 +9446,11 @@ export default function App() {
                 {settingsSectionHeading("info", "main")}
               <fieldset>
                 <legend>情報</legend>
-                <div className="settings-row"><span>バージョン</span><span>{currentVersion}</span></div>
+                <div className="settings-row"><span>バージョン</span><span>{currentVersion}</span>{updateAvailable && <span className="settings-hint" style={{ color: "#cc3300" }}>新しいバージョンがあります{knownLatestVersion ? ` (v${knownLatestVersion})` : ""}</span>}</div>
+                <label className="settings-row" title="オンにすると、起動時に1日1回だけ、公開している最新版の情報 (数百バイト) を確認します。オフにすると、ヘルプ > バージョン情報 を開いたときだけ確認します">
+                  <input type="checkbox" checked={autoUpdateCheck} onChange={(e) => setAutoUpdateCheck(e.target.checked)} />
+                  <span>起動時に新しいバージョンを確認する (1日1回)</span>
+                </label>
                 <div className="settings-row">
                   <span>GitHub</span>
                   <button onClick={() => { const url = "https://github.com/kaedekiku/LiveFakeTauri2"; if (isTauriRuntime()) void invoke("open_external_url", { url }).catch(() => window.open(url, "_blank")); else window.open(url, "_blank"); }}>GitHubページを開く</button>

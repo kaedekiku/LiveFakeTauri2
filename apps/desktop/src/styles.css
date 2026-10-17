@@ -3911,3 +3911,6 @@ button.search-history-btn:hover {
 .tab-site-colors .thread-tab.site-jpnkn { box-shadow: inset 4px 0 0 #2a7bd6; }
 .tab-site-colors .board-tab-bar .board-tab.site-twitch,
 .tab-site-colors .thread-tab.site-twitch { box-shadow: inset 4px 0 0 #9147ff; }
+
+/* ヘルプメニューの「新しいバージョンがあります」の印 */
+.menu-badge { color: #e05a2b; font-size: 0.7em; margin-left: 2px; vertical-align: top; }
