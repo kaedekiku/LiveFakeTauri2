@@ -20,6 +20,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::process::Command;
 use tauri::{AppHandle, Emitter, Manager};
+
+mod twitch_auth;
+mod twitch_badges;
+mod youtube;
 use tauri::webview::WebviewWindowBuilder;
 use tauri::window::Color;
 use std::sync::Mutex;
@@ -35,8 +39,271 @@ struct PopupImageEntry {
 }
 struct ImagePopupState(Mutex<Vec<PopupImageEntry>>);
 
+// --- Twitch チャット (匿名・読み取り専用。受信は core-twitch) ---
+
+/// 受信中のチャンネルと、その受信タスク
+struct TwitchState(Mutex<HashMap<String, tauri::async_runtime::JoinHandle<()>>>);
+
+// --- OBS 表示 (ブラウザソース用のサーバー。127.0.0.1 のみ・既定オフ。実体は core-overlay) ---
+
+struct OverlayState {
+    hub: std::sync::Arc<core_overlay::OverlayHub>,
+    server: Mutex<Option<core_overlay::RunningServer>>,
+}
+
+/// OBS 表示のサーバーを始める (すでに同じポートで動いていれば何もしない)。戻り値は待ち受けているポート
+#[tauri::command(async)]
+async fn overlay_start(state: tauri::State<'_, OverlayState>, port: u16) -> Result<u16, String> {
+    if port < 1024 {
+        return Err("ポートは 1024〜65535 の範囲で指定してください".into());
+    }
+    let old = {
+        let mut guard = state.server.lock().unwrap_or_else(|e| e.into_inner());
+        if guard.as_ref().map(|s| s.port()) == Some(port) {
+            return Ok(port);
+        }
+        guard.take()
+    };
+    if let Some(old) = old {
+        old.stop();
+    }
+    let server = core_overlay::start(state.hub.clone(), port).await.map_err(|e| e.to_string())?;
+    let _ = core_store::append_log(&format!("overlay: start 127.0.0.1:{port}"));
+    *state.server.lock().unwrap_or_else(|e| e.into_inner()) = Some(server);
+    Ok(port)
+}
+
+#[tauri::command]
+fn overlay_stop(state: tauri::State<'_, OverlayState>) {
+    let old = state.server.lock().unwrap_or_else(|e| e.into_inner()).take();
+    if let Some(old) = old {
+        let _ = core_store::append_log(&format!("overlay: stop 127.0.0.1:{}", old.port()));
+        old.stop();
+    }
+}
+
+/// 表示する内容を OBS 表示へ送る (サーバーが止まっていても履歴には残り、立てたときに送られる)
+#[tauri::command]
+fn overlay_publish(state: tauri::State<'_, OverlayState>, items: Vec<core_overlay::OverlayComment>) {
+    state.hub.publish(&items);
+}
+
+/// OBS 表示から、目印の付いた表示を消す (YouTube で削除された発言)
+#[tauri::command]
+fn overlay_retract(state: tauri::State<'_, OverlayState>, keys: Vec<String>) {
+    state.hub.retract(&keys);
+}
+
+/// OBS 表示のレイアウト (名前 → 見た目の設定と追加 CSS) をまるごと差し替える
+#[tauri::command]
+fn overlay_set_layouts(
+    state: tauri::State<'_, OverlayState>,
+    layouts: HashMap<String, core_overlay::OverlayLayout>,
+) -> Result<(), String> {
+    state.hub.set_layouts(layouts).map_err(|e| e.to_string())
+}
+
+/// 同時に受信するチャンネル数の上限 (タブの開きすぎで接続が増えすぎないように)
+const TWITCH_MAX_CHANNELS: usize = 20;
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TwitchChatEvent {
+    channel: String,
+    login: String,
+    name: String,
+    color: String,
+    text: String,
+    /// 受信した時刻 (UNIX ミリ秒)
+    received_at: u64,
+    /// サブスク・ビッツなどのイベント (普通の発言なら null)
+    event: Option<TwitchChatEventKind>,
+    /// バッジの画像 (取得がオフ・不明なら空)
+    badges: Vec<twitch_badges::BadgeImage>,
+    /// スタンプの位置 (本文のコードポイント単位)
+    emotes: Vec<TwitchEmote>,
+    /// 最後のスタンプがビッツのパワーアップで巨大化している
+    giant: bool,
+}
+
+#[derive(Clone, Serialize)]
+struct TwitchEmote {
+    id: String,
+    start: usize,
+    end: usize,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TwitchChatEventKind {
+    kind: String,
+    months: u32,
+    count: u32,
+    bits: u32,
+    viewers: u32,
+    recipient: String,
+    reward: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TwitchStatusEvent {
+    channel: String,
+    /// "connecting" / "connected" / "disconnected"
+    state: String,
+    message: String,
+}
+
+/// Twitch ログイン (EventSub) の状態 (トークンは含めない)
+#[tauri::command]
+fn twitch_auth_status(state: tauri::State<'_, twitch_auth::TwitchAuthState>) -> twitch_auth::AuthStatus {
+    state.status()
+}
+
+/// Twitch ログインを始める (デバイスコード方式。コードと確認ページの URL を返し、許可されるまで裏で待つ)
+#[tauri::command]
+async fn twitch_login_start(state: tauri::State<'_, twitch_auth::TwitchAuthState>) -> Result<twitch_auth::AuthStatus, String> {
+    state.start_login().await
+}
+
+/// ログイン中なら、公式 API からスタンプの一覧 (名前と ID) を取る。掲示板に書かれたスタンプ名を画像にするのに使う
+#[tauri::command]
+async fn twitch_fetch_emotes(state: tauri::State<'_, twitch_auth::TwitchAuthState>, channels: Vec<String>) -> Result<Vec<twitch_auth::EmoteName>, String> {
+    state.fetch_emotes(channels).await
+}
+
+/// Twitch からログアウトする (Twitch 側の許可も取り消し、保存したログイン情報を消す)
+#[tauri::command]
+async fn twitch_logout(state: tauri::State<'_, twitch_auth::TwitchAuthState>) -> Result<(), String> {
+    state.logout().await;
+    Ok(())
+}
+
+/// Twitch のバッジ画像・チャンネルポイント報酬名の取得 (非公式の取得口 gql.twitch.tv) のオンオフ
+#[tauri::command]
+fn twitch_set_badges(state: tauri::State<'_, twitch_badges::BadgeState>, enabled: bool) -> Result<(), String> {
+    state.set_enabled(enabled);
+    Ok(())
+}
+
+/// 受信するチャンネルの一覧を、渡された一覧に合わせる (足りないものは受信を始め、余分なものは止める)。
+/// 開いている Twitch タブの一覧を毎回まるごと渡す使い方なので、画面の再読み込みなどで食い違っても自然に揃う。
+/// 戻り値は実際に受信対象にしたチャンネル名 (正規化済み)。チャット本文はログに残さない。
+#[tauri::command]
+fn twitch_sync(app: AppHandle, state: tauri::State<'_, TwitchState>, channels: Vec<String>) -> Result<Vec<String>, String> {
+    let mut wanted: Vec<String> = channels.iter().filter_map(|c| core_twitch::normalize_channel(c)).collect();
+    wanted.sort();
+    wanted.dedup();
+    wanted.truncate(TWITCH_MAX_CHANNELS);
+    app.state::<twitch_badges::BadgeState>().set_channels(wanted.clone());
+    let mut tasks = state.0.lock().unwrap_or_else(|e| e.into_inner());
+    tasks.retain(|channel, handle| {
+        let keep = wanted.contains(channel);
+        if !keep {
+            handle.abort();
+            let _ = core_store::append_log(&format!("twitch: stop #{channel}"));
+        }
+        keep
+    });
+    for channel in &wanted {
+        if tasks.contains_key(channel) {
+            continue;
+        }
+        let _ = core_store::append_log(&format!("twitch: start #{channel}"));
+        let (app_msg, app_status) = (app.clone(), app.clone());
+        let ch_badge = channel.clone();
+        let (ch_msg, ch_status) = (channel.clone(), channel.clone());
+        let handle = tauri::async_runtime::spawn(core_twitch::run_channel(
+            channel.clone(),
+            move |m| {
+                let received_at = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+                let _ = app_msg.emit(
+                    "twitch-message",
+                    {
+                    let badge_state = app_msg.state::<twitch_badges::BadgeState>();
+                    let badges = badge_state.resolve(&ch_badge, &m.badges);
+                    // ログイン中の自分のチャンネルは、チャンネルポイントを EventSub 側で出すので、チャットでは普通の発言として扱う
+                    let covered = app_msg.state::<twitch_auth::TwitchAuthState>().covers(&ch_badge);
+                    let event = m.event.filter(|e| !(covered && e.kind == "points"));
+                    TwitchChatEvent {
+                        badges,
+                        emotes: m.emotes.into_iter().map(|e| TwitchEmote { id: e.id, start: e.start, end: e.end }).collect(),
+                        giant: m.giant,
+                        channel: ch_msg.clone(),
+                        login: m.login,
+                        name: m.name,
+                        color: m.color,
+                        text: m.text,
+                        received_at,
+                        event: event.map(|e| TwitchChatEventKind {
+                            // 報酬名は分かれば (バッジと同じ取得口で調べた一覧から) 入れる
+                            reward: if e.reward.is_empty() { badge_state.reward_title(&ch_badge, &e.reward_id).unwrap_or_default() } else { e.reward },
+                            kind: e.kind,
+                            months: e.months,
+                            count: e.count,
+                            bits: e.bits,
+                            viewers: e.viewers,
+                            recipient: e.recipient,
+                        }),
+                    }
+                    },
+                );
+            },
+            move |st| {
+                let (state, message) = match st {
+                    core_twitch::Status::Connecting => ("connecting", String::new()),
+                    core_twitch::Status::Connected => ("connected", String::new()),
+                    core_twitch::Status::Disconnected { reason, retry_in_secs } => {
+                        ("disconnected", format!("{reason} ({retry_in_secs}秒後に再接続)"))
+                    }
+                };
+                if state != "connecting" {
+                    let _ = core_store::append_log(&format!("twitch: #{ch_status} {state} {message}"));
+                }
+                let _ = app_status.emit(
+                    "twitch-status",
+                    TwitchStatusEvent { channel: ch_status.clone(), state: state.to_string(), message },
+                );
+            },
+        ));
+        tasks.insert(channel.clone(), handle);
+    }
+    Ok(wanted)
+}
+
 /// Saved subtitle window position before moving off-screen
 static SUBTITLE_SAVED_POS: Mutex<Option<(i32, i32)>> = Mutex::new(None);
+/// 字幕ウィンドウのサイズ (論理ピクセル)。リサイズのたびに更新し、字幕をオフにしたときと終了時に settings.ini へ書く
+/// (App.subtitleWindowWidth / App.subtitleWindowHeight)。起動時に読み戻し、字幕をオンにしたときに復元する
+static SUBTITLE_SAVED_SIZE: Mutex<Option<(f64, f64)>> = Mutex::new(None);
+
+fn subtitle_size_ok(w: f64, h: f64) -> bool {
+    (120.0..=10000.0).contains(&w) && (40.0..=10000.0).contains(&h)
+}
+
+/// 覚えている字幕ウィンドウのサイズを settings.ini に書く (他の項目には触れない)
+fn persist_subtitle_size() {
+    let saved = *SUBTITLE_SAVED_SIZE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((w, h)) = saved {
+        let mut m = HashMap::new();
+        m.insert("App.subtitleWindowWidth".to_string(), format!("{}", w.round()));
+        m.insert("App.subtitleWindowHeight".to_string(), format!("{}", h.round()));
+        let _ = core_store::save_settings_ini(&m);
+    }
+}
+
+/// 字幕ウィンドウの今のサイズを覚える
+fn capture_subtitle_size(win: &tauri::WebviewWindow) {
+    if let (Ok(size), Ok(scale)) = (win.inner_size(), win.scale_factor()) {
+        let (w, h) = (f64::from(size.width) / scale, f64::from(size.height) / scale);
+        if subtitle_size_ok(w, h) {
+            *SUBTITLE_SAVED_SIZE.lock().unwrap_or_else(|e| e.into_inner()) = Some((w, h));
+        }
+    }
+}
 /// 書き込みの浮遊ウィンドウのサイズ。ユーザーがリサイズするたびに更新され、閉じて
 /// 再度開いたときに同じ大きさで復元される (アプリを再起動すると初期化される、字幕ウィンドウの
 /// 位置記憶と同じ扱い)。
@@ -1125,6 +1392,14 @@ fn save_generic_json(filename: String, data: serde_json::Value) -> Result<(), St
         "thread-fetch-times.json",
         "expanded-categories.json",
         "ui-state.json",
+        "viewer-whitelist.json",
+        "overlay-appearance.json",
+        "overlay-layouts.json",
+        "viewer-autoadd.json",
+        "twitch-events.json",
+        "twitch-teach.json",
+        "twitch-emotes.json",
+        "youtube-events.json",
         "post-history.json",
     ];
     if !ALLOWED.contains(&filename.as_str()) {
@@ -1144,6 +1419,14 @@ fn load_generic_json(filename: String) -> Result<serde_json::Value, String> {
         "thread-fetch-times.json",
         "expanded-categories.json",
         "ui-state.json",
+        "viewer-whitelist.json",
+        "overlay-appearance.json",
+        "overlay-layouts.json",
+        "viewer-autoadd.json",
+        "twitch-events.json",
+        "twitch-teach.json",
+        "twitch-emotes.json",
+        "youtube-events.json",
         "post-history.json",
     ];
     if !ALLOWED.contains(&filename.as_str()) {
@@ -1535,7 +1818,8 @@ fn load_app_settings() -> Result<HashMap<String, String>, String> {
 /// Template written to `custom.css` on first launch (all comments, no effect until edited).
 const USER_CSS_TEMPLATE: &str = r#"/* LiveFake ユーザーカスタムCSS (custom.css)
  *
- * このファイルに書いたCSSはアプリ起動時に標準スタイルの後から適用されます。
+ * このファイルに書いたCSSはアプリ起動時に読み込まれ、標準の見た目より常に優先されます
+ * (標準の見た目は CSS レイヤーにまとめてあるので、指定の強さに関係なくこちらが勝ちます)。
  * 編集後はメニュー「設定 > ユーザーCSSを再読み込み」で即座に反映できます。
  *
  * ── 基本色 (CSS変数) ─────────────────────────────
@@ -1563,6 +1847,10 @@ const USER_CSS_TEMPLATE: &str = r#"/* LiveFake ユーザーカスタムCSS (cust
  *   .anchor-popup / .id-popup    アンカー / IDポップアップ
  *   .compose-window              書き込みウィンドウ
  *   .status-bar                  ステータスバー
+ *   .pane.viewer / .viewer-item  ビュワー / ビュワーの1件
+ *   img.twitch-emote             Twitch のスタンプ (.giant で巨大)
+ *   .settings-panel              設定画面 (data/theme/setting.css も使えます)
+ *   一覧は docs/CSS_CUSTOMIZE.md を参照
  *
  * ── 例: 全体をセピア調にする ─────────────────────
  * :root { --bg: #f4ecd8; --panel: #fbf5e6; --ink: #4a3f2a; }
@@ -1582,7 +1870,6 @@ const THEME_CSS_FILES: &[(&str, &str)] = &[
     ("floating.css", "字幕ウィンドウ用"),
     ("mediaviewer.css", "画像ポップアップウィンドウ用"),
     ("compose.css", "書き込みの浮遊ウィンドウ用"),
-    ("broadcast.css", "OBS連携ウィンドウ用"),
     ("postform.css", "書き込み欄用 (書き込みパネル内に限定適用)"),
     ("setting.css", "設定画面用 (設定パネル内に限定適用)"),
 ];
@@ -1799,7 +2086,6 @@ fn refresh_window_css(app: AppHandle, allow_external: Option<bool>) -> Result<()
         ("subtitle", "floating.css"),
         ("image_popup", "mediaviewer.css"),
         ("compose_popup", "compose.css"),
-        ("broadcast", "broadcast.css"),
     ] {
         if let Some(win) = app.get_webview_window(label) {
             let f = read_theme_css_file(file, &theme_dir.join(file), allow);
@@ -1816,6 +2102,10 @@ fn refresh_window_css(app: AppHandle, allow_external: Option<bool>) -> Result<()
 /// したらば・JPNKN のドメイン上書き設定をアプリ内部の状態に反映する。
 /// 空文字列/未設定/既定値と同じ場合は上書きしない (既定のハードコードされたドメインのまま)。
 fn apply_domain_overrides_from_settings(settings: &HashMap<String, String>) {
+    // 一部の項目だけを保存するとき (OBS 表示のオンオフなど) は、ドメインの上書きに触れない
+    if !settings.contains_key("App.shitarabaHost") && !settings.contains_key("App.jpnknHost") {
+        return;
+    }
     let shitaraba = settings
         .get("App.shitarabaHost")
         .map(|s| s.trim().to_string())
@@ -2493,188 +2783,6 @@ fn compose_popup_hide(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-// ===== Broadcast (OBS 連携) Overlay Window Commands =====
-// 配信ホワイトリストに登録されたレスだけを表示する専用ウィンドウ。OBS 側は「ウィンドウ
-// キャプチャ」でこのウィンドウを取り込む想定で、アプリから OBS へ直接データを送る通信は
-// 一切行わない (プロセスが起動しているかどうかの確認のみ行う)。
-
-/// ウィンドウ位置はセッション内のみ記憶 (字幕ウィンドウの位置記憶と同じ扱い。「中央に戻す」が
-/// あるためアプリ再起動時は初期化してよい)。
-static BROADCAST_SAVED_POS: Mutex<Option<(i32, i32)>> = Mutex::new(None);
-/// ウィンドウサイズは設定ファイル (`App.broadcastWindowWidth/Height`) にも保存し、アプリを
-/// 再起動しても復元されるようにする。ブラウザを閉じる・OBS検知不能で自動オフになる・手動で
-/// スイッチ/ウィンドウをオフにする、いずれの経路でも `capture_broadcast_geometry` を通す。
-static BROADCAST_SAVED_SIZE: Mutex<Option<(f64, f64)>> = Mutex::new(None);
-
-/// 配信ウィンドウの現在位置・サイズを記憶する。サイズは設定ファイルへも保存し、次回起動時に
-/// 復元できるようにする (位置はセッション内のみ)。ウィンドウを閉じる直前に必ず呼ぶこと —
-/// 閉じた後 (Destroyed イベント内) では位置・サイズを取得できないため。
-fn capture_broadcast_geometry(win: &tauri::WebviewWindow) {
-    let (Ok(pos), Ok(size)) = (win.outer_position(), win.inner_size()) else { return };
-    {
-        let mut guard = BROADCAST_SAVED_POS.lock().unwrap_or_else(|e| e.into_inner());
-        *guard = Some((pos.x, pos.y));
-    }
-    let (w, h) = (size.width as f64, size.height as f64);
-    {
-        let mut guard = BROADCAST_SAVED_SIZE.lock().unwrap_or_else(|e| e.into_inner());
-        *guard = Some((w, h));
-    }
-    if let Ok(mut settings) = core_store::load_settings_ini() {
-        settings.insert("App.broadcastWindowWidth".to_string(), w.to_string());
-        settings.insert("App.broadcastWindowHeight".to_string(), h.to_string());
-        let _ = core_store::save_settings_ini(&settings);
-    }
-}
-static OBS_INTEGRATION_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-static OBS_POLL_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-/// OBS Studio (`obs64.exe`) が起動しているかを確認する。管理者権限は不要で、同じユーザー
-/// 権限内のプロセス一覧を見るだけ。OBS 自体のデータや設定を読んだり、OBS と直接通信したり
-/// はしない。
-#[cfg(target_os = "windows")]
-fn is_obs_running() -> bool {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
-    let output = Command::new("tasklist")
-        .args(["/FI", "IMAGENAME eq obs64.exe", "/NH"])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output();
-    match output {
-        Ok(o) => String::from_utf8_lossy(&o.stdout).to_ascii_lowercase().contains("obs64.exe"),
-        Err(_) => false,
-    }
-}
-#[cfg(not(target_os = "windows"))]
-fn is_obs_running() -> bool {
-    false
-}
-
-/// OBS連携の大元スイッチを切り替える。オンにする際はOBSが起動している必要がある。
-/// オンの間はバックグラウンドで5秒おきにOBSの起動状態を確認し、2回連続 (約10秒) で
-/// 見つからなくなったら自動的にオフへ戻し、`obs-integration-auto-disabled` イベントで
-/// メインウィンドウへ知らせる。
-#[tauri::command]
-async fn obs_integration_set_enabled(app: AppHandle, enabled: bool) -> Result<bool, String> {
-    use std::sync::atomic::Ordering;
-    if enabled {
-        if !is_obs_running() {
-            return Err(
-                "OBSが起動していないため、OBS連携をオンにできません。OBSを起動してから再度お試しください。"
-                    .to_string(),
-            );
-        }
-        OBS_INTEGRATION_ENABLED.store(true, Ordering::SeqCst);
-        let generation = OBS_POLL_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
-        let handle = app.clone();
-        tauri::async_runtime::spawn(async move {
-            let mut misses: u32 = 0;
-            loop {
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                if OBS_POLL_GENERATION.load(Ordering::SeqCst) != generation {
-                    return; // 手動で切り替え済み (別世代の監視ループがすでに動いている)
-                }
-                if is_obs_running() {
-                    misses = 0;
-                    continue;
-                }
-                misses += 1;
-                if misses >= 2 {
-                    OBS_INTEGRATION_ENABLED.store(false, Ordering::SeqCst);
-                    OBS_POLL_GENERATION.fetch_add(1, Ordering::SeqCst);
-                    let _ = handle.emit_to("main", "obs-integration-auto-disabled", ());
-                    return;
-                }
-            }
-        });
-    } else {
-        OBS_INTEGRATION_ENABLED.store(false, Ordering::SeqCst);
-        OBS_POLL_GENERATION.fetch_add(1, Ordering::SeqCst);
-    }
-    Ok(OBS_INTEGRATION_ENABLED.load(Ordering::SeqCst))
-}
-
-#[tauri::command]
-async fn broadcast_show(app: AppHandle) -> Result<(), String> {
-    if let Some(win) = app.get_webview_window("broadcast") {
-        let _ = win.set_focus();
-        return Ok(());
-    }
-    let saved_size = *BROADCAST_SAVED_SIZE.lock().unwrap_or_else(|e| e.into_inner());
-    let saved_pos = *BROADCAST_SAVED_POS.lock().unwrap_or_else(|e| e.into_inner());
-    let (init_w, init_h) = saved_size.unwrap_or((480.0, 160.0));
-    let win = portable_webview(WebviewWindowBuilder::new(&app, "broadcast", tauri::WebviewUrl::App("broadcast.html".into())))
-        .title("LiveFake - OBS連携")
-        .inner_size(init_w, init_h)
-        .min_inner_size(240.0, 100.0)
-        .decorations(false)
-        .resizable(true)
-        .build()
-        .map_err(|e| e.to_string())?;
-    if let Some((x, y)) = saved_pos {
-        let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
-    } else if let Ok(Some(monitor)) = app.primary_monitor() {
-        let ms = monitor.size();
-        let ws = win
-            .outer_size()
-            .unwrap_or(tauri::PhysicalSize::new(init_w as u32, init_h as u32));
-        let x = (ms.width as i32 - ws.width as i32) / 2;
-        let y = (ms.height as i32 - ws.height as i32) / 2;
-        let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
-    }
-    let handle = app.clone();
-    win.on_window_event(move |event| {
-        if let tauri::WindowEvent::Destroyed = event {
-            let _ = handle.emit_to("main", "broadcast-closed", ());
-        }
-    });
-    Ok(())
-}
-
-#[tauri::command]
-async fn broadcast_hide(app: AppHandle) -> Result<(), String> {
-    if let Some(win) = app.get_webview_window("broadcast") {
-        capture_broadcast_geometry(&win);
-        app.run_on_main_thread(move || {
-            if win.close().is_err() {
-                let _ = win.destroy();
-            }
-        })
-        .map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}
-
-#[tauri::command]
-async fn broadcast_reset_position(app: AppHandle) -> Result<(), String> {
-    if let Some(win) = app.get_webview_window("broadcast") {
-        if let Ok(Some(monitor)) = app.primary_monitor() {
-            let ms = monitor.size();
-            let ws = win.outer_size().unwrap_or(tauri::PhysicalSize::new(480, 160));
-            let x = (ms.width as i32 - ws.width as i32) / 2;
-            let y = (ms.height as i32 - ws.height as i32) / 2;
-            let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
-        }
-    }
-    Ok(())
-}
-
-/// 配信ウィンドウへ表示内容またはスタイル設定を送る。ペイロードの形はフロント側で組み立てる
-/// (`{ style: {...} }` / `{ item: {...} }` / `{ clearQueue: true }`)。Rust 側は中身を検証せず
-/// そのままウィンドウの JS へ転送するだけ (このウィンドウはローカルの表示専用で、外部通信は
-/// 発生しない)。
-#[tauri::command]
-fn broadcast_update(app: AppHandle, data: serde_json::Value) -> Result<(), String> {
-    if let Some(win) = app.get_webview_window("broadcast") {
-        let js = format!(
-            "if(window.__broadcastUpdate)window.__broadcastUpdate({})",
-            serde_json::to_string(&data).unwrap_or_else(|_| "null".to_string())
-        );
-        let _ = win.eval(&js);
-    }
-    Ok(())
-}
-
 // ===== Subtitle Window Commands =====
 
 #[tauri::command]
@@ -2688,10 +2796,11 @@ async fn subtitle_show(app: AppHandle) -> Result<(), String> {
     }
     let _ = core_store::append_log("subtitle_show: before lock");
     let saved = SUBTITLE_SAVED_POS.lock().unwrap_or_else(|e| e.into_inner()).take();
+    let (sw, sh) = SUBTITLE_SAVED_SIZE.lock().unwrap_or_else(|e| e.into_inner()).unwrap_or((800.0, 200.0));
     let _ = core_store::append_log("subtitle_show: before build");
     let win = portable_webview(WebviewWindowBuilder::new(&app, "subtitle", tauri::WebviewUrl::App("subtitle.html".into())))
         .title("LiveFake - 字幕")
-        .inner_size(800.0, 200.0)
+        .inner_size(sw, sh)
         .decorations(false)
         .transparent(true)
         .background_color(Color(0, 0, 0, 0))
@@ -2702,6 +2811,15 @@ async fn subtitle_show(app: AppHandle) -> Result<(), String> {
             e.to_string()
         })?;
     let _ = core_store::append_log("subtitle_show: window built ok");
+    // リサイズのたびにサイズを覚える (オフにしたとき・終了時に保存する)
+    {
+        let w2 = win.clone();
+        win.on_window_event(move |event| {
+            if let tauri::WindowEvent::Resized(_) = event {
+                capture_subtitle_size(&w2);
+            }
+        });
+    }
     // Restore previous position or center on primary monitor
     if let Some((x, y)) = saved {
         let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
@@ -2724,6 +2842,8 @@ async fn subtitle_hide(app: AppHandle) -> Result<(), String> {
             let mut guard = SUBTITLE_SAVED_POS.lock().unwrap_or_else(|e| e.into_inner());
             *guard = Some((pos.x, pos.y));
         }
+        capture_subtitle_size(&win);
+        persist_subtitle_size();
         // Run on main thread — window close must dispatch from UI thread
         app.run_on_main_thread(move || {
             let r = win.close();
@@ -3142,6 +3262,11 @@ pub fn run() {
 
     tauri::Builder::default()
         .manage(ImagePopupState(Mutex::new(Vec::new())))
+        .manage(TwitchState(Mutex::new(HashMap::new())))
+        .manage(twitch_badges::BadgeState::default())
+        .manage(twitch_auth::TwitchAuthState::default())
+        .manage(youtube::YoutubeState::default())
+        .manage(OverlayState { hub: std::sync::Arc::new(core_overlay::OverlayHub::new()), server: Mutex::new(None) })
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             // Focus the existing window when a second instance is launched
             if let Some(win) = app.get_webview_window("main") {
@@ -3150,6 +3275,8 @@ pub fn run() {
             }
         }))
         .setup(|app| {
+            // 保存済みの Twitch ログインがあれば EventSub (入力の無い報酬・自動報酬・フォロー) を始める
+            app.state::<twitch_auth::TwitchAuthState>().init(app.handle().clone());
             // メインウィンドウは tauri.conf.json で "create": false にしておき、ここで作る。
             // 設定ファイルからでは WebView2 のデータフォルダを AppData 配下にしか指定できないため
             if app.get_webview_window("main").is_none() {
@@ -3167,15 +3294,12 @@ pub fn run() {
             // したらば/JPNKN のドメイン上書き設定を起動時に反映
             if let Some(m) = startup_settings.as_ref() {
                 apply_domain_overrides_from_settings(m);
-            }
-            // OBS連携ウィンドウの直前のサイズを起動時に復元 (位置はセッション内のみの記憶)
-            if let Some(m) = startup_settings.as_ref() {
-                let w: Option<f64> = m.get("App.broadcastWindowWidth").and_then(|v| v.parse().ok());
-                let h: Option<f64> = m.get("App.broadcastWindowHeight").and_then(|v| v.parse().ok());
+                // 字幕ウィンドウの前回のサイズ
+                let w: Option<f64> = m.get("App.subtitleWindowWidth").and_then(|v| v.parse().ok());
+                let h: Option<f64> = m.get("App.subtitleWindowHeight").and_then(|v| v.parse().ok());
                 if let (Some(w), Some(h)) = (w, h) {
-                    if w >= 200.0 && h >= 200.0 {
-                        let mut guard = BROADCAST_SAVED_SIZE.lock().unwrap_or_else(|e| e.into_inner());
-                        *guard = Some((w, h));
+                    if subtitle_size_ok(w, h) {
+                        *SUBTITLE_SAVED_SIZE.lock().unwrap_or_else(|e| e.into_inner()) = Some((w, h));
                     }
                 }
             }
@@ -3197,10 +3321,13 @@ pub fn run() {
                 let handle = app.handle().clone();
                 main_win.on_window_event(move |event| {
                     if let tauri::WindowEvent::Destroyed = event {
-                        if let Some(w) = handle.get_webview_window("subtitle") { let _ = w.close(); }
+                        if let Some(w) = handle.get_webview_window("subtitle") {
+                            capture_subtitle_size(&w);
+                            persist_subtitle_size();
+                            let _ = w.close();
+                        }
                         if let Some(w) = handle.get_webview_window("image_popup") { let _ = w.close(); }
                         if let Some(w) = handle.get_webview_window("compose_popup") { let _ = w.close(); }
-                        if let Some(w) = handle.get_webview_window("broadcast") { capture_broadcast_geometry(&w); let _ = w.close(); }
                     }
                 });
             }
@@ -3222,6 +3349,23 @@ pub fn run() {
             probe_post_finalize_submit_from_input,
             check_for_updates,
             get_data_dir,
+            twitch_sync,
+            twitch_set_badges,
+            twitch_auth_status,
+            twitch_login_start,
+            twitch_logout,
+            twitch_fetch_emotes,
+            youtube::youtube_methods,
+            youtube::youtube_key_status,
+            youtube::youtube_set_key,
+            youtube::youtube_clear_key,
+            youtube::youtube_sync,
+            youtube::youtube_reconnect,
+            overlay_start,
+            overlay_stop,
+            overlay_publish,
+            overlay_retract,
+            overlay_set_layouts,
             open_file_dialog,
             open_folder_dialog,
             save_image_to_folder,
@@ -3296,11 +3440,6 @@ pub fn run() {
             compose_popup_result,
             compose_popup_hide,
             compose_popup_save_size,
-            obs_integration_set_enabled,
-            broadcast_show,
-            broadcast_hide,
-            broadcast_reset_position,
-            broadcast_update,
             subtitle_show,
             subtitle_hide,
             subtitle_reset_position,

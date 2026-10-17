@@ -6,16 +6,13 @@ argument-hint: "<バージョン> 例: 0.1.0"
 
 LiveFake の指定バージョンでリリース準備を行う。
 
-## NEW.md / README / CHANGELOG の運用
+## README / CHANGELOG の運用 (NEW.md は v0.0.119 で廃止)
 
-- `NEW.md` は「前回リリースからの更新内容」を実装ベースで書いたファイルで、リリースのたびに書き直す
-  （最新の GitHub リリース = タグの実装と、現在の開発環境の実装を読み比べて書く。前回分の内容は残さない）
-- GitHub Actions の release ワークフローは `NEW.md` の内容をそのままリリースページの本文にする
-  (`body_path: NEW.md`)。文字数の心配は基本的に無用 (GitHub の上限は約 125,000 文字)。
-  **`NEW.md` はタグを push する前に main へコミット済みである必要がある** (`body_path` はタグ時点のファイルを読むため、
-  コミットし忘れるとワークフローがファイル無しで失敗する)
-- `README.md` の「## 最新の更新 (vX.Y.Z)」セクションには `NEW.md` の内容を要約して載せる（全文だと長すぎるため）。バージョン番号も更新すること
-- `CHANGELOG.md` には過去のバージョンの内容を蓄積する。リリース確定後、`NEW.md` の全文をそのバージョンの見出しの下に追記し、`NEW.md` 自体は次のバージョン向けの空の状態に戻す
+- 前回リリースからの更新内容のメモは、作業のたびに Claude のメモリ (release-draft) に書きためる (GitHub には置かない)
+- `README.md` の「## 最新の更新 (vX.Y.Z)」の `<!-- release-notes:start -->` 〜 `<!-- release-notes:end -->` の間に、メモを要約して書く。
+  GitHub Actions の release ワークフローはこの印の間を切り出してリリースページの本文にする (タグ時点の README を読むので、タグの前に main へコミットしておく)
+- `CHANGELOG.md` の先頭に `## vX.Y.Z (YYYY/MM/DD)` を足し、要約と、メモの詳しい内容を残す (タグの前に同じコミットで行ってよい)
+- 本文のリンクは、リリースページでも開けるよう `https://github.com/kaedekiku/LiveFakeTauri2/blob/main/...` の形で書く
 
 ## 手順
 
@@ -23,10 +20,10 @@ LiveFake の指定バージョンでリリース準備を行う。
    - `apps/desktop/package.json`
    - `apps/desktop/src-tauri/tauri.conf.json`
    - `apps/desktop/src-tauri/Cargo.toml`
-2. `NEW.md` の内容を確認する。無い/古い（前回リリース以降の変更を反映していない）場合は、直近のタグの実装 (`git show <前回タグ>:apps/desktop/src/App.tsx` 等、または GitHub 上のコードを参照) と現在の実装を比較して書き直す
+2. 更新内容のメモ (release-draft) を確認する。足りなければ、直近のタグの実装 (`git show <前回タグ>:apps/desktop/src/App.tsx` 等) と現在の実装を比較して補う
 3. バージョン差分を表示し、変更前にユーザーの確認を得る
 4. 3ファイルのバージョンを更新
-5. `README.md` の「## 最新の更新」セクションを `NEW.md` の要約で更新し、見出しのバージョン番号も新しいものに変える
+5. `README.md` の「## 最新の更新」の印の間をメモの要約で書き換え、見出しのバージョン番号も新しいものに変える。`CHANGELOG.md` にも追記する
 6. `cargo check --workspace` で検証
    あわせて `python scripts/generate_third_party_licenses.py --check` を実行し、失敗したら生成し直してコミットする
    (release ワークフローでも同じ確認をしており、古いままタグを push するとビルドが失敗する)
@@ -37,13 +34,9 @@ LiveFake の指定バージョンでリリース準備を行う。
 
 手順3でユーザーの明示的な確認を得るまで、絶対にファイル変更に進まないこと。
 
-## リリース後の必須作業: CHANGELOG.md への転記と NEW.md のクリア
+## リリース後の必須作業: メモの片付け
 
-タグ push → GitHub Actions のビルド・リリース公開を確認した後:
-
-1. `NEW.md` の全文を `CHANGELOG.md` の先頭に `## v<バージョン> (YYYY/MM/DD)` の見出しを付けて追記する
-2. `NEW.md` の中身を、次のバージョン向けの空のテンプレート（見出しと説明コメントのみ）に戻す
-3. 上記 2 ファイルをコミットするかはユーザーに確認する（このスキル自体はコミットしない）
+タグ push → GitHub Actions のビルド・リリース公開を確認した後、更新内容のメモ (release-draft) を次のバージョン向けに空にする。
 
 ## リリース後の必須作業: latest.json の更新
 

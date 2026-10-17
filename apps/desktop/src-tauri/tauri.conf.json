@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "LiveFake",
-  "version": "0.0.118",
+  "version": "0.0.119",
   "identifier": "io.livefake.browser",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -32,8 +32,8 @@
       "icons/icon.ico"
     ],
     "homepage": "",
-    "shortDescription": "5ちゃんねる専用ブラウザ",
-    "longDescription": "Live5chライクな専ブラを現代技術で作り直す。Tauri v2 + Reactで構築されたPC向け5ch.io専用ブラウザです。",
+    "shortDescription": "実況向け掲示板ブラウザ＋Twitchビュワー",
+    "longDescription": "5ch.io / したらば / JPNKN の実況向け掲示板ブラウザに、Twitch チャットのビュワーを組み合わせたアプリです。Tauri v2 + React 製。",
     "linux": {
       "deb": {
         "depends": [

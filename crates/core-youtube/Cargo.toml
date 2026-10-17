@@ -1,0 +1,26 @@
+[package]
+name = "core-youtube"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "YouTube ライブ配信のチャットの受信 (読み取り専用)"
+build = "build.rs"
+
+[dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { version = "1", default-features = false, features = ["time"] }
+url = { workspace = true }
+
+[build-dependencies]
+# 暗号化して置くソースをビルドのときに復号する。カギが無ければ使わない
+aes-gcm = "0.10"
+base64 = { workspace = true }
+
+[dev-dependencies]
+# examples/seal.rs (暗号化して置くソースの暗号化・カギの作成)
+aes-gcm = "0.10"
+base64 = { workspace = true }
+# 実際の配信につなぐテスト (#[ignore]。LF_YT_TEST_VIDEO に配信中の動画 ID を入れて実行)
+tokio = { version = "1", default-features = false, features = ["rt", "macros", "time"] }

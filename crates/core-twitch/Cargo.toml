@@ -1,0 +1,12 @@
+[package]
+name = "core-twitch"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Twitch チャットの受信 (匿名 IRC over WebSocket・読み取り専用)"
+
+[dependencies]
+futures-util = { workspace = true }
+thiserror = { workspace = true }
+tokio = { version = "1", default-features = false, features = ["time"] }
+tokio-tungstenite = { workspace = true }

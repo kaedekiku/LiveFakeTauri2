@@ -244,13 +244,96 @@ UTF-8 / Shift_JIS / EUC-JP のスコアリングによる自動判定を行う�
 - 表示要素: スレタイ・レス番・名前・ID・時刻・本文 (200文字まで)。クリックでジャンプ
 - NG (非表示) レスは表示しない
 
-### 10.1 OBS 連携 (隠しタブ)
+### 10.1 ビュワーと OBS 表示
 
-- 設定 > 情報 の「隠しタブ」から「OBS連携」タブを表示する (`App.obsTabRevealed`)。機能自体も既定オフ
-- オンにするには OBS Studio (`obs64.exe`) の起動が必要 (Rust 側で確認)。OBS が終了したら自動的にオフに戻す
-- 配信ホワイトリスト (当日限り・再起動で空) に登録した ID の新着レスだけを、枠なしの専用ウィンドウ (`broadcast.html`) に表示する。
-  本文は textContent で表示し HTML として解釈しない。文字参照は送る前に文字へ戻す
-- 背景色 (クロマキー)・フォント・文字サイズ/色・縁取り・絵文字の縁取り・表示秒数・スクロール・ヘッダ項目を設定可能
+- ビュワー (板タブの左端): Twitch のチャットと、配信ホワイトリストの ID のレスを1本にまとめて表示する。
+  本文はレス表示欄と同じ無害化・リンク化を通し、リンクカード (`App.viewerCards`)・画像サムネイル (`App.viewerThumbs`) を出す (既定オン)。
+  Twitch のチャットの分はクリックしてから読み込むこともできる (`App.viewerTwitchClickToLoad`、既定オフ)。**OBS 表示にはカード・サムネイルを出さない**
+  (OBS へ送る項目は決まった一覧だけで本文は文字のまま。core-overlay のテストで確認)
+  下部の「スレの最新レス」欄はホワイトリストに無い ID の新着を出し、上端のドラッグで高さを変える (`App.viewerLatestHeight`)
+- 配信ホワイトリスト: 日本時間の当日分を `data/viewer-whitelist.json` に保存。直接入力・単語での自動追加 (`viewer-autoadd.json`)。
+  登録項目 (ID・自動追加の単語・外した ID) は配信用マスク (`streamMaskEnabled`) で伏せられる
+- OBS 表示は `crates/core-overlay`: `127.0.0.1` だけで待ち受ける HTTP/WebSocket サーバー (既定ポート 11290、既定オフ)。
+  Host ヘッダが 127.0.0.1/localhost 以外なら 403、`/ws` は Origin が無いか同じ origin のときだけ受け付ける。
+  配るのは `/overlay.html`・`/api/appearance?layout=`・`/layout.css?layout=`・`/ws` だけで、設定を変える窓口は持たない
+  `/overlay.html` は保存させない (Cache-Control: no-store)。ページの中身から計算した版を埋め込み、`/ws` の接続直後に `{type:"hello", pageVersion}` で知らせ、
+  版が違えば表示側が読み込み直す (30秒以内は繰り返さない)
+- レイアウト: 名前 → {見た目の設定, 追加 CSS}。最大 50 個、名前は 1〜40 文字で `\ / : * ? " < > | % # &`・制御文字・
+  前後の空白/ピリオドは不可 (フロントと Rust の両方で検査)。「標準」は必ずあり消せない。見た目の JSON は 32KB、CSS は 256KB まで。
+  `data/overlay-layouts.json` に保存し、無ければ旧 `overlay-appearance.json` を「標準」として引き継ぐ。
+  変更は 400ms まとめて `overlay_set_layouts` で送り、変わったレイアウトだけ表示中のページへ知らせる
+- 本文はページ側で textContent として表示し HTML として解釈しない
+- 旧「OBS連携」(専用ウィンドウ `broadcast.html` を OBS でキャプチャする方式) は廃止した
+
+### 10.2 Twitch チャット (匿名・読み取り専用)
+
+- アドレスバーの `twitch.tv/<channel>` を Twitch タブ (タブ URL は `https://www.twitch.tv/<channel>`) として開く。
+  チャンネル名は `^[a-z0-9_]{1,25}$` のみ受け付ける (フロントと Rust の両方で検査。IRC 命令の注入を防ぐ)
+- 受信は `crates/core-twitch`: `wss://irc-ws.chat.twitch.tv:443` に匿名 (`justinfan`) で接続し PRIVMSG と USERNOTICE を読む。
+  イベント (サブスク・継続・ギフト・まとめてギフト・ギフトの継続・ビッツ・レイド・連続視聴・入力つきのチャンネルポイント・アナウンス) は
+  USERNOTICE と PRIVMSG の bits / custom-reward-id / msg-id タグから作る (ログインなしで分かるものだけ。報酬名の問い合わせはしない)。
+  まとめてギフトに続く個別のギフト通知は同じギフト ID で除く。種類ごとの「流す・読む・読み上げる文」は `data/twitch-events.json`
+- バッジ・報酬名 (`src-tauri/src/twitch_badges.rs`、TchViewer と同じ非公式の取得口 `gql.twitch.tv`、Web の Client-Id): 既定オン・設定でオフ可 (`App.twitchBadges`)。
+  受信チャンネルが変わったときと1時間ごとに取得し `data/badges-cache.json` に控える。クエリに埋め込むチャンネル名は英小文字・数字・_ のみ。
+  画像アドレスは `https://static-cdn.jtvnw.net/badges/v1/<uuid>` の形だけ通す (Rust・画面・OBS 表示の3か所で検査)。badges タグは英数字と `_-/,` のみ
+- スタンプ: emotes タグの位置 (コードポイント単位) を読み、ID は英数字と `_-` のみ・本文の範囲外や重なりは捨てる。`msg-id=gigantified-emote-message` なら最後のスタンプを巨大表示。
+  画像は `static-cdn.jtvnw.net/emoticons/v2/<id>/default/<dark|light>/<2.0|3.0>`。Twitch タブではエスケープ済みの HTML のテキスト部分 (リンクの外) の語だけを画像に置き換える。
+  大きさは `App.twitchEmoteSize` (28) / `App.twitchGiantEmoteSize` (112)、OBS はレイアウトの emoteSize / giantEmoteSize / badgeSize。
+  読み上げは名前のまま、同じスタンプは `App.twitchEmoteMax` 個 (既定 3、1〜10) まで、`App.twitchEmoteSpeak=none` なら除く
+- ログイン (`src-tauri/src/twitch_auth.rs`、TchViewer の eventsub.rs と同じ): デバイスコード方式・公開型クライアント (シークレットなし)、
+  許可は channel:read:redemptions / moderator:read:followers のみ。トークンは DPAPI で暗号化して `data/twitch-auth.bin` (暗号化できなければ保存しない)、
+  画面・ログに出さない。EventSub は `eventsub.wss.twitch.tv` のみ (再接続先も同ホストのみ)、message_id で重複除去、10分より古い通知は捨てる。
+  確認ページは `https://www.twitch.tv/activate` で始まるときだけ開く。ログイン中の自分のチャンネルは IRC 側のチャンネルポイントをイベントにしない。
+  クライアント ID は LiveFake 用に登録した公開型のもの。保存したログイン情報に発行元のクライアント ID を持たせ、違えば捨てる。エラーは Twitch の理由を添えて表示
+- 掲示板に書かれたスタンプ名 (`App.boardEmotes`、既定オン): 英数字と _ の 2〜64 文字の語が対応表 (名前→ID、`data/twitch-emotes.json`、最大1万件) と完全一致したときだけ画像にする。
+  対応表は Twitch のチャットで受信したスタンプと、ログイン中に公式 API (`/helix/chat/emotes/global`・`/helix/users`・`/helix/chat/emotes`) で取得した一覧から作る。
+  書き込みから画像のアドレスは受け取らない。名前がそのまま一致しないとき、頭の `BIG` (大文字小文字不問) を外した名前が一致すれば巨大スタンプとして表示
+  (スタンプ1つずつに giant を持たせ、ビュワー・HTML 差し込み・OBS 表示の3か所で扱う)。Twitch のチャットには適用しない (リリース版の方針)。
+  Twitch Developer Agreement の「Twitch Content / Program Materials は24時間を超えて保存しない」に合わせ、
+  対応表 (`twitch-emotes.json` 形式2: 名前→[ID, 最後に見た時刻]) は24時間見かけなかったものを捨て、時刻の無い古い形式は読み捨てる。
+  バッジの一覧 (`badges-cache.json`) も取得時刻 `fetched_at` から24時間でファイル・メモリとも捨てる。新着レスペイン・字幕にも Twitch のスタンプとバッジを出す (字幕は `App.subtitleEmoteSize` / `App.subtitleGiantEmoteSize`)
+- 教育・忘却 (`App.twitchTeach` 既定オフ・`App.twitchTeachAnnounce` 既定オン): Twitch のチャットのみ、視聴者ごとに5秒に1回、実際に読み上げに回った発言だけ。
+  VOICEVOX・SAPI は LiveFake の辞書 (`data/twitch-teach.json`、単語30・読み50文字・500件、URL・制御文字不可、あなたの読み上げ辞書の語は不可) を
+  あなたの辞書の後にすべての読み上げにかける。棒読みちゃんは LiveFake で処理せず、半角の書式にそろえてそのまま渡す (LiveFake の辞書はかけない)。
+  それ以外の本文 (掲示板・許可されなかったもの) のコマンドは読み上げに渡す前に取り除く
+- 字幕ウィンドウのサイズ: リサイズのたびに記憶し、字幕をオフにしたとき・メインウィンドウの終了時に `App.subtitleWindowWidth` / `App.subtitleWindowHeight` へ保存、
+  起動時に読み戻して次に開くときに使う (論理ピクセル、幅 120〜10000・高さ 40〜10000)
+- 新着レスペイン・字幕の見出しの表示項目に「Twitch のバッジ」(HeaderVis.badges) を追加
+  接続 15 秒・無通信 6 分でタイムアウト、`RECONNECT` で再接続、失敗時は 5 秒から 60 秒まで延ばして再接続
+- Tauri コマンド `twitch_sync(channels)` で、開いている Twitch タブのチャンネル一覧に受信を合わせる (上限 20)。
+  受信は `twitch-message` / `twitch-status` イベントで画面へ送る。チャット本文はログに残さない
+- 1件 = 1レス。`dateAndId` は `YYYY/MM/DD HH:MM:SS ID:<login>`。名前と本文は HTML エスケープして積む
+- 250ms ごとにまとめて反映、タブあたり 1000 件まで。新着ペイン・字幕・ビュワー・OBS 表示・読み上げに流す
+  (待ち行列の Twitch 分は 10 件、読み上げの溜まりは 10 件まで)。読み上げの前置きは「表示名さん」
+- 取得・巡回・SQLite キャッシュ・既読・栞・スクロール位置・書き込みは Twitch タブでは行わない
+
+### 10.3 YouTube ライブ配信のチャット (読み取り専用)
+
+- アドレスバーのライブ配信の URL (`youtube.com/watch?v=` / `youtube.com/live/` / `youtu.be/`。www. m. あり・https:// なし可) を YouTube タブ
+  (タブ URL は `https://www.youtube.com/watch?v=<動画ID>`) として開く。動画 ID は `^[A-Za-z0-9_-]{11}$` のみ (フロントと Rust の両方で検査)。
+  チャンネルの URL は開かずに案内を出す。アーカイブ・普通の動画は受信側で理由を出して止める
+- 受信は `crates/core-youtube`。YouTube Data API v3 (公式) を使う (`youtube_methods` で exe が持つ取得方法を画面に出し、`App.youtubeMethod` に保存する)
+- YouTube Data API v3: 利用者が自分で作った API キーを使う。`videos.list` (1 クォータ) で `liveBroadcastContent` が live / upcoming かと
+  `activeLiveChatId` を調べ、`liveChatMessages.list` (5 クォータ) を `pollingIntervalMillis` と `App.youtubeApiInterval` (既定 10 秒、5〜120) の長いほうの間隔で呼ぶ。
+  API キーは `x-goog-api-key` ヘッダーで送り URL に入れない (通信エラーの文からも URL を除く)。DPAPI で暗号化して `data/youtube-api-key.bin`
+  (暗号化できなければ保存しない)。画面には設定済みかだけを返し、ログに出さない。
+  上限超過・キー不正・API 未有効・キーの制限・チャットの終了/無効/不明は理由を出して止め、一時的な失敗は 5〜60 秒の間隔でやり直す
+- 最初の応答 (つなぐ前の発言) は流さない
+- イベント: スーパーチャット・スーパーステッカー・メンバー加入・メンバー継続・メンバーシップのギフト・ギフトの受け取り・ジュエルのギフト。
+  種類ごとの「流す・読む・読み上げる文」は `data/youtube-events.json` ({name} {amount} {months} {count} {level} {item} {message})。金額は表示するだけ
+- 削除: 発言の削除・投稿者単位の削除を受けたら、タブでは本文を「（削除されました）」にし、まだ流していない新着・ビュワー・OBS 表示から消す
+  (OBS 表示へは `overlay_retract` で目印 `yt:<動画ID>:<発言ID>` を送り、履歴からも除く)
+- 絵文字: チャンネル独自の絵文字は名前を空白で区切って本文に入れ、位置と画像を持つ。画像は `https://yt3.ggpht.com/` / `https://yt4.ggpht.com/` のものだけ
+  (Rust・画面・OBS 表示で検査)。読み上げでは `:名前:` を読まない
+- 1件 = 1レス。`dateAndId` は `YYYY/MM/DD HH:MM:SS ID:<チャンネルID>`。名前の色は配信者・モデレーター・メンバーで分ける。
+  タイトルが分かったらタブ名を「YouTube <タイトル>」にする。待ち行列・読み上げの溜まりの上限は Twitch の設定を使う。
+  読み上げの前置きは「表示名さん」(`App.youtubeSpeakName`)
+- `youtube_sync(videos, method, minInterval)` で開いている YouTube タブに受信を合わせる (上限 10)。方式・間隔が変わればつなぎ直す。
+  設定 (settings.ini) と取得方法の一覧を読み終えてから始める。`youtube_reconnect(video)` で止まった受信をやり直す。
+  受信は `youtube-message` / `youtube-status` イベント。チャット本文はログに残さない
+- 取得・巡回・SQLite キャッシュ・既読・栞・スクロール位置・書き込みは YouTube タブでは行わない。チャットは保存しない
+  (YouTube API Services の開発者ポリシーの保存期間に合わせる)。設定画面に YouTube 利用規約と Google プライバシー ポリシーへのリンクを置く
+- OBS 表示: クラス `.youtube` (出どころの色は赤)。見た目は Twitch の設定 (`--t-*`) を使う
 
 ---
 
@@ -305,6 +388,14 @@ UTF-8 / Shift_JIS / EUC-JP のスコアリングによる自動判定を行う�
 - **書き込み回数の色付けルールは変えない**: ID の書き込み回数 (n/総数) の色付け (2回以上=青、5回以上=赤) の
   決まりと色の種類は、視認性の改善を理由に変更しない (ダークモードで読みやすくするための青・赤の色合いの調整はよい)
 - 適用範囲: メイン画面・設定画面に加え、新着レスペイン・字幕・OBS 表示にもいったん当てはめ、実装を見て見直す
+- (13.1 とは別に) 本文中の画像 URL が家庭内・自分の PC のアドレス (IP の直書き 10/8・127/8・169.254/16・172.16/12・192.168/16・100.64/10 など、IPv6 の ::1・fc00::/7・fe80::/10、
+  localhost・*.local) を指すときはサムネイルにもカードの画像にもしない (画面が直接読み込むため、ルーターなどへのアクセスに使われうる)
+- 2026-10-17 の見直し (ライト・ダークで全画面の文字のコントラスト比を自動計測して 4.5:1 未満を修正):
+  補足の文字は `--text-secondary` (ライト #666 / ダーク #aaa) にそろえる。書き込み回数は `.id-count-some` / `.id-count-many` で、
+  ダークでだけ明るい青 #8fb4ff・赤 #ff7070 にする。平らなボタン (ツールバー・スレタイバー・タブの×・+外部板) には常に薄い枠を付ける
+- 同じ設定を複数の場所に置かない: 「登録項目のマスク」は 設定 > 表示、「掲示板の新着の読み上げ方」は 設定 > 読み上げ (とビュワー上部) に置き、
+  他の設定画面には状態と移動ボタンだけを出す。説明文は2行程度にして、詳しくはマニュアルへ
+- 一覧への登録・削除 (NG・辞書・ハイライト・ホワイトリスト・教育辞書・OBS のレイアウトなど) はその場で保存し、それ以外は「設定を保存」で保存する (設定画面の下の帯に注記)
 
 ---
 
@@ -319,14 +410,33 @@ UTF-8 / Shift_JIS / EUC-JP のスコアリングによる自動判定を行う�
 
 ## 15. セキュリティ・制約
 
-- 通信先を対応ドメインに限定すること (`is_allowed_url`)
+- 通信先を対応ドメインに限定すること (`is_allowed_url`)。Twitch の通信先は次に限る:
+  チャット受信 `irc-ws.chat.twitch.tv`、ログイン `id.twitch.tv`、公式 API `api.twitch.tv`、イベント `eventsub.wss.twitch.tv`、
+  バッジ・報酬名 `gql.twitch.tv` (非公式・設定でオフ可)、画像 `static-cdn.jtvnw.net` (バッジ・スタンプ)。OBS 表示は `127.0.0.1` だけで待ち受ける。
+  YouTube は `www.googleapis.com`、絵文字の画像は `yt3.ggpht.com` / `yt4.ggpht.com`
 - レス本文 HTML はサニタイズしてから描画すること。`javascript:` 等の危険スキームをブロック
 - Cookie 値 (Be3M / Be3D / sid) をログに記録しないこと
 - 二重起動を防止すること
 - **GPL ライセンス (GPLv2 / GPLv3 / AGPL) のライブラリは使用禁止**
 
+### 15.1 プライベート版の機能の扱い
+
+開発者が自分だけで使う版 (プライベート版) の機能は、リリース版の環境ではどんな方法でも使えないようにする。
+「隠す」のではなく、リリース版にそのコードが存在しないことで保証する (存在しないものは、ソースや exe を読ませても見つからず、有効にもできない)。
+
+- プライベート版の機能のコード・説明・設定項目・設定ファイルの項目は、リリース版 (main ブランチ・タグ・配布 ZIP・GitHub) に一切含めない
+- プライベート版は開発者の PC のローカルブランチだけで管理し、GitHub などへは公開しない
+- プライベート版だけのコードには、必ず目印のコメント「private ブランチ限定」を付ける
+- 開発者の PC のリポジトリに push の直前の検査を置き、main とタグ以外の送信と、プライベート版の機能を含むコミットの送信を止める
+  (検査の中身は PC の中だけに置き、公開しない)
+- リリースの自動処理 (GitHub Actions) は、ソースに目印「private ブランチ限定」が1つでもあればリリースを失敗させる
+- 他者が同じような機能を独自に作ることや、プライベート版の exe・ファイルそのものが外に出た場合までは防げない。exe を PC に縛る鍵などの足止めは行わない
+- 例外 (暗号化して置く機能): 一部の機能は、ソースを AES-256-GCM で暗号化したものだけを公開リポジトリに置き、
+  カギ (Git の対象外) がある環境のビルドにだけ組み込む。カギが無いビルド (リリースの自動処理を含む) の exe にはその機能のコードが入らない。
+  カギと復号したソースは Git の対象外にし、push の直前の検査でも止める。リリースの自動処理は、カギが無いことと、exe にその機能が入っていないことを確かめる
+
 ---
 
 ## 16. 既知の制限 (対応予定)
 
-- **プロキシ (HTTP / SOCKS5 / SOCKS4)**: 設定 UI・保存・クライアント生成は実装済みだが、HTTP クライアントに反映されないため動作しない。プロキシパスワードは平文保存
+- **プロキシ (HTTP / SOCKS5 / SOCKS4)**: 設定 UI・保存・クライアント生成は実装済みだが、HTTP クライアントに反映されないため動作しない。プロキシのパスワードは Windows の機能 (DPAPI) で暗号化して保存

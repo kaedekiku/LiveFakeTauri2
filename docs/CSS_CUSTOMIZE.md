@@ -11,8 +11,8 @@ LiveFake は UI の見た目をユーザー自身が CSS で自由にカスタ�
 ### 1.1 カスタム CSS ファイル一覧
 
 - EXE と同じフォルダの **`data/custom.css`** がメインのカスタム CSS ファイルです
-- アプリ起動時に自動で読み込まれ、**標準スタイルの後**に適用されます
-  （同じ詳細度のセレクタならユーザー CSS が優先されます）
+- アプリ起動時に自動で読み込まれ、**標準の見た目より常に優先**されます
+  （アプリの標準の見た目は CSS レイヤーにまとめてあるため、セレクタの詳細度 (指定の強さ) に関係なくユーザー CSS が勝ちます。→ [1.4](#14-css-レイヤーと優先順位)）
 - 初回起動時、コメントで書き方の説明が入ったテンプレートが自動生成されます
 
 さらに、汎用掲示板ブラウザ **SIKI と同じファイル構成**の `data/theme/` フォルダにも対応しています。
@@ -29,7 +29,10 @@ SIKI のカスタム CSS の知識・レシピをほぼそのまま流用でき�
 | `postform.css` | 書き込みパネル（`@scope` で書き込み欄に限定適用） | `postform.css` |
 | `setting.css` | 設定パネル（同上） | `setting.css` |
 
-適用順（後勝ち）: 標準スタイル → `custom.css` → `main.css` → `light.css`/`dark.css` → `postform.css`/`setting.css`
+適用順（後勝ち）: 標準の見た目 (レイヤー `lf-base` → `lf-inline`) → `custom.css` → `main.css` → `light.css`/`dark.css` → `postform.css`/`setting.css`
+
+以前の「OBS連携」用の `broadcast.css` は、OBS連携の廃止 (OBS 表示への置き換え) に伴い読み込まれなくなりました。
+`data/theme/` に残っていても害はありません (不要なら削除してかまいません)。OBS 表示の見た目は、設定 > ビュワー > OBS 表示 のレイアウトの「追加 CSS」で変えます。
 
 字幕ウィンドウ・画像ポップアップウィンドウ・書き込みの浮遊ウィンドウは別の WebView なので、メインウィンドウの `custom.css` は届きません。
 これらの見た目を変えたい場合はそれぞれ `floating.css` / `mediaviewer.css` / `compose.css` に書いてください。
@@ -45,6 +48,7 @@ SIKI のカスタム CSS の知識・レシピをほぼそのまま流用でき�
 
 ### 1.3 制約とセキュリティ
 
+
 - `@import url(...)` や外部 CSS・外部フォントの読み込みは CSP により**ブロックされます**
 - **`url(http://…)` / `url(https://…)` による外部サーバーへの画像参照は、既定で無効化されます**
   （該当の `url(...)` は `none` に置換され、ブロックしたホスト名がステータスバーに表示されます）。
@@ -54,11 +58,34 @@ SIKI のカスタム CSS の知識・レシピをほぼそのまま流用でき�
 - 1 ファイルあたりのサイズ上限は 512KB です（超過したファイルは読み込まれません）
 - CSS の文法エラーがあっても起動は失敗しません（エラー行以降のルールが無視されるだけです）
 
+> ⚠️ **設定画面用の `setting.css` に、出所の分からない CSS を貼らないでください**
+> CSS ではアプリの動作や設定の値は変えられませんが、見た目は自由に変えられます。悪意のある CSS を貼ると、
+> 警告文を隠したり、削除などの危険なボタンを安全そうに見せかけたりできてしまいます (見た目のだまし)。
+> 設定画面は大事な操作が多いので、自分で書いた (内容を理解している) CSS だけを使ってください。
+
 > ⚠️ **ネット上で配布されている CSS を貼り付ける際の注意**
 > CSS には JavaScript を使わずに、外部サーバーへの画像読み込みを利用して
 > 「誰が・いつ・何を表示しているか」を送信させる既知の手法があります。
 > 外部 URL ブロックが既定で有効なのはこの対策です。出所の分からない CSS に
 > `url(http…)` が含まれていた場合は、その部分を削除して使ってください。
+
+### 1.4 CSS レイヤーと優先順位
+
+アプリの標準の見た目は `src/app.css` で次の CSS レイヤーにまとめて読み込んでいます。
+
+| レイヤー | 中身 |
+|---|---|
+| `lf-base` | 標準の見た目 (styles.css) |
+| `lf-inline` | 以前は要素に直接書いていた見た目をクラスにしたもの (inline-classes.css。`lf-w70` など) |
+
+ユーザー CSS はレイヤーの外に置かれるので、**詳細度 (`.a .b` のような指定の強さ) に関係なく、常に標準の見た目より優先**されます。
+たとえば `.settings-row input { width: 100px; }` のような弱い指定でも、標準の見た目を上書きできます。
+
+例外が2つあります。
+- **設定画面の値で決まる見た目** (文字サイズ・フォント・ペインの幅・ビュワーの欄の高さ・ハイライトの色など) は、
+  利用者の設定そのものなので要素に直接指定しています。CSS より設定画面が優先です (→ [5.1](#51-設定画面と重複する項目))
+- 標準の見た目のうち `!important` 付きの指定 (6 か所) は、ユーザー CSS の `!important` でも上書きできません。
+  このうちダークモードの入力欄の色は、変数 `--dark-input-bg` / `--dark-input-border` で変えられます (→ 2.1)
 
 ---
 
@@ -79,6 +106,11 @@ LiveFake の配色は以下の CSS 変数で構成されており、これを上
 | `--bg-light` | ダークモード専用の明るめ背景 | — | `#2d2d30` |
 | `--response-gap` | レス間の余白（設定「レス間隔」から自動設定。直接編集は非推奨） | `10px` | 同左 |
 | `--thumb-size` | 画像サムネイルの一辺（設定「サムネイルサイズ」から自動設定） | `200px` | 同左 |
+| `--text-secondary` | 説明文・補足の文字色 (背景とのコントラスト比 4.5:1 以上) | `#666666` | `#aaaaaa` |
+| `--dark-input-bg` / `--dark-input-border` | ダークモードの入力欄の背景 / 枠 (`.dark { … }` で指定) | — | `#1e1e1e` / `#555` |
+| `--tw-emote` / `--tw-giant` | Twitch のスタンプ / 巨大スタンプの高さ（設定 > Twitch から自動設定） | `28px` / `112px` | 同左 |
+| `--viewer-accent` | ビュワーの出どころの色 (`.src-twitch` / `.src-youtube` / `.src-5ch` / `.src-shitaraba` / `.src-jpnkn` ごと) | 紫 / 赤 / 橙 / 緑 / 青 | 同左 |
+| `--chip-fill` | ビュワー上部の出どころボタンのオンのときの塗り (`.viewer-chip.src-…` ごと) | 濃い紫 / 橙 / 緑 / 青 | 同左 |
 
 ### 2.2 ライトモードの配色を変える
 
@@ -279,6 +311,10 @@ LiveFake の配色は以下の CSS 変数で構成されており、これを上
 | `.new-arrival-meta` | メタ情報のまとまり |
 | `.new-arrival-thread-title` / `.new-arrival-res-no` / `.new-arrival-name` / `.new-arrival-mail` / `.new-arrival-id` / `.new-arrival-id-count` / `.new-arrival-time` | スレタイトル / レス番号 / 名前 / [メール欄] / ID / (n/回数) / 時刻 |
 | `.new-arrival-body` | 本文（サムネイル・リンクカードも本文内に表示） |
+| `.arrival-badges` (`.viewer-badges` も付く) | Twitch のバッジ（名前の前） |
+| `img.twitch-emote` / `img.twitch-emote.giant` | Twitch のスタンプ / 巨大スタンプ（掲示板に書かれたスタンプ名・`BIG`+スタンプ名も同じ） |
+| `img.twitch-emote.youtube-emoji` | YouTube のチャンネル独自の絵文字（Twitch のスタンプと同じ大きさ） |
+| `.id-count-some` / `.id-count-many` | 書き込み回数 (n/回数) の 2回以上 (青) / 5回以上 (赤)。メインのレス表示の `.response-id-count` にも付く |
 
 ### 3.8 書き込みウィンドウ
 
@@ -333,6 +369,22 @@ LiveFake の配色は以下の CSS 変数で構成されており、これを上
 
 保存操作にまつわるボタンの見た目は `button.primary`（保存・実行系）／`button.danger`（削除・リセット系）でも調整できます。
 
+設定画面のその他の部品:
+
+| クラス | 要素 |
+|--------|------|
+| `.settings-footer-note` | 画面下の1行の注記（その場で保存される項目の説明） |
+| `.settings-table` / `.settings-table-head` / `.settings-table-row` | 一覧の表（読み上げ辞書・許可リスト・Twitch 教育辞書など） / 見出し行 / 各行 |
+| `.settings-note` / `.settings-note-block` | 表の上などの小さな説明文 / その下に余白を付けたもの |
+| `.settings-row-stack` | 縦に並べる設定行 |
+| `.mask-note` | 「登録項目のマスク: オン」の状態表示と切り替えボタン（切り替えは 設定 > 表示） |
+| `.connect-list` → `.connect-lamp` (`.ok` / `.wait` / `.ng`) / `.connect-title` / `.connect-state` / `.connect-fill` / `.connect-count` | 設定 > 接続 の開いているタブの一覧 / 状態ランプ / 題名 / 状態の文字 / 埋まり具合のバー / N/1000 |
+| `.twitch-event-table` | 設定 > Twitch > イベント・設定 > YouTube > イベント の種類ごとの表 |
+| `.youtube-method` | 設定 > YouTube の取得方法の選択肢 |
+| `.twitch-login-code` / `.twitch-login-code-value` | Twitch ログインのコード表示 |
+| `.overlay-css-input` / `.overlay-layout-msg` (`.error`) | OBS 表示のレイアウトの追加 CSS 入力欄 / 操作のメッセージ（エラーは `.error`） |
+| `lf-` で始まるクラス | 以前は要素に直接書いていた見た目をクラスにしたもの。名前が見た目そのものを表します (例: `lf-w70` = 幅 70px、`lf-grow` = 残りの幅いっぱい、`lf-full-width` = 横幅いっぱい)。一覧は `src/inline-classes.css` |
+
 ### 3.10 書き込みの浮遊ウィンドウ
 
 スレッドタイトルバーの「書き込み」ボタンから開く、新スレ立て・返信用の別ウィンドウです（字幕ウィンドウ・画像ポップアップと同じ仕組みの独立した OS ウィンドウ）。
@@ -364,6 +416,51 @@ LiveFake の配色は以下の CSS 変数で構成されており、これを上
 | `.status-nav-bar` | スレを開いているときだけ、`.status-bar` の中身がこちらに切り替わる（着数・サイズ・リンクフィルタ・Top/New/End など。3.5 参照） |
 
 板一覧・スレ一覧を見ているときは通常のステータスメッセージ（`.status-main` 等）、スレを開いているときは `.status-nav-bar` の内容と、**同じ 1 行の中身が状況によって入れ替わります**（同時に両方が表示されるわけではありません）。
+
+### 3.12 ビュワー
+
+板タブの左端の「ビュワー」（Twitch のチャットと配信ホワイトリストの ID のレスをまとめて表示）。
+
+```text
+.board-tab.viewer-tab                       板タブの「ビュワー」
+.pane.viewer (#viewerPane)                  ビュワー全体
+├─ .viewer-toolbar                              上部の切り替え
+│   ├─ .viewer-chip.src-twitch / .src-youtube / .src-5ch / .src-shitaraba / .src-jpnkn   出どころの切り替え (オンは :has(input:checked))
+│   ├─ .viewer-toggle                               読み上げ方・最新レス欄・自動スクロール
+│   └─ .viewer-grow                                 間を空ける要素
+├─ .viewer-list                                 表示の一覧
+│   ├─ .viewer-empty                                まだ何も無いときの説明
+│   └─ .viewer-item.src-…                           1件 (イベントは .viewer-event .ev-sub などが付く)
+│       ├─ .viewer-meta                                 見出し
+│       │   ├─ .viewer-site / .viewer-where / .viewer-no    出どころ (イベントは種類名) / 板・スレ・チャンネル / レス番号
+│       │   ├─ .viewer-badges > img                         Twitch のバッジ
+│       │   └─ .viewer-name / .viewer-uid / .viewer-time     名前 / ID / 時刻
+│       ├─ .viewer-event-summary                        イベントの要約 (「〇〇さんがサブスクしました」など)
+│       ├─ .viewer-text                                 本文 (img.twitch-emote / .giant、サムネイル .response-thumbs-row・リンクカード .ogp-card を含む)
+│       └─ .viewer-media-reveal                         「画像・カードを表示」ボタン (Twitch をクリックで読み込む設定のとき)
+└─ .viewer-latest                               下の「スレの最新レス」欄
+    ├─ .viewer-latest-resize                        高さを変える上端のつまみ
+    ├─ .viewer-latest-head / .viewer-latest-hint    見出し / 説明
+    └─ .viewer-latest-list → .viewer-latest-item        一覧 → 1件
+        ├─ .viewer-latest-text                          本文
+        └─ .viewer-latest-wl                            「WLに入れる」ボタン
+```
+
+文字の大きさ・フォント・太字は 設定 > ビュワー > 表示 から `--viewer-fs` / `--viewer-latest-fs` / `--viewer-font` / `--viewer-weight` として渡しています
+(設定画面の値なので、CSS で変えるより設定画面で変えてください)。
+
+### 3.13 その他の新しい部品
+
+| クラス | 要素 |
+|--------|------|
+| `.tab-site-colors` (`.right-pane` に付く) + `.site-5ch` / `.site-shitaraba` / `.site-jpnkn` / `.site-twitch` / `.site-youtube` | 板タブ・スレタブの左端のサイトの色の線（設定 > 表示 でオンのとき） |
+| `.tab-tts-off` | 読み上げをオフにしたタブの印 |
+| `.menu-badge` | 新しいバージョンがあるときのヘルプメニューの印 |
+| `.ogp-card-thumb-failed` | リンクカードの画像が読み込めなかったとき (既定では画像の枠ごと隠す) |
+| `.thread-tab-close` / `.title-action-btn` / `.tool-bar button` | タブの × / スレタイバー・新着レスペインのボタン / ツールバーのボタン（常に薄い枠が付く） |
+
+字幕ウィンドウ（`floating.css`）では、Twitch のスタンプは `img.twitch-emote` (`.giant`)、バッジは `img.sub-badge` です。
+大きさは 設定 > 字幕 > 表示 の「Twitch のスタンプの大きさ」から `--tw-emote` / `--tw-giant` として渡されます。
 
 ---
 
@@ -486,8 +583,9 @@ LiveFake の配色は以下の CSS 変数で構成されており、これを上
 
 ### 5.1 設定画面と重複する項目
 
-フォントの種類・サイズ・レス間隔・各ペインの文字サイズ・サムネイルサイズなどは**設定パネルから変更でき、
-インラインスタイル（CSS より優先）または CSS 変数 (`--response-gap` / `--thumb-size` など) で適用されます**。
+フォントの種類・サイズ・レス間隔・各ペインの文字サイズ・サムネイルサイズ・ビュワーの文字・各欄の高さなどは**設定パネルから変更でき、
+要素への直接指定（インラインスタイル。CSS より優先）または CSS 変数 (`--response-gap` / `--thumb-size` / `--viewer-fs` など) で適用されます**。
+直接指定が残っているのはこうした「設定画面の値で決まるもの」だけで、それ以外の見た目はすべてクラスになっています (→ 1.4)。
 これらは custom.css ではなく設定画面から変更してください。CSS で無理に上書きするには `!important` が必要になり、
 設定画面の操作と競合します。
 
@@ -497,6 +595,8 @@ LiveFake の配色は以下の CSS 変数で構成されており、これを上
 ### 5.2 クラス名の互換性
 
 クラス名はアプリのバージョンアップで変更・追加・削除されることがあります。
+特に `lf-` で始まるクラスは見た目そのものを表す名前なので、見た目を調整したときに名前が変わることがあります。
+長く使う CSS では、なるべく `.settings-row` や `.viewer-item` のような部品の名前を使ってください。
 更新後に見た目が崩れた場合は custom.css の該当ルールを見直してください。
 
 ### 5.3 元に戻したいとき

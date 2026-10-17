@@ -1,8 +1,8 @@
 [package]
 name = "livefake"
-version = "0.0.118"
+version = "0.0.119"
 license = "MIT"
-description = "実況向け掲示板ブラウザ"
+description = "実況向け掲示板ブラウザ＋Twitchビュワー"
 homepage = ""
 repository = ""
 edition = "2021"
@@ -21,6 +21,9 @@ core-fetch = { path = "../../../crates/core-fetch" }
 core-proxy = { path = "../../../crates/core-proxy" }
 core-store = { path = "../../../crates/core-store" }
 core-tts = { path = "../../../crates/core-tts" }
+core-twitch = { path = "../../../crates/core-twitch" }
+core-youtube = { path = "../../../crates/core-youtube" }
+core-overlay = { path = "../../../crates/core-overlay" }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "multipart"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -28,3 +31,5 @@ tauri = { version = "2", features = [] }
 tauri-plugin-single-instance = "2"
 winreg = "0.56.0"
 tokio = { version = "1", default-features = false, features = ["time"] }
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }

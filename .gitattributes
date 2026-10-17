@@ -1,0 +1,2 @@
+# 暗号化したファイルは改行の変換をしない
+crates/core-youtube/sealed.bin binary

@@ -10,6 +10,8 @@
   --line: #c0c0c0;
   --ink: #1b1b1b;
   --sub: #555555;
+  /* 説明文などの補足の文字 (背景とのコントラスト比 4.5:1 以上) */
+  --text-secondary: #666666;
   --accent: #0066cc;
   /* SIKI互換テーマ変数 (custom.css / data/theme/*.css から上書き可能) */
   --color-boardTab-activeBackground: var(--panel);
@@ -1158,13 +1160,13 @@ li.fav-drag-over {
   color: #669;
 }
 .new-arrival-name {
-  color: #393;
+  color: #2a7a2a;
 }
 .new-arrival-id {
-  color: #c60;
+  color: #a65200;
 }
 .new-arrival-time {
-  color: #999;
+  color: #666;
 }
 .new-arrival-body {
   font-size: 11px;
@@ -1596,7 +1598,7 @@ pre {
 
 .status-sep {
   margin: 0 4px;
-  color: #999;
+  color: #555;
 }
 
 .status-clickable {
@@ -1989,7 +1991,7 @@ button.search-history-btn:hover {
 
 .ng-empty {
   font-size: 11px;
-  color: #999999;
+  color: var(--text-secondary);
 }
 
 .ng-hint {
@@ -2313,7 +2315,7 @@ button.search-history-btn:hover {
 
 .settings-hint {
   font-size: 11px;
-  color: #888;
+  color: var(--text-secondary);
   margin-left: 4px;
 }
 
@@ -2671,6 +2673,7 @@ button.search-history-btn:hover {
   --line: #3c3c3c;
   --ink: #d4d4d4;
   --sub: #9e9e9e;
+  --text-secondary: #aaaaaa;
   --accent: #4da6ff;
   --bg-light: #2d2d30;
   /* SIKI互換テーマ変数 (ダーク時の既定値) */
@@ -2693,9 +2696,10 @@ button.search-history-btn:hover {
 .dark input[type="password"],
 .dark input[type="search"],
 .dark input:not([type]) {
-  background-color: #1e1e1e !important;
+  /* 利用者の CSS から変えるときは .dark { --dark-input-bg: …; --dark-input-border: …; } */
+  background-color: var(--dark-input-bg, #1e1e1e) !important;
   color: var(--ink) !important;
-  border-color: #555 !important;
+  border-color: var(--dark-input-border, #555) !important;
 }
 .dark .menu-bar {
   background: #2d2d30;
@@ -3254,7 +3258,7 @@ button.search-history-btn:hover {
 }
 .dark .nav-jump-input,
 .dark .tab-res-count {
-  color: #888;
+  color: #aaa;
 }
 
 
@@ -3460,7 +3464,9 @@ button.search-history-btn:hover {
 .response-scroll .ogp-card-slot:not([data-ogp-state]),
 .response-scroll .ogp-card-slot[data-ogp-state="loading"],
 .new-arrival-body .ogp-card-slot:not([data-ogp-state]),
-.new-arrival-body .ogp-card-slot[data-ogp-state="loading"] {
+.new-arrival-body .ogp-card-slot[data-ogp-state="loading"],
+.viewer-list .ogp-card-slot:not([data-ogp-state]),
+.viewer-list .ogp-card-slot[data-ogp-state="loading"] {
   min-height: 100px;
 }
 .ogp-card-slot[data-ogp-state="empty"] {
@@ -3849,8 +3855,8 @@ button.search-history-btn:hover {
   background: #e8f0fe;
 }
 .settings-section-tab.active {
-  background: #4a90d9;
-  border-color: #4a90d9;
+  background: #2f6db5;
+  border-color: #2f6db5;
   color: #fff;
   font-weight: 700;
 }
@@ -3897,6 +3903,40 @@ button.search-history-btn:hover {
   background: rgba(255, 220, 0, 0.12);
 }
 
+/* ===== ビュワー (板タブの左端) ===== */
+.board-tab.viewer-tab .board-tab-title { font-weight: 700; }
+.pane.viewer { flex: 1 1 0; min-height: 0; padding: 0; display: flex; flex-direction: column; overflow: hidden; }
+.viewer-toolbar {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  background: #e0e0e0; border-bottom: 1px solid #a0a0a0; padding: 2px 6px;
+  font-size: calc(11px + var(--fs-delta, 0px));
+}
+.viewer-grow { flex: 1; }
+.viewer-chip, .viewer-toggle { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
+.viewer-chip { padding: 1px 6px; border-radius: 10px; border: 1px solid #b0b0b0; background: #f6f6f6; }
+.viewer-list { flex: 1; min-height: 60px; overflow-y: auto; padding: 4px 6px; font-size: var(--viewer-fs, calc(13px + var(--fs-delta, 0px))); font-family: var(--viewer-font, inherit); font-weight: var(--viewer-weight, normal); }
+.viewer-empty { color: #666; padding: 12px; line-height: 1.6; }
+.viewer-item { border-left: 4px solid var(--viewer-accent, #888); padding: 3px 8px; margin: 3px 0; background: rgba(0, 0, 0, 0.03); border-radius: 3px; cursor: pointer; }
+.viewer-item:hover { background: rgba(0, 0, 0, 0.07); }
+.viewer-meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; font-size: 0.85em; color: #666; }
+.viewer-site { color: #fff; background: var(--viewer-accent, #888); border-radius: 3px; padding: 0 5px; font-weight: 700; font-size: 0.9em; }
+.viewer-where { color: #555; }
+.viewer-no { color: #555; }
+.viewer-name { font-weight: 700; color: #2a7a2a; }
+.viewer-text { white-space: pre-wrap; word-break: break-word; line-height: 1.45; }
+.src-twitch { --viewer-accent: #9147ff; }
+.src-5ch { --viewer-accent: #e05a2b; }
+.src-shitaraba { --viewer-accent: #2f8f4e; }
+.src-jpnkn { --viewer-accent: #2a7bd6; }
+.src-twitch .viewer-name { color: #7d3cdf; }
+.dark .viewer-toolbar { background: #2d2d30; border-color: var(--line); color: var(--sub); }
+.dark .viewer-chip { background: #333; border-color: #555; }
+.dark .viewer-item { background: rgba(255, 255, 255, 0.04); }
+.dark .viewer-item:hover { background: rgba(255, 255, 255, 0.08); }
+.dark .viewer-meta, .dark .viewer-where, .dark .viewer-no { color: #aaa; }
+.dark .viewer-name { color: #7fd17f; }
+.dark .src-twitch .viewer-name { color: #bf94ff; }
+.dark .viewer-empty { color: #999; }
 /* メニューの中の、押せない表示だけの行 (例: 文字サイズ (…): 12px) */
 .menu-dropdown .menu-label { padding: 4px 12px; color: var(--sub, #666); font-size: 0.92em; cursor: default; }
 /* 書き込み履歴: 種類とスレ名 */
@@ -3912,5 +3952,156 @@ button.search-history-btn:hover {
 .tab-site-colors .board-tab-bar .board-tab.site-twitch,
 .tab-site-colors .thread-tab.site-twitch { box-shadow: inset 4px 0 0 #9147ff; }
 
+/* ビュワーの下の「スレの最新レス」欄 */
+.pane.viewer .viewer-list { min-height: 0; }
+.viewer-latest { position: relative; flex-shrink: 0; display: flex; flex-direction: column; border-top: 1px solid #a0a0a0; }
+.viewer-latest-resize { position: absolute; left: 0; right: 0; top: -3px; height: 6px; cursor: row-resize; z-index: 1; }
+.viewer-latest-resize:hover { background: rgba(0, 0, 0, 0.12); }
+.viewer-latest-head { display: flex; align-items: center; gap: 8px; padding: 2px 6px; background: #ececec; font-size: calc(11px + var(--fs-delta, 0px)); font-weight: 700; }
+.viewer-latest-hint { font-weight: 400; color: #666; }
+.viewer-latest-list { flex: 1; overflow-y: auto; font-size: var(--viewer-latest-fs, calc(12px + var(--fs-delta, 0px))); font-family: var(--viewer-font, inherit); font-weight: var(--viewer-weight, normal); }
+.viewer-latest-item { display: flex; align-items: center; gap: 6px; padding: 1px 6px; border-left: 3px solid var(--viewer-accent, #888); cursor: pointer; white-space: nowrap; }
+.viewer-latest-item:hover { background: rgba(0, 0, 0, 0.06); }
+.viewer-latest-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.viewer-latest-wl { font-size: 0.9em; padding: 0 6px; }
+.dark .viewer-latest { border-color: var(--line); }
+.dark .viewer-latest-head { background: #2d2d30; color: var(--sub); }
+.dark .viewer-latest-hint { color: #999; }
+.dark .viewer-latest-item:hover { background: rgba(255, 255, 255, 0.08); }
+/* タブの読み上げオフの印 */
+.tab-tts-off { flex-shrink: 0; margin-right: 2px; opacity: 0.7; }
+/* 設定 > 接続 */
+.connect-list li { display: flex; align-items: center; gap: 6px; padding-left: 9px; } /* 左端の色の線とランプが重ならないように */
+.connect-list li.site-5ch { box-shadow: inset 3px 0 0 #e05a2b; }
+.connect-list li.site-shitaraba { box-shadow: inset 3px 0 0 #2f8f4e; }
+.connect-list li.site-jpnkn { box-shadow: inset 3px 0 0 #2a7bd6; }
+.connect-list li.site-twitch { box-shadow: inset 3px 0 0 #9147ff; }
+.connect-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-left: 4px; }
+/* 一覧の共通 CSS (.ng-list li span { flex: 1 }) で横に伸びないよう、ランプと状態の表示は幅を固定する */
+.connect-list .connect-lamp { flex: 0 0 8px; width: 8px; height: 8px; border-radius: 50%; background: #aaa; }
+.connect-list .connect-state, .connect-list .connect-count { flex: none; font-size: 11px; color: #555; }
+.connect-list .connect-state { min-width: 4.5em; }
+.connect-fill { flex: none; width: 100px; height: 8px; }
+.dark .connect-list .connect-state, .dark .connect-list .connect-count { color: var(--sub); }
+.connect-list .connect-lamp.ok { background: #2f9e5b; }
+.connect-list .connect-lamp.ng { background: #d64545; }
+.connect-list .connect-lamp.wait { background: #d4a017; }
 /* ヘルプメニューの「新しいバージョンがあります」の印 */
 .menu-badge { color: #e05a2b; font-size: 0.7em; margin-left: 2px; vertical-align: top; }
+
+/* 登録項目のマスク (複数行の入力欄は文字を伏せて表示する) */
+textarea.masked-text { -webkit-text-security: disc; }
+/* OBS 表示の追加 CSS の入力欄 */
+.overlay-css-input { width: 100%; box-sizing: border-box; font-family: Consolas, "MS Gothic", monospace; font-size: 12px; }
+
+/* OBS 表示のレイアウト操作のメッセージ */
+.overlay-layout-msg { margin: 4px 0 0; color: #2f7a3f; }
+.overlay-layout-msg.error { color: #c0392b; }
+.dark .overlay-layout-msg { color: #7fd18f; }
+.dark .overlay-layout-msg.error { color: #ff8a80; }
+
+/* ビュワーの出どころの切り替え: それぞれの色で、オンは塗り・オフは枠だけ */
+.viewer-chip { border-color: var(--viewer-accent, #b0b0b0); color: var(--viewer-accent, inherit); font-weight: 700; }
+.viewer-chip:has(input:checked) { background: var(--viewer-accent, #888); color: #fff; }
+.viewer-chip input { accent-color: var(--viewer-accent, auto); }
+.dark .viewer-chip { background: transparent; border-color: var(--viewer-accent, #555); color: var(--viewer-accent, inherit); }
+.dark .viewer-chip.src-twitch { --viewer-accent: #a970ff; }
+.dark .viewer-chip.src-jpnkn { --viewer-accent: #4a95e8; }
+.dark .viewer-chip.src-shitaraba { --viewer-accent: #3fa864; }
+.dark .viewer-chip:has(input:checked) { background: var(--viewer-accent, #555); color: #fff; }
+/* ダークモード: ビュワーのボタンが白地に白文字にならないように */
+.dark .pane.viewer button { background: #3a3a3a; color: var(--ink); border-color: #555; }
+.dark .pane.viewer button:hover:not(:disabled) { background: #4a4a4a; }
+/* ビュワーの Twitch のイベント (サブスク・ビッツなど) */
+.viewer-item.viewer-event { --viewer-accent: #e0a400; background: rgba(224, 164, 0, 0.10); }
+.viewer-event-summary { font-weight: 700; line-height: 1.45; }
+.dark .viewer-item.viewer-event { background: rgba(224, 164, 0, 0.14); }
+/* 設定 > Twitch > イベント */
+.twitch-event-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.twitch-event-table th { text-align: left; font-weight: 400; color: var(--sub, #666); padding: 2px 4px; }
+.twitch-event-table td { padding: 2px 4px; white-space: nowrap; }
+.twitch-event-table td:nth-child(4) { width: 100%; }
+.twitch-event-table button { padding: 2px 8px; }
+
+/* ビュワーの Twitch のバッジ */
+.viewer-badges { display: inline-flex; gap: 2px; align-items: center; }
+.viewer-badges img { height: 1.15em; width: auto; vertical-align: middle; }
+
+/* Twitch のスタンプ (Twitch タブ・ビュワー。大きさは 設定 > Twitch > スタンプ) */
+img.twitch-emote { height: var(--tw-emote, 28px); width: auto; vertical-align: middle; }
+img.twitch-emote.giant { height: var(--tw-giant, 112px); display: inline-block; }
+/* Twitch ログインのコード */
+.twitch-login-code { margin: 6px 0; padding: 8px; border: 1px dashed #9147ff; border-radius: 4px; }
+.twitch-login-code-value { font-size: 22px; font-weight: 700; letter-spacing: 3px; margin: 4px 0 6px; font-family: Consolas, monospace; }
+
+/* 新着レスペインの Twitch のバッジ */
+.arrival-badges { margin-right: 3px; }
+
+/* ===== 要件 13.1 (既定の状態で見やすく) の見直し ===== */
+/* 書き込み回数の色: 2回以上=青、5回以上=赤 (決まりは変えず、ダークでは暗い背景で読める明るさにする) */
+.id-count-some { color: #3366ff; }
+.id-count-many { color: #cc3333; }
+.dark .id-count-some { color: #8fb4ff; }
+.dark .id-count-many { color: #ff7070; }
+/* 新着レスペインの見出し (ダーク) */
+.dark .new-arrival-thread-title { color: #8f8fd6; }
+.dark .new-arrival-res-no { color: #a0a0d0; }
+.dark .new-arrival-name { color: #7fd17f; }
+.dark .new-arrival-id { color: #ff9f40; }
+.dark .new-arrival-time { color: #aaa; }
+/* ビュワーの出どころの切り替え: 塗りは白い文字が読める濃さに、オフは文字を通常色にして枠だけ色を付ける */
+.viewer-chip.src-5ch { --chip-fill: #b8441c; }
+.viewer-chip.src-shitaraba { --chip-fill: #237040; }
+.viewer-chip.src-jpnkn { --chip-fill: #1f5fa8; }
+.viewer-chip.src-twitch { --chip-fill: #7b3fe0; }
+.viewer-chip, .dark .viewer-chip { color: var(--ink); }
+.viewer-chip:has(input:checked), .dark .viewer-chip:has(input:checked) { background: var(--chip-fill, var(--viewer-accent, #555)); color: #fff; border-color: var(--chip-fill, var(--viewer-accent, #555)); }
+/* 押せる部品が背景に埋もれないよう、平らなボタンにも薄い枠を常に付ける */
+.tool-bar button { border-color: rgba(0, 0, 0, 0.2); border-radius: 2px; }
+.dark .tool-bar button { border-color: rgba(255, 255, 255, 0.22); }
+.title-action-btn { border: 1px solid rgba(0, 0, 0, 0.2); border-radius: 3px; }
+.dark .title-action-btn { border: 1px solid rgba(255, 255, 255, 0.22); }
+.thread-tab-close { border: 1px solid rgba(0, 0, 0, 0.15); border-radius: 2px; }
+.dark .thread-tab-close { border-color: rgba(255, 255, 255, 0.2); }
+.external-board-add-btn { border: 1px solid #c4c4c4; }
+.dark .external-board-add-btn { border: 1px solid #555; }
+.boards-fetch { border-color: #a8a8a8; }
+/* 登録項目のマスクの状態 (切り替えは 設定 > 表示) */
+.mask-note { margin-bottom: 8px; gap: 8px; }
+.mask-note button { font-size: 11px; padding: 1px 6px; }
+/* 設定画面の下の注記 (その場で保存される項目) */
+.settings-footer-note { flex-shrink: 0; padding: 4px 12px; font-size: 11px; color: var(--text-secondary); border-top: 1px solid var(--line); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* ステータスバーの区切り (ダークでは明るめに) */
+.dark .status-sep { color: #999; }
+
+
+/* ビュワーのサムネイル・リンクカード */
+.viewer-text .response-thumbs-row { margin-top: 4px; }
+.viewer-list .thumb-size-gate {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: var(--thumb-size, 200px); height: var(--thumb-size, 200px);
+  border: 1px solid #d0d0d0; background: #f0f0f0; box-sizing: border-box; vertical-align: top;
+}
+.viewer-list .thumb-size-gate:has(.response-thumb) { border: none; background: none; }
+.viewer-text .ogp-card { margin-top: 4px; }
+.viewer-media-reveal { margin-top: 3px; font-size: 11px; padding: 1px 8px; }
+
+/* リンクカードの画像が読み込めなかったとき */
+.ogp-card-thumb.ogp-card-thumb-failed { display: none; }
+
+/* YouTube (出どころの色は赤) */
+.src-youtube { --viewer-accent: #e00000; }
+.src-youtube .viewer-name { color: #555; }
+.dark .src-youtube .viewer-name { color: #ddd; }
+.dark .viewer-chip.src-youtube { --viewer-accent: #ff4e45; }
+.viewer-chip.src-youtube { --chip-fill: #cc0000; }
+.tab-site-colors .board-tab-bar .board-tab.site-youtube,
+.tab-site-colors .thread-tab.site-youtube { box-shadow: inset 4px 0 0 #ff0033; }
+.connect-list li.site-youtube { box-shadow: inset 3px 0 0 #ff0033; }
+/* YouTube のチャンネル独自の絵文字 (Twitch のスタンプと同じ大きさ。巨大化はしない) */
+img.twitch-emote.youtube-emoji { height: var(--tw-emote, 28px); }
+/* 設定 > YouTube の取得方法 */
+.youtube-method { align-items: flex-start; }
+
+/* ここまで。このファイル全体は app.css から CSS レイヤー lf-base として読み込まれる
+   (利用者の CSS はレイヤーの外なので、指定の強さに関係なくこのファイルより優先される) */

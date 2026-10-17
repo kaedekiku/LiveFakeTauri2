@@ -24,7 +24,8 @@
 Tauri App (livefake)
 ├── core-fetch  (HTTP取得: reqwest, encoding_rs) → core-parse
 ├── core-store  (永続化: rusqlite, dirs)
-└── core-parse  (パーサ: 外部依存なし)
+├── core-parse  (パーサ: 外部依存なし)
+└── core-twitch (Twitch チャット受信: tokio-tungstenite + rustls。aws-lc-rs を引き込まないこと)
 ```
 
 ## 開発コマンド
@@ -183,7 +184,7 @@ cd apps/desktop && npx tsc --noEmit      # TypeScript型チェック
 - SAPI・棒読みちゃん・VOICEVOXなど、OS APIやブロッキング処理を呼ぶTauriコマンドには必ず `#[tauri::command(async)]` を付与する。非asyncコマンドはメインスレッドをブロックし、UI全体がフリーズする。
 
 #### クイックフォローアップリリースのノート作成
-- 直前のリリースが大型アップデート直後の不具合修正である場合、NEW.md・READMEの「最新の更新」には今回分に加えて前回リリースの内容も累積して記載する。
+- 直前のリリースが大型アップデート直後の不具合修正である場合、READMEの「最新の更新」には今回分に加えて前回リリースの内容も累積して記載する。
 
 #### SIKI互換クラスのリファクタ時チェック
 - 複数のクラスを1つの要素にまとめるリファクタを行う際は、docs/CSS_CUSTOMIZE.mdのSIKI互換対応表と照合し、既存のエイリアスクラス(例: .postform-foot)を落としていないか確認する。`.claude/hooks/check-siki-classes.js`(PostToolUse フック)が App.tsx 編集時に機械的にも警告する。

@@ -115,7 +115,7 @@ export default function App() {
             </p>
           </div>
           <div className="hero-visual">
-            <img className="app-icon" src={appIcon} alt="5ch Browser icon" />
+            <img className="app-icon" src={appIcon} alt="LiveFake icon" />
             <button
               type="button"
               className="zoomable-shot shot-button"

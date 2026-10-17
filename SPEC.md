@@ -72,7 +72,9 @@ Tauri App (livefake)
 ├── core-parse  subject.txt / dat / read.cgi HTML / したらば / JPNKN パーサ (外部依存: encoding_rs のみ)
 ├── core-proxy  プロキシクライアント生成・ImageViewURLReplace パーサ
 ├── core-store  Portable 永続化 (INI/JSON/SQLite/イベントログ)
-└── core-tts    SAPI / 棒読みちゃん / VOICEVOX 読み上げ
+├── core-tts    SAPI / 棒読みちゃん / VOICEVOX 読み上げ
+├── core-twitch Twitch チャット受信 (匿名 IRC over WebSocket・読み取り専用。tokio-tungstenite + rustls)
+└── core-youtube YouTube ライブ配信のチャット受信 (読み取り専用。YouTube Data API v3。reqwest + rustls)
 ```
 
 - 各 crate は単一 `lib.rs` 構成
@@ -229,6 +231,14 @@ Tauri App (livefake)
 
 ### 字幕
 `subtitle_show` `subtitle_hide` `subtitle_reset_position` `subtitle_update` `subtitle_opacity` `subtitle_topmost` `subtitle_font_size` `subtitle_meta_font_size` `subtitle_id_font_size` `subtitle_id_font_family`
+
+### Twitch チャット
+`twitch_sync` (開いている Twitch タブのチャンネル一覧に受信を合わせる)。受信はイベント `twitch-message` / `twitch-status`
+
+### YouTube ライブ配信のチャット
+`youtube_methods` (この exe で使える取得方法) `youtube_key_status` `youtube_set_key` `youtube_clear_key` (API キー。DPAPI で暗号化して保存し、画面には設定済みかだけ返す)
+`youtube_sync` (開いている YouTube タブの配信に受信を合わせる) `youtube_reconnect`。受信はイベント `youtube-message` / `youtube-status`。
+OBS 表示から削除された発言を消す `overlay_retract`
 
 ### ウィンドウ・アプリ
 `set_window_theme` `save/load_window_size` `quit_app` `open_external_url` `open_file_dialog` `open_folder_dialog` `get_data_dir` `list_system_fonts` `check_for_updates`

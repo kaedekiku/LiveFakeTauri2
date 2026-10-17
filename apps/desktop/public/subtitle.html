@@ -86,6 +86,10 @@
   /* --- OGP / X ポストカード (メイン側で解決済みの HTML が bodyHtml に埋め込まれてくる) ---
      半透明の暗い背景に載せるためダーク配色。 */
   #subtitleBody .body-link { color: #9fd0ff; text-decoration: none; }
+  /* Twitch のスタンプ・バッジ */
+  img.twitch-emote { height: var(--tw-emote, 40px); width: auto; vertical-align: middle; }
+  img.twitch-emote.giant { height: var(--tw-giant, 160px); display: inline-block; }
+  img.sub-badge { height: 1.1em; width: auto; vertical-align: middle; margin-right: 2px; }
   .ogp-cards { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; font-size: 14px; line-height: 1.35; text-shadow: none; white-space: normal; }
   .ogp-card { position: relative; display: flex; align-items: stretch; max-width: 460px; border: 1px solid #55555c; border-radius: 8px; overflow: hidden; background: rgba(43, 43, 48, 0.9); color: inherit; text-decoration: none; }
   .ogp-card-hover { display: none; }
@@ -248,7 +252,20 @@
     var parts = [];
     if (on("threadTitle") && e.threadTitle) parts.push('<span style="color:#88aaff">' + escapeHtml(e.threadTitle) + '</span>');
     if (on("resNo") && e.responseNo != null) parts.push('<span style="color:#aaaaaa">' + escapeHtml(e.responseNo) + '</span>');
-    if (on("name") && e.name) parts.push('<span style="color:#88ff88"><span style="color:#999999">名前：</span>' + escapeHtml(e.name) + '</span>');
+    // Twitch のバッジ (画像は Twitch の画像配信サーバーのものだけ)
+    var badgeHtml = "";
+    if (on("badges") && Array.isArray(e.badges)) {
+      e.badges.slice(0, 10).forEach(function(b) {
+        if (b && typeof b.url === "string" && /^https:\/\/static-cdn\.jtvnw\.net\/badges\/v1\/[0-9a-f-]{1,64}$/i.test(b.url)) {
+          badgeHtml += '<img class="sub-badge" src="' + b.url + '/2" alt="' + escapeHtml(b.title || "") + '">';
+        }
+      });
+    }
+    if (on("name") && e.name) parts.push('<span style="color:#88ff88"><span style="color:#999999">名前：</span>' + badgeHtml + escapeHtml(e.name) + '</span>');
+    // スタンプの大きさ (メイン側の設定)
+    var es = Number(e.emoteSize), gs = Number(e.giantEmoteSize);
+    if (es >= 8 && es <= 400) document.documentElement.style.setProperty("--tw-emote", es + "px");
+    if (gs >= 16 && gs <= 800) document.documentElement.style.setProperty("--tw-giant", gs + "px");
     if (on("mail") && e.mail) parts.push('<span style="color:#aaaaaa">[' + escapeHtml(e.mail) + ']</span>');
     if (on("date") && e.date) parts.push('<span style="color:#999999">投稿日：' + escapeHtml(e.date) + '</span>');
     if (on("id") && e.id) {
@@ -275,7 +292,9 @@
   };
 
   window.__setOpacity = function(value) {
-    var a = Math.max(0.1, Math.min(1.0, Number(value) || 1.0));
+    // 0 (背景を完全に透明) も受け付ける。数値でないときだけ既定の 1
+    var n = Number(value);
+    var a = Math.max(0, Math.min(1.0, isNaN(n) ? 1.0 : n));
     rootEl.style.background = "rgba(26, 26, 46, " + a + ")";
   };
 

@@ -1,0 +1,16 @@
+[package]
+name = "core-overlay"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "OBS のブラウザソース向け表示サーバー (127.0.0.1 のみ・読み取り専用)"
+
+[dependencies]
+axum = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { version = "1", default-features = false, features = ["net", "sync", "macros", "rt", "time"] }
+
+[dev-dependencies]
+tokio = { version = "1", default-features = false, features = ["net", "sync", "macros", "rt", "time", "io-util"] }

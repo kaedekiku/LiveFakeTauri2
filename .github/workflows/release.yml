@@ -23,12 +23,29 @@ jobs:
         run: npm ci
         working-directory: apps/desktop
 
+      # プライベート版だけのコードの目印 (REQUIREMENTS 15.1) が apps/ と crates/ にあればリリースしない
+      - name: Check no private-only code
+        shell: bash
+        run: |
+          MARK="$(printf 'private \xe3\x83\x96\xe3\x83\xa9\xe3\x83\xb3\xe3\x83\x81\xe9\x99\x90\xe5\xae\x9a')"
+          if git grep -n -F "$MARK" -- apps crates; then echo "private-only code found"; exit 1; fi
+
       - name: Check third-party license list is up to date
         run: python scripts/generate_third_party_licenses.py --check
 
       - name: Build Windows exe
         working-directory: apps/desktop
         run: npx tauri build --config '{"bundle":{"active":false}}'
+
+      # 暗号化して置いている機能は、カギのあるビルドにだけ入る (REQUIREMENTS 15.1)。リリースの exe に入っていないことを確かめる
+      - name: Check encrypted feature is not built in
+        shell: pwsh
+        run: |
+          if (Test-Path crates/core-youtube/sealed.key) { Write-Error "key file must not exist"; exit 1 }
+          if (Test-Path crates/core-youtube/sealed_plain.rs) { Write-Error "decrypted source must not exist"; exit 1 }
+          $text = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes("target/release/livefake.exe"))
+          $marks = @([string]::new([char[]]@(0x65B9, 0x5F0F, 0x42)), [string]::new([char[]]@(0x67, 0x65, 0x74, 0x5F, 0x6C, 0x69, 0x76, 0x65, 0x5F, 0x63, 0x68, 0x61, 0x74)))
+          foreach ($m in $marks) { if ($text.Contains($m)) { Write-Error "release exe contains the encrypted feature"; exit 1 } }
 
       - name: Package as ZIP
         shell: pwsh
@@ -58,9 +75,15 @@ jobs:
         with:
           path: artifacts
 
+      # リリースページの本文は README の「最新の更新」の印の間
+      - name: Extract release notes from README
+        run: |
+          awk '/<!-- release-notes:start -->/{f=1;next} /<!-- release-notes:end -->/{f=0} f' README.md > release-notes.md
+          test -s release-notes.md
+
       - name: Attach to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          body_path: NEW.md
+          body_path: release-notes.md
           files: |
             artifacts/windows-x64/*

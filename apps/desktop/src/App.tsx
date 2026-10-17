@@ -16,8 +16,7 @@ import {
   ClipboardList, RefreshCw, Pencil, FilePenLine, Save,
   Star, X, ChevronLeft, ChevronRight, ChevronDown, Ban,
   Image, Film, ExternalLink,
-  Subtitles, Volume2, VolumeX, ChevronUp, Search, PanelLeftClose, PanelLeftOpen,
-  Cast,
+  Subtitles, Volume2, VolumeX, Ear, EarOff, ChevronUp, Search, PanelLeftClose, PanelLeftOpen,
 } from "lucide-react";
 
 type MenuInfo = { topLevelKeys: number; normalizedSample: string };
@@ -84,6 +83,8 @@ const ngScopeMatches = (entry: string | NgEntry, boardUrl: string, threadUrl: st
 type ThreadTab = {
   threadUrl: string;
   title: string;
+  /** このタブ (スレ・Twitch チャンネル) の新着を読み上げない */
+  ttsOff?: boolean;
 };
 
 const stripHtmlForMatch = (html: string): string =>
@@ -150,7 +151,7 @@ const clampMenuPosition = (x: number, y: number, width: number, height: number) 
 };
 const isTauriRuntime = () =>
   typeof window !== "undefined" && Boolean((globalThis as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
-type SiteType = "fiveCh" | "shitaraba" | "jpnkn";
+type SiteType = "fiveCh" | "shitaraba" | "jpnkn" | "twitch" | "youtube";
 const DEFAULT_BBSMENU_URL = "https://menu.5ch.io/bbsmenu.json";
 const DEFAULT_SHITARABA_HOST = "jbbs.shitaraba.net";
 const DEFAULT_JPNKN_HOST = "bbs.jpnkn.com";
@@ -163,8 +164,78 @@ const detectSiteType = (url: string): SiteType => {
   const host = urlHostname(url);
   if (host === "jbbs.shitaraba.net" || host === "jbbs.livedoor.jp") return "shitaraba";
   if (host === "bbs.jpnkn.com") return "jpnkn";
+  if (host && TWITCH_HOSTS.has(host)) return "twitch";
+  if (isYoutubeUrl(url)) return "youtube";
   return "fiveCh";
 };
+// ----- Twitch チャット (匿名・読み取り専用) -----
+// Twitch のチャンネルは、タブ URL を https://www.twitch.tv/<チャンネル名> に揃えて「スレ」と同じように開く。
+// チャンネル名は Twitch の規則 (英小文字・数字・_、1〜25文字) に合うものだけを受け付ける (Rust 側でも同じ検査をする)
+const TWITCH_HOSTS = new Set(["twitch.tv", "www.twitch.tv", "m.twitch.tv"]);
+const twitchChannelFromUrl = (url: string): string | null => {
+  let u: URL;
+  try { u = new URL(url.trim()); } catch { return null; }
+  if (!TWITCH_HOSTS.has(u.hostname.toLowerCase())) return null;
+  const name = (u.pathname.split("/")[1] ?? "").toLowerCase();
+  return /^[a-z0-9_]{1,25}$/.test(name) ? name : null;
+};
+// アドレスバーの入力 ("twitch.tv/name" のように https:// が無い形も受け付ける)
+const twitchChannelFromInput = (raw: string): string | null => {
+  const v = raw.trim();
+  return twitchChannelFromUrl(/^https?:\/\//i.test(v) ? v : `https://${v}`);
+};
+const isTwitchUrl = (url: string) => twitchChannelFromUrl(url) !== null;
+const twitchTabUrl = (channel: string) => `https://www.twitch.tv/${channel}`;
+// ----- YouTube ライブ配信のチャット (読み取り専用) -----
+// 配信は、タブ URL を https://www.youtube.com/watch?v=<動画ID> に揃えて「スレ」と同じように開く。
+// 開けるのはライブ配信の URL (watch?v= / live/ / youtu.be/) だけ。動画 ID は Rust 側でも確かめる
+const YOUTUBE_HOSTS = new Set(["youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"]);
+const YT_VIDEO_ID_RE = /^[A-Za-z0-9_-]{11}$/;
+const youtubeVideoFromUrl = (url: string): string | null => {
+  let u: URL;
+  try { u = new URL(url.trim()); } catch { return null; }
+  const host = u.hostname.toLowerCase();
+  if (!YOUTUBE_HOSTS.has(host)) return null;
+  const segs = u.pathname.split("/").filter(Boolean);
+  const id = host === "youtu.be" ? segs[0] : segs[0] === "watch" ? u.searchParams.get("v") : segs[0] === "live" ? segs[1] : null;
+  return id && YT_VIDEO_ID_RE.test(id) ? id : null;
+};
+// アドレスバーの入力 ("youtube.com/live/ID" のように https:// が無い形も受け付ける)
+const youtubeVideoFromInput = (raw: string): string | null => {
+  const v = raw.trim();
+  return youtubeVideoFromUrl(/^https?:\/\//i.test(v) ? v : `https://${v}`);
+};
+// YouTube の URL だが、ライブ配信の URL ではないもの (チャンネルのページなど)
+const isYoutubeNonVideoInput = (raw: string): boolean => {
+  const v = raw.trim();
+  const host = urlHostname(/^https?:\/\//i.test(v) ? v : `https://${v}`);
+  return !!host && YOUTUBE_HOSTS.has(host) && youtubeVideoFromInput(v) === null;
+};
+const isYoutubeUrl = (url: string) => youtubeVideoFromUrl(url) !== null;
+const youtubeTabUrl = (video: string) => `https://www.youtube.com/watch?v=${video}`;
+// Twitch・YouTube のチャットのタブ (流れていくだけなので、取得・巡回・栞・書き込みはしない)
+const isChatUrl = (url: string) => isTwitchUrl(url) || isYoutubeUrl(url);
+// YouTube の絵文字の画像 (YouTube の画像配信サーバーのものだけ使う。Rust 側でも確かめている)
+const YT_EMOJI_URL_RE = /^https:\/\/yt[34]\.ggpht\.com\/[A-Za-z0-9_\-=/.~]{1,500}$/;
+// YouTube の投稿者の立場の色 (名前の色に使う。配信者=黄・モデレーター=青・メンバー=緑。それ以外は色を付けない)
+const youtubeRoleColor = (m: { owner?: unknown; moderator?: unknown; member?: unknown }) =>
+  m.owner === true ? "#c99a00" : m.moderator === true ? "#5e84f1" : m.member === true ? "#2ba640" : "";
+// 発言 ID (英数字と一部の記号)。OBS 表示から消すときの目印に使う
+const YT_MESSAGE_ID_RE = /^[A-Za-z0-9_\-.=%:+/]{1,256}$/;
+const YT_CHANNEL_ID_RE = /^UC[A-Za-z0-9_-]{22}$/;
+// 1つの Twitch タブに残すチャットの件数 (古いものから捨てる)
+const TWITCH_MAX_ROWS = 1000;
+// 受信したチャットをまとめて画面に反映する間隔 (1件ずつ反映すると流れが速いときに重くなる)
+const TWITCH_FLUSH_MS = 250;
+// 新着ペイン・字幕の待ち行列に残す Twitch のチャットの上限 (既定値。設定 > Twitch で変更可)。
+// 1件ずつ数秒かけて表示するので、多く残すと流れの速いチャンネルでは表示が分単位で遅れていく。
+// 新しいものを優先して古いものから捨てる
+const TWITCH_MAX_QUEUED_ARRIVALS_DEFAULT = 10;
+// 読み上げが溜まっているとき、これ以上は Twitch のチャットを読み上げに積まない (既定値。設定 > Twitch で変更可)
+const TWITCH_MAX_TTS_BACKLOG_DEFAULT = 10;
+const TWITCH_LIMIT_MIN = 1;
+const TWITCH_LIMIT_MAX = 50;
+const clampTwitchLimit = (v: number) => Math.max(TWITCH_LIMIT_MIN, Math.min(TWITCH_LIMIT_MAX, Math.round(v) || TWITCH_LIMIT_MIN));
 // 5ch はレス1000で埋まり、1001番はサーバーが付ける「このスレッドは1000を超えました」の定型文。
 // 新着ペイン・字幕にはスレが埋まったことが分かるよう1001番まで流し、読み上げは1000番まで。
 // したらば・JPNKN は板によって1000を超えて書き込めるため、番号では除外しない
@@ -235,6 +306,330 @@ const decodeNumericCharRefs = (s: string) =>
 const hasInvisibleChar = (s: string) => INVISIBLE_CHAR_RE.test(decodeNumericCharRefs(s));
 // 空文字や不明な値 (古い設定ファイル・手で書き換えたファイル) は "off" として扱う
 const normalizeInvisibleMode = (v: unknown): NgInvisibleMode => (v === "abone" || v === "hide" ? v : "off");
+// 読み上げの前置き: 掲示板は「レスN番さん」「したらばN番さん」「ジャパンくんN番さん」、
+// Twitch・YouTube は「名前さん」(名前が無ければ前置きなし)
+const speakPrefix = (site: SiteType, no: number, name: string): string => {
+  if (site === "twitch" || site === "youtube") {
+    const n = decodeHtmlEntities(name.replace(/<[^>]*>/g, "")).trim();
+    return n ? `${n}さん` : "";
+  }
+  return site === "shitaraba" ? `したらば${no}番さん`
+    : site === "jpnkn" ? `ジャパンくん${no}番さん`
+    : `レス${no}番さん`;
+};
+// ----- OBS 表示 (ブラウザソース) の見た目 -----
+// 既定値は TchViewer と同じ。値の形式は表示側 (overlay.html) でも厳しく確かめる
+type OverlayBoardStyle = { fontSize: number; textColor: string; nameColor: string; idColor: string; bgColor: string; bgOpacity: number; showSite: boolean; showNo: boolean; showName: boolean; showId: boolean };
+type OverlayTwitchStyle = { fontSize: number; textColor: string; nameColor: string; bgColor: string; bgOpacity: number; showSite: boolean; showName: boolean; showBadges: boolean; useUserColor: boolean; fixNameContrast: boolean; emoteSize: number; giantEmoteSize: number; badgeSize: number };
+type OverlayAppearance = { maxItems: number; fadeSeconds: number; newestOnTop: boolean; gap: number; outlineWidth: number; outlineColor: string; board: OverlayBoardStyle; twitch: OverlayTwitchStyle };
+const DEFAULT_OVERLAY_APPEARANCE: OverlayAppearance = {
+  maxItems: 15, fadeSeconds: 0, newestOnTop: false, gap: 6, outlineWidth: 0, outlineColor: "#000000",
+  board: { fontSize: 22, textColor: "#ffffff", nameColor: "#ffffff", idColor: "#d0d0d0", bgColor: "#000000", bgOpacity: 0.55, showSite: true, showNo: true, showName: true, showId: true },
+  twitch: { fontSize: 22, textColor: "#ffffff", nameColor: "#bf94ff", bgColor: "#000000", bgOpacity: 0.55, showSite: true, showName: true, showBadges: true, useUserColor: true, fixNameContrast: true, emoteSize: 32, giantEmoteSize: 112, badgeSize: 18 },
+};
+const OVERLAY_PORT_DEFAULT = 11290;
+// OBS 表示のレイアウト (TchViewer と同じ考え方)。名前ごとに見た目と追加 CSS を持ち、OBS 側は ?layout=名前 で使い分ける
+const OVERLAY_DEFAULT_LAYOUT = "標準";
+type OverlayLayoutData = { appearance: OverlayAppearance; css: string };
+const OVERLAY_CSS_MAX_CHARS = 200000;
+// レイアウト名として使えるか (Rust 側と同じ規則。URL の ?layout= に入るので紛らわしい文字は不可)
+const overlayLayoutNameError = (name: string, existing: string[]): string | null => {
+  const n = Array.from(name).length;
+  if (n === 0 || n > 40) return "レイアウト名は1〜40文字にしてください";
+  if (name.trim() !== name || name.startsWith(".") || name.endsWith(".")) return "レイアウト名の前後に空白やピリオドは使えません";
+  if (/[\u0000-\u001f\u007f\\/:*?"<>|%#&]/.test(name)) return "レイアウト名に \\ / : * ? \" < > | % # & は使えません";
+  if (existing.includes(name)) return "同じ名前のレイアウトがあります";
+  return null;
+};
+const sanitizeOverlayAppearance = (v: unknown): OverlayAppearance => {
+  const o = (v && typeof v === "object" ? v : {}) as Record<string, unknown>;
+  const num = (x: unknown, d: number, lo: number, hi: number) => (typeof x === "number" && Number.isFinite(x) ? Math.min(hi, Math.max(lo, x)) : d);
+  const col = (x: unknown, d: string) => (typeof x === "string" && /^#[0-9a-f]{6}$/i.test(x) ? x : d);
+  const bool = (x: unknown, d: boolean) => (typeof x === "boolean" ? x : d);
+  const b = (o.board && typeof o.board === "object" ? o.board : {}) as Record<string, unknown>;
+  const t = (o.twitch && typeof o.twitch === "object" ? o.twitch : {}) as Record<string, unknown>;
+  const D = DEFAULT_OVERLAY_APPEARANCE;
+  return {
+    maxItems: num(o.maxItems, D.maxItems, 1, 200), fadeSeconds: num(o.fadeSeconds, D.fadeSeconds, 0, 3600),
+    newestOnTop: bool(o.newestOnTop, D.newestOnTop), gap: num(o.gap, D.gap, 0, 60),
+    outlineWidth: num(o.outlineWidth, D.outlineWidth, 0, 8), outlineColor: col(o.outlineColor, D.outlineColor),
+    board: {
+      fontSize: num(b.fontSize, D.board.fontSize, 8, 120), textColor: col(b.textColor, D.board.textColor), nameColor: col(b.nameColor, D.board.nameColor),
+      idColor: col(b.idColor, D.board.idColor), bgColor: col(b.bgColor, D.board.bgColor), bgOpacity: num(b.bgOpacity, D.board.bgOpacity, 0, 1),
+      showSite: bool(b.showSite, true), showNo: bool(b.showNo, true), showName: bool(b.showName, true), showId: bool(b.showId, true),
+    },
+    twitch: {
+      fontSize: num(t.fontSize, D.twitch.fontSize, 8, 120), textColor: col(t.textColor, D.twitch.textColor), nameColor: col(t.nameColor, D.twitch.nameColor),
+      bgColor: col(t.bgColor, D.twitch.bgColor), bgOpacity: num(t.bgOpacity, D.twitch.bgOpacity, 0, 1),
+      showSite: bool(t.showSite, true), showName: bool(t.showName, true), showBadges: bool(t.showBadges, true), useUserColor: bool(t.useUserColor, true), fixNameContrast: bool(t.fixNameContrast, true),
+      emoteSize: num(t.emoteSize, D.twitch.emoteSize, 8, 200), giantEmoteSize: num(t.giantEmoteSize, D.twitch.giantEmoteSize, 16, 600), badgeSize: num(t.badgeSize, D.twitch.badgeSize, 8, 120),
+    },
+  };
+};
+// ----- Twitch のイベント (TchViewer と同じ。ログインなしで分かるものだけ) -----
+// 種類, 表示名, 既定の読み上げる文 ({name} {months} {count} {bits} {viewers} {recipient} {reward} {message})
+const TWITCH_EVENT_KINDS: { kind: string; label: string; template: string }[] = [
+  { kind: "sub", label: "サブスク", template: "{name}さんがサブスクしました {message}" },
+  { kind: "resub", label: "継続サブスク", template: "{name}さんがサブスクしました（{months}か月目） {message}" },
+  { kind: "subgift", label: "サブスクギフト", template: "{name}さんが{recipient}さんにサブスクをギフト" },
+  { kind: "submysterygift", label: "まとめてギフト", template: "{name}さんがサブスクを{count}個ギフト" },
+  { kind: "giftpaidupgrade", label: "ギフトの継続", template: "{name}さんがギフトのサブスクを継続" },
+  { kind: "bits", label: "ビッツ", template: "{name}さんが{bits}ビッツ {message}" },
+  { kind: "raid", label: "レイド", template: "{name}さんが{viewers}人でレイド" },
+  { kind: "watchstreak", label: "連続視聴", template: "{name}さんが{count}回連続視聴 {message}" },
+  { kind: "points", label: "チャンネルポイント", template: "{name}さんが「{reward}」を引き換え {message}" },
+  { kind: "follow", label: "フォロー", template: "{name}さんがフォロー" },
+  { kind: "announcement", label: "アナウンス", template: "{message}" },
+];
+// 既定で読み上げない種類 (TchViewer と同じ。フォローは数が多くなりやすいため)
+const TWITCH_EVENT_SPEAK_OFF_BY_DEFAULT = new Set(["follow"]);
+type TwitchEventSetting = { show: boolean; speak: boolean; template: string };
+type TwitchEventData = { kind: string; months: number; count: number; bits: number; viewers: number; recipient: string; reward: string };
+const TWITCH_EVENT_TEMPLATE_MAX = 200;
+const defaultTwitchEventSettings = (): Record<string, TwitchEventSetting> =>
+  Object.fromEntries(TWITCH_EVENT_KINDS.map((k) => [k.kind, { show: true, speak: !TWITCH_EVENT_SPEAK_OFF_BY_DEFAULT.has(k.kind), template: k.template }]));
+const sanitizeTwitchEventSettings = (v: unknown): Record<string, TwitchEventSetting> => {
+  const out = defaultTwitchEventSettings();
+  const o = (v && typeof v === "object" ? v : {}) as Record<string, unknown>;
+  for (const k of TWITCH_EVENT_KINDS) {
+    const e = (o[k.kind] && typeof o[k.kind] === "object" ? o[k.kind] : {}) as Partial<Record<keyof TwitchEventSetting, unknown>>;
+    out[k.kind] = {
+      show: typeof e.show === "boolean" ? e.show : true,
+      speak: typeof e.speak === "boolean" ? e.speak : !TWITCH_EVENT_SPEAK_OFF_BY_DEFAULT.has(k.kind),
+      template: typeof e.template === "string" && e.template.trim() ? e.template.slice(0, TWITCH_EVENT_TEMPLATE_MAX) : k.template,
+    };
+  }
+  return out;
+};
+// 読み上げる文・要約を作る (テンプレートに差し込み、空白を詰める)
+const renderTwitchEvent = (ev: TwitchEventData, template: string, name: string, message: string) =>
+  template
+    .split("{name}").join(name)
+    .split("{months}").join(String(ev.months))
+    .split("{count}").join(String(ev.count))
+    .split("{bits}").join(String(ev.bits))
+    .split("{viewers}").join(String(ev.viewers))
+    .split("{recipient}").join(ev.recipient || "誰か")
+    .split("{reward}").join(ev.reward || "チャンネルポイント報酬")
+    .split("{message}").join(message)
+    .split(/\s+/).filter(Boolean).join(" ");
+// 公式 API (YouTube Data API) の呼ぶ間隔 (秒)。1回 5 クォータ・1日 10,000 クォータが既定の上限
+const YOUTUBE_API_INTERVAL_DEFAULT = 10;
+const YOUTUBE_API_INTERVAL_MIN = 5;
+const YOUTUBE_API_INTERVAL_MAX = 120;
+const YOUTUBE_API_DAILY_QUOTA = 10000;
+// 同時に受信できる配信の数 (Rust 側と同じ)
+const YOUTUBE_MAX_VIDEOS = 10;
+// ----- YouTube のイベント (スーパーチャット・メンバー加入など。表示と読み上げだけで、お金のやり取りはしない) -----
+const YOUTUBE_EVENT_KINDS: { kind: string; label: string; template: string }[] = [
+  { kind: "superchat", label: "スーパーチャット", template: "{name}さんがスーパーチャット（{amount}） {message}" },
+  { kind: "supersticker", label: "スーパーステッカー", template: "{name}さんがスーパーステッカー（{amount}）" },
+  { kind: "member", label: "メンバー加入", template: "{name}さんがメンバーになりました" },
+  { kind: "milestone", label: "メンバー継続", template: "{name}さんがメンバー{months}か月 {message}" },
+  { kind: "gift", label: "メンバーシップのギフト", template: "{name}さんがメンバーシップを{count}個ギフト" },
+  { kind: "giftreceived", label: "ギフトの受け取り", template: "{name}さんがメンバーシップを受け取りました" },
+  { kind: "jewels", label: "ジュエルのギフト", template: "{name}さんが「{item}」を贈りました" },
+];
+// 既定で読み上げない種類 (ギフトの受け取りは、まとめてギフトされると数が多くなるため)
+const YOUTUBE_EVENT_SPEAK_OFF_BY_DEFAULT = new Set(["giftreceived"]);
+type YoutubeEventData = { kind: string; amount: string; months: number; count: number; level: string; item: string };
+const defaultYoutubeEventSettings = (): Record<string, TwitchEventSetting> =>
+  Object.fromEntries(YOUTUBE_EVENT_KINDS.map((k) => [k.kind, { show: true, speak: !YOUTUBE_EVENT_SPEAK_OFF_BY_DEFAULT.has(k.kind), template: k.template }]));
+const sanitizeYoutubeEventSettings = (v: unknown): Record<string, TwitchEventSetting> => {
+  const out = defaultYoutubeEventSettings();
+  const o = (v && typeof v === "object" ? v : {}) as Record<string, unknown>;
+  for (const k of YOUTUBE_EVENT_KINDS) {
+    const e = (o[k.kind] && typeof o[k.kind] === "object" ? o[k.kind] : {}) as Partial<Record<keyof TwitchEventSetting, unknown>>;
+    out[k.kind] = {
+      show: typeof e.show === "boolean" ? e.show : true,
+      speak: typeof e.speak === "boolean" ? e.speak : !YOUTUBE_EVENT_SPEAK_OFF_BY_DEFAULT.has(k.kind),
+      template: typeof e.template === "string" && e.template.trim() ? e.template.slice(0, TWITCH_EVENT_TEMPLATE_MAX) : k.template,
+    };
+  }
+  return out;
+};
+const renderYoutubeEvent = (ev: YoutubeEventData, template: string, name: string, message: string) =>
+  template
+    .split("{name}").join(name)
+    .split("{amount}").join(ev.amount || "")
+    .split("{months}").join(String(ev.months || 0))
+    .split("{count}").join(String(ev.count || 0))
+    .split("{level}").join(ev.level || "")
+    .split("{item}").join(ev.item || "")
+    .split("{message}").join(message)
+    .split(/\s+/).filter(Boolean).join(" ");
+// YouTube の読み上げ用: 絵文字の名前 (:_kusa: など) は読まない
+const youtubeSpeechText = (text: string) => text.replace(/:[A-Za-z0-9_\-]{1,64}:/g, " ").replace(/\s{2,}/g, " ").trim();
+// ビッツの応援文から「Cheer100」のような応援スタンプの文字を除く (読み上げ用)
+const stripCheermotes = (text: string) =>
+  text.split(/\s+/).filter((w) => !/^[A-Za-z]+\d+$/.test(w)).join(" ");
+// Twitch のバッジ (画像アドレスは Twitch の画像配信サーバーのものだけ使う。Rust 側でも確かめている)
+type TwitchBadge = { title: string; url: string };
+const TWITCH_BADGE_URL_RE = /^https:\/\/static-cdn\.jtvnw\.net\/badges\/v1\/[0-9a-f-]{1,64}$/i;
+const sanitizeTwitchBadges = (v: unknown): TwitchBadge[] =>
+  Array.isArray(v)
+    ? v.filter((b): b is TwitchBadge => !!b && typeof b === "object" && typeof (b as TwitchBadge).url === "string" && TWITCH_BADGE_URL_RE.test((b as TwitchBadge).url))
+      .slice(0, 10).map((b) => ({ title: typeof b.title === "string" ? b.title.slice(0, 100) : "", url: b.url }))
+    : [];
+// Twitch のスタンプ (位置は本文のコードポイント単位。ID は英数字と _ - だけ通す)
+// giant: このスタンプだけ巨大表示する (掲示板などで「BIG」+スタンプ名と書かれたもの)
+// url: YouTube のチャンネル独自の絵文字の画像 (YouTube も同じ形で扱う。Twitch は ID から画像アドレスを作るので無し)
+type TwitchEmote = { id: string; start: number; end: number; giant?: boolean; url?: string };
+const TWITCH_EMOTE_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const sanitizeTwitchEmotes = (v: unknown, text: string): TwitchEmote[] => {
+  if (!Array.isArray(v)) return [];
+  const n = Array.from(text).length;
+  const out: TwitchEmote[] = [];
+  let last = -1;
+  for (const e of v) {
+    if (!e || typeof e !== "object") continue;
+    const { id, start, end } = e as Record<string, unknown>;
+    if (typeof id !== "string" || !TWITCH_EMOTE_ID_RE.test(id) || typeof start !== "number" || typeof end !== "number") continue;
+    if (!Number.isInteger(start) || !Number.isInteger(end) || start <= last || start > end || end >= n) continue;
+    out.push({ id, start, end });
+    last = end;
+    if (out.length >= 200) break;
+  }
+  return out;
+};
+// YouTube の絵文字: 位置は本文のコードポイント単位。画像は YouTube の画像配信サーバーのものだけ。
+// ID は名前から作る (同じ絵文字を読む個数を数えるのに使う)
+const sanitizeYoutubeEmojis = (v: unknown, text: string): TwitchEmote[] => {
+  if (!Array.isArray(v)) return [];
+  const n = Array.from(text).length;
+  const out: TwitchEmote[] = [];
+  let last = -1;
+  for (const e of v) {
+    if (!e || typeof e !== "object") continue;
+    const { start, end, name, url } = e as Record<string, unknown>;
+    if (typeof url !== "string" || !YT_EMOJI_URL_RE.test(url) || typeof start !== "number" || typeof end !== "number") continue;
+    if (!Number.isInteger(start) || !Number.isInteger(end) || start <= last || start > end || end >= n) continue;
+    const id = `yt_${(typeof name === "string" ? name : "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 60)}` || "yt";
+    out.push({ id, start, end, url });
+    last = end;
+    if (out.length >= 200) break;
+  }
+  return out;
+};
+const twitchEmoteUrl = (id: string, giant: boolean, dark: boolean) =>
+  `https://static-cdn.jtvnw.net/emoticons/v2/${encodeURIComponent(id)}/default/${dark ? "dark" : "light"}/${giant ? "3.0" : "2.0"}`;
+// 同じスタンプを読む個数の上限 (設定できるのは 1〜この値)
+const TWITCH_EMOTE_MAX_LIMIT = 10;
+// 読み上げ用: スタンプは名前のまま読む (棒読みちゃんの教育などで読み替えられる)。同じスタンプは max 個まで、mode が none なら全部除く
+const twitchSpeechText = (text: string, emotes: TwitchEmote[], mode: "name" | "none", max: number) => {
+  if (emotes.length === 0) return text;
+  const limit = mode === "none" ? 0 : Math.max(1, Math.min(TWITCH_EMOTE_MAX_LIMIT, max));
+  const seen = new Map<string, number>();
+  const drop = emotes.filter((e) => {
+    const n = (seen.get(e.id) ?? 0) + 1;
+    seen.set(e.id, n);
+    return n > limit;
+  });
+  const cps = Array.from(text);
+  for (const e of [...drop].reverse()) cps.splice(e.start, e.end - e.start + 1);
+  return cps.join("").replace(/\s{2,}/g, " ").trim();
+};
+// Twitch タブのレス表示: 描画済み (エスケープ済み) の HTML の中のスタンプ名を画像に置き換える。
+// リンクの中とタグの中は触らない。巨大化したスタンプは最後のスタンプ
+const injectTwitchEmotes = (html: string, emotes: { id: string; name: string; giant?: boolean; url?: string }[], giant: boolean, dark: boolean): string => {
+  if (emotes.length === 0) return html;
+  const esc = (v: string) => v.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const byName = new Map(emotes.map((e) => [esc(e.name), { id: e.id, giant: e.giant === true, url: e.url }]));
+  return injectEmoteTokens(html, (tok) => byName.get(tok), giant, dark);
+};
+// スタンプ名 (エスケープ済みの語) → ID を引く関数で、HTML のテキスト部分の語を画像に置き換える
+const injectEmoteTokens = (html: string, lookup: (tok: string) => { id: string; giant?: boolean; url?: string } | undefined, giant: boolean, dark: boolean): string => {
+  const parts = html.split(/(<[^>]+>)/);
+  let inLink = false;
+  let lastIdx = -1;
+  const out: string[] = [];
+  for (const part of parts) {
+    if (part.startsWith("<")) {
+      if (/^<a[\s>]/i.test(part)) inLink = true;
+      else if (/^<\/a>/i.test(part)) inLink = false;
+      out.push(part);
+      continue;
+    }
+    if (inLink) { out.push(part); continue; }
+    for (const tok of part.split(/(\s+)/)) {
+      const hit = tok ? lookup(tok) : undefined;
+      if (hit && TWITCH_EMOTE_ID_RE.test(hit.id)) {
+        lastIdx = out.length;
+        const url = hit.url && YT_EMOJI_URL_RE.test(hit.url) ? hit.url : "";
+        out.push(`\u0000${hit.id}\u0001${hit.giant ? "1" : "0"}\u0001${url}\u0001${tok}`);
+      } else out.push(tok.replace(/\u0000/g, ""));
+    }
+  }
+  return out.map((v, i) => {
+    if (!v.startsWith("\u0000")) return v;
+    const [id, own, url, ...rest] = v.slice(1).split("\u0001");
+    const name = rest.join("");
+    const g = !url && (own === "1" || (giant && i === lastIdx));
+    return `<img class="twitch-emote${g ? " giant" : ""}${url ? " youtube-emoji" : ""}" src="${url || twitchEmoteUrl(id, g, dark)}" alt="${name}" title="${name}" loading="lazy" referrerpolicy="no-referrer">`;
+  }).join("");
+};
+// 掲示板などに書かれたスタンプ名: 英数字と _ の語で、知っているスタンプ名と大文字小文字まで一致したものだけ
+const BOARD_EMOTE_NAME_RE = /^[A-Za-z0-9_]{2,64}$/;
+// 語 → スタンプ。そのままの名前が優先で、無ければ頭の「BIG」(大文字小文字は問わない) を外した名前を巨大スタンプとして探す
+const BIG_PREFIX_RE = /^big/i;
+const lookupNamedEmote = (tok: string, names: Map<string, string>): { id: string; giant: boolean } | undefined => {
+  if (!BOARD_EMOTE_NAME_RE.test(tok)) return undefined;
+  const id = names.get(tok);
+  if (id && TWITCH_EMOTE_ID_RE.test(id)) return { id, giant: false };
+  if (BIG_PREFIX_RE.test(tok)) {
+    const rest = tok.slice(3);
+    const gid = BOARD_EMOTE_NAME_RE.test(rest) ? names.get(rest) : undefined;
+    if (gid && TWITCH_EMOTE_ID_RE.test(gid)) return { id: gid, giant: true };
+  }
+  return undefined;
+};
+const findNamedEmotes = (text: string, names: Map<string, string>): TwitchEmote[] => {
+  if (names.size === 0) return [];
+  const cps = Array.from(text);
+  const out: TwitchEmote[] = [];
+  let i = 0;
+  while (i < cps.length && out.length < 200) {
+    if (/\s/.test(cps[i])) { i++; continue; }
+    let j = i;
+    while (j < cps.length && !/\s/.test(cps[j])) j++;
+    const tok = cps.slice(i, j).join("");
+    const hit = lookupNamedEmote(tok, names);
+    if (hit) out.push({ id: hit.id, start: i, end: j - 1, ...(hit.giant ? { giant: true } : {}) });
+    i = j;
+  }
+  return out;
+};
+// ----- Twitch の教育・忘却コマンド (棒読みちゃんの書式: 教育(単語=読み) / 忘却(単語)。全角の括弧・＝も受け付ける) -----
+const TEACH_CMD_RE = /(教育|忘却)[(（]([^()（）\r\n]{1,120})[)）]/g;
+type TwitchTeachEntry = { word: string; reading: string; by: string; at: number };
+const TWITCH_TEACH_MAX = 500;
+const TWITCH_TEACH_INTERVAL_MS = 5000;
+const parseTeachCommands = (text: string): ({ type: "teach"; word: string; reading: string } | { type: "forget"; word: string })[] => {
+  const out: ({ type: "teach"; word: string; reading: string } | { type: "forget"; word: string })[] = [];
+  for (const m of text.matchAll(TEACH_CMD_RE)) {
+    if (m[1] === "教育") {
+      const k = m[2].search(/[=＝]/);
+      if (k <= 0) continue;
+      out.push({ type: "teach", word: m[2].slice(0, k).trim(), reading: m[2].slice(k + 1).trim() });
+    } else out.push({ type: "forget", word: m[2].trim() });
+    if (out.length >= 5) break;
+  }
+  return out;
+};
+// 棒読みちゃんに渡すときは半角の書式にそろえる
+const normalizeTeachCommands = (text: string) =>
+  text.replace(TEACH_CMD_RE, (_m, cmd: string, body: string) => `${cmd}(${body.replace(/＝/g, "=")})`);
+const teachWordOk = (v: string, max: number) => {
+  const n = Array.from(v).length;
+  return n >= 1 && n <= max && !/[\u0000-\u001f\u007f]/.test(v) && !/(https?:|ttps?:|:\/\/|www\.)/i.test(v);
+};
+const sanitizeTeachEntries = (v: unknown): TwitchTeachEntry[] =>
+  Array.isArray(v)
+    ? v.filter((e): e is TwitchTeachEntry => !!e && typeof e === "object" && typeof (e as TwitchTeachEntry).word === "string" && typeof (e as TwitchTeachEntry).reading === "string"
+      && teachWordOk((e as TwitchTeachEntry).word, 30) && teachWordOk((e as TwitchTeachEntry).reading, 50))
+      .slice(-TWITCH_TEACH_MAX)
+      .map((e) => ({ word: e.word, reading: e.reading, by: typeof e.by === "string" ? e.by.slice(0, 25) : "", at: typeof e.at === "number" ? e.at : 0 }))
+    : [];
 const escapeHtml = (s: string) =>
   s
     .replace(/&/g, "&amp;")
@@ -416,6 +811,33 @@ type OgpDomainFilters = { allow: string[]; block: string[] };
 const escapeOgpText = (s: string): string =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 const isHttpUrl = (s: string | null | undefined): s is string => typeof s === "string" && /^https?:\/\//i.test(s);
+// 家庭内・自分の PC を指すアドレスか (画像を画面に直接読み込ませると、ルーターなどへのアクセスに使われうるため、
+// サムネイル・カードの画像にしない)。名前を引いた先までは調べられないので、IP アドレスの直書きと localhost 系の名前だけを見る
+const isPrivateHostUrl = (raw: string): boolean => {
+  let host = "";
+  try { host = new URL(raw).hostname.toLowerCase(); } catch { return true; }
+  host = host.replace(/^\[|\]$/g, "");
+  if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host === "") return true;
+  const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])];
+    return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31)
+      || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127) || a >= 224;
+  }
+  if (host.includes(":")) {
+    if (host === "::1" || host === "::") return true;
+    if (/^f[cd]/.test(host) || /^fe[89ab]/.test(host)) return true; // fc00::/7・fe80::/10
+    const mapped = host.match(/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/);
+    if (mapped) return isPrivateHostUrl(`http://${mapped[1]}/`);
+    // URL の解析で ::ffff:c0a8:101 のような16進の形に直されたもの
+    const hex = host.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+    if (hex) {
+      const hi = parseInt(hex[1], 16), lo = parseInt(hex[2], 16);
+      return isPrivateHostUrl(`http://${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}/`);
+    }
+  }
+  return false;
+};
 // OGP カードを描画すべきか (タイトルか画像が無ければ素っ気ないカードになるので出さない)
 const ogpCardHasContent = (card: OgpCardData): boolean =>
   Boolean((card.title && card.title.trim()) || isHttpUrl(card.image));
@@ -428,7 +850,7 @@ const buildOgpCardHtml = (card: OgpCardData): string => {
   let host = "";
   try { host = new URL(card.url).hostname.replace(/^www\./, ""); } catch { host = ""; }
   const site = card.siteName ? escapeOgpText(card.siteName.trim()) : escapeOgpText(host);
-  const img = isHttpUrl(card.image)
+  const img = isHttpUrl(card.image) && !isPrivateHostUrl(card.image)
     ? `<span class="ogp-card-thumb"><img src="${escapeOgpText(card.image)}" loading="lazy" referrerpolicy="no-referrer" alt="" /></span>`
     : "";
   const url = escapeOgpText(card.url);
@@ -587,6 +1009,8 @@ const renderResponseBody = (html: string, opts?: RenderBodyOpts): { __html: stri
         const rawHref = normalizeExternalUrl(match);
         if (!rawHref) return match;
         const href = opts?.urlRules?.length ? applyUrlRules(rawHref, opts.urlRules) : rawHref;
+        // 家庭内・自分の PC のアドレスの画像はサムネイルにしない (リンクとしては残す)
+        if (isPrivateHostUrl(href)) return `<a class="body-link" href="${href}" target="_blank" rel="noopener">${match}</a>`;
         if (sizeGated) {
           collectedThumbs.push(`<span class="thumb-link thumb-size-gate" data-lightbox-src="${href}" data-gate-src="${href}" data-size-limit="${opts.imageSizeLimitKb}"><span class="thumb-gate-loading">画像を確認中…</span></span>`);
         } else {
@@ -840,6 +1264,248 @@ export default function App() {
   const [ngAddScope, setNgAddScope] = useState<"global" | "board" | "thread">("global");
   // 通常あぼ～んのレスを読み上げる際、「あぼーん」と読むか、前置き含め完全にスキップするか
   const [ngAboneSpeakEnabled, setNgAboneSpeakEnabled] = useState(true);
+  // 設定 > Twitch: 読み上げで「名前さん」を前に付けるか (TchViewer の既定と同じくオン)、
+  // 新着ペイン・字幕に溜める Twitch のチャットの上限、読み上げの溜まりの上限
+  const [twitchSpeakName, setTwitchSpeakName] = useState(true);
+  // Twitch のスタンプ: アプリ (Twitch タブ・ビュワー) での大きさ (px) と、読み上げ方
+  const [twitchEmoteSize, setTwitchEmoteSize] = useState(28);
+  const [twitchGiantEmoteSize, setTwitchGiantEmoteSize] = useState(112);
+  const [twitchEmoteSpeak, setTwitchEmoteSpeak] = useState<"name" | "none">("name");
+  const [twitchEmoteMax, setTwitchEmoteMax] = useState(3);
+  useEffect(() => {
+    document.documentElement.style.setProperty("--tw-emote", `${twitchEmoteSize}px`);
+    document.documentElement.style.setProperty("--tw-giant", `${twitchGiantEmoteSize}px`);
+  }, [twitchEmoteSize, twitchGiantEmoteSize]);
+  // 字幕ウィンドウでのスタンプの大きさ (px)
+  const [subtitleEmoteSize, setSubtitleEmoteSize] = useState(40);
+  const [subtitleGiantEmoteSize, setSubtitleGiantEmoteSize] = useState(160);
+  const subtitleEmoteSizesRef = useRef({ normal: 40, giant: 160 });
+  subtitleEmoteSizesRef.current = { normal: subtitleEmoteSize, giant: subtitleGiantEmoteSize };
+  // 掲示板などに書かれたスタンプ名を画像にする。対応表 (名前 → ID) は、Twitch のチャットで見たスタンプと、
+  // ログイン中に公式 API から取得した一覧から作る (data/twitch-emotes.json)
+  const [boardEmotesEnabled, setBoardEmotesEnabled] = useState(true);
+  const boardEmotesEnabledRef = useRef(true);
+  boardEmotesEnabledRef.current = boardEmotesEnabled;
+  const emoteNameMapRef = useRef<Map<string, string>>(new Map());
+  // 名前ごとの最後に見た (取得した) 時刻。Twitch の開発者向け規約 (保存は24時間のキャッシュまで) に合わせ、24時間を過ぎたら捨てる
+  const emoteNameSeenRef = useRef<Map<string, number>>(new Map());
+  const EMOTE_NAMES_KEEP_MS = 24 * 3600 * 1000;
+  const pruneEmoteNames = () => {
+    const limit = Date.now() - EMOTE_NAMES_KEEP_MS;
+    let changed = false;
+    for (const [name, at] of emoteNameSeenRef.current) {
+      if (at >= limit) continue;
+      emoteNameSeenRef.current.delete(name);
+      emoteNameMapRef.current.delete(name);
+      changed = true;
+    }
+    if (changed) emoteNamesDirtyRef.current = true;
+    return changed;
+  };
+  const [emoteNameVersion, setEmoteNameVersion] = useState(0);
+  const emoteNamesDirtyRef = useRef(false);
+  const emoteNamesLoadedRef = useRef(false);
+  const EMOTE_NAMES_MAX = 10000;
+  const learnEmoteNames = (pairs: { name: string; id: string; at?: number }[]) => {
+    const map = emoteNameMapRef.current;
+    const seen = emoteNameSeenRef.current;
+    const now = Date.now();
+    let changed = false;
+    for (const { name, id, at } of pairs) {
+      if (!BOARD_EMOTE_NAME_RE.test(name) || !TWITCH_EMOTE_ID_RE.test(id)) continue;
+      const t = typeof at === "number" ? at : now;
+      if (map.get(name) === id) {
+        // 同じものを見直したら時刻だけ新しくする (保存は20秒ごとのまとめ書きに任せる)
+        if ((seen.get(name) ?? 0) < t) { seen.set(name, t); emoteNamesDirtyRef.current = true; }
+        continue;
+      }
+      map.delete(name);
+      map.set(name, id);
+      seen.set(name, t);
+      changed = true;
+    }
+    while (map.size > EMOTE_NAMES_MAX) { const first = map.keys().next().value; if (first === undefined) break; map.delete(first); seen.delete(first); }
+    if (changed) emoteNamesDirtyRef.current = true;
+    return changed;
+  };
+  useEffect(() => {
+    let cancelled = false;
+    void loadFromFile<unknown>("twitch-emotes.json").then((d) => {
+      if (cancelled) return;
+      // 形式 2: { name: [id, 覚えた時刻] }。時刻の無い古い形式は捨てる (24時間の決まりを守れないため)
+      const o = d && typeof d === "object" && (d as { version?: unknown }).version === 2 ? (d as { emotes?: unknown }).emotes : undefined;
+      if (o && typeof o === "object") {
+        learnEmoteNames(Object.entries(o as Record<string, unknown>)
+          .filter((e): e is [string, [string, number]] => Array.isArray(e[1]) && typeof e[1][0] === "string" && typeof e[1][1] === "number")
+          .map(([name, [id, at]]) => ({ name, id, at })));
+      }
+      const pruned = pruneEmoteNames();
+      emoteNamesDirtyRef.current = pruned || (!!d && (d as { version?: unknown }).version !== 2);
+      emoteNamesLoadedRef.current = true;
+      setEmoteNameVersion((v) => v + 1);
+    });
+    // 覚えた分は 20 秒ごとにまとめて保存し、表示にも反映する (受信のたびに全体を描き直さないように)
+    let ticks = 0;
+    const timer = window.setInterval(() => {
+      if (!emoteNamesLoadedRef.current) return;
+      // 期限切れの掃除は10分ごと
+      if (++ticks % 30 === 0) pruneEmoteNames();
+      if (!emoteNamesDirtyRef.current) return;
+      emoteNamesDirtyRef.current = false;
+      saveToFile("twitch-emotes.json", { version: 2, emotes: Object.fromEntries([...emoteNameMapRef.current].map(([name, id]) => [name, [id, emoteNameSeenRef.current.get(name) ?? Date.now()]])) });
+      setEmoteNameVersion((v) => v + 1);
+    }, 20000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, []);
+  const boardEmoteLookup = (tok: string) => lookupNamedEmote(tok, emoteNameMapRef.current);
+  // Twitch の教育・忘却 (Twitch のチャットからだけ。既定オフ)。VOICEVOX・SAPI では LiveFake の「Twitch 教育辞書」で処理し、
+  // 棒読みちゃんでは棒読みちゃん自身に任せる (二重に教育しないように)。掲示板のコマンドはどのエンジンでも受け付けない
+  const [twitchTeachEnabled, setTwitchTeachEnabled] = useState(false);
+  const [twitchTeachAnnounce, setTwitchTeachAnnounce] = useState(true);
+  const [twitchTeachDict, setTwitchTeachDict] = useState<TwitchTeachEntry[]>([]);
+  const [twitchTeachNewWord, setTwitchTeachNewWord] = useState("");
+  const [twitchTeachNewReading, setTwitchTeachNewReading] = useState("");
+  const [twitchTeachMsg, setTwitchTeachMsg] = useState("");
+  const twitchTeachDictRef = useRef<TwitchTeachEntry[]>([]);
+  const twitchTeachEnabledRef = useRef(false);
+  twitchTeachEnabledRef.current = twitchTeachEnabled;
+  const twitchTeachLoadedRef = useRef(false);
+  const twitchTeachLastRef = useRef<Map<string, number>>(new Map());
+  useEffect(() => {
+    let cancelled = false;
+    void loadFromFile<unknown>("twitch-teach.json").then((d) => {
+      if (cancelled) return;
+      const entries = sanitizeTeachEntries(d && typeof d === "object" ? (d as { entries?: unknown }).entries : undefined);
+      twitchTeachDictRef.current = entries;
+      setTwitchTeachDict(entries);
+      twitchTeachLoadedRef.current = true;
+    });
+    return () => { cancelled = true; };
+  }, []);
+  const updateTwitchTeachDict = (next: TwitchTeachEntry[]) => {
+    twitchTeachDictRef.current = next;
+    setTwitchTeachDict(next);
+    if (twitchTeachLoadedRef.current) saveToFile("twitch-teach.json", { version: 1, entries: next });
+  };
+  // Twitch タブのスタンプ (タブの URL → レス番号 → スタンプ名と ID)。表示のときに画像へ置き換える
+  const twitchEmoteMapRef = useRef<Map<string, Map<number, { emotes: { id: string; name: string; giant?: boolean; url?: string }[]; giant: boolean }>>>(new Map());
+  // Twitch ログイン (任意。EventSub で入力の無い報酬・自動報酬・フォローを受け取る)。トークンは Rust 側だけが持つ
+  type TwitchAuthStatus = { loggedIn: boolean; login: string; state: string; message: string; userCode: string; verificationUri: string };
+  const [twitchAuth, setTwitchAuth] = useState<TwitchAuthStatus>({ loggedIn: false, login: "", state: "none", message: "", userCode: "", verificationUri: "" });
+  const [twitchAuthBusy, setTwitchAuthBusy] = useState(false);
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void invoke<TwitchAuthStatus>("twitch_auth_status").then((st) => { if (!disposed) setTwitchAuth(st); }).catch((e) => console.warn("twitch_auth_status failed", e));
+    void listen<TwitchAuthStatus>("twitch-auth", (ev) => { if (ev.payload) setTwitchAuth(ev.payload); })
+      .then((u) => { if (disposed) u(); else unlisten = u; })
+      .catch((e) => console.warn("twitch-auth listen failed", e));
+    return () => { disposed = true; unlisten?.(); };
+  }, []);
+  const openTwitchActivatePage = (uri: string) => {
+    // 開くのは Twitch の確認ページだけ (Rust 側でも確かめている)
+    if (!uri.startsWith("https://www.twitch.tv/activate")) return;
+    void invoke("open_external_url", { url: uri }).catch((e) => console.warn("open_external_url failed", e));
+  };
+  const startTwitchLogin = async () => {
+    setTwitchAuthBusy(true);
+    try {
+      const st = await invoke<TwitchAuthStatus>("twitch_login_start");
+      setTwitchAuth(st);
+      openTwitchActivatePage(st.verificationUri);
+    } catch (e) {
+      setTwitchAuth((prev) => ({ ...prev, state: "error", message: String(e) }));
+    } finally { setTwitchAuthBusy(false); }
+  };
+  const logoutTwitch = () => {
+    setAppConfirm({
+      title: "Twitch からログアウト",
+      message: "Twitch からログアウトしますか?\nTwitch 側の許可も取り消し、保存したログイン情報を削除します。",
+      buttons: [
+        { label: "ログアウト", danger: true, onClick: () => { setTwitchAuthBusy(true); void invoke("twitch_logout").catch((e) => console.warn("twitch_logout failed", e)).finally(() => setTwitchAuthBusy(false)); } },
+        { label: "キャンセル", onClick: () => {} },
+      ],
+    });
+  };
+  // Twitch のバッジ画像・チャンネルポイント報酬名を取得する (Twitch のサイトの非公式の取得口。TchViewer と同じ)
+  const [twitchBadgesEnabled, setTwitchBadgesEnabled] = useState(true);
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    void invoke("twitch_set_badges", { enabled: twitchBadgesEnabled }).catch((e) => console.warn("twitch_set_badges failed", e));
+  }, [twitchBadgesEnabled]);
+  const [twitchMaxQueuedArrivals, setTwitchMaxQueuedArrivals] = useState(TWITCH_MAX_QUEUED_ARRIVALS_DEFAULT);
+  const [twitchMaxTtsBacklog, setTwitchMaxTtsBacklog] = useState(TWITCH_MAX_TTS_BACKLOG_DEFAULT);
+  // 設定 > Twitch > イベント: 種類ごとに「流す」「読み上げる」「読み上げる文」(data/twitch-events.json。登録した時点で保存)
+  const [twitchEventSettings, setTwitchEventSettings] = useState<Record<string, TwitchEventSetting>>(defaultTwitchEventSettings);
+  const twitchEventSettingsLoadedRef = useRef(false);
+  const [twitchEventTestMsg, setTwitchEventTestMsg] = useState("");
+  useEffect(() => {
+    let cancelled = false;
+    void loadFromFile<unknown>("twitch-events.json").then((d) => {
+      if (cancelled) return;
+      if (d && typeof d === "object") setTwitchEventSettings(sanitizeTwitchEventSettings((d as { events?: unknown }).events));
+      twitchEventSettingsLoadedRef.current = true;
+    });
+    return () => { cancelled = true; };
+  }, []);
+  useEffect(() => {
+    if (twitchEventSettingsLoadedRef.current) saveToFile("twitch-events.json", { version: 1, events: twitchEventSettings });
+  }, [twitchEventSettings]);
+  const updateTwitchEvent = (kind: string, patch: Partial<TwitchEventSetting>) =>
+    setTwitchEventSettings((prev) => ({ ...prev, [kind]: { ...(prev[kind] ?? defaultTwitchEventSettings()[kind]), ...patch } }));
+  // ===== YouTube ライブ配信のチャット: 設定 =====
+  // 取得方法 (この exe で使えるものを Rust から受け取る)・公式 API の呼ぶ間隔・API キー (Rust 側だけが持つ。画面には設定済みかだけ)
+  type YoutubeMethod = { id: string; label: string; description: string; needsKey: boolean };
+  const [youtubeMethods, setYoutubeMethods] = useState<YoutubeMethod[]>([]);
+  const [youtubeMethod, setYoutubeMethod] = useState("api");
+  const [youtubeApiInterval, setYoutubeApiInterval] = useState(YOUTUBE_API_INTERVAL_DEFAULT);
+  const [youtubeKeySet, setYoutubeKeySet] = useState(false);
+  const [youtubeKeyInput, setYoutubeKeyInput] = useState("");
+  const [youtubeKeyMsg, setYoutubeKeyMsg] = useState<{ text: string; error: boolean } | null>(null);
+  // つなぎ直しの合図 (API キーを変えた・「つなぎ直す」を押した)
+  const [youtubeSyncVersion, setYoutubeSyncVersion] = useState(0);
+  const [youtubeSpeakName, setYoutubeSpeakName] = useState(true);
+  // 設定 > YouTube > イベント (data/youtube-events.json。登録した時点で保存)
+  const [youtubeEventSettings, setYoutubeEventSettings] = useState<Record<string, TwitchEventSetting>>(defaultYoutubeEventSettings);
+  const youtubeEventSettingsLoadedRef = useRef(false);
+  const [youtubeEventTestMsg, setYoutubeEventTestMsg] = useState("");
+  useEffect(() => {
+    let cancelled = false;
+    void loadFromFile<unknown>("youtube-events.json").then((d) => {
+      if (cancelled) return;
+      if (d && typeof d === "object") setYoutubeEventSettings(sanitizeYoutubeEventSettings((d as { events?: unknown }).events));
+      youtubeEventSettingsLoadedRef.current = true;
+    });
+    return () => { cancelled = true; };
+  }, []);
+  useEffect(() => {
+    if (youtubeEventSettingsLoadedRef.current) saveToFile("youtube-events.json", { version: 1, events: youtubeEventSettings });
+  }, [youtubeEventSettings]);
+  const updateYoutubeEvent = (kind: string, patch: Partial<TwitchEventSetting>) =>
+    setYoutubeEventSettings((prev) => ({ ...prev, [kind]: { ...(prev[kind] ?? defaultYoutubeEventSettings()[kind]), ...patch } }));
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    void invoke<YoutubeMethod[]>("youtube_methods").then((list) => setYoutubeMethods(Array.isArray(list) ? list : [])).catch((e) => console.warn("youtube_methods failed", e));
+    void invoke<boolean>("youtube_key_status").then((v) => setYoutubeKeySet(v === true)).catch((e) => console.warn("youtube_key_status failed", e));
+  }, []);
+  const saveYoutubeKey = () => {
+    const key = youtubeKeyInput.trim();
+    if (!key) { setYoutubeKeyMsg({ text: "API キーを入力してください", error: true }); return; }
+    void invoke("youtube_set_key", { key })
+      .then(() => { setYoutubeKeySet(true); setYoutubeKeyInput(""); setYoutubeKeyMsg({ text: "API キーを保存しました (暗号化して保存しています)", error: false }); setYoutubeSyncVersion((v) => v + 1); })
+      .catch((e) => setYoutubeKeyMsg({ text: String(e), error: true }));
+  };
+  const clearYoutubeKey = () => {
+    setAppConfirm({
+      title: "YouTube の API キー",
+      message: "保存した API キーを削除しますか?\nYouTube のチャットの受信は止まります。",
+      buttons: [
+        { label: "削除", danger: true, onClick: () => { void invoke("youtube_clear_key").then(() => { setYoutubeKeySet(false); setYoutubeKeyMsg({ text: "API キーを削除しました", error: false }); setYoutubeSyncVersion((v) => v + 1); }).catch((e) => setYoutubeKeyMsg({ text: String(e), error: true })); } },
+        { label: "キャンセル", onClick: () => {} },
+      ],
+    });
+  };
   const [threadNgOpen, setThreadNgOpen] = useState(false);
   const [threadNgInput, setThreadNgInput] = useState("");
   const [ngPanelOpen, setNgPanelOpen] = useState(false);
@@ -923,7 +1589,7 @@ export default function App() {
   const [activeTabIndex, setActiveTabIndex] = useState(-1);
   const [boardTabs, setBoardTabs] = useState<{boardUrl: string, title: string}[]>([]);
   const [activeBoardTabIndex, setActiveBoardTabIndex] = useState(-1);
-  const [activePaneView, setActivePaneView] = useState<"threads" | "responses">("threads");
+  const [activePaneView, setActivePaneView] = useState<"threads" | "responses" | "viewer">("threads");
   const tabCacheRef = useRef<Map<string, { responses: ThreadResponseItem[]; selectedResponse: number; scrollResponseNo?: number; scrollAtBottom?: boolean; newResponseStart?: number | null }>>(new Map());
   const closedTabsRef = useRef<{ threadUrl: string; title: string }[]>([]);
   const [tabRestoreReady, setTabRestoreReady] = useState(false);
@@ -999,33 +1665,80 @@ export default function App() {
   const [shitarabaHost, setShitarabaHost] = useState<string>(DEFAULT_SHITARABA_HOST);
   const [jpnknHost, setJpnknHost] = useState<string>(DEFAULT_JPNKN_HOST);
 
-  // ===== OBS連携 (配信ホワイトリスト表示ウィンドウ) =====
-  // 想定利用者がごく一部のため、設定タブは既定で隠しておき、「情報」タブのボタンで表示する。
-  // 機能自体も既定でオフで、オンにするにはOBSの起動が必要 (Rust側でチェック)。
-  const [obsTabRevealed, setObsTabRevealed] = useState(false);
-  const [obsIntegrationEnabled, setObsIntegrationEnabled] = useState(false);
-  const obsIntegrationEnabledRef = useRef(false);
-  obsIntegrationEnabledRef.current = obsIntegrationEnabled;
-  const [obsToggleError, setObsToggleError] = useState("");
-  const [broadcastVisible, setBroadcastVisible] = useState(false);
-  const broadcastVisibleRef = useRef(false);
-  broadcastVisibleRef.current = broadcastVisible;
-  // 配信ホワイトリスト (当日限り・アプリ再起動でリセットされる、IDハイライトより短命の運用でよい)
+  // ===== 配信ホワイトリスト (ビュワー・OBS 表示に流す掲示板の ID。当日限り) =====
   const [broadcastWhitelist, setBroadcastWhitelist] = useState<Record<string, true>>({});
+  // 配信ホワイトリストは data/viewer-whitelist.json に { date: 日本時間の日付, ids } で保存し、
+  // 起動時は日付が今日のときだけ読み込む (5ch の ID は日本時間の0時に変わるため)。
+  // 読み込みが終わる前に空の一覧で上書きしないよう、読み込み後にだけ保存する
+  const viewerWhitelistLoadedRef = useRef(false);
+  const todayJst = () => new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  // 自動で追加した ID と、そのきっかけの単語 (今日の分)。今日手で外した ID は自動では入れ直さない
+  const [whitelistAuto, setWhitelistAuto] = useState<Record<string, string>>({});
+  const [whitelistRemoved, setWhitelistRemoved] = useState<string[]>([]);
+  const isValidWhitelistId = (id: string) => id.length > 0 && id.length <= 64 && !/\s/.test(id);
+  useEffect(() => {
+    let cancelled = false;
+    void loadFromFile<{ date?: unknown; ids?: unknown; auto?: unknown; removed?: unknown }>("viewer-whitelist.json").then((d) => {
+      if (cancelled) return;
+      if (d && d.date === todayJst() && Array.isArray(d.ids)) {
+        const map: Record<string, true> = {};
+        for (const id of d.ids) if (typeof id === "string" && isValidWhitelistId(id)) map[id] = true;
+        setBroadcastWhitelist((prev) => ({ ...map, ...prev }));
+        if (d.auto && typeof d.auto === "object") {
+          const auto: Record<string, string> = {};
+          for (const [id, w] of Object.entries(d.auto as Record<string, unknown>)) if (map[id] && typeof w === "string") auto[id] = w.slice(0, 100);
+          setWhitelistAuto(auto);
+        }
+        if (Array.isArray(d.removed)) setWhitelistRemoved(d.removed.filter((x): x is string => typeof x === "string" && isValidWhitelistId(x)).slice(0, 1000));
+      }
+      viewerWhitelistLoadedRef.current = true;
+    });
+    return () => { cancelled = true; };
+  }, []);
+  useEffect(() => {
+    if (!viewerWhitelistLoadedRef.current) return;
+    const ids = Object.keys(broadcastWhitelist);
+    const auto: Record<string, string> = {};
+    for (const id of ids) if (whitelistAuto[id]) auto[id] = whitelistAuto[id];
+    saveToFile("viewer-whitelist.json", { date: todayJst(), ids, auto, removed: whitelistRemoved });
+  }, [broadcastWhitelist, whitelistAuto, whitelistRemoved]);
+  const addToWhitelist = (ids: string[]) => {
+    const valid = ids.map((x) => x.trim().replace(/^ID:/i, "")).filter(isValidWhitelistId);
+    if (valid.length === 0) return 0;
+    setBroadcastWhitelist((prev) => { const next = { ...prev }; for (const id of valid) next[id] = true; return next; });
+    setWhitelistAuto((prev) => { const next = { ...prev }; for (const id of valid) delete next[id]; return next; });
+    setWhitelistRemoved((prev) => prev.filter((x) => !valid.includes(x)));
+    return valid.length;
+  };
+  const removeFromWhitelist = (id: string) => {
+    setBroadcastWhitelist((prev) => { const next = { ...prev }; delete next[id]; return next; });
+    setWhitelistAuto((prev) => { const next = { ...prev }; delete next[id]; return next; });
+    setWhitelistRemoved((prev) => (prev.includes(id) ? prev : [...prev, id]));
+  };
+  // 自動追加: 登録した単語を本文に含むレスが届いたら、その ID を今日のホワイトリストに入れる (掲示板のみ)
+  type WhitelistAutoConfig = { enabled: boolean; words: string; limit: number };
+  const [whitelistAutoConfig, setWhitelistAutoConfig] = useState<WhitelistAutoConfig>({ enabled: false, words: "", limit: 20 });
+  const whitelistAutoLoadedRef = useRef(false);
+  useEffect(() => {
+    let cancelled = false;
+    void loadFromFile<Partial<WhitelistAutoConfig>>("viewer-autoadd.json").then((d) => {
+      if (cancelled) return;
+      if (d && typeof d === "object") {
+        setWhitelistAutoConfig({
+          enabled: d.enabled === true,
+          words: typeof d.words === "string" ? d.words.slice(0, 20000) : "",
+          limit: typeof d.limit === "number" && Number.isFinite(d.limit) ? Math.max(1, Math.min(100, Math.round(d.limit))) : 20,
+        });
+      }
+      whitelistAutoLoadedRef.current = true;
+    });
+    return () => { cancelled = true; };
+  }, []);
+  useEffect(() => {
+    if (whitelistAutoLoadedRef.current) saveToFile("viewer-autoadd.json", whitelistAutoConfig);
+  }, [whitelistAutoConfig]);
   const broadcastWhitelistRef = useRef<Record<string, true>>({});
   broadcastWhitelistRef.current = broadcastWhitelist;
-  // 見た目設定
-  const [broadcastFontFamily, setBroadcastFontFamily] = useState("");
-  const [broadcastFontPickerInput, setBroadcastFontPickerInput] = useState("");
-  const [broadcastFontPickerOpen, setBroadcastFontPickerOpen] = useState(false);
-  const [broadcastFontSize, setBroadcastFontSize] = useState(22);
-  const [broadcastTextColor, setBroadcastTextColor] = useState("#ffffff");
-  const [broadcastOutlineColor, setBroadcastOutlineColor] = useState("#000000");
-  const [broadcastOutlineWidth, setBroadcastOutlineWidth] = useState(2);
-  // カラー絵文字にも縁取りをかけるか (OFF なら絵文字の部分だけ縁取りを外す)
-  const [broadcastEmojiOutline, setBroadcastEmojiOutline] = useState(true);
-  const [broadcastBgColor, setBroadcastBgColor] = useState("#00ff00");
-  const [broadcastDisplaySeconds, setBroadcastDisplaySeconds] = useState(12);
   const hoverPreviewRef = useRef<HTMLDivElement | null>(null);
   const hoverPreviewImgRef = useRef<HTMLImageElement | null>(null);
   const hoverPreviewSrcRef = useRef<string | null>(null);
@@ -1046,9 +1759,9 @@ export default function App() {
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  type SettingsCategory = "display" | "posting" | "tts" | "tts-dict" | "proxy" | "ng" | "subtitle" | "highlights" | "presets" | "reset" | "info" | "obs";
-  const SETTINGS_CATEGORIES: SettingsCategory[] = ["display", "posting", "tts", "tts-dict", "ng", "highlights", "subtitle", "proxy", "presets", "reset", "info", ...(obsTabRevealed ? (["obs"] as const) : [])];
-  const SETTINGS_CATEGORY_LABELS: Record<SettingsCategory, string> = { display: "表示", posting: "書き込み", tts: "読み上げ", "tts-dict": "読み上げ辞書", subtitle: "字幕", proxy: "プロキシ", ng: "NG", highlights: "ハイライト", presets: "プリセット", reset: "リセット", info: "情報", obs: "OBS連携" };
+  type SettingsCategory = "display" | "posting" | "tts" | "tts-dict" | "proxy" | "ng" | "subtitle" | "highlights" | "presets" | "reset" | "info" | "twitch" | "youtube" | "viewer" | "connect";
+  const SETTINGS_CATEGORIES: SettingsCategory[] = ["display", "posting", "tts", "tts-dict", "ng", "highlights", "subtitle", "connect", "twitch", "youtube", "viewer", "proxy", "presets", "reset", "info"];
+  const SETTINGS_CATEGORY_LABELS: Record<SettingsCategory, string> = { display: "表示", posting: "書き込み", tts: "読み上げ", "tts-dict": "読み上げ辞書", subtitle: "字幕", proxy: "プロキシ", ng: "NG", highlights: "ハイライト", presets: "プリセット", reset: "リセット", info: "情報", twitch: "Twitch", youtube: "YouTube", viewer: "ビュワー", connect: "接続" };
   // 設定画面の保存まわりの状態 (詳細は「設定画面の保存 / 復元 / リセット / プリセット」の節)
   const settingsOpenRef = useRef(false);
   settingsOpenRef.current = settingsOpen;
@@ -1084,7 +1797,10 @@ export default function App() {
     presets: [],
     reset: [],
     info: [],
-    obs: [],
+    twitch: [{ id: "main", label: "受信・読み上げ" }, { id: "emotes", label: "スタンプ・バッジ" }, { id: "events", label: "イベント" }, { id: "teach", label: "教育・忘却" }, { id: "login", label: "ログイン" }],
+    youtube: [{ id: "main", label: "受信・読み上げ" }, { id: "events", label: "イベント" }],
+    connect: [],
+    viewer: [{ id: "display", label: "表示" }, { id: "whitelist", label: "ホワイトリスト" }, { id: "obs", label: "OBS 表示" }],
   };
   const [settingsCategory, setSettingsCategory] = useState<SettingsCategory>("display");
   const [settingsSection, setSettingsSection] = useState("");
@@ -1126,7 +1842,7 @@ export default function App() {
       <input type="search" value={settingsListFilter} onChange={(e) => setSettingsListFilter(e.target.value)}
         onKeyDown={(e) => { if (e.key === "Enter") recordInputHistory("settingsListFilter", settingsListFilter); }}
         onBlur={() => recordInputHistory("settingsListFilter", settingsListFilter)}
-        list="input-history-settingsListFilter" placeholder="一覧を絞り込み" style={{ width: 200 }} />
+        list="input-history-settingsListFilter" placeholder="一覧を絞り込み" className="lf-w200" />
       {inputHistoryDatalist("settingsListFilter")}
       {settingsListFilter && <button onClick={() => setSettingsListFilter("")}>クリア</button>}
     </div>
@@ -1157,12 +1873,12 @@ export default function App() {
   const subtitleCardsEnabledRef = useRef(false);
   subtitleCardsEnabledRef.current = subtitleCardsEnabled;
   // ヘッダ項目の表示/非表示 (レス表示欄 / 新着レスペイン / 字幕)。非表示の項目は詰めて左寄せ
-  type HeaderVis = { threadTitle: boolean; resNo: boolean; name: boolean; mail: boolean; watchoi: boolean; date: boolean; id: boolean; count: boolean };
-  const DEFAULT_HEADER_VIS: HeaderVis = { threadTitle: true, resNo: true, name: true, mail: true, watchoi: true, date: true, id: true, count: true };
+  type HeaderVis = { threadTitle: boolean; resNo: boolean; name: boolean; mail: boolean; watchoi: boolean; date: boolean; id: boolean; count: boolean; badges: boolean };
+  const DEFAULT_HEADER_VIS: HeaderVis = { threadTitle: true, resNo: true, name: true, mail: true, watchoi: true, date: true, id: true, count: true, badges: true };
   const sanitizeHeaderVis = (v: unknown): HeaderVis => {
     const o = (v && typeof v === "object" ? v : {}) as Partial<Record<keyof HeaderVis, unknown>>;
     const b = (x: unknown) => (typeof x === "boolean" ? x : true);
-    return { threadTitle: b(o.threadTitle), resNo: b(o.resNo), name: b(o.name), mail: b(o.mail), watchoi: b(o.watchoi), date: b(o.date), id: b(o.id), count: b(o.count) };
+    return { threadTitle: b(o.threadTitle), resNo: b(o.resNo), name: b(o.name), mail: b(o.mail), watchoi: b(o.watchoi), date: b(o.date), id: b(o.id), count: b(o.count), badges: b(o.badges) };
   };
   const [mainHeaderVis, setMainHeaderVis] = useState<HeaderVis>(DEFAULT_HEADER_VIS);
   const [arrivalHeaderVis, setArrivalHeaderVis] = useState<HeaderVis>(DEFAULT_HEADER_VIS);
@@ -1172,17 +1888,18 @@ export default function App() {
   // レス表示欄のヘッダ項目が全て非表示ならレスの境目が分からないので罫線を引く (no-header)。常に罫線を引く設定もある
   const mainHeaderAllHidden = !mainHeaderVis.resNo && !mainHeaderVis.name && !mainHeaderVis.mail && !mainHeaderVis.watchoi && !mainHeaderVis.date && !mainHeaderVis.id && !mainHeaderVis.count;
   const [responseDividerAlways, setResponseDividerAlways] = useState(false);
-  const headerVisRows = (vis: HeaderVis, set: (next: HeaderVis) => void, opts: { threadTitle?: boolean; watchoi?: boolean }) => {
+  const headerVisRows = (vis: HeaderVis, set: (next: HeaderVis) => void, opts: { threadTitle?: boolean; watchoi?: boolean; badges?: boolean }) => {
     const items: Array<[keyof HeaderVis, string]> = [
       ...(opts.threadTitle ? ([["threadTitle", "スレ名"]] as Array<[keyof HeaderVis, string]>) : []),
       ["resNo", "レス番号"], ["name", "名前"], ["mail", "メール欄"],
       ...(opts.watchoi ? ([["watchoi", "ワッチョイ"]] as Array<[keyof HeaderVis, string]>) : []),
       ["date", "投稿日時"], ["id", "ID"], ["count", "書き込み回数"],
+      ...(opts.badges ? ([["badges", "Twitch のバッジ"]] as Array<[keyof HeaderVis, string]>) : []),
     ];
     return (
-      <div style={{ display: "flex", flexWrap: "wrap", gap: "2px 10px", fontSize: 11 }}>
+      <div className="lf-d-flex-fwrap-wrap-gap2-10-fs11">
         {items.map(([key, label]) => (
-          <label key={key} style={{ display: "flex", alignItems: "center", gap: 2 }}>
+          <label key={key} className="lf-d-flex-ai-center-gap2">
             <input type="checkbox" checked={vis[key]} onChange={(e) => set({ ...vis, [key]: e.target.checked })} />
             {label}
           </label>
@@ -1230,6 +1947,7 @@ export default function App() {
       id,
       time: isAbone ? "あぼ～ん" : r.dateAndId.replace(/\s+ID:\S+/g, "").replace(/\s+BE[:：]\d+[^\s]*/gi, "").trim(),
       text: isAbone ? "あぼ～ん" : arrivalBodyText(r.body),
+      plain: isAbone ? "あぼ～ん" : decodeHtmlEntities(r.body.replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]*>/g, "")).trim().slice(0, 5000),
       threadUrl: threadUrlForItem,
       idSeq: stats.seq,
       idCount: stats.count,
@@ -1252,91 +1970,353 @@ export default function App() {
   const [subtitleTiming, setSubtitleTiming] = useState<ScrollTiming>(DEFAULT_SCROLL_TIMING);
   const subtitleTimingRef = useRef<ScrollTiming>(DEFAULT_SCROLL_TIMING);
   subtitleTimingRef.current = subtitleTiming;
-  const [broadcastTiming, setBroadcastTiming] = useState<ScrollTiming>(DEFAULT_SCROLL_TIMING);
-  const broadcastTimingRef = useRef<ScrollTiming>(DEFAULT_SCROLL_TIMING);
-  broadcastTimingRef.current = broadcastTiming;
-  const [broadcastHeaderVis, setBroadcastHeaderVis] = useState<HeaderVis>(DEFAULT_HEADER_VIS);
-  const broadcastHeaderVisRef = useRef<HeaderVis>(DEFAULT_HEADER_VIS);
-  broadcastHeaderVisRef.current = broadcastHeaderVis;
 
-  // 配信ホワイトリスト表示ウィンドウへ、見た目設定をまとめて送る
-  const pushBroadcastStyle = () => {
-    if (!isTauriRuntime()) return;
-    void invoke("broadcast_update", {
-      data: {
-        style: {
-          // 空文字はフォント未指定 (配信ウィンドウ側で既定のフォントに戻す)
-          fontFamily: broadcastFontFamily,
-          fontSize: broadcastFontSize,
-          textColor: broadcastTextColor,
-          outlineColor: broadcastOutlineColor,
-          outlineWidth: broadcastOutlineWidth,
-          emojiOutline: broadcastEmojiOutline,
-          bgColor: broadcastBgColor,
-          displaySeconds: broadcastDisplaySeconds,
-          msPerPx: broadcastTiming.msPerPx,
-          waitSec: broadcastTiming.waitSec,
-          headerVis: broadcastHeaderVis,
-        },
-      },
-    }).catch(() => {});
+  // ===== ビュワー (Twitch のチャットと、配信ホワイトリストの ID のレスをまとめて流す) =====
+  // 板タブの左端に固定で置く。新着の経路 (掲示板の自動更新・裏のタブの巡回・Twitch の受信) はすべてここを通る
+  type ViewerSource = "twitch" | "youtube" | "5ch" | "shitaraba" | "jpnkn";
+  // Twitch・YouTube のチャット (掲示板のレスと違い、すべてビュワー・OBS 表示に流す。番号・ID は出さない)
+  const isChatSource = (src: ViewerSource) => src === "twitch" || src === "youtube";
+  type ViewerItem = { seq: number; source: ViewerSource; site: string; where: string; threadUrl: string; no: number; name: string; uid: string; time: string; text: string; color: string;
+    event?: { kind: string; label: string; summary: string };
+    badges?: TwitchBadge[];
+    // Twitch のスタンプ・YouTube の絵文字 (text の中の位置)
+    emotes?: TwitchEmote[];
+    giant?: boolean;
+    // 後で消すときの目印 (YouTube で削除された発言)
+    key?: string };
+  // Twitch の視聴者の名前の色 (ログイン名 → #RRGGBB)。受信のたびに更新し、ビュワー・OBS 表示で使う
+  const twitchColorRef = useRef<Map<string, string>>(new Map());
+  const VIEWER_MAX_ITEMS = 500;
+  const VIEWER_SITE_LABEL: Record<ViewerSource, string> = { twitch: "Twitch", youtube: "YouTube", "5ch": "5ch", shitaraba: "したらば", jpnkn: "JPNKN" };
+  const [viewerItems, setViewerItems] = useState<ViewerItem[]>([]);
+  const viewerSeqRef = useRef(0);
+  const [viewerFilter, setViewerFilter] = useState<Record<ViewerSource, boolean>>({ twitch: true, youtube: true, "5ch": true, shitaraba: true, jpnkn: true });
+  const [viewerAutoScroll, setViewerAutoScroll] = useState(true);
+  // ビュワー (と最新レス欄) の文字。フォントは空ならアプリ全体のフォント、大きさは 0 ならレスの文字サイズに連動
+  const [viewerFontFamily, setViewerFontFamily] = useState("");
+  const [viewerFontPickerInput, setViewerFontPickerInput] = useState("");
+  const [viewerFontPickerOpen, setViewerFontPickerOpen] = useState(false);
+  const [viewerFontSize, setViewerFontSize] = useState(0);
+  const [viewerFontBold, setViewerFontBold] = useState(false);
+  // ビュワーのリンクカード・画像サムネイル (OBS 表示には出さない)。Twitch のチャットはクリックで読み込むようにもできる
+  const [viewerCards, setViewerCards] = useState(true);
+  const [viewerThumbs, setViewerThumbs] = useState(true);
+  const [viewerTwitchClickToLoad, setViewerTwitchClickToLoad] = useState(false);
+  const [viewerRevealed, setViewerRevealed] = useState<Set<number>>(() => new Set());
+  const URL_IN_TEXT_RE = /(?:https?|ttps?):\/\//i;
+  // ビュワー (と最新レス欄) の見出しに出す項目
+  type ViewerShow = { time: boolean; site: boolean; where: boolean; id: boolean; badges: boolean };
+  const VIEWER_SHOW_LABELS: [keyof ViewerShow, string][] = [["time", "時間"], ["site", "プラットフォーム (Twitch / YouTube / 5ch / したらば / JPNKN)"], ["where", "板・スレ・チャンネル"], ["id", "ID"], ["badges", "Twitch のバッジ"]];
+  const [viewerShow, setViewerShow] = useState<ViewerShow>({ time: true, site: true, where: true, id: true, badges: true });
+  // ビュワーの下の「スレの最新レス」欄: 開いているスレの新着のうち、配信ホワイトリストに無い ID のもの (OBS には出さない)
+  type LatestItem = { seq: number; source: ViewerSource; site: string; threadUrl: string; no: number; uid: string; time: string; text: string };
+  const LATEST_MAX_ITEMS = 300;
+  const [latestItems, setLatestItems] = useState<LatestItem[]>([]);
+  const [latestPanelOpen, setLatestPanelOpen] = useState(true);
+  // 最新レス欄の高さ (px)。欄の上端をドラッグして変える
+  const [latestPanelHeight, setLatestPanelHeight] = useState(180);
+  const beginLatestResize = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startH = latestPanelHeight;
+    const pane = (e.currentTarget as HTMLElement).closest(".pane.viewer") as HTMLElement | null;
+    const maxH = Math.max(100, (pane?.clientHeight ?? 600) - 120);
+    const onMove = (mv: MouseEvent) => setLatestPanelHeight(Math.round(Math.max(80, Math.min(maxH, startH - (mv.clientY - startY)))));
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      document.body.style.userSelect = "";
+      document.body.style.cursor = "";
+    };
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "row-resize";
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
   };
-  // OBS連携の大元スイッチ。オンにする際はOBSが起動している必要がある (Rust側で確認)
-  const toggleObsIntegration = () => {
-    if (!isTauriRuntime()) return;
-    setObsToggleError("");
-    if (obsIntegrationEnabled) {
-      void invoke("obs_integration_set_enabled", { enabled: false }).catch(() => {});
-      setObsIntegrationEnabled(false);
-      if (broadcastVisibleRef.current) {
-        void invoke("broadcast_hide").catch(() => {});
-        setBroadcastVisible(false);
-      }
-    } else {
-      void invoke("obs_integration_set_enabled", { enabled: true })
-        .then(() => setObsIntegrationEnabled(true))
-        .catch((e) => setObsToggleError(String(e)));
-    }
+  const [whitelistInput, setWhitelistInput] = useState("");
+  const submitWhitelistInput = () => {
+    const parts = whitelistInput.split(/[\s,、]+/).filter(Boolean);
+    const n = addToWhitelist(parts);
+    setStatus(n > 0 ? `配信ホワイトリストに ${n} 件追加しました` : "ID の形式が正しくありません (空白を含まない64文字以内)");
+    if (n > 0) setWhitelistInput("");
   };
-  // ツールバーのトグル: OBS連携ウィンドウの表示/非表示 (大元のスイッチがオンのときだけ操作できる)
-  const toggleBroadcastWindow = () => {
-    if (!isTauriRuntime() || !obsIntegrationEnabledRef.current) return;
-    if (broadcastVisible) {
-      void invoke("broadcast_hide").catch((e) => console.warn("broadcast_hide:", e));
-      setBroadcastVisible(false);
-    } else {
-      void invoke("broadcast_show").then(() => {
-        setBroadcastVisible(true);
-        setTimeout(pushBroadcastStyle, 250);
-      }).catch((e) => console.warn("broadcast_show:", e));
+  const latestListRef = useRef<HTMLDivElement | null>(null);
+  const viewerListRef = useRef<HTMLDivElement | null>(null);
+  // OBS 表示 (ブラウザソース): 既定はオフ。オンの間だけ 127.0.0.1:ポート で待ち受ける
+  const [overlayEnabled, setOverlayEnabled] = useState(false);
+  const overlayEnabledRef = useRef(false);
+  overlayEnabledRef.current = overlayEnabled;
+  const [overlayPort, setOverlayPort] = useState(OVERLAY_PORT_DEFAULT);
+  const [overlayStatus, setOverlayStatus] = useState("");
+  const [overlayLayouts, setOverlayLayouts] = useState<Record<string, OverlayLayoutData>>({ [OVERLAY_DEFAULT_LAYOUT]: { appearance: DEFAULT_OVERLAY_APPEARANCE, css: "" } });
+  const [overlayEditingLayout, setOverlayEditingLayout] = useState(OVERLAY_DEFAULT_LAYOUT);
+  const [overlayLayoutNameInput, setOverlayLayoutNameInput] = useState("");
+  // レイアウト操作のメッセージ (設定画面の中に出す。ステータスバーは設定画面に隠れて見えないため)
+  const [overlayLayoutMsg, setOverlayLayoutMsg] = useState<{ text: string; error: boolean } | null>(null);
+  const overlayAppearanceLoadedRef = useRef(false);
+  const editingLayout = overlayLayouts[overlayEditingLayout] ?? overlayLayouts[OVERLAY_DEFAULT_LAYOUT] ?? { appearance: DEFAULT_OVERLAY_APPEARANCE, css: "" };
+  // 見た目の各項目は、プルダウンで選んでいるレイアウトを編集する
+  const overlayAppearance = editingLayout.appearance;
+  const setOverlayAppearance = (fn: (p: OverlayAppearance) => OverlayAppearance) => {
+    setOverlayLayouts((prev) => {
+      const cur = prev[overlayEditingLayout] ?? { appearance: DEFAULT_OVERLAY_APPEARANCE, css: "" };
+      return { ...prev, [overlayEditingLayout]: { ...cur, appearance: fn(cur.appearance) } };
+    });
+  };
+  const setOverlayLayoutCss = (css: string) => {
+    setOverlayLayouts((prev) => {
+      const cur = prev[overlayEditingLayout] ?? { appearance: DEFAULT_OVERLAY_APPEARANCE, css: "" };
+      return { ...prev, [overlayEditingLayout]: { ...cur, css: css.slice(0, OVERLAY_CSS_MAX_CHARS) } };
+    });
+  };
+  const overlayUrl = `http://127.0.0.1:${overlayPort}/overlay.html${overlayEditingLayout === OVERLAY_DEFAULT_LAYOUT ? "" : `?layout=${encodeURIComponent(overlayEditingLayout)}`}`;
+  // 名前を入れずに「新規」「複製」を押したときの名前 (「レイアウト 1」「配信B のコピー」「配信B のコピー 2」…)
+  const autoOverlayLayoutName = (copyFrom: string | null) => {
+    const names = Object.keys(overlayLayouts);
+    const base = copyFrom ? `${Array.from(copyFrom).slice(0, 30).join("")} のコピー` : "レイアウト";
+    if (copyFrom && !names.includes(base)) return base;
+    for (let i = copyFrom ? 2 : 1; i < 1000; i++) {
+      const n = `${base} ${i}`;
+      if (!names.includes(n)) return n;
     }
+    return base;
+  };
+  const addOverlayLayout = (copyFrom: string | null) => {
+    const name = overlayLayoutNameInput.trim() || autoOverlayLayoutName(copyFrom);
+    const err = overlayLayoutNameError(name, Object.keys(overlayLayouts));
+    if (err) { setOverlayLayoutMsg({ text: err, error: true }); return; }
+    if (Object.keys(overlayLayouts).length >= 50) { setOverlayLayoutMsg({ text: "レイアウトは50個までです", error: true }); return; }
+    setOverlayLayoutMsg({ text: copyFrom ? `「${copyFrom}」を「${name}」として複製しました` : `レイアウト「${name}」を作りました`, error: false });
+    const base = copyFrom ? overlayLayouts[copyFrom] : undefined;
+    setOverlayLayouts((prev) => ({ ...prev, [name]: base ? { appearance: base.appearance, css: base.css } : { appearance: DEFAULT_OVERLAY_APPEARANCE, css: "" } }));
+    setOverlayEditingLayout(name);
+    setOverlayLayoutNameInput("");
+  };
+  const renameOverlayLayout = () => {
+    if (overlayEditingLayout === OVERLAY_DEFAULT_LAYOUT) { setOverlayLayoutMsg({ text: "「標準」の名前は変えられません", error: true }); return; }
+    const name = overlayLayoutNameInput.trim();
+    if (!name) { setOverlayLayoutMsg({ text: "新しい名前を入力してから「名前を変更」を押してください", error: true }); return; }
+    const err = overlayLayoutNameError(name, Object.keys(overlayLayouts));
+    if (err) { setOverlayLayoutMsg({ text: err, error: true }); return; }
+    setOverlayLayoutMsg({ text: `「${overlayEditingLayout}」を「${name}」に変更しました`, error: false });
+    setOverlayLayouts((prev) => {
+      const next: Record<string, OverlayLayoutData> = {};
+      for (const [k, v] of Object.entries(prev)) next[k === overlayEditingLayout ? name : k] = v;
+      return next;
+    });
+    setOverlayEditingLayout(name);
+    setOverlayLayoutNameInput("");
+  };
+  const deleteOverlayLayout = () => {
+    if (overlayEditingLayout === OVERLAY_DEFAULT_LAYOUT) { setOverlayLayoutMsg({ text: "「標準」は削除できません", error: true }); return; }
+    const target = overlayEditingLayout;
+    setAppConfirm({
+      title: "レイアウトの削除",
+      message: `レイアウト「${target}」を削除しますか?\nOBS でこのレイアウトを使っているソースは「標準」の見た目になります。`,
+      buttons: [
+        { label: "削除", danger: true, onClick: () => { setOverlayLayouts((prev) => { const next = { ...prev }; delete next[target]; return next; }); setOverlayEditingLayout(OVERLAY_DEFAULT_LAYOUT); setOverlayLayoutMsg({ text: `レイアウト「${target}」を削除しました`, error: false }); } },
+        { label: "キャンセル", onClick: () => {} },
+      ],
+    });
+  };
+  const viewerSourceOf = (url: string): ViewerSource => {
+    const site = detectSiteType(url);
+    return site === "fiveCh" ? "5ch" : site;
+  };
+  // ビュワーの本文: レス表示欄と同じ無害化・リンク化を通し、サムネイルとリンクカードの置き場所を作ってから、スタンプを画像にする。
+  // OBS 表示へは別に文字だけを送るので、ここで作る画像・カードは OBS には出ない
+  // 一度作った HTML は、表示設定が変わるまで使い回す (新しい発言が届くたびに全件を作り直さない)
+  const viewerBodyCacheRef = useRef<Map<number, { sig: string; html: string }>>(new Map());
+  const viewerBodyHtml = (it: ViewerItem): string => {
+    const deferred = isChatSource(it.source) && viewerTwitchClickToLoad && !viewerRevealed.has(it.seq);
+    const sig = [deferred, viewerCards, viewerThumbs, imageSizeLimit, darkMode, imageUrlRules.length, ogpDomainFilters.allow.join(","), ogpDomainFilters.block.join(","), it.text].join("\u0001");
+    const cached = viewerBodyCacheRef.current.get(it.seq);
+    if (cached && cached.sig === sig) return cached.html;
+    const html = makeViewerBodyHtml(it, deferred);
+    const cache = viewerBodyCacheRef.current;
+    cache.set(it.seq, { sig, html });
+    if (cache.size > VIEWER_MAX_ITEMS * 2) {
+      const keep = new Set(viewerItems.map((x) => x.seq));
+      for (const k of cache.keys()) if (!keep.has(k)) cache.delete(k);
+    }
+    return html;
+  };
+  const makeViewerBodyHtml = (it: ViewerItem, deferred: boolean): string => {
+    const cards = viewerCards && !deferred;
+    let html = renderResponseBody(escapeHtml(it.text), {
+      // 画像NG に当たるものは URL ごと隠す。サムネイルを出さないとき (オフ・クリック待ち) は、URL はリンクとして残してサムネイルの行だけ外す
+      hideImages: matchesImageWords(it.text),
+      imageSizeLimitKb: imageSizeLimit,
+      urlRules: imageUrlRules,
+      ogpCards: cards,
+      tweetCards: cards,
+      ogpAllow: ogpDomainFilters.allow,
+      ogpBlock: ogpDomainFilters.block,
+    }).__html;
+    if (!viewerThumbs || deferred) html = html.replace(/<div class="response-thumbs-row">[\s\S]*?<\/div>/g, "");
+    if (it.emotes && it.emotes.length > 0) {
+      const cps = Array.from(it.text);
+      html = injectTwitchEmotes(html, it.emotes.map((e) => ({ id: e.id, name: cps.slice(e.start, e.end + 1).join(""), giant: e.giant === true, url: e.url })), !!it.giant, darkMode);
+    }
+    return html;
+  };
+  const pushLatestArrivals = (arrivals: ArrivalItem[]) => {
+    const add: LatestItem[] = [];
+    for (const a of arrivals) {
+      if (a.isAbone) continue;
+      const source = viewerSourceOf(a.threadUrl);
+      if (isChatSource(source) || broadcastWhitelistRef.current[a.id]) continue;
+      add.push({ seq: ++viewerSeqRef.current, source, site: VIEWER_SITE_LABEL[source], threadUrl: a.threadUrl, no: a.responseNo, uid: a.id, time: a.time, text: a.plain.replace(/\s+/g, " ").slice(0, 300) });
+    }
+    if (add.length === 0) return;
+    setLatestItems((prev) => {
+      const next = prev.concat(add);
+      return next.length > LATEST_MAX_ITEMS ? next.slice(-LATEST_MAX_ITEMS) : next;
+    });
+  };
+  // Twitch・YouTube のチャットはすべて、掲示板のレスは配信ホワイトリストの ID だけを流す。
+  // 透明あぼ～んは呼び出し元で除いてある。通常あぼ～んに当たったものも配信向けには流さない
+  const pushViewerArrivals = (arrivals: ArrivalItem[]) => {
+    const add: ViewerItem[] = [];
+    for (const a of arrivals) {
+      if (a.isAbone) continue;
+      const source = viewerSourceOf(a.threadUrl);
+      if (!isChatSource(source) && !broadcastWhitelistRef.current[a.id]) continue;
+      add.push({
+        seq: ++viewerSeqRef.current,
+        source,
+        site: VIEWER_SITE_LABEL[source],
+        where: decodeHtmlEntities(a.threadTitle),
+        threadUrl: a.threadUrl,
+        no: a.responseNo,
+        name: decodeHtmlEntities(a.name),
+        uid: a.id,
+        time: a.time,
+        // イベントは見出し (要約) を別に持ち、本文は添えられたメッセージだけにする
+        text: a.twitchEvent ? a.twitchEvent.message : a.plain,
+        // 掲示板のレスに書かれたスタンプ名 (Twitch のチャットは下で受信したスタンプ情報に置き換える)
+        ...(!isChatSource(source) && boardEmotesEnabledRef.current ? { emotes: findNamedEmotes(a.plain, emoteNameMapRef.current) } : {}),
+        color: isChatSource(source) ? (twitchColorRef.current.get(a.id) ?? "") : "",
+        ...(a.chatKey ? { key: a.chatKey } : {}),
+        ...(a.twitchBadges ? { badges: a.twitchBadges } : {}),
+        // スタンプは受信したままの本文の位置なので、本文もそれに合わせる
+        ...(a.twitchRaw && a.twitchRaw.emotes.length > 0 ? { text: a.twitchRaw.text, emotes: a.twitchRaw.emotes, giant: a.twitchRaw.giant } : {}),
+        ...(a.twitchEvent ? { event: { kind: a.twitchEvent.kind, label: a.twitchEvent.label, summary: a.twitchEvent.summary } } : {}),
+      });
+    }
+    if (add.length === 0) return;
+    // OBS 表示へも同じものを送る (Twitch・YouTube は ID を出さない・番号は無い)
+    if (isTauriRuntime() && overlayEnabledRef.current) {
+      const items = add.map((it) => ({
+        source: it.source, site: it.site, no: isChatSource(it.source) ? null : it.no,
+        name: it.name, uid: isChatSource(it.source) ? "" : it.uid, text: it.text, color: it.color,
+        event: it.event ?? null,
+        badgeList: it.badges ?? [],
+        emotes: (it.emotes ?? []).map((e) => ({ id: e.id, start: e.start, end: e.end, giant: e.giant === true, ...(e.url ? { url: e.url } : {}) })),
+        giant: it.giant === true,
+        key: it.key ?? "",
+      }));
+      void invoke("overlay_publish", { items }).catch((e) => console.warn("overlay_publish failed", e));
+    }
+    setViewerItems((prev) => {
+      const next = prev.concat(add);
+      return next.length > VIEWER_MAX_ITEMS ? next.slice(-VIEWER_MAX_ITEMS) : next;
+    });
   };
   useEffect(() => {
-    if (broadcastVisible) pushBroadcastStyle();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [broadcastVisible, broadcastFontFamily, broadcastFontSize, broadcastTextColor, broadcastOutlineColor, broadcastOutlineWidth, broadcastEmojiOutline, broadcastBgColor, broadcastDisplaySeconds, broadcastTiming, broadcastHeaderVis]);
-  // 新着レスのうち、配信ホワイトリストに登録されているIDのものだけをOBS連携ウィンドウへ送る。
-  // カード化・サムネイル化はせず、本文はプレーンな文字列のまま渡す (リンク先の安全性が
-  // 保証できないものを配信画面に自動表示しないため)
-  const pushBroadcastArrivals = (arrivals: ArrivalItem[]) => {
-    if (!isTauriRuntime() || !obsIntegrationEnabledRef.current) return;
-    // 複数件をまとめて1回のinvokeで送る (1件ずつ個別にinvokeすると、非同期呼び出しの完了順が
-    // 送信順と一致する保証が無く、配信ウィンドウ側での表示順が入れ替わることがあったため)
-    const items = arrivals
-      .filter((a) => broadcastWhitelistRef.current[a.id])
-      // 5ch のデータは Shift_JIS のため絵文字などは &#128512; のような文字参照で届く。配信ウィンドウは
-      // textContent で表示するので、ここで文字に戻してから送る (戻した結果が < などでもHTMLとしては解釈されない)
-      .map((a) => ({
-        threadTitle: decodeHtmlEntities(a.threadTitle), responseNo: a.responseNo,
-        name: decodeHtmlEntities(a.name), mail: decodeHtmlEntities(a.mail),
-        id: a.id, date: a.time, idSeq: a.idSeq, idCount: a.idCount,
-        body: decodeHtmlEntities(a.text), isAa: isAsciiArt(a.text),
-      }));
-    if (items.length === 0) return;
-    void invoke("broadcast_update", { data: { items } }).catch(() => {});
+    if (!isTauriRuntime()) return;
+    let cancelled = false;
+    if (!overlayEnabled) {
+      void invoke("overlay_stop").catch((e) => console.warn("overlay_stop failed", e));
+      setOverlayStatus("");
+      return;
+    }
+    invoke<number>("overlay_start", { port: overlayPort })
+      .then((p) => { if (!cancelled) setOverlayStatus(`動作中 (127.0.0.1:${p})`); })
+      .catch((e) => { if (!cancelled) setOverlayStatus(`開始できませんでした: ${String(e)}`); });
+    return () => { cancelled = true; };
+  }, [overlayEnabled, overlayPort]);
+  // 「OBS 表示を使う」は「設定を保存」を待たず、切り替えた時点で settings.ini に保存する
+  // (設定画面を「保存しないで閉じる」で閉じても戻らないよう、開いたときの値の控えも合わせる)
+  const changeOverlayEnabled = (v: boolean) => {
+    setOverlayEnabled(v);
+    if (isTauriRuntime() && appSettingsLoadedRef.current) {
+      void invoke("save_app_settings", { settings: { "App.overlayEnabled": String(v) } }).catch((e) => console.warn("save overlayEnabled failed", e));
+    }
+    setSettingsSnapshot((prev) => (prev ? { ...prev, app: { ...prev.app, "App.overlayEnabled": String(v) } } : prev));
   };
-  // OBS連携がオフになったら、レス右クリックメニューを開いていても表示されないよう
-  // ホワイトリストは残したままでよい (当日限りで自然に意味を失う運用)
+  // レイアウトの読み込み (data/overlay-layouts.json)。無ければ以前の overlay-appearance.json を「標準」として引き継ぐ
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const d = await loadFromFile<unknown>("overlay-layouts.json");
+      const result: Record<string, OverlayLayoutData> = {};
+      const raw = d && typeof d === "object" ? (d as { layouts?: unknown }).layouts : undefined;
+      if (raw && typeof raw === "object") {
+        for (const [name, v] of Object.entries(raw as Record<string, unknown>)) {
+          if (overlayLayoutNameError(name, []) !== null || Object.keys(result).length >= 50) continue;
+          const o = (v && typeof v === "object" ? v : {}) as { appearance?: unknown; css?: unknown };
+          result[name] = { appearance: sanitizeOverlayAppearance(o.appearance), css: typeof o.css === "string" ? o.css.slice(0, OVERLAY_CSS_MAX_CHARS) : "" };
+        }
+      } else {
+        const old = await loadFromFile<unknown>("overlay-appearance.json");
+        if (old) result[OVERLAY_DEFAULT_LAYOUT] = { appearance: sanitizeOverlayAppearance(old), css: "" };
+      }
+      if (!result[OVERLAY_DEFAULT_LAYOUT]) result[OVERLAY_DEFAULT_LAYOUT] = { appearance: DEFAULT_OVERLAY_APPEARANCE, css: "" };
+      if (cancelled) return;
+      setOverlayLayouts(result);
+      overlayAppearanceLoadedRef.current = true;
+    })();
+    return () => { cancelled = true; };
+  }, []);
+  // 変更は少し待ってからまとめて OBS 表示へ送り、保存する (追加 CSS の入力中に1文字ごとに送らないように)
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    const timer = window.setTimeout(() => {
+      void invoke("overlay_set_layouts", { layouts: overlayLayouts }).catch((e) => { console.warn("overlay_set_layouts failed", e); setStatus(`OBS 表示のレイアウトを反映できませんでした: ${String(e)}`); });
+      if (overlayAppearanceLoadedRef.current) saveToFile("overlay-layouts.json", { layouts: overlayLayouts });
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [overlayLayouts]);
+  useEffect(() => {
+    if (!viewerAutoScroll || activePaneView !== "viewer") return;
+    const el = viewerListRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [viewerItems, viewerAutoScroll, activePaneView]);
+  useEffect(() => {
+    if (!latestPanelOpen || activePaneView !== "viewer") return;
+    const el = latestListRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [latestItems, latestPanelOpen, activePaneView]);
+  const applyWhitelistAutoAdd = (arrivals: ArrivalItem[]) => {
+    const cfg = whitelistAutoConfig;
+    if (!cfg.enabled) return;
+    const words = cfg.words.split(/\r?\n/).map((w) => w.trim()).filter(Boolean);
+    if (words.length === 0) return;
+    let count = Object.keys(whitelistAuto).length;
+    const added: Record<string, string> = {};
+    for (const a of arrivals) {
+      if (count >= cfg.limit) break;
+      if (a.isAbone || !a.id || isChatSource(viewerSourceOf(a.threadUrl))) continue;
+      if (broadcastWhitelistRef.current[a.id] || added[a.id] || whitelistRemoved.includes(a.id)) continue;
+      const hit = words.find((w) => ngMatch(w, a.plain));
+      if (!hit) continue;
+      added[a.id] = hit;
+      count++;
+    }
+    const ids = Object.keys(added);
+    if (ids.length === 0) return;
+    // この後のビュワーへの振り分けで通るよう、ref にもすぐ反映する
+    broadcastWhitelistRef.current = { ...broadcastWhitelistRef.current, ...Object.fromEntries(ids.map((id) => [id, true as const])) };
+    setBroadcastWhitelist((prev) => { const next = { ...prev }; for (const id of ids) next[id] = true; return next; });
+    setWhitelistAuto((prev) => ({ ...prev, ...added }));
+    setStatus(`配信ホワイトリストに自動で追加しました: ${ids.map((id) => `ID:${id}`).join(" ")}`);
+  };
+  const pushBroadcastArrivals = (arrivals: ArrivalItem[]) => {
+    applyWhitelistAutoAdd(arrivals);
+    pushLatestArrivals(arrivals);
+    pushViewerArrivals(arrivals);
+  };
   // 字幕の表示が終わるまで次のレスを待つ (同期)。字幕ウィンドウが閉じている・報告が無いときは新着ペインの時間だけで進む
   const [subtitleSyncEnabled, setSubtitleSyncEnabled] = useState(true);
   const subtitleSyncEnabledRef = useRef(true);
@@ -1356,19 +2336,19 @@ export default function App() {
     <>
       <label className="settings-row">
         <span>短いレスの表示時間 (秒・スクロール不要時)</span>
-        <input type="number" min={0} max={120} step={0.1} value={t.fitSec} onChange={(e) => set(sanitizeScrollTiming({ ...t, fitSec: Number(e.target.value) }))} style={{ width: 70 }} />
+        <input type="number" min={0} max={120} step={0.1} value={t.fitSec} onChange={(e) => set(sanitizeScrollTiming({ ...t, fitSec: Number(e.target.value) }))} className="lf-w70" />
       </label>
       <label className="settings-row">
         <span>スクロール開始までの待ち時間 (秒)</span>
-        <input type="number" min={0} max={20} step={0.1} value={t.waitSec} onChange={(e) => set(sanitizeScrollTiming({ ...t, waitSec: Number(e.target.value) }))} style={{ width: 70 }} />
+        <input type="number" min={0} max={20} step={0.1} value={t.waitSec} onChange={(e) => set(sanitizeScrollTiming({ ...t, waitSec: Number(e.target.value) }))} className="lf-w70" />
       </label>
       <label className="settings-row">
         <span>スクロール速度 (1px あたり ms)</span>
-        <input type="number" min={1} max={100} step={1} value={t.msPerPx} onChange={(e) => set(sanitizeScrollTiming({ ...t, msPerPx: Number(e.target.value) }))} style={{ width: 70 }} />
+        <input type="number" min={1} max={100} step={1} value={t.msPerPx} onChange={(e) => set(sanitizeScrollTiming({ ...t, msPerPx: Number(e.target.value) }))} className="lf-w70" />
       </label>
       <label className="settings-row">
         <span>スクロール後の表示時間 (秒)</span>
-        <input type="number" min={0} max={120} step={0.1} value={t.holdSec} onChange={(e) => set(sanitizeScrollTiming({ ...t, holdSec: Number(e.target.value) }))} style={{ width: 70 }} />
+        <input type="number" min={0} max={120} step={0.1} value={t.holdSec} onChange={(e) => set(sanitizeScrollTiming({ ...t, holdSec: Number(e.target.value) }))} className="lf-w70" />
       </label>
     </>
   );
@@ -1396,6 +2376,9 @@ export default function App() {
   const [ttsMaxReadLength, setTtsMaxReadLength] = useState(100);
   // 辞書・許可リストに一致せず読まないURLを、黙って飛ばす代わりに「URL省略」と読むか
   const [ttsUrlOmitEnabled, setTtsUrlOmitEnabled] = useState(true);
+  // 掲示板の新着の読み上げ方: "full" = 全文 (従来) / "whitelist" = TCV方式
+  // (配信ホワイトリストの ID は本文まで読み、それ以外は「レスN番さん」と番号だけ読む)。Twitch のチャットには関係しない
+  const [ttsBoardMode, setTtsBoardMode] = useState<"full" | "whitelist">("full");
   const ttsUrlOmitEnabledRef = useRef(true);
   ttsUrlOmitEnabledRef.current = ttsUrlOmitEnabled;
   const [sapiVoices, setSapiVoices] = useState<{ index: number; name: string }[]>([]);
@@ -1502,6 +2485,8 @@ export default function App() {
   const [fontPickerInput, setFontPickerInput] = useState("");
   const [fontPickerOpen, setFontPickerOpen] = useState(false);
   const [darkMode, setDarkMode] = useState(false);
+  const darkModeRef = useRef(false);
+  darkModeRef.current = darkMode;
   const [composeFontSize, setComposeFontSize] = useState(13);
   const [resIdFontSize, setResIdFontSize] = useState(0); // 0 = same as parent, ±px delta
   const [resIdFontFamily, setResIdFontFamily] = useState("");
@@ -1532,6 +2517,8 @@ export default function App() {
   // まだ既定値のままの state で settings.ini を上書きし、直前まで保存されていた値
   // (棒読みちゃんの実行ファイルパス等) を消してしまう
   const appSettingsLoadedRef = useRef(false);
+  // settings.ini を読み終えた (読み込み前の既定値で動き出してほしくない処理が待つ)
+  const [appSettingsReady, setAppSettingsReady] = useState(false);
   const threadScrollPositions = useRef<Record<string, number>>({});
   const boardTreeRef = useRef<HTMLDivElement | null>(null);
   const boardTreeScrollRestoreRef = useRef<number | null>(null);
@@ -1552,7 +2539,17 @@ export default function App() {
   const [newArrivalPaneHeight, setNewArrivalPaneHeight] = useState(DEFAULT_NEW_ARRIVAL_PX);
   const [newArrivalFontSize, setNewArrivalFontSize] = useState(13);
   const newArrivalScrollRef = useRef<HTMLDivElement | null>(null);
-  type ArrivalItem = { threadTitle: string; responseNo: number; name: string; mail: string; id: string; time: string; text: string; threadUrl: string; idSeq: number; idCount: number; isAbone?: boolean };
+  // text は新着ペイン・字幕用 (タグを除いて短く切ったもの、文字参照はそのまま)。plain はビュワー・OBS 表示用の全文の平文
+  type ArrivalItem = { threadTitle: string; responseNo: number; name: string; mail: string; id: string; time: string; text: string; plain: string; threadUrl: string; idSeq: number; idCount: number; isAbone?: boolean;
+    // Twitch のイベント (サブスク・ビッツなど)。speech は読み上げる文、message は視聴者が添えたメッセージ
+    twitchEvent?: { kind: string; label: string; summary: string; message: string; speech: string; speak: boolean };
+    // Twitch のバッジ (ビュワー・OBS 表示用)
+    twitchBadges?: TwitchBadge[];
+    // Twitch のスタンプ (text は受信したままの本文。emotes の位置はこの本文のコードポイント単位)
+    twitchRaw?: { text: string; emotes: TwitchEmote[]; giant: boolean };
+    // YouTube の発言の目印 (yt:動画ID:発言ID)。削除されたら、まだ流していない新着・ビュワー・OBS 表示から消す。
+    // YouTube のイベント・絵文字も twitchEvent / twitchRaw と同じ形で持つ
+    chatKey?: string };
   const arrivalQueueRef = useRef<ArrivalItem[]>([]);
   const [currentArrivalItem, setCurrentArrivalItem] = useState<ArrivalItem | null>(null);
   const currentArrivalItemRef = useRef<ArrivalItem | null>(null);
@@ -2054,6 +3051,7 @@ export default function App() {
 
   const bookmarkCacheRef = useRef<Record<string, number>>({});
   const saveBookmark = (url: string, responseNo: number) => {
+    if (isChatUrl(url)) return; // Twitch・YouTube のチャットは流れていくだけなので栞は残さない
     bookmarkCacheRef.current[url] = responseNo;
     const data = bookmarkCacheRef.current;
     saveToFile("bookmarks.json", data);
@@ -2077,6 +3075,7 @@ export default function App() {
     return 0;
   };
   const saveScrollPos = (url: string, responseNo?: number) => {
+    if (isChatUrl(url)) return;
     const no = responseNo ?? getVisibleResponseNo();
     if (no <= 1) return;
     threadScrollPositions.current[url] = no;
@@ -2414,7 +3413,7 @@ export default function App() {
   };
 
   const onTabClick = (index: number) => {
-    const paneWasUnmounted = activePaneView === "threads";
+    const paneWasUnmounted = activePaneView !== "responses";
     setActivePaneView("responses");
     if (index === activeTabIndex) {
       // Same tab, but coming back from the thread-list view: the responses
@@ -2583,7 +3582,8 @@ export default function App() {
 
   // Fetch responses for a background tab (updates cache + new arrivals, no UI update)
   const fetchBackgroundTabResponses = async (tabUrl: string, tabTitle: string) => {
-    if (!isTauriRuntime()) return;
+    // Twitch・YouTube のタブはチャットを受信して積むので、巡回はしない
+    if (!isTauriRuntime() || isChatUrl(tabUrl)) return;
     try {
       const cached = tabCacheRef.current.get(tabUrl);
       const prevResponses = cached?.responses ?? [];
@@ -2627,10 +3627,8 @@ export default function App() {
           const site = detectSiteType(tabUrl);
           for (const a of arrivals) {
             if (!speaksResNo(tabUrl, a.responseNo)) continue;
-            const prefix = site === "shitaraba" ? `したらば${a.responseNo}番さん`
-              : site === "jpnkn" ? `ジャパンくん${a.responseNo}番さん`
-              : `レス${a.responseNo}番さん`;
-            ttsSpeakArrival(a, prefix);
+            const prefix = speakPrefixFor(site, a.responseNo, a.name);
+            ttsSpeakBoardArrival(a, prefix);
           }
         }
       }
@@ -2716,6 +3714,15 @@ export default function App() {
   const fetchResponsesFromCurrent = async (targetThreadUrl?: string, opts?: { keepSelection?: boolean; resetScroll?: boolean }) => {
     const url = (targetThreadUrl ?? threadUrl).trim();
     if (!url) return;
+    // Twitch・YouTube のタブはチャットを受信して積むだけなので、取得はせず手元にある分を表示する
+    if (isChatUrl(url)) {
+      const rows = tabCacheRef.current.get(url)?.responses ?? [];
+      setFetchedResponses(rows);
+      const tw = isTwitchUrl(url);
+      setResponseListProbe(`${tw ? "twitch" : "youtube"} rows=${rows.length}`);
+      if (!opts?.keepSelection) setStatus(`${tw ? `Twitch #${twitchChannelFromUrl(url)}` : "YouTube"}: ${rows.length > 0 ? `${rows.length}件` : "チャットの受信を待っています"}`);
+      return;
+    }
     if (!/\/(test|bbs)\/read\.cgi\/[^/]+\/[^/]+/.test(new URL(url, "https://dummy").pathname)) {
       setResponseListProbe("スレッドを選択してください");
       return;
@@ -2826,17 +3833,15 @@ export default function App() {
         // Update subtitle directly only on manual refresh (auto-refresh uses queue via advanceToNextArrival)
         if (arrivals.length > 0 && !autoRefreshEnabled) {
           const latest = arrivals[arrivals.length - 1];
-          subtitleUpdate({ threadTitle: latest.threadTitle, responseNo: latest.responseNo, name: latest.name, mail: latest.mail, id: latest.id, date: latest.time, body: latest.text, idSeq: latest.idSeq, idCount: latest.idCount });
+          subtitleUpdate({ threadTitle: latest.threadTitle, responseNo: latest.responseNo, name: latest.name, mail: latest.mail, id: latest.id, date: latest.time, body: latest.text, idSeq: latest.idSeq, idCount: latest.idCount }, latest);
         }
         // TTS: 5ch の1001番 (定型文) は読まない。したらば・JPNKN は番号で除外しない
         if (ttsEnabled && ttsMode !== "off") {
           const site = detectSiteType(url);
           for (const a of arrivals) {
             if (!speaksResNo(url, a.responseNo)) continue;
-            const prefix = site === "shitaraba" ? `したらば${a.responseNo}番さん`
-              : site === "jpnkn" ? `ジャパンくん${a.responseNo}番さん`
-              : `レス${a.responseNo}番さん`;
-            ttsSpeakArrival(a, prefix);
+            const prefix = speakPrefixFor(site, a.responseNo, a.name);
+            ttsSpeakBoardArrival(a, prefix);
           }
         }
       } else {
@@ -2854,6 +3859,381 @@ export default function App() {
       if (!opts?.keepSelection) setResponsesLoading(false);
     }
   };
+
+  // ===== Twitch チャット (匿名・読み取り専用) =====
+  // Rust 側 (twitch_sync) が受信したチャットを "twitch-message" イベントで受け取り、Twitch タブのレスとして積む。
+  // 1件 = 1レスとし、ID 欄にログイン名を入れる (ID の NG・ハイライト・書き込み回数・配信ホワイトリストがそのまま効く)。
+  // 本文と名前は HTML として解釈されないようエスケープしてから積む (表示時に文字参照が戻されて文字として出る)
+  type TwitchChatPayload = { channel: string; login: string; name: string; color: string; text: string; receivedAt: number; event?: TwitchEventData | null; badges?: unknown; emotes?: unknown; giant?: unknown };
+  const twitchPendingRef = useRef<TwitchChatPayload[]>([]);
+  const twitchFlushTimerRef = useRef<number | null>(null);
+  const formatChatTime = (ms: number) => {
+    const d = new Date(ms);
+    const p2 = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}/${p2(d.getMonth() + 1)}/${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`;
+  };
+  // 読み上げの前置き。Twitch で「名前を読み上げる」がオフなら前置きなし
+  const speakPrefixFor = (site: SiteType, no: number, name: string) =>
+    speakPrefix(site, no, (site === "twitch" && !twitchSpeakName) || (site === "youtube" && !youtubeSpeakName) ? "" : name);
+  // 設定 > 接続: Twitch チャンネル・スレを複数まとめて開く (開いているタブがそのまま受信・巡回の対象)
+  const [twitchStatusMap, setTwitchStatusMap] = useState<Record<string, string>>({});
+  const [connectTwitchInput, setConnectTwitchInput] = useState("");
+  const [connectThreadInput, setConnectThreadInput] = useState("");
+  const addConnectTabs = (entries: { url: string; title: string }[]) => {
+    const existing = new Set(threadTabs.map((t) => t.threadUrl));
+    const fresh = entries.filter((e, i) => !existing.has(e.url) && entries.findIndex((x) => x.url === e.url) === i);
+    const room = Math.max(0, maxOpenTabsRef.current - threadTabs.length);
+    const adding = fresh.slice(0, room);
+    if (adding.length > 0) setThreadTabs((prev) => [...prev, ...adding.map((e) => ({ threadUrl: e.url, title: e.title }))]);
+    const skipped = fresh.length - adding.length;
+    setStatus(`${adding.length}件追加しました${skipped > 0 ? ` (タブ上限のため ${skipped}件は追加していません)` : ""}${entries.length - fresh.length > 0 ? ` / 開いているもの ${entries.length - fresh.length}件` : ""}`);
+  };
+  const submitConnectTwitch = () => {
+    const chans = connectTwitchInput.split(/[\s,、]+/).map((v) => twitchChannelFromInput(v.startsWith("#") ? `twitch.tv/${v.slice(1)}` : v.includes(".") ? v : `twitch.tv/${v}`)).filter((c): c is string => c !== null);
+    if (chans.length === 0) { setStatus("チャンネル名の形式が正しくありません (英数字と _ の1〜25文字)"); return; }
+    addConnectTabs(chans.map((c) => ({ url: twitchTabUrl(c), title: `Twitch #${c}` })));
+    setConnectTwitchInput("");
+  };
+  const submitConnectThreads = () => {
+    const urls = connectThreadInput.split(/\s+/).map((v) => rewrite5chNet(v.trim())).filter((v) => {
+      try { return /\/(test|bbs)\/read\.cgi\/[^/]+\/[^/]+/.test(new URL(v).pathname); } catch { return false; }
+    });
+    if (urls.length === 0) { setStatus("スレッドの URL (…/read.cgi/板/番号/) を入力してください"); return; }
+    addConnectTabs(urls.map((u) => {
+      const parts = u.replace(/\/+$/, "").split("/");
+      return { url: u, title: `${parts[parts.length - 2] ?? ""}/${parts[parts.length - 1] ?? ""}` };
+    }));
+    setConnectThreadInput("");
+  };
+  const flushTwitchMessages = () => {
+    twitchFlushTimerRef.current = null;
+    const pending = twitchPendingRef.current;
+    if (pending.length === 0) return;
+    twitchPendingRef.current = [];
+    const byChannel = new Map<string, TwitchChatPayload[]>();
+    for (const m of pending) {
+      if (m.color && /^#[0-9a-f]{6}$/i.test(m.color)) {
+        twitchColorRef.current.set(m.login, m.color);
+        if (twitchColorRef.current.size > 5000) twitchColorRef.current.clear();
+      }
+      const list = byChannel.get(m.channel);
+      if (list) list.push(m); else byChannel.set(m.channel, [m]);
+    }
+    const activeUrl = threadTabsRef.current[activeTabIndexRef.current]?.threadUrl;
+    const arrivals: ArrivalItem[] = [];
+    for (const [channel, msgs] of byChannel) {
+      const url = twitchTabUrl(channel);
+      const tab = threadTabsRef.current.find((t) => t.threadUrl === url);
+      if (!tab) continue; // タブを閉じた直後に届いた分は捨てる
+      const cached = tabCacheRef.current.get(url);
+      const prev = cached?.responses ?? [];
+      let no = prev.length > 0 ? prev[prev.length - 1].responseNo : 0;
+      // イベントは「【種類】要約」+ 添えられたメッセージの1レスにする。「流す」がオフの種類は、
+      // メッセージがあれば普通の発言として、無ければ表示しない
+      const events: (ArrivalItem["twitchEvent"] | undefined)[] = [];
+      const badgeLists: TwitchBadge[][] = [];
+      const raws: { text: string; emotes: TwitchEmote[]; giant: boolean }[] = [];
+      const emoteMap = twitchEmoteMapRef.current.get(url) ?? new Map<number, { emotes: { id: string; name: string; giant?: boolean }[]; giant: boolean }>();
+      const added: ThreadResponseItem[] = [];
+      for (const m of msgs) {
+        const kindInfo = m.event ? TWITCH_EVENT_KINDS.find((k) => k.kind === m.event!.kind) : undefined;
+        const setting = kindInfo ? (twitchEventSettings[kindInfo.kind] ?? defaultTwitchEventSettings()[kindInfo.kind]) : undefined;
+        let ev: ArrivalItem["twitchEvent"] | undefined;
+        if (m.event && kindInfo && setting) {
+          if (!setting.show) {
+            if (!m.text.trim()) continue;
+          } else {
+            const summary = renderTwitchEvent(m.event, setting.template, m.name, "");
+            const spoken = twitchSpeechText(m.text, sanitizeTwitchEmotes(m.emotes, m.text), twitchEmoteSpeak, twitchEmoteMax);
+            const speechMessage = m.event.kind === "bits" ? stripCheermotes(spoken) : spoken;
+            ev = { kind: kindInfo.kind, label: kindInfo.label, summary, message: m.text, speech: renderTwitchEvent(m.event, setting.template, m.name, speechMessage), speak: setting.speak };
+          }
+        }
+        events.push(ev);
+        badgeLists.push(sanitizeTwitchBadges(m.badges));
+        const emotes = sanitizeTwitchEmotes(m.emotes, m.text);
+        const giant = m.giant === true && emotes.some((e) => !e.giant);
+        raws.push({ text: m.text, emotes, giant });
+        if (emotes.length > 0) {
+          const cps = Array.from(m.text);
+          learnEmoteNames(emotes.filter((e) => !e.giant).map((e) => ({ name: cps.slice(e.start, e.end + 1).join(""), id: e.id })));
+          emoteMap.set(no + 1, { emotes: emotes.map((e) => ({ id: e.id, name: cps.slice(e.start, e.end + 1).join(""), ...(e.giant ? { giant: true } : {}) })), giant });
+        }
+        added.push({
+          responseNo: ++no,
+          name: escapeHtml(m.name),
+          mail: "",
+          dateAndId: `${formatChatTime(m.receivedAt)} ID:${m.login}`,
+          body: ev ? `【${escapeHtml(ev.label)}】${escapeHtml(ev.summary)}${m.text ? ` <br> ${escapeHtml(m.text)}` : ""}` : escapeHtml(m.text),
+        });
+      }
+      if (added.length === 0) continue;
+      const rows = [...prev, ...added].slice(-TWITCH_MAX_ROWS);
+      // 画面から消えたレスのスタンプ情報は捨てる
+      const oldest = rows[0]?.responseNo ?? 0;
+      for (const k of emoteMap.keys()) if (k < oldest) emoteMap.delete(k);
+      if (emoteMap.size > 0) twitchEmoteMapRef.current.set(url, emoteMap);
+      else twitchEmoteMapRef.current.delete(url);
+      tabCacheRef.current.set(url, { ...(cached ?? { selectedResponse: rows[0]?.responseNo ?? 1 }), responses: rows });
+      if (url === activeUrl) {
+        if (autoScrollEnabledRef.current) pendingAutoScrollRef.current = true;
+        setFetchedResponses(rows);
+        setLastFetchTime(formatChatTime(Date.now()));
+      }
+      added.forEach((r, i) => {
+        if (getNgResult({ name: r.name, mail: r.mail, time: r.dateAndId, text: r.body }, url)?.mode === "hide") return;
+        const a = makeArrival(r, tab.title, url, rows);
+        if (events[i]) a.twitchEvent = events[i];
+        if (badgeLists[i]?.length) a.twitchBadges = badgeLists[i];
+        if (raws[i]) a.twitchRaw = raws[i];
+        arrivals.push(a);
+      });
+    }
+    if (arrivals.length === 0) return;
+    // 新着ペイン・字幕・OBS連携 (掲示板の新着と同じ経路)
+    const queueWasEmpty = arrivalQueueRef.current.length === 0;
+    arrivalQueueRef.current.push(...arrivals);
+    const twitchQueued = arrivalQueueRef.current.filter((a) => isTwitchUrl(a.threadUrl)).length;
+    if (twitchQueued > twitchMaxQueuedArrivals) {
+      let drop = twitchQueued - twitchMaxQueuedArrivals;
+      arrivalQueueRef.current = arrivalQueueRef.current.filter((a) => {
+        if (drop > 0 && isTwitchUrl(a.threadUrl)) { drop--; return false; }
+        return true;
+      });
+    }
+    setArrivalQueueCount(arrivalQueueRef.current.length);
+    pushBroadcastArrivals(arrivals);
+    if (!arrivalPausedRef.current && !arrivalTimerRef.current && (currentArrivalItemRef.current === null || queueWasEmpty)) {
+      advanceToNextArrival();
+    }
+    // 読み上げ (「名前さん」+ 本文)。読み上げが溜まっているときは新しく積まない。
+    // イベントは種類ごとの「読み上げる文」を読む (数が少なく大事なので、溜まっていても読む)
+    if (ttsEnabled && ttsMode !== "off") {
+      for (const a of arrivals) {
+        if (a.twitchEvent) {
+          if (a.twitchEvent.speak && !a.isAbone && !isTabTtsOff(a.threadUrl)) ttsSpeak(a.twitchEvent.speech, "", undefined, { name: a.name, id: a.id });
+          continue;
+        }
+        if (ttsQueueRef.current.length >= twitchMaxTtsBacklog) continue;
+        if (a.isAbone || isTabTtsOff(a.threadUrl)) { ttsSpeakArrival(a, speakPrefixFor("twitch", a.responseNo, a.name)); continue; }
+        const raw = a.twitchRaw ? twitchSpeechText(a.twitchRaw.text, a.twitchRaw.emotes, twitchEmoteSpeak, twitchEmoteMax) : decodeHtmlEntities(a.text);
+        // 教育・忘却は、実際に読み上げに回る発言だけで処理する
+        const teach = handleTwitchTeach(a.id, raw);
+        if (teach.text.trim() === "" && a.twitchRaw?.emotes.length) continue; // スタンプだけで、読むものが無い
+        ttsSpeakArrival({ ...a, text: escapeHtml(teach.text) }, speakPrefixFor("twitch", a.responseNo, a.name), { keepTeachCommands: teach.keep });
+        for (const msg of teach.announces) ttsSpeak(msg, "");
+      }
+    }
+  };
+  // 設定 > Twitch > イベントの「テスト」: 開いている Twitch タブに、試しのイベントを1件流す (表示・読み上げ・OBS の確認用)
+  const testTwitchEvent = (kind: string) => {
+    const ch = threadTabs.map((t) => twitchChannelFromUrl(t.threadUrl)).find((c): c is string => !!c);
+    if (!ch) { setTwitchEventTestMsg("Twitch のタブを開いてから押してください (テストはそのタブに流れます)"); return; }
+    const withMessage = ["sub", "resub", "bits", "watchstreak", "points", "announcement"].includes(kind);
+    twitchPendingRef.current.push({
+      channel: ch, login: "test_user", name: "テスト", color: "#1e90ff", receivedAt: Date.now(),
+      text: withMessage ? (kind === "bits" ? "Cheer100 テストのメッセージです" : "テストのメッセージです") : "",
+      event: { kind, months: 12, count: 5, bits: 100, viewers: 30, recipient: "受け取った人", reward: "テストの報酬" },
+    });
+    flushTwitchMessages();
+    setTwitchEventTestMsg(`Twitch #${ch} にテストの「${TWITCH_EVENT_KINDS.find((k) => k.kind === kind)?.label ?? kind}」を流しました`);
+  };
+  // イベントの受け口は最初の描画時に1回だけ登録するので、最新の状態を参照する処理はこの ref 経由で呼ぶ
+  const twitchFlushRef = useRef(flushTwitchMessages);
+  twitchFlushRef.current = flushTwitchMessages;
+
+  // ===== YouTube ライブ配信のチャット (読み取り専用) =====
+  // Rust 側 (youtube_sync) が受信したチャットを "youtube-message" で受け取り、YouTube タブのレスとして積む。
+  // 1件 = 1レスとし、ID 欄に投稿者のチャンネル ID を入れる (ID の NG・ハイライト・配信ホワイトリストがそのまま効く)。
+  // 本文と名前は HTML として解釈されないようエスケープしてから積む。
+  // 削除された発言は、タブでは本文を「(削除されました)」にし、まだ流していない新着・ビュワー・OBS 表示からは消す
+  type YoutubeMessagePayload = { id: string; channelId: string; name: string; text: string; emojis?: unknown; owner?: unknown; moderator?: unknown; member?: unknown; verified?: unknown; event?: YoutubeEventData | null };
+  type YoutubeBatch = { video: string; receivedAt: number; messages: YoutubeMessagePayload[]; deleted: string[]; deletedAuthors: string[] };
+  const youtubePendingRef = useRef<YoutubeBatch[]>([]);
+  const youtubeFlushTimerRef = useRef<number | null>(null);
+  // タブごとの 発言 ID → レス番号・投稿者 (削除の知らせと照らし合わせる。タブに残っている分だけ)
+  const youtubeMsgIndexRef = useRef<Map<string, Map<string, { no: number; channelId: string }>>>(new Map());
+  const [youtubeStatusMap, setYoutubeStatusMap] = useState<Record<string, { state: string; message: string }>>({});
+  const [connectYoutubeInput, setConnectYoutubeInput] = useState("");
+  const submitConnectYoutube = () => {
+    const videos = connectYoutubeInput.split(/[\s,、]+/).map((v) => youtubeVideoFromInput(v)).filter((v): v is string => v !== null);
+    if (videos.length === 0) { setStatus("ライブ配信の URL (youtube.com/watch?v=… / youtube.com/live/… / youtu.be/…) を入力してください"); return; }
+    addConnectTabs(videos.map((v) => ({ url: youtubeTabUrl(v), title: `YouTube ${v}` })));
+    setConnectYoutubeInput("");
+  };
+  // 削除された発言を、まだ流していない新着・ビュワー・OBS 表示から消す
+  const removeChatKeys = (keys: string[]) => {
+    if (keys.length === 0) return;
+    const set = new Set(keys);
+    const before = arrivalQueueRef.current.length;
+    arrivalQueueRef.current = arrivalQueueRef.current.filter((a) => !a.chatKey || !set.has(a.chatKey));
+    if (arrivalQueueRef.current.length !== before) setArrivalQueueCount(arrivalQueueRef.current.length);
+    setViewerItems((prev) => (prev.some((it) => it.key && set.has(it.key)) ? prev.filter((it) => !it.key || !set.has(it.key)) : prev));
+    if (isTauriRuntime()) void invoke("overlay_retract", { keys }).catch((e) => console.warn("overlay_retract failed", e));
+  };
+  const flushYoutubeMessages = () => {
+    youtubeFlushTimerRef.current = null;
+    const pending = youtubePendingRef.current;
+    if (pending.length === 0) return;
+    youtubePendingRef.current = [];
+    const byVideo = new Map<string, YoutubeBatch[]>();
+    for (const b of pending) {
+      const list = byVideo.get(b.video);
+      if (list) list.push(b); else byVideo.set(b.video, [b]);
+    }
+    const activeUrl = threadTabsRef.current[activeTabIndexRef.current]?.threadUrl;
+    const arrivals: ArrivalItem[] = [];
+    const removedKeys: string[] = [];
+    for (const [video, batches] of byVideo) {
+      const url = youtubeTabUrl(video);
+      const tab = threadTabsRef.current.find((t) => t.threadUrl === url);
+      if (!tab) continue; // タブを閉じた直後に届いた分は捨てる
+      const cached = tabCacheRef.current.get(url);
+      const prev = cached?.responses ?? [];
+      let no = prev.length > 0 ? prev[prev.length - 1].responseNo : 0;
+      const index = youtubeMsgIndexRef.current.get(url) ?? new Map<string, { no: number; channelId: string }>();
+      const emoteMap = twitchEmoteMapRef.current.get(url) ?? new Map<number, { emotes: { id: string; name: string; giant?: boolean; url?: string }[]; giant: boolean }>();
+      const added: ThreadResponseItem[] = [];
+      const extras: { ev?: ArrivalItem["twitchEvent"]; raw?: ArrivalItem["twitchRaw"]; key: string }[] = [];
+      const deletedNos = new Set<number>();
+      for (const b of batches) {
+        for (const m of b.messages) {
+          if (!m || typeof m.id !== "string" || typeof m.name !== "string" || typeof m.text !== "string") continue;
+          const channelId = typeof m.channelId === "string" && YT_CHANNEL_ID_RE.test(m.channelId) ? m.channelId : "";
+          const color = youtubeRoleColor(m);
+          if (channelId) {
+            if (color) twitchColorRef.current.set(channelId, color); else twitchColorRef.current.delete(channelId);
+            if (twitchColorRef.current.size > 5000) twitchColorRef.current.clear();
+          }
+          // イベントは「【種類】要約」+ 添えられたメッセージの1レスにする。「流す」がオフの種類は、
+          // メッセージがあれば普通の発言として、無ければ表示しない
+          const kindInfo = m.event ? YOUTUBE_EVENT_KINDS.find((k) => k.kind === m.event!.kind) : undefined;
+          const setting = kindInfo ? (youtubeEventSettings[kindInfo.kind] ?? defaultYoutubeEventSettings()[kindInfo.kind]) : undefined;
+          let ev: ArrivalItem["twitchEvent"] | undefined;
+          const name = m.name.trim() || "(名前なし)";
+          if (m.event && kindInfo && setting) {
+            if (!setting.show) {
+              if (!m.text.trim()) continue;
+            } else {
+              const e = { kind: kindInfo.kind, amount: String(m.event.amount ?? ""), months: Number(m.event.months) || 0, count: Number(m.event.count) || 0, level: String(m.event.level ?? ""), item: String(m.event.item ?? "") };
+              const summary = renderYoutubeEvent(e, setting.template, name, "");
+              ev = { kind: kindInfo.kind, label: kindInfo.label, summary, message: m.text, speech: renderYoutubeEvent(e, setting.template, name, youtubeSpeechText(m.text)), speak: setting.speak };
+            }
+          } else if (m.event) {
+            continue; // 知らない種類のイベントは出さない
+          }
+          const emojis = sanitizeYoutubeEmojis(m.emojis, m.text);
+          if (emojis.length > 0) {
+            const cps = Array.from(m.text);
+            emoteMap.set(no + 1, { emotes: emojis.map((e) => ({ id: e.id, name: cps.slice(e.start, e.end + 1).join(""), url: e.url })), giant: false });
+          }
+          added.push({
+            responseNo: ++no,
+            name: escapeHtml(name),
+            mail: "",
+            dateAndId: `${formatChatTime(Number(b.receivedAt) || Date.now())} ID:${channelId || "unknown"}`,
+            body: ev ? `【${escapeHtml(ev.label)}】${escapeHtml(ev.summary)}${m.text ? ` <br> ${escapeHtml(m.text)}` : ""}` : escapeHtml(m.text),
+          });
+          const msgId = YT_MESSAGE_ID_RE.test(m.id) ? m.id : "";
+          if (msgId) index.set(msgId, { no, channelId });
+          extras.push({ ev, raw: emojis.length > 0 ? { text: m.text, emotes: emojis, giant: false } : undefined, key: msgId ? `yt:${video}:${msgId}` : "" });
+        }
+        for (const id of Array.isArray(b.deleted) ? b.deleted : []) {
+          if (typeof id !== "string" || !YT_MESSAGE_ID_RE.test(id)) continue;
+          const hit = index.get(id);
+          if (hit) deletedNos.add(hit.no);
+          removedKeys.push(`yt:${video}:${id}`);
+        }
+        for (const author of Array.isArray(b.deletedAuthors) ? b.deletedAuthors : []) {
+          if (typeof author !== "string" || !YT_CHANNEL_ID_RE.test(author)) continue;
+          for (const [id, v] of index) {
+            if (v.channelId !== author) continue;
+            deletedNos.add(v.no);
+            removedKeys.push(`yt:${video}:${id}`);
+          }
+        }
+      }
+      if (added.length === 0 && deletedNos.size === 0) continue;
+      let rows = [...prev, ...added].slice(-TWITCH_MAX_ROWS);
+      if (deletedNos.size > 0) {
+        rows = rows.map((r) => (deletedNos.has(r.responseNo) ? { ...r, body: "（削除されました）" } : r));
+        for (const n of deletedNos) emoteMap.delete(n);
+      }
+      // 画面から消えたレスの絵文字・発言 ID は捨てる
+      const oldest = rows[0]?.responseNo ?? 0;
+      for (const k of emoteMap.keys()) if (k < oldest) emoteMap.delete(k);
+      for (const [id, v] of index) if (v.no < oldest) index.delete(id);
+      if (emoteMap.size > 0) twitchEmoteMapRef.current.set(url, emoteMap); else twitchEmoteMapRef.current.delete(url);
+      youtubeMsgIndexRef.current.set(url, index);
+      tabCacheRef.current.set(url, { ...(cached ?? { selectedResponse: rows[0]?.responseNo ?? 1 }), responses: rows });
+      if (url === activeUrl) {
+        if (autoScrollEnabledRef.current && added.length > 0) pendingAutoScrollRef.current = true;
+        setFetchedResponses(rows);
+        setLastFetchTime(formatChatTime(Date.now()));
+      }
+      added.forEach((r, i) => {
+        if (deletedNos.has(r.responseNo)) return;
+        if (getNgResult({ name: r.name, mail: r.mail, time: r.dateAndId, text: r.body }, url)?.mode === "hide") return;
+        const a = makeArrival(r, tab.title, url, rows);
+        const x = extras[i];
+        if (x?.ev) a.twitchEvent = x.ev;
+        if (x?.raw) a.twitchRaw = x.raw;
+        if (x?.key) a.chatKey = x.key;
+        arrivals.push(a);
+      });
+    }
+    if (removedKeys.length > 0) removeChatKeys(removedKeys);
+    if (arrivals.length === 0) return;
+    // 新着ペイン・字幕・OBS連携 (掲示板の新着と同じ経路)。溜めておく上限は Twitch と同じ設定を使う
+    const queueWasEmpty = arrivalQueueRef.current.length === 0;
+    arrivalQueueRef.current.push(...arrivals);
+    const queued = arrivalQueueRef.current.filter((a) => isYoutubeUrl(a.threadUrl)).length;
+    if (queued > twitchMaxQueuedArrivals) {
+      let drop = queued - twitchMaxQueuedArrivals;
+      arrivalQueueRef.current = arrivalQueueRef.current.filter((a) => {
+        if (drop > 0 && isYoutubeUrl(a.threadUrl)) { drop--; return false; }
+        return true;
+      });
+    }
+    setArrivalQueueCount(arrivalQueueRef.current.length);
+    pushBroadcastArrivals(arrivals);
+    if (!arrivalPausedRef.current && !arrivalTimerRef.current && (currentArrivalItemRef.current === null || queueWasEmpty)) {
+      advanceToNextArrival();
+    }
+    // 読み上げ (「名前さん」+ 本文)。読み上げが溜まっているときは新しく積まない。
+    // イベントは種類ごとの「読み上げる文」を読む (数が少なく大事なので、溜まっていても読む)
+    if (ttsEnabled && ttsMode !== "off") {
+      for (const a of arrivals) {
+        if (a.twitchEvent) {
+          if (a.twitchEvent.speak && !a.isAbone && !isTabTtsOff(a.threadUrl)) ttsSpeak(a.twitchEvent.speech, "", undefined, { name: a.name, id: a.id });
+          continue;
+        }
+        if (ttsQueueRef.current.length >= twitchMaxTtsBacklog) continue;
+        if (a.isAbone || isTabTtsOff(a.threadUrl)) { ttsSpeakArrival(a, speakPrefixFor("youtube", a.responseNo, a.name)); continue; }
+        const text = youtubeSpeechText(a.twitchRaw ? a.twitchRaw.text : decodeHtmlEntities(a.text));
+        if (!text) continue; // 絵文字だけで、読むものが無い
+        ttsSpeakArrival({ ...a, text: escapeHtml(text) }, speakPrefixFor("youtube", a.responseNo, a.name));
+      }
+    }
+  };
+  // 設定 > YouTube > イベントの「テスト」: 開いている YouTube タブに、試しのイベントを1件流す (表示・読み上げ・OBS の確認用)
+  const testYoutubeEvent = (kind: string) => {
+    const video = threadTabs.map((t) => youtubeVideoFromUrl(t.threadUrl)).find((v): v is string => !!v);
+    if (!video) { setYoutubeEventTestMsg("YouTube のタブを開いてから押してください (テストはそのタブに流れます)"); return; }
+    const withMessage = ["superchat", "milestone"].includes(kind);
+    youtubePendingRef.current.push({
+      video, receivedAt: Date.now(), deleted: [], deletedAuthors: [],
+      messages: [{
+        id: `test.${Date.now()}`, channelId: "UCtesttesttesttesttest00", name: "テスト", member: true,
+        text: withMessage ? "テストのメッセージです" : "",
+        event: { kind, amount: "¥1,000", months: 12, count: 5, level: "メンバー", item: kind === "jewels" ? "ラーメン" : "テストのステッカー" },
+      }],
+    });
+    flushYoutubeMessages();
+    setYoutubeEventTestMsg(`YouTube のタブにテストの「${YOUTUBE_EVENT_KINDS.find((k) => k.kind === kind)?.label ?? kind}」を流しました`);
+  };
+  const youtubeFlushRef = useRef(flushYoutubeMessages);
+  youtubeFlushRef.current = flushYoutubeMessages;
 
   // 投稿成功後の共通処理 (名前履歴・自分の投稿判定・再取得・スクロール)。
   // 下部の書き込みパネルと、スレッドタイトルバーから開く浮遊ウィンドウの両方から呼ばれる
@@ -2887,6 +4267,15 @@ export default function App() {
 
   const probePostFlowTraceFromCompose = async () => {
     if (composeSubmitting) return;
+    if (isChatUrl(threadTabs[activeTabIndex]?.threadUrl ?? threadUrl)) {
+      const where = isTwitchUrl(threadTabs[activeTabIndex]?.threadUrl ?? threadUrl) ? "Twitch" : "YouTube";
+      setAppConfirm({
+        title: `${where} には書き込めません`,
+        message: `このブラウザからは ${where} のチャットに書き込めません (受信のみ)。`,
+        buttons: [{ label: "OK", primary: true, onClick: () => {} }],
+      });
+      return;
+    }
     setComposeSubmitting(true);
     setComposeResult(null);
     // Always post to the currently active tab, not the URL bar state
@@ -2913,6 +4302,15 @@ export default function App() {
   // スレッドタイトルバーの「書き込み」から浮遊ウィンドウ (別 OS ウィンドウ) を開く。
   // 下部の書き込みパネルとは独立で、名前・スレ情報などの初期値だけを渡す
   const openComposePopup = () => {
+    if (isChatUrl(threadTabs[activeTabIndex]?.threadUrl ?? threadUrl)) {
+      const where = isTwitchUrl(threadTabs[activeTabIndex]?.threadUrl ?? threadUrl) ? "Twitch" : "YouTube";
+      setAppConfirm({
+        title: `${where} には書き込めません`,
+        message: `このブラウザからは ${where} のチャットに書き込めません (受信のみ)。`,
+        buttons: [{ label: "OK", primary: true, onClick: () => {} }],
+      });
+      return;
+    }
     if (!isTauriRuntime()) { setComposeOpen(true); setComposeBody(""); setComposeResult(null); return; }
     const tab = threadTabs[activeTabIndex];
     // 開いた時点のスレに固定する (別ウィンドウなので、開いたままメイン側でタブを切り替えられても
@@ -3079,7 +4477,7 @@ export default function App() {
   // TTS: enqueue text for sequential playback
   // maxReadLength applies to plain text body only (HTML tags + entities decoded); prefix is always read in full
   // URL (http/https/ttp) は URL 単位で辞書・許可リストと照合して読みに置き換え、該当しなければ読まない
-  const ttsSpeak = (bodyText: string, prefix?: string, responseNo?: number, meta?: { name?: string; id?: string }) => {
+  const ttsSpeak = (bodyText: string, prefix?: string, responseNo?: number, meta?: { name?: string; id?: string }, opts?: { keepTeachCommands?: boolean }) => {
     if (!isTauriRuntime() || ttsMode === "off") return;
     // Skip system messages (res 1001/1002)
     if (responseNo != null && responseNo >= 1001) return;
@@ -3090,6 +4488,8 @@ export default function App() {
     // Strip HTML tags, then decode HTML entities to get true character count
     let plain = bodyText.replace(/<[^>]*>/g, "");
     plain = decodeHtmlEntities(plain).replace(/\u00A0/g, " ");
+    // 教育・忘却のコマンドは読まない (棒読みちゃんにも渡さない)。Twitch のチャットで許可されたものだけ、棒読みちゃんへそのまま渡す
+    if (!opts?.keepTeachCommands) plain = plain.replace(TEACH_CMD_RE, " ");
     // 読み上げない辞書 (本文ワード): レス全体スキップ指定なら読まない、そうでなければ語句だけ除去
     for (const e of mute.words) {
       const v = e.value.trim();
@@ -3111,6 +4511,10 @@ export default function App() {
       let out = text;
       for (const entry of dict) {
         if (!entry.fullReplace && entry.from) out = out.split(entry.from).join(entry.to);
+      }
+      // Twitch 教育辞書 (あなたの読み上げ辞書の後にかける。棒読みちゃんでは棒読みちゃん自身が覚えているのでかけない)
+      if (twitchTeachEnabledRef.current && ttsMode !== "bouyomi") {
+        for (const e of twitchTeachDictRef.current) if (e.word && e.reading) out = out.split(e.word).join(e.reading);
       }
       return out;
     };
@@ -3143,13 +4547,68 @@ export default function App() {
 
   // 新着レス (通常あぼ～ん考慮) の読み上げ。あぼ～ん該当時は設定次第で
   // 「あぼーん」とだけ読むか、前置き含め完全にスキップする
-  const ttsSpeakArrival = (a: ArrivalItem, prefix: string) => {
+  // 前置き (「レスN番さん」など) だけを読む。読み上げない辞書 (名前・ID) はここでも効かせる
+  const ttsSpeakNumberOnly = (prefix: string, meta: { name?: string; id?: string }) => {
+    if (!isTauriRuntime() || ttsMode === "off" || !prefix) return;
+    const mute = ttsMuteRef.current;
+    if (meta.name && ttsMuteMatches(mute.names, meta.name)) return;
+    if (meta.id && ttsMuteMatches(mute.ids, meta.id)) return;
+    ttsQueueRef.current.push(prefix);
+    void processTtsQueue();
+  };
+  // タブごとの読み上げのオンオフ (スレ・Twitch チャンネル単位)。「このレスから読み上げ」は自分で選んだ操作なので対象外
+  const isTabTtsOff = (url: string) => threadTabsRef.current.some((t) => t.threadUrl === url && t.ttsOff);
+  const toggleTabTts = (url: string) => {
+    setThreadTabs((prev) => prev.map((t) => (t.threadUrl === url ? { ...t, ttsOff: !t.ttsOff } : t)));
+  };
+  // 掲示板の新着の読み上げ。「ホワイトリスト以外はレス番のみ」では、配信ホワイトリストに無い ID のレスは番号だけ読む
+  const ttsSpeakBoardArrival = (a: ArrivalItem, prefix: string) => {
+    if (isTabTtsOff(a.threadUrl)) return;
+    if (ttsBoardMode === "whitelist" && !broadcastWhitelistRef.current[a.id]) {
+      ttsSpeakNumberOnly(prefix, { name: a.name, id: a.id });
+      return;
+    }
+    ttsSpeakArrival(a, prefix);
+  };
+  // Twitch のチャットの教育・忘却。視聴者ごとに5秒に1回まで。戻り値: 読み上げに渡すときにコマンドを残すか・知らせる文
+  const handleTwitchTeach = (login: string, text: string): { keep: boolean; text: string; announces: string[] } => {
+    const cmds = parseTeachCommands(text);
+    if (cmds.length === 0 || !twitchTeachEnabledRef.current) return { keep: false, text, announces: [] };
+    const now = Date.now();
+    const last = twitchTeachLastRef.current.get(login) ?? 0;
+    if (now - last < TWITCH_TEACH_INTERVAL_MS) return { keep: false, text, announces: [] };
+    twitchTeachLastRef.current.set(login, now);
+    if (twitchTeachLastRef.current.size > 5000) twitchTeachLastRef.current.clear();
+    // 棒読みちゃん: 棒読みちゃん自身が教育・忘却する (LiveFake は覚えない)
+    if (ttsMode === "bouyomi") return { keep: true, text: normalizeTeachCommands(text), announces: [] };
+    let dict = [...twitchTeachDictRef.current];
+    const announces: string[] = [];
+    for (const c of cmds) {
+      if (c.type === "teach") {
+        if (!teachWordOk(c.word, 30) || !teachWordOk(c.reading, 50)) continue;
+        // あなたの読み上げ辞書にある語は上書きさせない
+        if (ttsDictRef.current.some((e) => e.from === c.word)) continue;
+        dict = dict.filter((e) => e.word !== c.word);
+        dict.push({ word: c.word, reading: c.reading, by: login, at: now });
+        if (dict.length > TWITCH_TEACH_MAX) dict = dict.slice(-TWITCH_TEACH_MAX);
+        announces.push(`${c.word}を覚えました`);
+      } else {
+        if (!dict.some((e) => e.word === c.word)) continue;
+        dict = dict.filter((e) => e.word !== c.word);
+        announces.push(`${c.word}を忘れました`);
+      }
+    }
+    if (announces.length > 0) updateTwitchTeachDict(dict);
+    return { keep: false, text, announces: twitchTeachAnnounce ? announces : [] };
+  };
+  const ttsSpeakArrival = (a: ArrivalItem, prefix: string, opts?: { keepTeachCommands?: boolean }) => {
+    if (isTabTtsOff(a.threadUrl)) return;
     if (a.isAbone) {
       if (!ngAboneSpeakEnabled) return;
       ttsSpeak("あぼーん", prefix, undefined, { name: a.name, id: a.id });
       return;
     }
-    ttsSpeak(a.text, prefix, undefined, { name: a.name, id: a.id });
+    ttsSpeak(a.text, prefix, undefined, { name: a.name, id: a.id }, opts);
   };
 
   // TTS: stop playback and clear queue; returns a promise so callers can await full stop
@@ -3161,7 +4620,27 @@ export default function App() {
   };
 
   // Subtitle: send update to subtitle window
-  const subtitleUpdate = (data: { threadTitle?: string; name?: string; mail?: string; id?: string; date?: string; body?: string; responseNo?: number; idSeq?: number; idCount?: number }) => {
+  // 新着レスペイン・字幕: Twitch のチャットは受信したスタンプ、掲示板は書かれたスタンプ名を画像にする
+  const arrivalTwitchEmoteNames = (a: ArrivalItem) => {
+    if (!a.twitchRaw || a.twitchRaw.emotes.length === 0) return null;
+    const cps = Array.from(a.twitchRaw.text);
+    return a.twitchRaw.emotes.map((e) => ({ id: e.id, name: cps.slice(e.start, e.end + 1).join(""), giant: e.giant === true, url: e.url }));
+  };
+  const arrivalHasEmotes = (a: ArrivalItem) =>
+    !!arrivalTwitchEmoteNames(a) || (!isChatUrl(a.threadUrl) && boardEmotesEnabledRef.current && findNamedEmotes(decodeHtmlEntities(a.text), emoteNameMapRef.current).length > 0);
+  const arrivalEmoteHtml = (a: ArrivalItem, html: string) => {
+    const names = arrivalTwitchEmoteNames(a);
+    if (names) return injectTwitchEmotes(html, names, !!a.twitchRaw?.giant, darkModeRef.current);
+    if (!isChatUrl(a.threadUrl) && boardEmotesEnabledRef.current && emoteNameMapRef.current.size > 0) return injectEmoteTokens(html, boardEmoteLookup, false, darkModeRef.current);
+    return html;
+  };
+  // 字幕へ渡す Twitch のバッジとスタンプの大きさ (字幕側でも画像アドレスを確かめる)
+  const subtitleTwitchExtras = (item?: ArrivalItem) => ({
+    badges: item?.twitchBadges ?? [],
+    emoteSize: subtitleEmoteSizesRef.current.normal,
+    giantEmoteSize: subtitleEmoteSizesRef.current.giant,
+  });
+  const subtitleUpdate = (data: { threadTitle?: string; name?: string; mail?: string; id?: string; date?: string; body?: string; responseNo?: number; idSeq?: number; idCount?: number }, item?: ArrivalItem) => {
     // タイマー経由で呼ばれるため、設定・ハイライトは ref で最新値を読む (古いレンダーの値を使わない)
     if (!isTauriRuntime() || !subtitleVisibleRef.current) return;
     // 通し番号: 字幕からの表示終了報告を現在のレスと突き合わせるために使う
@@ -3189,15 +4668,17 @@ export default function App() {
           let bodyHtml = raw;
           // 置換文字列に $ が含まれても特殊解釈されないよう関数形式で置換する
           slots.forEach((s, i) => { bodyHtml = bodyHtml.replace(s.full, () => htmls[i] ?? ""); });
-          return invoke("subtitle_update", { data: { ...data, seq, scroll, show, bodyHtml, idColor } });
+          if (item) bodyHtml = arrivalEmoteHtml(item, bodyHtml);
+          return invoke("subtitle_update", { data: { ...data, seq, scroll, show, bodyHtml, idColor, ...subtitleTwitchExtras(item) } });
         })
         .catch((e) => console.warn("subtitle_update:", e));
       return;
     }
-    const bodyHtml = data.body
+    let bodyHtml = data.body
       ? renderResponseBodyHighlighted(data.body, "", { hideImages: true }, wordHighlights).__html
       : undefined;
-    invoke("subtitle_update", { data: { ...data, seq, scroll, show, bodyHtml, idColor } }).catch((e) => console.warn("subtitle_update:", e));
+    if (bodyHtml && item) bodyHtml = arrivalEmoteHtml(item, bodyHtml);
+    invoke("subtitle_update", { data: { ...data, seq, scroll, show, bodyHtml, idColor, ...subtitleTwitchExtras(item) } }).catch((e) => console.warn("subtitle_update:", e));
   };
 
   const advanceToNextArrival = () => {
@@ -3220,7 +4701,7 @@ export default function App() {
       currentArrivalItemRef.current = next;
       setCurrentArrivalItem(next);
       if (next === null) return;
-      subtitleUpdate({ threadTitle: next.threadTitle, responseNo: next.responseNo, name: next.name, mail: next.mail, id: next.id, date: next.time, body: next.text, idSeq: next.idSeq, idCount: next.idCount });
+      subtitleUpdate({ threadTitle: next.threadTitle, responseNo: next.responseNo, name: next.name, mail: next.mail, id: next.id, date: next.time, body: next.text, idSeq: next.idSeq, idCount: next.idCount }, next);
       _startArrivalTimer();
     }, 200);
   };
@@ -3637,7 +5118,7 @@ export default function App() {
     }
     return { idCountMap: countMap, idSeqMap: seqMap };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [responseItems]);
+  }, [responseItems, viewerItems, viewerThumbs, activePaneView]);
 
   const activeThreadUrl = activeTabIndex >= 0 && activeTabIndex < threadTabs.length ? threadTabs[activeTabIndex].threadUrl : threadUrl.trim();
   const myPostNos = useMemo(() => new Set(myPosts[activeThreadUrl] ?? []), [myPosts, activeThreadUrl]);
@@ -3802,16 +5283,40 @@ export default function App() {
           ogpBlock: ogpDomainFilters.block,
         }, wordHighlights);
       nextById.set(r.id, { text: r.text, hideImages, html });
-      map.set(r.id, html);
+      // Twitch・YouTube のタブ: スタンプ・絵文字の名前を画像に置き換える
+      const emoteEntry = isChatUrl(threadUrl) ? twitchEmoteMapRef.current.get(threadUrl)?.get(r.id) : undefined;
+      map.set(r.id, emoteEntry ? { __html: injectTwitchEmotes(html.__html, emoteEntry.emotes, emoteEntry.giant, darkMode) }
+        : boardEmotesEnabled && !isChatUrl(threadUrl) && emoteNameMapRef.current.size > 0 ? { __html: injectEmoteTokens(html.__html, boardEmoteLookup, false, darkMode) }
+        : html);
     }
     bodyCacheRef.current = { sig: bodySig, byId: nextById };
     return map;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visibleResponseItems, ngResultMap, responseSearchQuery, showImagePreview, ngFilters, threadUrl, imageSizeLimit, imageUrlRules, ogpCardsEnabled, tweetCardsEnabled, ogpDomainFilters, textHighlights]);
+  }, [visibleResponseItems, ngResultMap, responseSearchQuery, showImagePreview, ngFilters, threadUrl, imageSizeLimit, imageUrlRules, ogpCardsEnabled, tweetCardsEnabled, ogpDomainFilters, textHighlights, darkMode, boardEmotesEnabled, emoteNameVersion]);
 
   const goFromLocationInput = () => goToLocation(locationInput);
   // URL バーの文字列 (手入力・貼り付け) で移動する。Enter と「貼り付けて移動」は同じ経路
   const goToLocation = (raw: string) => {
+    // Twitch のチャンネル (twitch.tv/名前) は Twitch タブとして開く
+    const twitchChannel = twitchChannelFromInput(raw);
+    if (twitchChannel) {
+      const url = twitchTabUrl(twitchChannel);
+      setLocationInput(url);
+      openThreadInTab(url, `Twitch #${twitchChannel}`);
+      return;
+    }
+    // YouTube のライブ配信 (watch?v= / live/ / youtu.be/) は YouTube タブとして開く
+    const ytVideo = youtubeVideoFromInput(raw);
+    if (ytVideo) {
+      const url = youtubeTabUrl(ytVideo);
+      setLocationInput(url);
+      openThreadInTab(url, `YouTube ${ytVideo}`);
+      return;
+    }
+    if (isYoutubeNonVideoInput(raw)) {
+      setStatus("YouTube はライブ配信の URL (youtube.com/watch?v=… / youtube.com/live/… / youtu.be/…) を入れてください");
+      return;
+    }
     const next = rewrite5chNet(raw.trim());
     if (!next) return;
     if (next !== locationInput.trim()) setLocationInput(next);
@@ -3832,6 +5337,10 @@ export default function App() {
 
   const refreshByLocationInput = () => {
     const raw = locationInput.trim();
+    if (twitchChannelFromInput(raw) || youtubeVideoFromInput(raw) || isYoutubeNonVideoInput(raw)) {
+      goToLocation(raw);
+      return;
+    }
     const next = rewrite5chNet(raw);
     if (!next) return;
     if (next !== raw) setLocationInput(next);
@@ -4255,7 +5764,7 @@ export default function App() {
     if (scrollSaveTimerRef.current) clearTimeout(scrollSaveTimerRef.current);
     scrollSaveTimerRef.current = setTimeout(() => {
       const url = threadUrl.trim();
-      if (!url) return;
+      if (!url || isChatUrl(url)) return; // Twitch・YouTube のチャットは位置を残さない
       const container = responseScrollRef.current;
       if (!container) return;
       const atBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 5;
@@ -4422,12 +5931,10 @@ export default function App() {
           subtitleCardsEnabled?: boolean;
           arrivalTiming?: unknown;
           subtitleTiming?: unknown;
-          broadcastTiming?: unknown;
           subtitleSyncEnabled?: boolean;
           mainHeaderVis?: unknown;
           arrivalHeaderVis?: unknown;
           subtitleHeaderVis?: unknown;
-          broadcastHeaderVis?: unknown;
           responseDividerAlways?: boolean;
           settingsSearchHistory?: unknown;
           lastBoard?: { boardName: string; url: string };
@@ -4501,12 +6008,10 @@ export default function App() {
         if (typeof parsed.subtitleCardsEnabled === "boolean") setSubtitleCardsEnabled(parsed.subtitleCardsEnabled);
         if (parsed.arrivalTiming !== undefined) setArrivalTiming(sanitizeScrollTiming(parsed.arrivalTiming));
         if (parsed.subtitleTiming !== undefined) setSubtitleTiming(sanitizeScrollTiming(parsed.subtitleTiming));
-        if (parsed.broadcastTiming !== undefined) setBroadcastTiming(sanitizeScrollTiming(parsed.broadcastTiming));
         if (typeof parsed.subtitleSyncEnabled === "boolean") setSubtitleSyncEnabled(parsed.subtitleSyncEnabled);
         if (parsed.mainHeaderVis !== undefined) setMainHeaderVis(sanitizeHeaderVis(parsed.mainHeaderVis));
         if (parsed.arrivalHeaderVis !== undefined) setArrivalHeaderVis(sanitizeHeaderVis(parsed.arrivalHeaderVis));
         if (parsed.subtitleHeaderVis !== undefined) setSubtitleHeaderVis(sanitizeHeaderVis(parsed.subtitleHeaderVis));
-        if (parsed.broadcastHeaderVis !== undefined) setBroadcastHeaderVis(sanitizeHeaderVis(parsed.broadcastHeaderVis));
         if (typeof parsed.responseDividerAlways === "boolean") setResponseDividerAlways(parsed.responseDividerAlways);
         if (Array.isArray(parsed.settingsSearchHistory)) setSettingsSearchHistory(parsed.settingsSearchHistory.filter((x): x is string => typeof x === "string").slice(0, 20));
         if (parsed.lastBoard && typeof parsed.lastBoard.boardName === "string" && typeof parsed.lastBoard.url === "string") {
@@ -4532,7 +6037,7 @@ export default function App() {
         if (typeof parsed.composePanelPx === "number") setComposePanelPx(clamp(parsed.composePanelPx, MIN_COMPOSE_PANEL_PX, MAX_COMPOSE_PANEL_PX));
         if (typeof parsed.subtitleBodyFontSize === "number") setSubtitleBodyFontSize(clamp(parsed.subtitleBodyFontSize, 10, 96));
         if (typeof parsed.subtitleMetaFontSize === "number") setSubtitleMetaFontSize(clamp(parsed.subtitleMetaFontSize, 8, 48));
-        if (typeof parsed.subtitleOpacity === "number") setSubtitleOpacity(clamp(parsed.subtitleOpacity, 0.1, 1));
+        if (typeof parsed.subtitleOpacity === "number") setSubtitleOpacity(clamp(parsed.subtitleOpacity, 0, 1));
         if (typeof parsed.subtitleAlwaysOnTop === "boolean") setSubtitleAlwaysOnTop(parsed.subtitleAlwaysOnTop);
       } catch { /* ignore */ }
   };
@@ -5063,6 +6568,40 @@ export default function App() {
       if (map["App.autoScroll"]) setAutoScrollEnabled(map["App.autoScroll"] === "true");
       if (map["App.smoothScroll"]) setSmoothScroll(map["App.smoothScroll"] === "true");
       if (map["App.maxOpenTabs"]) { const n = parseInt(map["App.maxOpenTabs"], 10); if (!isNaN(n) && n >= 1) setMaxOpenTabs(n); }
+      if (map["App.twitchSpeakName"]) setTwitchSpeakName(map["App.twitchSpeakName"] !== "false");
+      if (map["App.twitchBadges"]) setTwitchBadgesEnabled(map["App.twitchBadges"] !== "false");
+      { const n = parseInt(map["App.twitchEmoteSize"] ?? "", 10); if (!isNaN(n) && n >= 8 && n <= 200) setTwitchEmoteSize(n); }
+      { const n = parseInt(map["App.twitchGiantEmoteSize"] ?? "", 10); if (!isNaN(n) && n >= 16 && n <= 600) setTwitchGiantEmoteSize(n); }
+      if (map["App.twitchEmoteSpeak"]) setTwitchEmoteSpeak(map["App.twitchEmoteSpeak"] === "none" ? "none" : "name");
+      { const n = parseInt(map["App.subtitleEmoteSize"] ?? "", 10); if (!isNaN(n) && n >= 8 && n <= 400) setSubtitleEmoteSize(n); }
+      { const n = parseInt(map["App.subtitleGiantEmoteSize"] ?? "", 10); if (!isNaN(n) && n >= 16 && n <= 800) setSubtitleGiantEmoteSize(n); }
+      if (map["App.boardEmotes"]) setBoardEmotesEnabled(map["App.boardEmotes"] !== "false");
+      if (map["App.twitchTeach"]) setTwitchTeachEnabled(map["App.twitchTeach"] === "true");
+      if (map["App.twitchTeachAnnounce"]) setTwitchTeachAnnounce(map["App.twitchTeachAnnounce"] !== "false");
+      { const n = parseInt(map["App.twitchEmoteMax"] ?? "", 10); if (!isNaN(n) && n >= 1) setTwitchEmoteMax(Math.min(TWITCH_EMOTE_MAX_LIMIT, n)); }
+      if (map["App.overlayEnabled"]) setOverlayEnabled(map["App.overlayEnabled"] === "true");
+      if (map["App.viewerLatestHeight"]) { const n = parseInt(map["App.viewerLatestHeight"], 10); if (!isNaN(n) && n >= 80 && n <= 2000) setLatestPanelHeight(n); }
+      if (map["App.viewerLatestPanel"]) setLatestPanelOpen(map["App.viewerLatestPanel"] !== "false");
+      if (map["App.viewerFontFamily"] !== undefined) { const f = map["App.viewerFontFamily"].replace(/["\\;{}<>]/g, "").slice(0, 100); setViewerFontFamily(f); setViewerFontPickerInput(f); }
+      if (map["App.viewerFontBold"] !== undefined) setViewerFontBold(map["App.viewerFontBold"] === "true");
+      if (map["App.viewerCards"] !== undefined) setViewerCards(map["App.viewerCards"] !== "false");
+      if (map["App.viewerThumbs"] !== undefined) setViewerThumbs(map["App.viewerThumbs"] !== "false");
+      if (map["App.viewerTwitchClickToLoad"] !== undefined) setViewerTwitchClickToLoad(map["App.viewerTwitchClickToLoad"] === "true");
+      setViewerShow((prev) => {
+        const next = { ...prev };
+        for (const [k] of VIEWER_SHOW_LABELS) {
+          const v = map[`App.viewerShow${k[0].toUpperCase()}${k.slice(1)}`];
+          if (v !== undefined) next[k] = v !== "false";
+        }
+        return next;
+      });
+      if (map["App.viewerFontSize"] !== undefined) { const n = parseInt(map["App.viewerFontSize"], 10); setViewerFontSize(!isNaN(n) && n >= 8 && n <= 48 ? n : 0); }
+      if (map["App.overlayPort"]) { const n = parseInt(map["App.overlayPort"], 10); if (!isNaN(n) && n >= 1024 && n <= 65535) setOverlayPort(n); }
+      if (map["App.twitchMaxQueuedArrivals"]) { const n = parseInt(map["App.twitchMaxQueuedArrivals"], 10); if (!isNaN(n)) setTwitchMaxQueuedArrivals(clampTwitchLimit(n)); }
+      if (map["App.twitchMaxTtsBacklog"]) { const n = parseInt(map["App.twitchMaxTtsBacklog"], 10); if (!isNaN(n)) setTwitchMaxTtsBacklog(clampTwitchLimit(n)); }
+      if (map["App.youtubeMethod"] && /^[a-z]{1,20}$/.test(map["App.youtubeMethod"])) setYoutubeMethod(map["App.youtubeMethod"]);
+      { const n = parseInt(map["App.youtubeApiInterval"] ?? "", 10); if (!isNaN(n)) setYoutubeApiInterval(Math.max(YOUTUBE_API_INTERVAL_MIN, Math.min(YOUTUBE_API_INTERVAL_MAX, n))); }
+      if (map["App.youtubeSpeakName"]) setYoutubeSpeakName(map["App.youtubeSpeakName"] !== "false");
       if (map["App.tabSiteColors"]) setTabSiteColors(map["App.tabSiteColors"] !== "false");
       if (map["App.autoUpdateCheck"]) setAutoUpdateCheck(map["App.autoUpdateCheck"] !== "false");
       if (map["App.lastUpdateCheck"] !== undefined) setLastUpdateCheck(map["App.lastUpdateCheck"]);
@@ -5074,15 +6613,6 @@ export default function App() {
       if (map["App.shitarabaHost"] !== undefined && map["App.shitarabaHost"].trim()) setShitarabaHost(map["App.shitarabaHost"]);
       if (map["App.jpnknHost"] !== undefined && map["App.jpnknHost"].trim()) setJpnknHost(map["App.jpnknHost"]);
       if (map["App.mainAlwaysOnBottom"]) setMainAlwaysOnBottom(map["App.mainAlwaysOnBottom"] === "true");
-      if (map["App.obsTabRevealed"]) setObsTabRevealed(map["App.obsTabRevealed"] === "true");
-      if (map["App.broadcastFontFamily"] !== undefined) { setBroadcastFontFamily(map["App.broadcastFontFamily"]); setBroadcastFontPickerInput(map["App.broadcastFontFamily"]); }
-      if (map["App.broadcastFontSize"]) { const n = parseInt(map["App.broadcastFontSize"], 10); if (!isNaN(n)) setBroadcastFontSize(n); }
-      if (map["App.broadcastTextColor"]) setBroadcastTextColor(map["App.broadcastTextColor"]);
-      if (map["App.broadcastOutlineColor"]) setBroadcastOutlineColor(map["App.broadcastOutlineColor"]);
-      if (map["App.broadcastOutlineWidth"]) { const n = parseInt(map["App.broadcastOutlineWidth"], 10); if (!isNaN(n)) setBroadcastOutlineWidth(n); }
-      if (map["App.broadcastEmojiOutline"] !== undefined) setBroadcastEmojiOutline(map["App.broadcastEmojiOutline"] !== "false");
-      if (map["App.broadcastBgColor"]) setBroadcastBgColor(map["App.broadcastBgColor"]);
-      if (map["App.broadcastDisplaySeconds"]) { const n = parseFloat(map["App.broadcastDisplaySeconds"]); if (!isNaN(n)) setBroadcastDisplaySeconds(n); }
       if (map["App.cssAllowExternalUrls"]) setCssAllowExternalUrls(map["App.cssAllowExternalUrls"] === "true");
       if (map["App.streamMaskEnabled"] !== undefined) setStreamMaskEnabled(map["App.streamMaskEnabled"] === "true");
       if (map["App.ngAboneSpeakEnabled"] !== undefined) setNgAboneSpeakEnabled(map["App.ngAboneSpeakEnabled"] === "true");
@@ -5091,6 +6621,7 @@ export default function App() {
       if (map["Speech.enabled"]) setTtsEnabled(map["Speech.enabled"] === "true");
       if (map["Speech.maxReadLength"]) { const n = parseInt(map["Speech.maxReadLength"], 10); if (!isNaN(n) && n >= 0) setTtsMaxReadLength(n); }
       if (map["Speech.urlOmit"] !== undefined) setTtsUrlOmitEnabled(map["Speech.urlOmit"] !== "false");
+      if (map["Speech.boardMode"] !== undefined) setTtsBoardMode(map["Speech.boardMode"] === "whitelist" ? "whitelist" : "full");
       if (map["Speech.sapiVoiceIndex"]) { const n = parseInt(map["Speech.sapiVoiceIndex"], 10); if (!isNaN(n)) setSapiVoiceIndex(n); }
       if (map["Speech.sapiRate"]) { const n = parseInt(map["Speech.sapiRate"], 10); if (!isNaN(n)) setSapiRate(n); }
       if (map["Speech.sapiVolume"]) { const n = parseInt(map["Speech.sapiVolume"], 10); if (!isNaN(n)) setSapiVolume(n); }
@@ -5110,11 +6641,11 @@ export default function App() {
   };
   // Load app settings from settings.ini on startup
   useEffect(() => {
-    if (!isTauriRuntime()) { appSettingsLoadedRef.current = true; return; }
+    if (!isTauriRuntime()) { appSettingsLoadedRef.current = true; setAppSettingsReady(true); return; }
     invoke<Record<string, string>>("load_app_settings")
       .then((map) => { applyAppSettings(map); runStartupUpdateCheck(map); })
       .catch(() => {})
-      .finally(() => { appSettingsLoadedRef.current = true; });
+      .finally(() => { appSettingsLoadedRef.current = true; setAppSettingsReady(true); });
   }, []);
 
   // Load TTS dictionary on startup
@@ -5229,6 +6760,78 @@ export default function App() {
     const card = await fetchOgpCardCached(url);
     return card && ogpCardHasContent(card) ? buildOgpCardHtml(card) : "";
   };
+  // 本文の中のクリック (リンク・サムネイル・サイズ上限の画像)。処理したら true (レス表示欄とビュワーで共通)
+  const handleBodyContentClick = (e: React.MouseEvent<HTMLElement>): boolean => {
+    const target = e.target as HTMLElement;
+    // body-link: open 5ch thread URLs in tab, others in external browser
+    const bodyLink = target.closest<HTMLAnchorElement>("a.body-link");
+    if (bodyLink) {
+      e.preventDefault();
+      const url = bodyLink.getAttribute("href");
+      if (url) {
+        let _p = "";
+        try { _p = new URL(url, "https://dummy").pathname; } catch { /* ignore */ }
+        if (/\/(test|bbs)\/read\.cgi\/[^/]+\/[^/]+/.test(_p)) {
+          const title = url.split("/").pop() || url;
+          openThreadInTab(url, title);
+          return true;
+        }
+        // 板トップURL(スレ一覧ページ)は上のスレURL判定には一致しないため、
+        // 自サイト(5ch/したらば/JPNKN)のURLであれば内部で板として開く。
+        // これに一致しない他サイトのURLは従来どおり外部ブラウザで開く
+        if (isSameSiteBoardUrl(url)) {
+          const slug = _p.replace(/\/+$/, "").split("/").filter(Boolean).pop() || url;
+          selectBoard({ boardName: slug, url });
+          return true;
+        }
+      }
+      if (url && /\.(jpe?g|png|gif|webp|bmp)(\?|$)/i.test(url) && isTauriRuntime()) {
+        void invoke("open_image_popup", { url }).catch(() => window.open(url, "_blank"));
+        return true;
+      }
+      if (url && isTauriRuntime()) {
+        void invoke("open_external_url", { url }).catch(() => window.open(url, "_blank"));
+      } else if (url) {
+        window.open(url, "_blank");
+      }
+      return true;
+    }
+    // thumb image click: open in popup window
+    if (target.classList.contains("response-thumb") || target.closest<HTMLElement>("[data-lightbox-src]")) {
+      e.preventDefault();
+      const thumbLink = target.closest<HTMLElement>("[data-lightbox-src]");
+      const url = thumbLink?.dataset.lightboxSrc ?? "";
+      if (url && isTauriRuntime()) {
+        void invoke("open_image_popup", { url }).catch(() => window.open(url, "_blank"));
+      } else if (url) {
+        window.open(url, "_blank");
+      }
+      return true;
+    }
+    // Size-gated image click: reveal the image
+    const gateBlocked = target.closest<HTMLElement>(".thumb-gate-blocked");
+    if (gateBlocked) {
+      e.preventDefault();
+      const src = gateBlocked.dataset.revealSrc;
+      if (src) {
+        const parent = gateBlocked.closest<HTMLElement>(".thumb-size-gate");
+        if (parent) {
+          parent.innerHTML = `<img class="response-thumb" src="${src}" loading="lazy" alt="" />`;
+        }
+      }
+      return true;
+    }
+    return false;
+  };
+  // リンクカードの画像が読み込めなかったら (相手のサーバーが断る・消えた など)、画像の枠ごと隠す
+  useEffect(() => {
+    const onError = (ev: Event) => {
+      const img = ev.target;
+      if (img instanceof HTMLImageElement && img.parentElement?.classList.contains("ogp-card-thumb")) img.parentElement.classList.add("ogp-card-thumb-failed");
+    };
+    document.addEventListener("error", onError, true);
+    return () => document.removeEventListener("error", onError, true);
+  }, []);
   // コンテナ内の .ogp-card-slot を IntersectionObserver で監視し、画面に入ったものだけ取得して埋める
   // (スレ内の全 URL へ一斉に通信しない)。React が innerHTML を差し替えるたびにスロットは白紙で
   // 作り直されるため、MutationObserver で未処理スロットを拾い直す。戻り値は解除関数。
@@ -5362,6 +6965,124 @@ export default function App() {
     return () => { disposed = true; if (unlisten) unlisten(); };
   }, []);
   // 書き込みの浮遊ウィンドウからの送信要求。実際の投稿は既存の投稿フローで行う
+
+  // Twitch: 受信したチャットと接続状態を受け取る
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let disposed = false;
+    const unlistens: (() => void)[] = [];
+    const keep = (p: Promise<() => void>, label: string) => {
+      p.then((fn) => { if (disposed) fn(); else unlistens.push(fn); }).catch((e) => console.warn(label, e));
+    };
+    keep(listen<TwitchChatPayload>("twitch-message", (ev) => {
+      const m = ev.payload;
+      if (!m || typeof m.channel !== "string" || typeof m.text !== "string" || typeof m.login !== "string") return;
+      const pending = twitchPendingRef.current;
+      pending.push(m);
+      // 画面の反映が追いつかないほど溜まったら古いものから捨てる
+      if (pending.length > 2000) pending.splice(0, pending.length - 2000);
+      if (twitchFlushTimerRef.current === null) {
+        twitchFlushTimerRef.current = window.setTimeout(() => twitchFlushRef.current(), TWITCH_FLUSH_MS);
+      }
+    }), "twitch-message listen failed");
+    keep(listen<{ channel?: unknown; state?: unknown; message?: unknown }>("twitch-status", (ev) => {
+      const { channel, state, message } = ev.payload ?? {};
+      if (typeof channel !== "string" || typeof state !== "string") return;
+      const label = state === "connected" ? "チャットの受信を開始しました"
+        : state === "connecting" ? "接続しています…"
+        : `切断されました ${typeof message === "string" ? message : ""}`;
+      setStatus(`Twitch #${channel}: ${label}`);
+      setTwitchStatusMap((prev) => ({ ...prev, [channel]: state }));
+    }), "twitch-status listen failed");
+    keep(listen<YoutubeBatch>("youtube-message", (ev) => {
+      const b = ev.payload;
+      if (!b || typeof b.video !== "string" || !YT_VIDEO_ID_RE.test(b.video) || !Array.isArray(b.messages)) return;
+      const pending = youtubePendingRef.current;
+      pending.push(b);
+      // 画面の反映が追いつかないほど溜まったら古いものから捨てる
+      if (pending.length > 500) pending.splice(0, pending.length - 500);
+      if (youtubeFlushTimerRef.current === null) {
+        youtubeFlushTimerRef.current = window.setTimeout(() => youtubeFlushRef.current(), TWITCH_FLUSH_MS);
+      }
+    }), "youtube-message listen failed");
+    keep(listen<{ video?: unknown; state?: unknown; message?: unknown; title?: unknown }>("youtube-status", (ev) => {
+      const { video, state, message, title } = ev.payload ?? {};
+      if (typeof video !== "string" || !YT_VIDEO_ID_RE.test(video) || typeof state !== "string") return;
+      const msg = typeof message === "string" ? message.slice(0, 300) : "";
+      const label = state === "live" ? "チャットの受信を開始しました"
+        : state === "connecting" ? "接続しています…"
+        : state === "ended" ? "配信が終わりました"
+        : msg;
+      setStatus(`YouTube: ${label}`);
+      setYoutubeStatusMap((prev) => ({ ...prev, [video]: { state, message: msg } }));
+      // 配信のタイトルが分かったら、タブの名前にする
+      if (state === "live" && typeof title === "string" && title.trim()) {
+        const url = youtubeTabUrl(video);
+        const name = `YouTube ${Array.from(title.trim()).slice(0, 60).join("")}`;
+        setThreadTabs((prev) => (prev.some((t) => t.threadUrl === url && t.title !== name) ? prev.map((t) => (t.threadUrl === url ? { ...t, title: name } : t)) : prev));
+      }
+    }), "youtube-status listen failed");
+    return () => {
+      disposed = true;
+      for (const fn of unlistens) fn();
+      if (twitchFlushTimerRef.current !== null) {
+        window.clearTimeout(twitchFlushTimerRef.current);
+        twitchFlushTimerRef.current = null;
+      }
+      if (youtubeFlushTimerRef.current !== null) {
+        window.clearTimeout(youtubeFlushTimerRef.current);
+        youtubeFlushTimerRef.current = null;
+      }
+    };
+  }, []);
+  // Twitch: 開いている Twitch タブのチャンネルだけを受信する (タブの開閉・セッション復元・並べ替えのすべてをここで反映)
+  const twitchChannelsKey = threadTabs
+    .map((t) => twitchChannelFromUrl(t.threadUrl))
+    .filter((c): c is string => c !== null)
+    .sort()
+    .join(",");
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    const channels = twitchChannelsKey ? twitchChannelsKey.split(",") : [];
+    void invoke<string[]>("twitch_sync", { channels }).catch((e) => console.warn("twitch_sync failed", e));
+  }, [twitchChannelsKey]);
+  // YouTube: 開いている YouTube タブの配信だけを受信する。取得方法・間隔を変えたら、Rust 側でつなぎ直す。
+  // 設定 (settings.ini) と使える取得方法を読み終えてから始める (読み込み前の既定値で一度つないでしまわないように)
+  const youtubeVideosKey = threadTabs
+    .map((t) => youtubeVideoFromUrl(t.threadUrl))
+    .filter((v): v is string => v !== null)
+    .sort()
+    .join(",");
+  const youtubeEffectiveMethod = youtubeMethods.some((m) => m.id === youtubeMethod) ? youtubeMethod : "api";
+  useEffect(() => {
+    if (!isTauriRuntime() || !appSettingsReady || youtubeMethods.length === 0) return;
+    const videos = youtubeVideosKey ? youtubeVideosKey.split(",") : [];
+    void invoke<string[]>("youtube_sync", { videos, method: youtubeEffectiveMethod, minInterval: youtubeApiInterval }).catch((e) => console.warn("youtube_sync failed", e));
+  }, [youtubeVideosKey, youtubeEffectiveMethod, youtubeApiInterval, youtubeSyncVersion, appSettingsReady, youtubeMethods.length]);
+  const reconnectYoutube = (video: string) => {
+    if (!isTauriRuntime()) return;
+    void invoke("youtube_reconnect", { video }).then(() => setYoutubeSyncVersion((v) => v + 1)).catch((e) => console.warn("youtube_reconnect failed", e));
+  };
+  // ログイン中は、公式 API からスタンプの一覧を取って対応表に足す (チャンネルが変わったときと1時間ごと。設定の「今すぐ取得」でも)
+  const [emoteFetchMsg, setEmoteFetchMsg] = useState("");
+  const fetchTwitchEmotesNow = (manual: boolean) => {
+    if (!isTauriRuntime()) return;
+    if (manual) setEmoteFetchMsg("取得しています…");
+    void invoke<{ name: string; id: string }[]>("twitch_fetch_emotes", { channels: twitchChannelsKey ? twitchChannelsKey.split(",") : [] })
+      .then((list) => {
+        if (learnEmoteNames(list)) setEmoteNameVersion((v) => v + 1);
+        if (manual) setEmoteFetchMsg(`${list.length} 件を取得しました`);
+      })
+      .catch((e) => { console.warn("twitch_fetch_emotes failed", e); if (manual) setEmoteFetchMsg(`取得できませんでした: ${String(e)}`); });
+  };
+  useEffect(() => {
+    if (!isTauriRuntime() || twitchAuth.state !== "connected") return;
+    const run = () => fetchTwitchEmotesNow(false);
+    run();
+    const timer = window.setInterval(run, 3600 * 1000);
+    return () => window.clearInterval(timer);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [twitchAuth.state, twitchChannelsKey]);
   useEffect(() => {
     if (!isTauriRuntime()) return;
     let disposed = false;
@@ -5381,28 +7102,6 @@ export default function App() {
       .then((fn) => { if (disposed) fn(); else unlisten = fn; }).catch((e) => console.warn("compose-popup-closed listen failed", e));
     return () => { disposed = true; if (unlisten) unlisten(); };
   }, []);
-  // OBS連携ウィンドウが (Alt+F4等で) 閉じられたときにツールバーの状態を合わせる
-  useEffect(() => {
-    if (!isTauriRuntime()) return;
-    let disposed = false;
-    let unlisten: (() => void) | null = null;
-    void listen("broadcast-closed", () => { setBroadcastVisible(false); })
-      .then((fn) => { if (disposed) fn(); else unlisten = fn; }).catch((e) => console.warn("broadcast-closed listen failed", e));
-    return () => { disposed = true; if (unlisten) unlisten(); };
-  }, []);
-  // OBSが終了する等でOBS連携が自動的にオフになったときにフロント側の状態を合わせる
-  useEffect(() => {
-    if (!isTauriRuntime()) return;
-    let disposed = false;
-    let unlisten: (() => void) | null = null;
-    void listen("obs-integration-auto-disabled", () => {
-      setObsIntegrationEnabled(false);
-      setBroadcastVisible(false);
-      setObsToggleError("OBSが起動していないため、OBS連携を自動的にオフにしました。");
-      if (isTauriRuntime()) void invoke("broadcast_hide").catch(() => {});
-    }).then((fn) => { if (disposed) fn(); else unlisten = fn; }).catch((e) => console.warn("obs-integration-auto-disabled listen failed", e));
-    return () => { disposed = true; if (unlisten) unlisten(); };
-  }, []);
   // 字幕ヘッダに一時停止状態と残りキュー数を表示
   useEffect(() => {
     if (!isTauriRuntime() || !subtitleVisible) return;
@@ -5417,6 +7116,14 @@ export default function App() {
     if (!container) return;
     return setupOgpFill(container, ogpCardsEnabled);
   }, [ogpCardsEnabled, tweetCardsEnabled, activePaneView]);
+  // ビュワー (表示中のときだけ)
+  useEffect(() => {
+    if (!viewerCards || activePaneView !== "viewer") return;
+    const container = viewerListRef.current;
+    if (!container) return;
+    return setupOgpFill(container, true);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewerCards, activePaneView]);
   // 【試験】新着レスペイン (arrivalCardsEnabled が ON のときのみ)
   useEffect(() => {
     if (!arrivalCardsEnabled || (!ogpCardsEnabled && !tweetCardsEnabled)) return;
@@ -5435,6 +7142,33 @@ export default function App() {
       "App.smoothScroll": String(smoothScroll),
       "App.maxOpenTabs": String(maxOpenTabs),
       "App.logRetentionDays": String(logRetentionDays),
+      "App.twitchSpeakName": String(twitchSpeakName),
+      "App.twitchBadges": String(twitchBadgesEnabled),
+      "App.twitchEmoteSize": String(twitchEmoteSize),
+      "App.twitchGiantEmoteSize": String(twitchGiantEmoteSize),
+      "App.twitchEmoteSpeak": twitchEmoteSpeak,
+      "App.twitchEmoteMax": String(twitchEmoteMax),
+      "App.subtitleEmoteSize": String(subtitleEmoteSize),
+      "App.subtitleGiantEmoteSize": String(subtitleGiantEmoteSize),
+      "App.boardEmotes": String(boardEmotesEnabled),
+      "App.twitchTeach": String(twitchTeachEnabled),
+      "App.twitchTeachAnnounce": String(twitchTeachAnnounce),
+      "App.overlayEnabled": String(overlayEnabled),
+      "App.viewerLatestHeight": String(latestPanelHeight),
+      "App.viewerLatestPanel": String(latestPanelOpen),
+      "App.viewerFontFamily": viewerFontFamily,
+      "App.viewerFontSize": String(viewerFontSize),
+      "App.viewerFontBold": String(viewerFontBold),
+      "App.viewerCards": String(viewerCards),
+      "App.viewerThumbs": String(viewerThumbs),
+      "App.viewerTwitchClickToLoad": String(viewerTwitchClickToLoad),
+      ...Object.fromEntries(VIEWER_SHOW_LABELS.map(([k]) => [`App.viewerShow${k[0].toUpperCase()}${k.slice(1)}`, String(viewerShow[k])])),
+      "App.overlayPort": String(overlayPort),
+      "App.twitchMaxQueuedArrivals": String(twitchMaxQueuedArrivals),
+      "App.twitchMaxTtsBacklog": String(twitchMaxTtsBacklog),
+      "App.youtubeMethod": youtubeMethod,
+      "App.youtubeApiInterval": String(youtubeApiInterval),
+      "App.youtubeSpeakName": String(youtubeSpeakName),
       "App.tabSiteColors": String(tabSiteColors),
       "App.autoUpdateCheck": String(autoUpdateCheck),
       "App.lastUpdateCheck": lastUpdateCheck,
@@ -5445,15 +7179,6 @@ export default function App() {
       "App.shitarabaHost": shitarabaHost,
       "App.jpnknHost": jpnknHost,
       "App.mainAlwaysOnBottom": String(mainAlwaysOnBottom),
-      "App.obsTabRevealed": String(obsTabRevealed),
-      "App.broadcastFontFamily": broadcastFontFamily,
-      "App.broadcastFontSize": String(broadcastFontSize),
-      "App.broadcastTextColor": broadcastTextColor,
-      "App.broadcastOutlineColor": broadcastOutlineColor,
-      "App.broadcastOutlineWidth": String(broadcastOutlineWidth),
-      "App.broadcastEmojiOutline": String(broadcastEmojiOutline),
-      "App.broadcastBgColor": broadcastBgColor,
-      "App.broadcastDisplaySeconds": String(broadcastDisplaySeconds),
       "App.cssAllowExternalUrls": String(cssAllowExternalUrls),
       "App.streamMaskEnabled": String(streamMaskEnabled),
       "App.ngAboneSpeakEnabled": String(ngAboneSpeakEnabled),
@@ -5461,6 +7186,7 @@ export default function App() {
       "Speech.enabled": String(ttsEnabled),
       "Speech.maxReadLength": String(ttsMaxReadLength),
       "Speech.urlOmit": String(ttsUrlOmitEnabled),
+      "Speech.boardMode": ttsBoardMode,
       "Speech.sapiVoiceIndex": String(sapiVoiceIndex),
       "Speech.sapiRate": String(sapiRate),
       "Speech.sapiVolume": String(sapiVolume),
@@ -5484,9 +7210,9 @@ export default function App() {
   useEffect(() => {
     if (!isTauriRuntime() || !appSettingsLoadedRef.current || settingsOpenRef.current) return;
     void invoke("save_app_settings", { settings: buildAppSettingsMap() }).catch(() => {});
-  }, [responsesFontSize, responseGap, autoRefreshInterval, autoRefreshEnabled, autoScrollEnabled, smoothScroll, maxOpenTabs, logRetentionDays, tabSiteColors, autoUpdateCheck, lastUpdateCheck, knownLatestVersion, webviewCacheMb, imageSaveFolder, bbsmenuUrl, shitarabaHost, jpnknHost,
-      mainAlwaysOnBottom, obsTabRevealed, broadcastFontFamily, broadcastFontSize, broadcastTextColor, broadcastOutlineColor, broadcastOutlineWidth, broadcastEmojiOutline, broadcastBgColor, broadcastDisplaySeconds, cssAllowExternalUrls, streamMaskEnabled, ngAboneSpeakEnabled,
-      ttsMode, ttsEnabled, ttsMaxReadLength, ttsUrlOmitEnabled, sapiVoiceIndex, sapiRate, sapiVolume,
+  }, [responsesFontSize, responseGap, autoRefreshInterval, autoRefreshEnabled, autoScrollEnabled, smoothScroll, maxOpenTabs, logRetentionDays, tabSiteColors, autoUpdateCheck, lastUpdateCheck, knownLatestVersion, webviewCacheMb, overlayEnabled, overlayPort, latestPanelHeight, latestPanelOpen, viewerFontFamily, viewerFontSize, viewerFontBold, viewerShow, viewerCards, viewerThumbs, viewerTwitchClickToLoad, twitchSpeakName, twitchBadgesEnabled, twitchEmoteSize, twitchGiantEmoteSize, twitchEmoteSpeak, twitchEmoteMax, subtitleEmoteSize, subtitleGiantEmoteSize, boardEmotesEnabled, twitchTeachEnabled, twitchTeachAnnounce, twitchMaxQueuedArrivals, twitchMaxTtsBacklog, youtubeMethod, youtubeApiInterval, youtubeSpeakName, imageSaveFolder, bbsmenuUrl, shitarabaHost, jpnknHost,
+      mainAlwaysOnBottom, cssAllowExternalUrls, streamMaskEnabled, ngAboneSpeakEnabled,
+      ttsMode, ttsEnabled, ttsMaxReadLength, ttsUrlOmitEnabled, ttsBoardMode, sapiVoiceIndex, sapiRate, sapiVolume,
       voicevoxEndpoint, voicevoxSpeakerId, voicevoxSpeedScale, voicevoxPitchScale, voicevoxIntonationScale, voicevoxVolumeScale,
       composeName, composeMail, composeSage, composeFontSize, composeOpen]);
 
@@ -5523,12 +7249,10 @@ export default function App() {
       subtitleCardsEnabled,
       arrivalTiming,
       subtitleTiming,
-      broadcastTiming,
       subtitleSyncEnabled,
       mainHeaderVis,
       arrivalHeaderVis,
       subtitleHeaderVis,
-      broadcastHeaderVis,
       responseDividerAlways,
       settingsSearchHistory,
       lastBoard: lastBoardUrlRef.current ? { boardName: selectedBoard, url: lastBoardUrlRef.current } : undefined,
@@ -5560,7 +7284,7 @@ export default function App() {
     if (isTauriRuntime()) {
       void invoke("save_layout_prefs", { prefs: JSON.stringify(buildLayoutPrefsPayload()) }).catch(() => {});
     }
-  }, [boardPaneVisible, boardPanePx, threadPanePx, responseTopRatio, boardsFontSize, threadsFontSize, responsesFontSize, responsesHeaderFontSize, darkMode, fontFamily, fontBold, threadColWidths, showBoardButtons, keepSortOnRefresh, composeSubmitKey, imageSizeLimit, showImagePreview, hoverPreviewEnabled, ogpCardsEnabled, tweetCardsEnabled, arrivalCardsEnabled, subtitleCardsEnabled, arrivalTiming, subtitleTiming, broadcastTiming, subtitleSyncEnabled, mainHeaderVis, arrivalHeaderVis, subtitleHeaderVis, broadcastHeaderVis, responseDividerAlways, settingsSearchHistory, selectedBoard, hoverPreviewDelay, thumbSize, restoreSession, autoRefreshInterval, autoScrollEnabled, newArrivalPaneOpen, newArrivalPaneHeight, newArrivalFontSize, resIdFontSize, resIdFontFamily, newArrivalIdFontSize, newArrivalIdFontFamily, subtitleIdFontSize, subtitleIdFontFamily, popupFontSize, popupMaxWidth, popupMaxHeight, composePanelPx, subtitleBodyFontSize, subtitleMetaFontSize, subtitleOpacity, subtitleAlwaysOnTop]);
+  }, [boardPaneVisible, boardPanePx, threadPanePx, responseTopRatio, boardsFontSize, threadsFontSize, responsesFontSize, responsesHeaderFontSize, darkMode, fontFamily, fontBold, threadColWidths, showBoardButtons, keepSortOnRefresh, composeSubmitKey, imageSizeLimit, showImagePreview, hoverPreviewEnabled, ogpCardsEnabled, tweetCardsEnabled, arrivalCardsEnabled, subtitleCardsEnabled, arrivalTiming, subtitleTiming, subtitleSyncEnabled, mainHeaderVis, arrivalHeaderVis, subtitleHeaderVis, responseDividerAlways, settingsSearchHistory, selectedBoard, hoverPreviewDelay, thumbSize, restoreSession, autoRefreshInterval, autoScrollEnabled, newArrivalPaneOpen, newArrivalPaneHeight, newArrivalFontSize, resIdFontSize, resIdFontFamily, newArrivalIdFontSize, newArrivalIdFontFamily, subtitleIdFontSize, subtitleIdFontFamily, popupFontSize, popupMaxWidth, popupMaxHeight, composePanelPx, subtitleBodyFontSize, subtitleMetaFontSize, subtitleOpacity, subtitleAlwaysOnTop]);
 
   // ===== 設定画面の保存 / 復元 / リセット / プリセット =====
   // 値の設定は変更した時点で画面に反映される (プレビュー) が、ファイルへの保存は「設定を保存」を押したときだけ行う。
@@ -6310,16 +8034,21 @@ export default function App() {
                       <div className="new-arrival-meta">
                         {arrivalHeaderVis.threadTitle && <span className="new-arrival-thread-title">{currentArrivalItem.threadTitle}</span>}
                         {arrivalHeaderVis.resNo && <span className="new-arrival-res-no">{currentArrivalItem.responseNo}</span>}
-                        {arrivalHeaderVis.name && <span className="new-arrival-name"><span className="response-label">名前：</span>{currentArrivalItem.name}</span>}
+                        {arrivalHeaderVis.name && <span className="new-arrival-name"><span className="response-label">名前：</span>{arrivalHeaderVis.badges && currentArrivalItem.twitchBadges && currentArrivalItem.twitchBadges.length > 0 && (
+                          <span className="viewer-badges arrival-badges">{currentArrivalItem.twitchBadges.map((b, i) => <img key={i} src={`${b.url}/1`} srcSet={`${b.url}/1 1x, ${b.url}/2 2x`} alt={b.title} title={b.title} referrerPolicy="no-referrer" />)}</span>
+                        )}{currentArrivalItem.name}</span>}
                         {arrivalHeaderVis.mail && currentArrivalItem.mail && <span className="new-arrival-mail">[{currentArrivalItem.mail}]</span>}
                         {arrivalHeaderVis.date && <span className="new-arrival-time"><span className="response-label">投稿日：</span>{currentArrivalItem.time}</span>}
                         {arrivalHeaderVis.id && currentArrivalItem.id && <span className="new-arrival-id" style={{ color: idHighlights[currentArrivalItem.id] ?? undefined, ...(newArrivalIdFontSize !== 0 ? { fontSize: `${Math.max(6, newArrivalFontSize + newArrivalIdFontSize)}px` } : {}), ...(newArrivalIdFontFamily ? { fontFamily: `"${newArrivalIdFontFamily}", sans-serif` } : {}) }}>ID:{currentArrivalItem.id}</span>}
-                        {arrivalHeaderVis.count && currentArrivalItem.idCount > 0 && <span className="new-arrival-id-count" style={{ color: currentArrivalItem.idCount >= 5 ? "#cc3333" : currentArrivalItem.idCount >= 2 ? "#3366ff" : undefined }}>({currentArrivalItem.idSeq}/{currentArrivalItem.idCount})</span>}
+                        {arrivalHeaderVis.count && currentArrivalItem.idCount > 0 && <span className={`new-arrival-id-count${currentArrivalItem.idCount >= 5 ? " id-count-many" : currentArrivalItem.idCount >= 2 ? " id-count-some" : ""}`}>({currentArrivalItem.idSeq}/{currentArrivalItem.idCount})</span>}
                       </div>
                       {arrivalCardsEnabled && (ogpCardsEnabled || tweetCardsEnabled)
                         ? /* カード付き描画: 本文は renderResponseBody でサニタイズ済み (画像は非表示のまま) */
-                          <div className="new-arrival-body" ref={newArrivalBodyRef} style={{ fontSize: `${newArrivalFontSize}px` }} dangerouslySetInnerHTML={renderResponseBody(currentArrivalItem.text, { hideImages: true, ogpCards: ogpCardsEnabled, tweetCards: tweetCardsEnabled, ogpAllow: ogpDomainFilters.allow, ogpBlock: ogpDomainFilters.block })} />
-                        : <div className="new-arrival-body" ref={newArrivalBodyRef} style={{ fontSize: `${newArrivalFontSize}px` }}>{decodeHtmlEntities(currentArrivalItem.text)}</div>}
+                          <div className="new-arrival-body" ref={newArrivalBodyRef} style={{ fontSize: `${newArrivalFontSize}px` }} dangerouslySetInnerHTML={{ __html: arrivalEmoteHtml(currentArrivalItem, renderResponseBody(currentArrivalItem.text, { hideImages: true, ogpCards: ogpCardsEnabled, tweetCards: tweetCardsEnabled, ogpAllow: ogpDomainFilters.allow, ogpBlock: ogpDomainFilters.block }).__html) }} />
+                        : arrivalHasEmotes(currentArrivalItem)
+                          ? /* スタンプがあるときだけ HTML で描く (本文は renderResponseBody でサニタイズ済み) */
+                            <div className="new-arrival-body" ref={newArrivalBodyRef} style={{ fontSize: `${newArrivalFontSize}px` }} dangerouslySetInnerHTML={{ __html: arrivalEmoteHtml(currentArrivalItem, renderResponseBody(currentArrivalItem.text, { hideImages: true }).__html) }} />
+                          : <div className="new-arrival-body" ref={newArrivalBodyRef} style={{ fontSize: `${newArrivalFontSize}px` }}>{decodeHtmlEntities(currentArrivalItem.text)}</div>}
                     </div>
                   )}
                 </div>
@@ -6334,6 +8063,13 @@ export default function App() {
         {/* Board tab bar (upper) */}
         <div className="board-tab-bar-wrap">
           <div className="board-tab-bar board-tabs" ref={boardTabBarRef}>
+            <div
+              className={`board-tab tab viewer-tab ${activePaneView === "viewer" ? "active" : ""}`}
+              onClick={() => setActivePaneView("viewer")}
+              title="Twitch・YouTube のチャットと、配信ホワイトリストに入れた ID のレスをまとめて表示します"
+            >
+              <span className="board-tab-title">ビュワー</span>
+            </div>
             {boardTabs.length === 0 && (
               <div className="board-tab placeholder">
                 <span className="board-tab-title">板未選択</span>
@@ -6342,7 +8078,7 @@ export default function App() {
             {boardTabs.map((tab, i) => (
               <div
                 key={tab.boardUrl}
-                className={`board-tab tab ${siteClassOf(tab.boardUrl)} ${i === activeBoardTabIndex ? "active" : ""} ${boardTabDragIndex !== null && boardTabDragIndex !== i ? "drag-target" : ""}`}
+                className={`board-tab tab ${siteClassOf(tab.boardUrl)} ${i === activeBoardTabIndex && activePaneView !== "viewer" ? "active" : ""} ${boardTabDragIndex !== null && boardTabDragIndex !== i ? "drag-target" : ""}`}
                 onClick={() => {
                   if (boardTabDragSuppressClickRef.current) return;
                   setActiveBoardTabIndex(i);
@@ -6366,7 +8102,7 @@ export default function App() {
                       dragging = true;
                       setBoardTabDragIndex(i);
                     }
-                    const els = boardTabBarRef.current?.querySelectorAll<HTMLElement>(".board-tab:not(.placeholder)");
+                    const els = boardTabBarRef.current?.querySelectorAll<HTMLElement>(".board-tab:not(.placeholder):not(.viewer-tab)");
                     if (!els) return;
                     els.forEach((el) => el.classList.remove("drag-over"));
                     for (let j = 0; j < els.length; j++) {
@@ -6501,6 +8237,7 @@ export default function App() {
                   document.addEventListener("mouseup", onUp);
                 }}
               >
+                {tab.ttsOff && <EarOff size={11} className="tab-tts-off" aria-label="読み上げオフ" />}
                 <span className="thread-tab-title title">{tab.title}</span>
                 {tabCacheRef.current.has(tab.threadUrl) && (
                   <span className="tab-res-count">({tabCacheRef.current.get(tab.threadUrl)!.responses.length})</span>
@@ -6516,10 +8253,121 @@ export default function App() {
             ))}
           </div>
         </div>
-        {activePaneView === "threads" ? (
+        {activePaneView === "viewer" ? (
+        <section id="viewerPane" className="pane viewer" style={{
+          '--fs-delta': `${responsesFontSize - 12}px`,
+          ...(viewerFontSize > 0 ? { '--viewer-fs': `${viewerFontSize}px`, '--viewer-latest-fs': `${Math.max(8, viewerFontSize - 1)}px` } : {}),
+          ...(viewerFontBold ? { '--viewer-weight': "bold" } : {}),
+          ...(viewerFontFamily ? { '--viewer-font': `"${viewerFontFamily.replace(/["\\;{}<>]/g, "")}", "Emoji", sans-serif` } : {}),
+        } as React.CSSProperties}>
+          <div className="viewer-toolbar">
+            {(Object.keys(VIEWER_SITE_LABEL) as ViewerSource[]).map((src) => (
+              <label key={src} className={`viewer-chip src-${src}`} title="表示する出どころ">
+                <input type="checkbox" checked={viewerFilter[src]} onChange={(e) => setViewerFilter((prev) => ({ ...prev, [src]: e.target.checked }))} />
+                {VIEWER_SITE_LABEL[src]}
+              </label>
+            ))}
+            <span className="viewer-grow" />
+            <label className="viewer-toggle" title="掲示板の新着レスの読み上げ方 (設定 > 読み上げ と同じもの)">
+              読み上げ:
+              <select value={ttsBoardMode} onChange={(e) => setTtsBoardMode(e.target.value === "whitelist" ? "whitelist" : "full")}>
+                <option value="full">全文</option>
+                <option value="whitelist">レス番のみ</option>
+              </select>
+            </label>
+            <label className="viewer-toggle" title="ビュワーの下に、ホワイトリストに無い ID の新着レスを表示する (OBS には出ません)">
+              <input type="checkbox" checked={latestPanelOpen} onChange={(e) => setLatestPanelOpen(e.target.checked)} />
+              最新レス欄
+            </label>
+            <label className="viewer-toggle" title="新しいものが届いたら一番下へ移動する">
+              <input type="checkbox" checked={viewerAutoScroll} onChange={(e) => setViewerAutoScroll(e.target.checked)} />
+              自動スクロール
+            </label>
+            <button onClick={() => setViewerItems([])} title="ビュワーの表示を消します">クリア</button>
+          </div>
+          <div className="viewer-list" ref={viewerListRef}>
+            {viewerItems.filter((it) => viewerFilter[it.source]).length === 0 ? (
+              <div className="viewer-empty">
+                まだ表示するものはありません。Twitch のチャット (アドレスバーに twitch.tv/チャンネル名)、YouTube のライブ配信のチャット (ライブ配信の URL) と、
+                配信ホワイトリストに入れた ID のレス (レスを右クリック →「配信ホワイトリストに追加」) がここに流れます。
+                配信ホワイトリスト: {Object.keys(broadcastWhitelist).length}件
+              </div>
+            ) : viewerItems.filter((it) => viewerFilter[it.source]).map((it) => (
+              <div
+                key={it.seq}
+                className={`viewer-item src-${it.source}${it.event ? ` viewer-event ev-${it.event.kind}` : ""}`}
+                onClick={(e) => {
+                  if (handleBodyContentClick(e)) return;
+                  const idx = threadTabs.findIndex((t) => t.threadUrl === it.threadUrl);
+                  if (idx >= 0) { onTabClick(idx); setSelectedResponse(it.no); }
+                }}
+                title="クリックでそのタブへ移動"
+              >
+                <div className="viewer-meta">
+                  {it.event ? <span className="viewer-site">{it.event.label}</span> : viewerShow.site && <span className="viewer-site">{it.site}</span>}
+                  {viewerShow.where && <span className="viewer-where">{it.where}</span>}
+                  {!isChatSource(it.source) && <span className="viewer-no">{it.no}</span>}
+                  {viewerShow.badges && it.badges && it.badges.length > 0 && (
+                    <span className="viewer-badges">
+                      {it.badges.map((b, i) => <img key={i} src={`${b.url}/1`} srcSet={`${b.url}/1 1x, ${b.url}/2 2x`} alt={b.title} title={b.title} referrerPolicy="no-referrer" />)}
+                    </span>
+                  )}
+                  <span className="viewer-name" style={it.color ? { color: it.color } : undefined}>{it.name}</span>
+                  {viewerShow.id && it.uid && <span className="viewer-uid" style={{ color: idHighlights[it.uid] ?? undefined }}>ID:{it.uid}</span>}
+                  {viewerShow.time && <span className="viewer-time">{it.time}</span>}
+                </div>
+                {it.event && <div className="viewer-event-summary">{it.event.summary}</div>}
+                {(!it.event || it.text) && <div className="viewer-text" dangerouslySetInnerHTML={{ __html: viewerBodyHtml(it) }} />}
+                {isChatSource(it.source) && viewerTwitchClickToLoad && !viewerRevealed.has(it.seq) && (viewerThumbs || viewerCards) && URL_IN_TEXT_RE.test(it.text) && (
+                  <button className="viewer-media-reveal" onClick={(e) => { e.stopPropagation(); setViewerRevealed((prev) => new Set(prev).add(it.seq)); }} title="この発言のリンクの画像・カードを読み込みます">画像・カードを表示</button>
+                )}
+              </div>
+            ))}
+          </div>
+          {latestPanelOpen && (
+            <div className="viewer-latest" style={{ height: latestPanelHeight }}>
+              <div className="viewer-latest-resize" onMouseDown={beginLatestResize} title="ドラッグで高さを変えます" />
+              <div className="viewer-latest-head">
+                <span>スレの最新レス</span>
+                <span className="viewer-latest-hint">開いているスレの新着のうち、ホワイトリストに無い ID のもの (OBS には出ません)</span>
+                <span className="viewer-grow" />
+                <button onClick={() => setLatestItems([])}>クリア</button>
+              </div>
+              <div className="viewer-latest-list" ref={latestListRef}>
+                {latestItems.length === 0 ? (
+                  <div className="viewer-empty">まだありません</div>
+                ) : latestItems.map((it) => (
+                  <div
+                    key={it.seq}
+                    className={`viewer-latest-item src-${it.source}`}
+                    onClick={() => {
+                      const idx = threadTabs.findIndex((t) => t.threadUrl === it.threadUrl);
+                      if (idx >= 0) { onTabClick(idx); setSelectedResponse(it.no); }
+                    }}
+                    title={it.text}
+                  >
+                    {viewerShow.time && <span className="viewer-time">{it.time.replace(/^\S+\s+/, "")}</span>}
+                    {viewerShow.site && <span className="viewer-site">{it.site}</span>}
+                    <span className="viewer-no">{it.no}</span>
+                    {viewerShow.id && it.uid && <span className="viewer-uid">ID:{it.uid}</span>}
+                    <span className="viewer-latest-text">{it.text}</span>
+                    {it.uid && !broadcastWhitelist[it.uid] && (
+                      <button
+                        className="viewer-latest-wl"
+                        onClick={(e) => { e.stopPropagation(); addToWhitelist([it.uid]); }}
+                        title="この ID を配信ホワイトリストに入れる"
+                      >WLに入れる</button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </section>
+        ) : activePaneView === "threads" ? (
         <section id="boardPane" className="pane threads" onMouseDown={() => setFocusedPane("threads")} style={{ '--fs-delta': `${threadsFontSize - 12}px` } as React.CSSProperties}>
           <div className="threads-toolbar">
-            <div className="search-with-history" style={{ flex: 1 }}>
+            <div className="search-with-history lf-flex1">
               <input
                 ref={threadSearchRef}
                 className="thread-search"
@@ -6638,7 +8486,7 @@ export default function App() {
                     }
                   }}
                   placeholder="NGワード (例: BE:12345)"
-                  style={{ flex: 1 }}
+                  className="lf-flex1"
                 />
                 <button onClick={() => { addNgEntry("thread_words", threadNgInput, "hide"); setThreadNgInput(""); }}>追加</button>
               </div>
@@ -6849,18 +8697,16 @@ export default function App() {
                   }}
                   title="字幕"
                 ><Subtitles size={14} /></button>
-                {obsIntegrationEnabled && (
-                  <button
-                    className={`title-action-btn ${broadcastVisible ? "active" : ""}`}
-                    onClick={toggleBroadcastWindow}
-                    title="OBS連携ウィンドウ"
-                  ><Cast size={14} /></button>
-                )}
                 <button
                   className={`title-action-btn ${ttsEnabled ? "active" : ""}`}
                   onClick={() => setTtsEnabled(!ttsEnabled)}
-                  title={`読み上げ ${ttsEnabled ? "ON" : "OFF"}`}
+                  title={`すべてのスレ・チャンネルの読み上げ ${ttsEnabled ? "ON" : "OFF"}`}
                 ><Volume2 size={14} /></button>
+                <button
+                  className={`title-action-btn ${threadTabs[activeTabIndex].ttsOff ? "" : "active"}`}
+                  onClick={() => toggleTabTts(threadTabs[activeTabIndex].threadUrl)}
+                  title={`このタブ (スレ・チャンネル) の読み上げ ${threadTabs[activeTabIndex].ttsOff ? "OFF" : "ON"}`}
+                >{threadTabs[activeTabIndex].ttsOff ? <EarOff size={14} /> : <Ear size={14} />}</button>
                 <button
                   className="title-action-btn"
                   onClick={() => void ttsStop()}
@@ -6881,7 +8727,7 @@ export default function App() {
           {responseSearchMode && (
             <div className="response-search-bar">
               <span className="search-mode-label">{responseSearchMode === "extract" ? "レス抽出:" : "スレ内検索:"}</span>
-              <div className="search-with-history" style={{ flex: 1 }}>
+              <div className="search-with-history lf-flex1">
                 <input
                   ref={responseSearchRef}
                   className="thread-search"
@@ -6946,65 +8792,8 @@ export default function App() {
               onScroll={onResponseScroll}
               onContextMenu={onResponseAreaContextMenu}
               onClick={(e) => {
+                if (handleBodyContentClick(e)) return;
                 const target = e.target as HTMLElement;
-                // body-link: open 5ch thread URLs in tab, others in external browser
-                const bodyLink = target.closest<HTMLAnchorElement>("a.body-link");
-                if (bodyLink) {
-                  e.preventDefault();
-                  const url = bodyLink.getAttribute("href");
-                  if (url) {
-                    let _p = "";
-                    try { _p = new URL(url, "https://dummy").pathname; } catch { /* ignore */ }
-                    if (/\/(test|bbs)\/read\.cgi\/[^/]+\/[^/]+/.test(_p)) {
-                      const title = url.split("/").pop() || url;
-                      openThreadInTab(url, title);
-                      return;
-                    }
-                    // 板トップURL(スレ一覧ページ)は上のスレURL判定には一致しないため、
-                    // 自サイト(5ch/したらば/JPNKN)のURLであれば内部で板として開く。
-                    // これに一致しない他サイトのURLは従来どおり外部ブラウザで開く
-                    if (isSameSiteBoardUrl(url)) {
-                      const slug = _p.replace(/\/+$/, "").split("/").filter(Boolean).pop() || url;
-                      selectBoard({ boardName: slug, url });
-                      return;
-                    }
-                  }
-                  if (url && /\.(jpe?g|png|gif|webp|bmp)(\?|$)/i.test(url) && isTauriRuntime()) {
-                    void invoke("open_image_popup", { url }).catch(() => window.open(url, "_blank"));
-                    return;
-                  }
-                  if (url && isTauriRuntime()) {
-                    void invoke("open_external_url", { url }).catch(() => window.open(url, "_blank"));
-                  } else if (url) {
-                    window.open(url, "_blank");
-                  }
-                  return;
-                }
-                // thumb image click: open in popup window
-                if (target.classList.contains("response-thumb") || target.closest<HTMLElement>("[data-lightbox-src]")) {
-                  e.preventDefault();
-                  const thumbLink = target.closest<HTMLElement>("[data-lightbox-src]");
-                  const url = thumbLink?.dataset.lightboxSrc ?? "";
-                  if (url && isTauriRuntime()) {
-                    void invoke("open_image_popup", { url }).catch(() => window.open(url, "_blank"));
-                  } else if (url) {
-                    window.open(url, "_blank");
-                  }
-                  return;
-                }
-                // Size-gated image click: reveal the image
-                const gateBlocked = target.closest<HTMLElement>(".thumb-gate-blocked");
-                if (gateBlocked) {
-                  e.preventDefault();
-                  const src = gateBlocked.dataset.revealSrc;
-                  if (src) {
-                    const parent = gateBlocked.closest<HTMLElement>(".thumb-size-gate");
-                    if (parent) {
-                      parent.innerHTML = `<img class="response-thumb" src="${src}" loading="lazy" alt="" />`;
-                    }
-                  }
-                  return;
-                }
                 const anchor = target.closest<HTMLElement>(".anchor-ref");
                 if (!anchor) return;
                 const ids = getAnchorIds(anchor);
@@ -7181,8 +8970,7 @@ export default function App() {
                             )}
                             {mainHeaderVis.count && (
                             <span
-                              className="response-id-count cnt"
-                              style={{ color: count >= 5 ? '#cc3333' : count >= 2 ? '#3366ff' : undefined }}
+                              className={`response-id-count cnt${count >= 5 ? " id-count-many" : count >= 2 ? " id-count-some" : ""}`}
                             >
                               ({idSeqMap.get(r.id) ?? 1}/{count})
                             </span>
@@ -7281,7 +9069,7 @@ export default function App() {
                   } catch (e) {
                     setComposeResult({ ok: false, message: `診断エラー: ${String(e)}` });
                   }
-                }} style={{ fontSize: "0.85em" }}>接続診断</button>
+                }} className="lf-fs0_85em">接続診断</button>
               )}
             </div>
             {!composePreview ? (
@@ -7306,7 +9094,7 @@ export default function App() {
         )}
       </section>
       <footer className="status-bar">
-        {activePaneView !== "threads" && activeTabIndex >= 0 && activeTabIndex < threadTabs.length ? (
+        {activePaneView === "responses" && activeTabIndex >= 0 && activeTabIndex < threadTabs.length ? (
           <div className="status-nav-bar" style={{ '--fs-delta': `${responsesFontSize - 12}px` } as React.CSSProperties}>
             <span className="nav-info">
               着:{visibleResponseItems.length}{ngFilteredCount > 0 ? `(NG${ngFilteredCount})` : ""}
@@ -7432,7 +9220,7 @@ export default function App() {
                             </select>
                           )}
                           {scope !== "global" && <span className="ng-mode-label" style={{ background: scope === "board" ? "#2a7a2a" : "#2a5a9a", color: "#fff" }}>{scope === "board" ? "板" : "スレ"}</span>}
-                          {isRegex && <span className="ng-mode-label" style={{ background: "#6b4c9a", color: "#fff" }}>正規表現</span>}
+                          {isRegex && <span className="ng-mode-label lf-bg6b4c9a-c-fff">正規表現</span>}
                           <span>{maskDisplay(v)}</span>
                           <button className="ng-remove" onClick={() => removeNgEntry(type, v)}>×</button>
                         </li>
@@ -7605,7 +9393,7 @@ export default function App() {
             );
           })()}
           {/* ----- 配信ホワイトリスト (OBS連携が有効なときだけ表示) ----- */}
-          {obsIntegrationEnabled && (() => {
+          {(() => {
             // ID欄を右クリックしたときはそのID、本文などを右クリックしたときはそのレスのID
             // (レス表示欄でIDを非表示にしていても登録できるようにするため)
             const wlId = responseMenu.resId
@@ -7613,11 +9401,7 @@ export default function App() {
             if (!wlId) return null;
             return (
               <button onClick={() => {
-                setBroadcastWhitelist((prev) => {
-                  const next = { ...prev };
-                  if (next[wlId]) delete next[wlId]; else next[wlId] = true;
-                  return next;
-                });
+                if (broadcastWhitelist[wlId]) removeFromWhitelist(wlId); else addToWhitelist([wlId]);
                 setResponseMenu(null);
               }}>{broadcastWhitelist[wlId] ? `ID:${wlId} を配信ホワイトリストから解除` : `ID:${wlId} を配信ホワイトリストに追加`}</button>
             );
@@ -7659,7 +9443,7 @@ export default function App() {
           {/* ----- セパレーター ----- */}
           <hr className="menu-sep" />
           {/* このレスから読み上げ（レス番号上のみ） */}
-          {responseMenu.isOnResNo && responseMenu.responseId > 0 && (ttsMode !== "off" || diagnosticsEnabled) && (
+          {responseMenu.isOnResNo && responseMenu.responseId > 0 && ttsMode !== "off" && (
             <button onClick={() => {
               const startNo = responseMenu.responseId;
               const items = visibleResponseItems.filter((r) => r.id >= startNo);
@@ -7667,32 +9451,11 @@ export default function App() {
               const site = detectSiteType(curThreadUrl);
               setResponseMenu(null);
               setStatus(`レス ${startNo} から読み上げ開始 (${items.length}件)`);
-              // テスト機能 (診断モード: debug ビルドまたは LIVEFAKE_DIAG=1 のときのみ):
-              // 該当レスを「新着レス」として扱い、自動更新時と同じ経路で新着レスペイン・字幕ウィンドウへ流す。
-              // 新着ペイン・字幕でのカード表示などの見え方を、実際の新着を待たずに検証するためのもの。
-              if (diagnosticsEnabled) {
-                const tabTitle = threadTabs[activeTabIndex]?.title ?? "";
-                const arrivals: ArrivalItem[] = items
-                  .filter((item) => showsArrivalResNo(curThreadUrl, item.id))
-                  .map((item) => makeArrival({ responseNo: item.id, name: item.name, mail: item.mail, dateAndId: item.time, body: item.text }, tabTitle, curThreadUrl, fetchedResponses));
-                if (arrivals.length > 0) {
-                  const queueWasEmpty = arrivalQueueRef.current.length === 0;
-                  arrivalQueueRef.current.push(...arrivals);
-                  setArrivalQueueCount(arrivalQueueRef.current.length);
-                  pushBroadcastArrivals(arrivals);
-                  if (!arrivalPausedRef.current && !arrivalTimerRef.current && (currentArrivalItemRef.current === null || queueWasEmpty)) {
-                    advanceToNextArrival();
-                  }
-                }
-              }
-              if (ttsMode === "off") return;
               void (async () => {
                 await ttsStop();
                 for (const item of items) {
                   if (!speaksResNo(curThreadUrl, item.id)) continue;
-                  const prefix = site === "shitaraba" ? `したらば${item.id}番さん`
-                    : site === "jpnkn" ? `ジャパンくん${item.id}番さん`
-                    : `レス${item.id}番さん`;
+                  const prefix = speakPrefixFor(site, item.id, item.name);
                   const idMatch = item.time.match(/ID:([^\s]+)/);
                   if (ngResultMap.get(item.id)?.mode === "abone") {
                     if (ngAboneSpeakEnabled) ttsSpeak("あぼーん", prefix, undefined, { name: item.name, id: idMatch ? idMatch[1] : "" });
@@ -7701,7 +9464,30 @@ export default function App() {
                   ttsSpeak(item.text, prefix, undefined, { name: item.name, id: idMatch ? idMatch[1] : "" });
                 }
               })();
-            }}>{diagnosticsEnabled ? "このレスから読み上げ（テスト: 新着として流す）" : "このレスから読み上げ"}</button>
+            }}>このレスから読み上げ</button>
+          )}
+          {/* このレスから新着として流す（レス番号上のみ）: 自動更新で届いた新着と同じ経路で、新着レスペイン・字幕へ流す。
+              配信ホワイトリストの ID のレスはビュワー・OBS 表示にも流れる (本物の新着と同じ扱い)。読み上げはしない */}
+          {responseMenu.isOnResNo && responseMenu.responseId > 0 && (
+            <button onClick={() => {
+              const startNo = responseMenu.responseId;
+              const items = visibleResponseItems.filter((r) => r.id >= startNo);
+              const curThreadUrl = threadTabs[activeTabIndex]?.threadUrl ?? threadUrl;
+              const tabTitle = threadTabs[activeTabIndex]?.title ?? "";
+              setResponseMenu(null);
+              const arrivals: ArrivalItem[] = items
+                .filter((item) => showsArrivalResNo(curThreadUrl, item.id))
+                .map((item) => makeArrival({ responseNo: item.id, name: item.name, mail: item.mail, dateAndId: item.time, body: item.text }, tabTitle, curThreadUrl, fetchedResponses));
+              setStatus(`レス ${startNo} から新着として流します (${arrivals.length}件)`);
+              if (arrivals.length === 0) return;
+              const queueWasEmpty = arrivalQueueRef.current.length === 0;
+              arrivalQueueRef.current.push(...arrivals);
+              setArrivalQueueCount(arrivalQueueRef.current.length);
+              pushBroadcastArrivals(arrivals);
+              if (!arrivalPausedRef.current && !arrivalTimerRef.current && (currentArrivalItemRef.current === null || queueWasEmpty)) {
+                advanceToNextArrival();
+              }
+            }} title="このレスから後を、新着レスとして新着レスペイン・字幕に流します (配信ホワイトリストの ID のレスはビュワー・OBS 表示にも流れます)">このレスから新着として流す</button>
           )}
           {/* ----- セパレーター ----- */}
           <hr className="menu-sep" />
@@ -7736,6 +9522,11 @@ export default function App() {
       )}
       {tabMenu && (
         <div className="thread-menu tab-menu" style={{ left: tabMenu.x, top: tabMenu.y }} onClick={(e) => e.stopPropagation()}>
+          {threadTabs[tabMenu.tabIndex] && (
+            <button onClick={() => { toggleTabTts(threadTabs[tabMenu.tabIndex].threadUrl); setTabMenu(null); }}>
+              {threadTabs[tabMenu.tabIndex].ttsOff ? "このタブの読み上げをオンにする" : "このタブの読み上げをオフにする"}
+            </button>
+          )}
           <button onClick={() => { closeTab(tabMenu.tabIndex); setTabMenu(null); }}>タブを閉じる</button>
           <button onClick={() => { closeOtherTabs(tabMenu.tabIndex); setTabMenu(null); }} disabled={threadTabs.length <= 1}>
             他のタブを閉じる
@@ -8076,28 +9867,28 @@ export default function App() {
       })()}
       {aboutOpen && (
         <div className="lightbox-overlay" onClick={() => setAboutOpen(false)}>
-          <div className="settings-panel" onClick={(e) => e.stopPropagation()} style={{ width: 360, textAlign: "center" }}>
+          <div className="settings-panel lf-w360-ta-center" onClick={(e) => e.stopPropagation()}>
             <header className="settings-header">
               <strong>バージョン情報</strong>
               <button onClick={() => setAboutOpen(false)}>閉じる</button>
             </header>
-            <div style={{ padding: "24px 16px", display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
-              <img src="/icon.png" alt="LiveFake" style={{ width: 64, height: 64 }} />
-              <div style={{ fontSize: "1.3em", fontWeight: "bold" }}>LiveFake</div>
-              <div style={{ color: "var(--sub)" }}>v{currentVersion}</div>
-              <div style={{ fontSize: "0.85em", color: "var(--sub)", lineHeight: 1.6 }}>
-                5ch専用ブラウザ<br />
+            <div className="lf-p24-16-d-flex-fd-column-ai-center-gap12">
+              <img src="/icon.png" alt="LiveFake" className="lf-w64-h64" />
+              <div className="lf-fs1_3em-fw-bold">LiveFake</div>
+              <div className="lf-c-sub">v{currentVersion}</div>
+              <div className="lf-fs0_85em-c-sub-lh1_6">
+                実況向け掲示板ブラウザ＋Twitchビュワー<br />
                 Runtime: {runtimeState}
               </div>
               <div style={{ fontSize: "0.85em", color: updateResult?.hasUpdate ? "#cc3300" : "var(--sub)", marginTop: 4 }}>
                 {updateProbe === "running..." ? "更新確認中..." : updateResult ? (updateResult.hasUpdate ? `新しいバージョンがあります: v${updateResult.latestVersion}` : `最新版です (v${currentVersion})`) : ""}
               </div>
               {updateResult?.hasUpdate && (
-                <button onClick={openDownloadPage} style={{ marginTop: 4 }}>
+                <button onClick={openDownloadPage} className="lf-mt4">
                   ダウンロードページを開く
                 </button>
               )}
-              <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+              <div className="lf-d-flex-gap8-mt4">
                 <button
                   onClick={() => {
                     const url = GITHUB_RELEASE_URL;
@@ -8210,22 +10001,21 @@ export default function App() {
                     <option value="dark">ダーク</option>
                   </select>
                 </label>
-                <label className="settings-row" style={{ alignItems: "flex-start" }}>
-                  <span style={{ paddingTop: 4 }}>フォント</span>
+                <label className="settings-row lf-ai-flex-start">
+                  <span className="lf-pt4">フォント</span>
                   <div className="font-picker">
-                    <div style={{ display: "flex", gap: 4 }}>
+                    <div className="lf-d-flex-gap4">
                       <input
                         type="text"
-                        className="font-picker-input"
+                        className="font-picker-input lf-grow"
                         value={fontPickerInput}
                         onChange={(e) => { setFontPickerInput(e.target.value); setFontPickerOpen(true); }}
                         onFocus={() => setFontPickerOpen(true)}
                         onBlur={() => setTimeout(() => setFontPickerOpen(false), 150)}
                         placeholder="デフォルト (入力またはクリック)"
-                        style={{ flex: 1, minWidth: 0 }}
                       />
                       {fontFamily && (
-                        <button style={{ flexShrink: 0 }} onClick={() => { setFontFamily(""); setFontPickerInput(""); }}>×</button>
+                        <button className="lf-shrink0" onClick={() => { setFontFamily(""); setFontPickerInput(""); }}>×</button>
                       )}
                     </div>
                     {fontPickerOpen && (() => {
@@ -8311,7 +10101,7 @@ export default function App() {
                   <input type="checkbox" checked={showBoardButtons} onChange={(e) => setShowBoardButtons(e.target.checked)} />
                   <span>板ボタンバー</span>
                 </label>
-                <label className="settings-row" title="板タブ・スレタブの左端に、サイトごとの色の線を付けます (5ch=橙 / したらば=緑 / JPNKN=青)">
+                <label className="settings-row" title="板タブ・スレタブの左端に、サイトごとの色の線を付けます (5ch=橙 / したらば=緑 / JPNKN=青 / Twitch=紫)">
                   <input type="checkbox" checked={tabSiteColors} onChange={(e) => setTabSiteColors(e.target.checked)} />
                   <span>タブの左端にサイトごとの色の線を付ける</span>
                 </label>
@@ -8334,7 +10124,7 @@ export default function App() {
                   <span>取得元URL</span>
                   <input
                     type="text"
-                    style={{ flex: 1 }}
+                    className="lf-flex1"
                     value={bbsmenuUrl}
                     onChange={(e) => setBbsmenuUrl(e.target.value)}
                     placeholder={DEFAULT_BBSMENU_URL}
@@ -8354,7 +10144,7 @@ export default function App() {
                   <span>したらば</span>
                   <input
                     type="text"
-                    style={{ flex: 1 }}
+                    className="lf-flex1"
                     value={shitarabaHost}
                     onChange={(e) => setShitarabaHost(e.target.value)}
                     onBlur={() => {
@@ -8378,7 +10168,7 @@ export default function App() {
                   <span>JPNKN</span>
                   <input
                     type="text"
-                    style={{ flex: 1 }}
+                    className="lf-flex1"
                     value={jpnknHost}
                     onChange={(e) => setJpnknHost(e.target.value)}
                     onBlur={() => {
@@ -8415,7 +10205,7 @@ export default function App() {
                   <span>文字サイズ (レスヘッダ)</span>
                   <input type="number" value={responsesHeaderFontSize} min={8} max={20} onChange={(e) => setResponsesHeaderFontSize(Number(e.target.value))} />
                 </label>
-                <div className="settings-row" style={{ flexDirection: "column", alignItems: "stretch", gap: 4 }}>
+                <div className="settings-row settings-row-stack">
                   <span>レスヘッダに表示する項目（非表示の項目は詰めて表示）</span>
                   {headerVisRows(mainHeaderVis, setMainHeaderVis, { watchoi: true })}
                 </div>
@@ -8425,18 +10215,18 @@ export default function App() {
                 </label>
                 <label className="settings-row">
                   <span>レスID 文字サイズ補正 (0=同じ、±px)</span>
-                  <input type="number" value={resIdFontSize} min={-20} max={24} onChange={(e) => setResIdFontSize(Number(e.target.value))} style={{ width: 60 }} />
+                  <input type="number" value={resIdFontSize} min={-20} max={24} onChange={(e) => setResIdFontSize(Number(e.target.value))} className="lf-w60" />
                 </label>
-                <label className="settings-row" style={{ alignItems: "flex-start" }}>
-                  <span style={{ paddingTop: 4 }}>レスID フォント</span>
+                <label className="settings-row lf-ai-flex-start">
+                  <span className="lf-pt4">レスID フォント</span>
                   <div className="font-picker">
-                    <div style={{ display: "flex", gap: 4 }}>
-                      <input type="text" className="font-picker-input" value={resIdFontPickerInput}
+                    <div className="lf-d-flex-gap4">
+                      <input type="text" className="font-picker-input lf-grow" value={resIdFontPickerInput}
                         onChange={(e) => { setResIdFontPickerInput(e.target.value); setResIdFontPickerOpen(true); }}
                         onFocus={() => setResIdFontPickerOpen(true)}
                         onBlur={() => setTimeout(() => setResIdFontPickerOpen(false), 150)}
-                        placeholder="デフォルト (入力またはクリック)" style={{ flex: 1, minWidth: 0 }} />
-                      {resIdFontFamily && <button style={{ flexShrink: 0 }} onClick={() => { setResIdFontFamily(""); setResIdFontPickerInput(""); }}>×</button>}
+                        placeholder="デフォルト (入力またはクリック)" />
+                      {resIdFontFamily && <button className="lf-shrink0" onClick={() => { setResIdFontFamily(""); setResIdFontPickerInput(""); }}>×</button>}
                     </div>
                     {resIdFontPickerOpen && (() => {
                       const q = resIdFontPickerInput.toLowerCase();
@@ -8490,7 +10280,7 @@ export default function App() {
                 </label>
                 <div className="settings-row">
                   <span>画像保存先フォルダ</span>
-                  <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11, color: "#888" }}>{imageSaveFolder || "(未設定 — 毎回選択)"}</span>
+                  <span className="lf-flex1-ov-hidden-to-ellipsis-ws-nowrap-fs11-c-text-secondary">{imageSaveFolder || "(未設定 — 毎回選択)"}</span>
                   <button onClick={() => {
                     if (!isTauriRuntime()) return;
                     invoke<string | null>("open_folder_dialog").then((p) => { if (p) setImageSaveFolder(p); }).catch((e) => console.warn("open_folder_dialog:", e));
@@ -8504,7 +10294,7 @@ export default function App() {
                   <span>有効なルール数</span>
                   <span>{imageUrlRules.length} 件</span>
                 </div>
-                <div className="settings-row" style={{ gap: 8 }}>
+                <div className="settings-row lf-gap8">
                   <button onClick={() => {
                     if (!isTauriRuntime()) return;
                     invoke<UrlReplaceRule[]>("reset_image_url_replace")
@@ -8518,7 +10308,7 @@ export default function App() {
                     }).catch(() => {});
                   }}>データフォルダを開く</button>
                 </div>
-                <div style={{ fontSize: "0.8em", color: "var(--sub)", marginTop: 4 }}>
+                <div className="lf-fs0_8em-c-sub-mt4">
                   データフォルダ内の ImageViewURLReplace.txt を編集してアプリを再起動すると反映されます
                 </div>
               </fieldset>
@@ -8536,30 +10326,30 @@ export default function App() {
                   <span>X（Twitter）のポストをカード表示・動画をその場で再生（x.com / twimg.com へ通信します）</span>
                 </label>
                 {(ogpCardsEnabled || tweetCardsEnabled) && (
-                  <div className="settings-row" style={{ flexDirection: "column", alignItems: "stretch", gap: 4 }}>
-                    <div style={{ fontSize: 11, color: "var(--text-secondary, #888)" }}>
+                  <div className="settings-row settings-row-stack">
+                    <div className="settings-note">
                       カード表示の通信先ドメイン。ブロックは常に除外、許可は空なら全ドメイン・登録があればそのドメインのみ通信します。
                       私有ネットワーク・ローカルアドレスへは設定に関わらず通信しません。
                     </div>
-                    <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                      <input type="text" value={ogpDomainInput} onChange={(e) => setOgpDomainInput(e.target.value)} placeholder="example.com" style={{ width: 180 }} />
+                    <div className="lf-d-flex-gap4-ai-center">
+                      <input type="text" value={ogpDomainInput} onChange={(e) => setOgpDomainInput(e.target.value)} placeholder="example.com" className="lf-w180" />
                       <button onClick={() => { addOgpDomain("allow", ogpDomainInput); setOgpDomainInput(""); }}>許可に追加</button>
                       <button onClick={() => { addOgpDomain("block", ogpDomainInput); setOgpDomainInput(""); }}>ブロックに追加</button>
                     </div>
                     {ogpDomainFilters.allow.length > 0 && (
-                      <div style={{ fontSize: 11 }}>
+                      <div className="lf-fs11">
                         許可: {ogpDomainFilters.allow.map((d) => (
-                          <span key={`a-${d}`} style={{ display: "inline-flex", alignItems: "center", gap: 2, marginRight: 6 }}>
-                            {d}<button style={{ fontSize: 10, padding: "0 4px" }} onClick={() => removeOgpDomain("allow", d)}>×</button>
+                          <span key={`a-${d}`} className="lf-d-inline-flex-ai-center-gap2-mr6">
+                            {d}<button className="lf-fs10-p0-4" onClick={() => removeOgpDomain("allow", d)}>×</button>
                           </span>
                         ))}
                       </div>
                     )}
                     {ogpDomainFilters.block.length > 0 && (
-                      <div style={{ fontSize: 11 }}>
+                      <div className="lf-fs11">
                         ブロック: {ogpDomainFilters.block.map((d) => (
-                          <span key={`b-${d}`} style={{ display: "inline-flex", alignItems: "center", gap: 2, marginRight: 6 }}>
-                            {d}<button style={{ fontSize: 10, padding: "0 4px" }} onClick={() => removeOgpDomain("block", d)}>×</button>
+                          <span key={`b-${d}`} className="lf-d-inline-flex-ai-center-gap2-mr6">
+                            {d}<button className="lf-fs10-p0-4" onClick={() => removeOgpDomain("block", d)}>×</button>
                           </span>
                         ))}
                       </div>
@@ -8580,30 +10370,30 @@ export default function App() {
                   <input type="checkbox" checked={arrivalCardsEnabled} onChange={(e) => setArrivalCardsEnabled(e.target.checked)} />
                   <span>新着レスペインにもカードを表示（OGP / X カードが ON のとき有効）</span>
                 </label>
-                <div className="settings-row" style={{ flexDirection: "column", alignItems: "stretch", gap: 4 }}>
-                  <div style={{ fontSize: 11, color: "var(--text-secondary, #888)" }}>
+                <div className="settings-row settings-row-stack">
+                  <div className="settings-note">
                     新着レスペインの自動スクロール: 収まらない長文は「待ち時間」の後、最下行まで「スクロール速度」でゆっくり流し、到達後の表示時間が過ぎたら次のレスへ進みます。
                   </div>
                   {scrollTimingRows(arrivalTiming, setArrivalTiming)}
                 </div>
-                <div className="settings-row" style={{ flexDirection: "column", alignItems: "stretch", gap: 4 }}>
+                <div className="settings-row settings-row-stack">
                   <span>新着レスペインのヘッダに表示する項目（非表示の項目は詰めて表示）</span>
-                  {headerVisRows(arrivalHeaderVis, setArrivalHeaderVis, { threadTitle: true })}
+                  {headerVisRows(arrivalHeaderVis, setArrivalHeaderVis, { threadTitle: true, badges: true })}
                 </div>
                 <label className="settings-row">
                   <span>新着ID 文字サイズ補正 (0=同じ、±px)</span>
-                  <input type="number" value={newArrivalIdFontSize} min={-20} max={24} onChange={(e) => setNewArrivalIdFontSize(Number(e.target.value))} style={{ width: 60 }} />
+                  <input type="number" value={newArrivalIdFontSize} min={-20} max={24} onChange={(e) => setNewArrivalIdFontSize(Number(e.target.value))} className="lf-w60" />
                 </label>
-                <label className="settings-row" style={{ alignItems: "flex-start" }}>
-                  <span style={{ paddingTop: 4 }}>新着ID フォント</span>
+                <label className="settings-row lf-ai-flex-start">
+                  <span className="lf-pt4">新着ID フォント</span>
                   <div className="font-picker">
-                    <div style={{ display: "flex", gap: 4 }}>
-                      <input type="text" className="font-picker-input" value={newArrivalIdFontPickerInput}
+                    <div className="lf-d-flex-gap4">
+                      <input type="text" className="font-picker-input lf-grow" value={newArrivalIdFontPickerInput}
                         onChange={(e) => { setNewArrivalIdFontPickerInput(e.target.value); setNewArrivalIdFontPickerOpen(true); }}
                         onFocus={() => setNewArrivalIdFontPickerOpen(true)}
                         onBlur={() => setTimeout(() => setNewArrivalIdFontPickerOpen(false), 150)}
-                        placeholder="デフォルト (入力またはクリック)" style={{ flex: 1, minWidth: 0 }} />
-                      {newArrivalIdFontFamily && <button style={{ flexShrink: 0 }} onClick={() => { setNewArrivalIdFontFamily(""); setNewArrivalIdFontPickerInput(""); }}>×</button>}
+                        placeholder="デフォルト (入力またはクリック)" />
+                      {newArrivalIdFontFamily && <button className="lf-shrink0" onClick={() => { setNewArrivalIdFontFamily(""); setNewArrivalIdFontPickerInput(""); }}>×</button>}
                     </div>
                     {newArrivalIdFontPickerOpen && (() => {
                       const q = newArrivalIdFontPickerInput.toLowerCase();
@@ -8677,21 +10467,21 @@ export default function App() {
                   <input type="number" min={10} max={96} value={subtitleBodyFontSize} onChange={(e) => {
                     const v = Number(e.target.value);
                     setSubtitleBodyFontSize(v);
-                  }} style={{ width: 60 }} />
+                  }} className="lf-w60" />
                 </div>
                 <div className="settings-row">
                   <span>メタフォントサイズ</span>
                   <input type="number" min={8} max={48} value={subtitleMetaFontSize} onChange={(e) => {
                     const v = Number(e.target.value);
                     setSubtitleMetaFontSize(v);
-                  }} style={{ width: 60 }} />
+                  }} className="lf-w60" />
                 </div>
                 <div className="settings-row">
                   <span>背景透明度</span>
-                  <input type="range" min={0.1} max={1.0} step={0.05} value={subtitleOpacity} onChange={(e) => {
+                  <input type="range" min={0} max={1.0} step={0.05} value={subtitleOpacity} onChange={(e) => {
                     const v = Number(e.target.value);
                     setSubtitleOpacity(v);
-                  }} style={{ width: 120 }} />
+                  }} className="lf-w120" />
                   <span>{subtitleOpacity.toFixed(2)}</span>
                 </div>
                 <div className="settings-row">
@@ -8700,27 +10490,27 @@ export default function App() {
                     setSubtitleAlwaysOnTop(e.target.checked);
                   }} />
                 </div>
-                <div className="settings-row" style={{ flexDirection: "column", alignItems: "stretch", gap: 4 }}>
+                <div className="settings-row settings-row-stack">
                   <span>字幕のヘッダに表示する項目（非表示の項目は詰めて表示）</span>
-                  {headerVisRows(subtitleHeaderVis, setSubtitleHeaderVis, { threadTitle: true })}
+                  {headerVisRows(subtitleHeaderVis, setSubtitleHeaderVis, { threadTitle: true, badges: true })}
                 </div>
                 <div className="settings-row">
                   <span>ID 文字サイズ補正 (0=メタと同じ、±px)</span>
                   <input type="number" min={-48} max={48} value={subtitleIdFontSize} onChange={(e) => {
                     const v = Number(e.target.value);
                     setSubtitleIdFontSize(v);
-                  }} style={{ width: 60 }} />
+                  }} className="lf-w60" />
                 </div>
-                <div className="settings-row" style={{ alignItems: "flex-start" }}>
-                  <span style={{ paddingTop: 4 }}>ID フォント</span>
+                <div className="settings-row lf-ai-flex-start">
+                  <span className="lf-pt4">ID フォント</span>
                   <div className="font-picker">
-                    <div style={{ display: "flex", gap: 4 }}>
-                      <input type="text" className="font-picker-input" value={subtitleIdFontPickerInput}
+                    <div className="lf-d-flex-gap4">
+                      <input type="text" className="font-picker-input lf-grow" value={subtitleIdFontPickerInput}
                         onChange={(e) => { setSubtitleIdFontPickerInput(e.target.value); setSubtitleIdFontPickerOpen(true); }}
                         onFocus={() => setSubtitleIdFontPickerOpen(true)}
                         onBlur={() => setTimeout(() => setSubtitleIdFontPickerOpen(false), 150)}
-                        placeholder="デフォルト (入力またはクリック)" style={{ flex: 1, minWidth: 0 }} />
-                      {subtitleIdFontFamily && <button style={{ flexShrink: 0 }} onClick={() => {
+                        placeholder="デフォルト (入力またはクリック)" />
+                      {subtitleIdFontFamily && <button className="lf-shrink0" onClick={() => {
                         setSubtitleIdFontFamily(""); setSubtitleIdFontPickerInput("");
                       }}>×</button>}
                     </div>
@@ -8740,6 +10530,13 @@ export default function App() {
                       ) : null;
                     })()}
                   </div>
+                </div>
+                <div className="settings-row">
+                  <span>Twitch のスタンプの大きさ</span>
+                  <input type="number" min={8} max={400} step={1} value={subtitleEmoteSize} onChange={(e) => { const n = Math.round(Number(e.target.value)); if (n >= 8 && n <= 400) setSubtitleEmoteSize(n); }} className="lf-w70" />
+                  <span>px / 巨大化</span>
+                  <input type="number" min={16} max={800} step={1} value={subtitleGiantEmoteSize} onChange={(e) => { const n = Math.round(Number(e.target.value)); if (n >= 16 && n <= 800) setSubtitleGiantEmoteSize(n); }} className="lf-w70" />
+                  <span>px</span>
                 </div>
                 <div className="settings-row">
                   <span>ウィンドウ位置</span>
@@ -8767,8 +10564,8 @@ export default function App() {
                   <input type="checkbox" checked={subtitleSyncEnabled} onChange={(e) => setSubtitleSyncEnabled(e.target.checked)} />
                   <span>新着レスペインと字幕の次レス表示を同期する（両方が最下行まで表示し終えてから、長い方の「スクロール後の表示時間」を待って次へ。字幕を閉じているときは新着ペインの時間で進む）</span>
                 </label>
-                <div className="settings-row" style={{ flexDirection: "column", alignItems: "stretch", gap: 4 }}>
-                  <div style={{ fontSize: 11, color: "var(--text-secondary, #888)" }}>
+                <div className="settings-row settings-row-stack">
+                  <div className="settings-note">
                     字幕の自動スクロール（新着ペインとは別に設定。字幕は文字が大きい分、同じ速度でも時間がかかります）
                   </div>
                   {scrollTimingRows(subtitleTiming, setSubtitleTiming)}
@@ -8798,12 +10595,19 @@ export default function App() {
                 </div>
                 <div className="settings-row">
                   <span>最大文字数 (0=無制限)</span>
-                  <input type="number" min={0} max={300} step={1} value={ttsMaxReadLength} onChange={(e) => setTtsMaxReadLength(Number(e.target.value))} style={{ width: 70 }} />
+                  <input type="number" min={0} max={300} step={1} value={ttsMaxReadLength} onChange={(e) => setTtsMaxReadLength(Number(e.target.value))} className="lf-w70" />
                 </div>
                 <label className="settings-row" title="読み上げ辞書・読み上げ許可リストに一致しないURLを、黙って飛ばす代わりに「URL省略」と読みます。URLが続けて並んでいる場合は1回だけ読みます">
                   <input type="checkbox" checked={ttsUrlOmitEnabled} onChange={(e) => setTtsUrlOmitEnabled(e.target.checked)} />
                   <span>読まないURLを「URL省略」と読む</span>
                 </label>
+                <div className="settings-row" title="掲示板の新着レスの読み上げ方です (Twitch のチャットには関係しません)。「ホワイトリスト以外はレス番のみ」では、配信ホワイトリストに入れた ID のレスは本文まで読み、それ以外のレスは「レスN番さん」のように番号だけを読みます">
+                  <span>掲示板の新着の読み上げ方</span>
+                  <select value={ttsBoardMode} onChange={(e) => setTtsBoardMode(e.target.value === "whitelist" ? "whitelist" : "full")}>
+                    <option value="full">全文を読む (従来)</option>
+                    <option value="whitelist">ホワイトリスト以外はレス番のみ</option>
+                  </select>
+                </div>
                 {ttsMode === "sapi" && (
                   <>
                     <div className="settings-row">
@@ -8817,11 +10621,11 @@ export default function App() {
                     </div>
                     <div className="settings-row">
                       <span>速度 (-10〜+10)</span>
-                      <input type="number" min={-10} max={10} value={sapiRate} onChange={(e) => setSapiRate(Number(e.target.value))} style={{ width: 60 }} />
+                      <input type="number" min={-10} max={10} value={sapiRate} onChange={(e) => setSapiRate(Number(e.target.value))} className="lf-w60" />
                     </div>
                     <div className="settings-row">
                       <span>音量 (0〜100)</span>
-                      <input type="number" min={0} max={100} value={sapiVolume} onChange={(e) => setSapiVolume(Number(e.target.value))} style={{ width: 60 }} />
+                      <input type="number" min={0} max={100} value={sapiVolume} onChange={(e) => setSapiVolume(Number(e.target.value))} className="lf-w60" />
                     </div>
                   </>
                 )}
@@ -8829,7 +10633,7 @@ export default function App() {
                   <>
                     <div className="settings-row">
                       <span>RemoteTalk.exe パス</span>
-                      <input type="text" value={bouyomiPath} onChange={(e) => setBouyomiPath(e.target.value)} style={{ width: 160 }} placeholder="C:\...\RemoteTalk.exe" />
+                      <input type="text" value={bouyomiPath} onChange={(e) => setBouyomiPath(e.target.value)} className="lf-w160" placeholder="C:\...\RemoteTalk.exe" />
                       <button onClick={() => {
                         if (!isTauriRuntime()) return;
                         invoke<string | null>("open_file_dialog", { filterName: "EXE ファイル", filterExt: "*.exe" })
@@ -8843,7 +10647,7 @@ export default function App() {
                   <>
                     <div className="settings-row">
                       <span>エンドポイント</span>
-                      <input type="text" value={voicevoxEndpoint} onChange={(e) => setVoicevoxEndpoint(e.target.value)} style={{ width: 200 }} />
+                      <input type="text" value={voicevoxEndpoint} onChange={(e) => setVoicevoxEndpoint(e.target.value)} className="lf-w200" />
                     </div>
                     <div className="settings-row">
                       <span>スピーカー</span>
@@ -8859,19 +10663,19 @@ export default function App() {
                     </div>
                     <div className="settings-row">
                       <span>速度 (0.5〜2.0)</span>
-                      <input type="number" min={0.5} max={2.0} step={0.1} value={voicevoxSpeedScale} onChange={(e) => setVoicevoxSpeedScale(Number(e.target.value))} style={{ width: 60 }} />
+                      <input type="number" min={0.5} max={2.0} step={0.1} value={voicevoxSpeedScale} onChange={(e) => setVoicevoxSpeedScale(Number(e.target.value))} className="lf-w60" />
                     </div>
                     <div className="settings-row">
                       <span>ピッチ (-0.15〜+0.15)</span>
-                      <input type="number" min={-0.15} max={0.15} step={0.01} value={voicevoxPitchScale} onChange={(e) => setVoicevoxPitchScale(Number(e.target.value))} style={{ width: 60 }} />
+                      <input type="number" min={-0.15} max={0.15} step={0.01} value={voicevoxPitchScale} onChange={(e) => setVoicevoxPitchScale(Number(e.target.value))} className="lf-w60" />
                     </div>
                     <div className="settings-row">
                       <span>抑揚 (0〜2.0)</span>
-                      <input type="number" min={0} max={2.0} step={0.1} value={voicevoxIntonationScale} onChange={(e) => setVoicevoxIntonationScale(Number(e.target.value))} style={{ width: 60 }} />
+                      <input type="number" min={0} max={2.0} step={0.1} value={voicevoxIntonationScale} onChange={(e) => setVoicevoxIntonationScale(Number(e.target.value))} className="lf-w60" />
                     </div>
                     <div className="settings-row">
                       <span>音量 (0〜2.0)</span>
-                      <input type="number" min={0} max={2.0} step={0.1} value={voicevoxVolumeScale} onChange={(e) => setVoicevoxVolumeScale(Number(e.target.value))} style={{ width: 60 }} />
+                      <input type="number" min={0} max={2.0} step={0.1} value={voicevoxVolumeScale} onChange={(e) => setVoicevoxVolumeScale(Number(e.target.value))} className="lf-w60" />
                     </div>
                   </>
                 )}
@@ -8885,53 +10689,53 @@ export default function App() {
               )}
               {(settingsSearching || settingsCategory === "tts-dict") && (
               <div className="settings-cat" data-cat="tts-dict">
-              <label className="settings-row" style={{ marginBottom: 8 }} title="登録内容の表示を隠します(読み上げ辞書には影響しません)">
-                <input type="checkbox" checked={streamMaskEnabled} onChange={(e) => setStreamMaskEnabled(e.target.checked)} />
-                <span>登録項目のマスク</span>
-              </label>
+              <div className="settings-row settings-hint mask-note">
+                <span>登録項目のマスク: {streamMaskEnabled ? "オン (登録内容を伏せて表示中)" : "オフ"}</span>
+                <button onClick={() => requestSwitchSettingsCategory("display")}>設定 &gt; 表示 で切り替え</button>
+              </div>
               <section className="settings-section" data-section="dict">
                 {settingsSectionHeading("tts-dict", "dict")}
               <fieldset>
                 <legend>読み上げ辞書 ({ttsDictEntries.length}件)</legend>
                 {settingsListFilterRow()}
-                <div style={{ fontSize: 11, color: "var(--text-secondary, #888)", marginBottom: 6 }}>
+                <div className="settings-note settings-note-block">
                   「全文置換」: テキストにキーワードが含まれる場合、レス全体を「読み上げテキスト」で置換します。<br />
                   URL はキーワードに「://」を含む項目なら URL 文字列との部分一致、含まない項目ならホスト名との部分一致 (例: youtube) で照合し、
                   一致した URL 全体を読み上げテキストに置き換えます。どの項目にも一致しない URL は読み上げません。
                 </div>
-                <table data-search-exclude="1" style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, marginBottom: 6 }}>
+                <table data-search-exclude="1" className="settings-table">
                   <thead>
-                    <tr style={{ borderBottom: "1px solid var(--border, #ccc)", textAlign: "left" }}>
-                      <th style={{ padding: "2px 6px" }}>キーワード</th>
-                      <th style={{ padding: "2px 6px" }}>読み上げテキスト</th>
-                      <th style={{ padding: "2px 6px", textAlign: "center" }}>全文置換</th>
-                      <th style={{ padding: "2px 6px" }}></th>
+                    <tr className="settings-table-head">
+                      <th className="lf-p2-6">キーワード</th>
+                      <th className="lf-p2-6">読み上げテキスト</th>
+                      <th className="lf-p2-6-ta-center">全文置換</th>
+                      <th className="lf-p2-6"></th>
                     </tr>
                   </thead>
                   <tbody>
                     {ttsDictEntries.map((entry, i) => ({ entry, i })).filter(({ entry }) => settingsListMatch(entry.from, entry.to)).map(({ entry, i }) => (
-                      <tr key={i} style={{ borderBottom: "1px solid var(--border-light, #eee)" }}>
-                        <td style={{ padding: "3px 6px" }}>
-                          <input type="text" value={entry.from} onChange={(e) => setTtsDictEntries((prev) => prev.map((x, j) => j === i ? { ...x, from: e.target.value } : x))} style={{ width: 220 }} />
+                      <tr key={i} className="settings-table-row">
+                        <td className="lf-p3-6">
+                          <input type="text" value={entry.from} onChange={(e) => setTtsDictEntries((prev) => prev.map((x, j) => j === i ? { ...x, from: e.target.value } : x))} className="lf-w220" />
                         </td>
-                        <td style={{ padding: "3px 6px" }}>
-                          <input type="text" value={entry.to} onChange={(e) => setTtsDictEntries((prev) => prev.map((x, j) => j === i ? { ...x, to: e.target.value } : x))} style={{ width: 220 }} />
+                        <td className="lf-p3-6">
+                          <input type="text" value={entry.to} onChange={(e) => setTtsDictEntries((prev) => prev.map((x, j) => j === i ? { ...x, to: e.target.value } : x))} className="lf-w220" />
                         </td>
-                        <td style={{ padding: "3px 6px", textAlign: "center" }}>
+                        <td className="lf-p3-6-ta-center">
                           <input type="checkbox" checked={!!entry.fullReplace} onChange={(e) => setTtsDictEntries((prev) => prev.map((x, j) => j === i ? { ...x, fullReplace: e.target.checked } : x))} />
                         </td>
-                        <td style={{ padding: "3px 6px" }}>
+                        <td className="lf-p3-6">
                           <button onClick={() => setTtsDictEntries((prev) => prev.filter((_, j) => j !== i))}>削除</button>
                         </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
-                <div style={{ display: "flex", gap: 4, alignItems: "center", marginTop: 4 }}>
-                  <input type="text" value={ttsDictNewFrom} onChange={(e) => setTtsDictNewFrom(e.target.value)} placeholder="キーワード" style={{ width: 220 }} />
+                <div className="lf-d-flex-gap4-ai-center-mt4">
+                  <input type="text" value={ttsDictNewFrom} onChange={(e) => setTtsDictNewFrom(e.target.value)} placeholder="キーワード" className="lf-w220" />
                   <span>→</span>
-                  <input type="text" value={ttsDictNewTo} onChange={(e) => setTtsDictNewTo(e.target.value)} placeholder="読み上げテキスト" style={{ width: 220 }} />
-                  <label style={{ display: "flex", alignItems: "center", gap: 2, fontSize: 11 }}>
+                  <input type="text" value={ttsDictNewTo} onChange={(e) => setTtsDictNewTo(e.target.value)} placeholder="読み上げテキスト" className="lf-w220" />
+                  <label className="lf-d-flex-ai-center-gap2-fs11">
                     <input type="checkbox" checked={ttsDictNewFullReplace} onChange={(e) => setTtsDictNewFullReplace(e.target.checked)} />
                     全文置換
                   </label>
@@ -8948,38 +10752,38 @@ export default function App() {
               <fieldset>
                 <legend>読み上げ許可リスト（IPアドレス配信URL） ({ttsIpAllow.length}件)</legend>
                 {settingsListFilterRow()}
-                <div style={{ fontSize: 11, color: "var(--text-secondary, #888)", marginBottom: 6 }}>
+                <div className="settings-note settings-note-block">
                   ホスト部分が生の IP アドレス (例: 192.0.2.1:8030) の URL は、ここに登録されたものだけ「読み上げテキスト」で読み上げ、
                   未登録の IP アドレスは読み上げません。ポートを省略するとその IP の全ポートに一致します。ドメイン名の URL は上の読み上げ辞書で扱います。
                 </div>
-                <table data-search-exclude="1" style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, marginBottom: 6 }}>
+                <table data-search-exclude="1" className="settings-table">
                   <thead>
-                    <tr style={{ borderBottom: "1px solid var(--border, #ccc)", textAlign: "left" }}>
-                      <th style={{ padding: "2px 6px" }}>IPアドレス[:ポート]</th>
-                      <th style={{ padding: "2px 6px" }}>読み上げテキスト</th>
-                      <th style={{ padding: "2px 6px" }}></th>
+                    <tr className="settings-table-head">
+                      <th className="lf-p2-6">IPアドレス[:ポート]</th>
+                      <th className="lf-p2-6">読み上げテキスト</th>
+                      <th className="lf-p2-6"></th>
                     </tr>
                   </thead>
                   <tbody>
                     {ttsIpAllow.map((entry, i) => ({ entry, i })).filter(({ entry }) => settingsListMatch(entry.host, entry.to)).map(({ entry, i }) => (
-                      <tr key={i} style={{ borderBottom: "1px solid var(--border-light, #eee)" }}>
-                        <td style={{ padding: "3px 6px" }}>
-                          <input type={maskInputType} value={entry.host} onChange={(e) => setTtsIpAllow((prev) => prev.map((x, j) => j === i ? { ...x, host: e.target.value } : x))} style={{ width: 220 }} />
+                      <tr key={i} className="settings-table-row">
+                        <td className="lf-p3-6">
+                          <input type={maskInputType} value={entry.host} onChange={(e) => setTtsIpAllow((prev) => prev.map((x, j) => j === i ? { ...x, host: e.target.value } : x))} className="lf-w220" />
                         </td>
-                        <td style={{ padding: "3px 6px" }}>
-                          <input type={maskInputType} value={entry.to} onChange={(e) => setTtsIpAllow((prev) => prev.map((x, j) => j === i ? { ...x, to: e.target.value } : x))} style={{ width: 220 }} />
+                        <td className="lf-p3-6">
+                          <input type={maskInputType} value={entry.to} onChange={(e) => setTtsIpAllow((prev) => prev.map((x, j) => j === i ? { ...x, to: e.target.value } : x))} className="lf-w220" />
                         </td>
-                        <td style={{ padding: "3px 6px" }}>
+                        <td className="lf-p3-6">
                           <button onClick={() => setTtsIpAllow((prev) => prev.filter((_, j) => j !== i))}>削除</button>
                         </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
-                <div style={{ display: "flex", gap: 4, alignItems: "center", marginTop: 4 }}>
-                  <input type="text" value={ttsIpAllowNewHost} onChange={(e) => setTtsIpAllowNewHost(e.target.value)} placeholder="IPアドレス[:ポート]" style={{ width: 220 }} />
+                <div className="lf-d-flex-gap4-ai-center-mt4">
+                  <input type="text" value={ttsIpAllowNewHost} onChange={(e) => setTtsIpAllowNewHost(e.target.value)} placeholder="IPアドレス[:ポート]" className="lf-w220" />
                   <span>→</span>
-                  <input type="text" value={ttsIpAllowNewTo} onChange={(e) => setTtsIpAllowNewTo(e.target.value)} placeholder="読み上げテキスト" style={{ width: 220 }} />
+                  <input type="text" value={ttsIpAllowNewTo} onChange={(e) => setTtsIpAllowNewTo(e.target.value)} placeholder="読み上げテキスト" className="lf-w220" />
                   <button onClick={() => {
                     const host = ttsIpAllowNewHost.trim();
                     if (!host) return;
@@ -8994,48 +10798,48 @@ export default function App() {
               <fieldset>
                 <legend>読み上げない辞書 ({ttsMuteDict.names.length + ttsMuteDict.words.length + ttsMuteDict.ids.length}件)</legend>
                 {settingsListFilterRow()}
-                <div style={{ fontSize: 11, color: "var(--text-secondary, #888)", marginBottom: 6 }}>
+                <div className="settings-note settings-note-block">
                   表示やあぼーんには影響せず、読み上げだけを抑制します。「/.../」で囲むと正規表現、それ以外は大小無視の部分一致です。<br />
                   レス本文ワード: 「レス全体を読まない」が OFF なら一致した語句だけを無音で除去、ON ならそのレス全体を読み上げません。<br />
                   名前・ワッチョイ / ID: 読み上げ文に含まれないため、一致したレス全体を常に読み上げません。
                 </div>
-                <table data-search-exclude="1" style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, marginBottom: 6 }}>
+                <table data-search-exclude="1" className="settings-table">
                   <thead>
-                    <tr style={{ borderBottom: "1px solid var(--border, #ccc)", textAlign: "left" }}>
-                      <th style={{ padding: "2px 6px" }}>種類</th>
-                      <th style={{ padding: "2px 6px" }}>ワード</th>
-                      <th style={{ padding: "2px 6px", textAlign: "center" }}>レス全体を読まない</th>
-                      <th style={{ padding: "2px 6px" }}></th>
+                    <tr className="settings-table-head">
+                      <th className="lf-p2-6">種類</th>
+                      <th className="lf-p2-6">ワード</th>
+                      <th className="lf-p2-6-ta-center">レス全体を読まない</th>
+                      <th className="lf-p2-6"></th>
                     </tr>
                   </thead>
                   <tbody>
                     {(["names", "words", "ids"] as const).flatMap((kind) => ttsMuteDict[kind].map((entry, i) => ({ entry, i })).filter(({ entry }) => settingsListMatch(entry.value)).map(({ entry, i }) => (
-                      <tr key={`${kind}-${i}`} style={{ borderBottom: "1px solid var(--border-light, #eee)" }}>
-                        <td style={{ padding: "3px 6px", whiteSpace: "nowrap" }}>{kind === "names" ? "名前・ワッチョイ" : kind === "words" ? "レス本文ワード" : "ID"}</td>
-                        <td style={{ padding: "3px 6px" }}>
-                          <input type={maskInputType} value={entry.value} onChange={(e) => setTtsMuteDict((prev) => ({ ...prev, [kind]: prev[kind].map((x, j) => j === i ? { ...x, value: e.target.value } : x) }))} style={{ width: 220 }} />
+                      <tr key={`${kind}-${i}`} className="settings-table-row">
+                        <td className="lf-p3-6-ws-nowrap">{kind === "names" ? "名前・ワッチョイ" : kind === "words" ? "レス本文ワード" : "ID"}</td>
+                        <td className="lf-p3-6">
+                          <input type={maskInputType} value={entry.value} onChange={(e) => setTtsMuteDict((prev) => ({ ...prev, [kind]: prev[kind].map((x, j) => j === i ? { ...x, value: e.target.value } : x) }))} className="lf-w220" />
                         </td>
-                        <td style={{ padding: "3px 6px", textAlign: "center" }}>
+                        <td className="lf-p3-6-ta-center">
                           {kind === "words"
                             ? <input type="checkbox" checked={!!entry.skipWhole} onChange={(e) => setTtsMuteDict((prev) => ({ ...prev, [kind]: prev[kind].map((x, j) => j === i ? { ...x, skipWhole: e.target.checked } : x) }))} />
-                            : <span style={{ fontSize: 11, color: "var(--text-secondary, #888)" }}>常に</span>}
+                            : <span className="settings-note">常に</span>}
                         </td>
-                        <td style={{ padding: "3px 6px" }}>
+                        <td className="lf-p3-6">
                           <button onClick={() => setTtsMuteDict((prev) => ({ ...prev, [kind]: prev[kind].filter((_, j) => j !== i) }))}>削除</button>
                         </td>
                       </tr>
                     )))}
                   </tbody>
                 </table>
-                <div style={{ display: "flex", gap: 4, alignItems: "center", marginTop: 4, flexWrap: "wrap" }}>
+                <div className="lf-d-flex-gap4-ai-center-mt4-fwrap-wrap">
                   <select value={ttsMuteNewKind} onChange={(e) => setTtsMuteNewKind(e.target.value as TtsMuteKind)}>
                     <option value="words">レス本文ワード</option>
                     <option value="names">名前・ワッチョイ</option>
                     <option value="ids">ID</option>
                   </select>
-                  <input type="text" value={ttsMuteNewValue} onChange={(e) => setTtsMuteNewValue(e.target.value)} placeholder="ワード または /正規表現/" style={{ width: 220 }} />
+                  <input type="text" value={ttsMuteNewValue} onChange={(e) => setTtsMuteNewValue(e.target.value)} placeholder="ワード または /正規表現/" className="lf-w220" />
                   {ttsMuteNewKind === "words" && (
-                    <label style={{ display: "flex", alignItems: "center", gap: 2, fontSize: 11 }}>
+                    <label className="lf-d-flex-ai-center-gap2-fs11">
                       <input type="checkbox" checked={ttsMuteNewSkipWhole} onChange={(e) => setTtsMuteNewSkipWhole(e.target.checked)} />
                       レス全体を読まない
                     </label>
@@ -9072,19 +10876,19 @@ export default function App() {
                 </label>
                 <label className="settings-row">
                   <span>ホスト</span>
-                  <input type="text" value={proxyHost} onChange={(e) => setProxyHost(e.target.value)} placeholder="127.0.0.1" style={{ width: 160 }} />
+                  <input type="text" value={proxyHost} onChange={(e) => setProxyHost(e.target.value)} placeholder="127.0.0.1" className="lf-w160" />
                 </label>
                 <label className="settings-row">
                   <span>ポート</span>
-                  <input type="text" value={proxyPort} onChange={(e) => setProxyPort(e.target.value)} placeholder="8080" style={{ width: 80 }} />
+                  <input type="text" value={proxyPort} onChange={(e) => setProxyPort(e.target.value)} placeholder="8080" className="lf-w80" />
                 </label>
                 <label className="settings-row">
                   <span>ユーザー名</span>
-                  <input type="text" value={proxyUsername} onChange={(e) => setProxyUsername(e.target.value)} style={{ width: 140 }} />
+                  <input type="text" value={proxyUsername} onChange={(e) => setProxyUsername(e.target.value)} className="lf-w140" />
                 </label>
                 <label className="settings-row">
                   <span>パスワード</span>
-                  <input type="password" value={proxyPassword} onChange={(e) => setProxyPassword(e.target.value)} style={{ width: 140 }} />
+                  <input type="password" value={proxyPassword} onChange={(e) => setProxyPassword(e.target.value)} className="lf-w140" />
                 </label>
                 <div className="settings-row">
                   <button onClick={() => {
@@ -9103,11 +10907,11 @@ export default function App() {
               <fieldset>
                 <legend>ワードハイライト ({textHighlights.filter((h) => h.type === "word").length}件)</legend>
                 {settingsListFilterRow()}
-                <div className="settings-row" style={{ gap: 4, flexWrap: "wrap", marginBottom: 6 }}>
+                <div className="settings-row lf-gap4-fwrap-wrap-mb6">
                   <input
                     type="text"
                     placeholder="ワードを入力..."
-                    style={{ flex: 1, minWidth: 100 }}
+                    className="lf-flex1-minw100"
                     value={hlWordInput}
                     onChange={(e) => setHlWordInput(e.target.value)}
                     onKeyDown={(e) => {
@@ -9125,7 +10929,7 @@ export default function App() {
                     setHlWordInput("");
                   }}>追加</button>
                 </div>
-                <div className="settings-row" style={{ gap: 3, flexWrap: "wrap", marginBottom: 8 }}>
+                <div className="settings-row lf-gap3-fwrap-wrap-mb8">
                   {HIGHLIGHT_COLORS.map((c) => (
                     <div key={c.color} title={c.name}
                       style={{ width: 18, height: 18, background: c.color, border: hlWordColor === c.color ? "2px solid var(--fg)" : "1px solid #888", borderRadius: 2, cursor: "pointer", flexShrink: 0 }}
@@ -9135,17 +10939,17 @@ export default function App() {
                 </div>
                 <div data-search-exclude="1">
                 {textHighlights.filter((h) => h.type === "word").length === 0 ? (
-                  <div style={{ color: "var(--sub)", fontSize: "0.85em" }}>登録なし</div>
+                  <div className="lf-c-sub-fs0_85em">登録なし</div>
                 ) : (
                   <>
                     {textHighlights.filter((h) => h.type === "word" && settingsListMatch(h.pattern)).map((h, i) => (
-                      <div key={i} className="settings-row" style={{ gap: 6 }}>
+                      <div key={i} className="settings-row lf-gap6">
                         <span style={{ width: 16, height: 16, display: "inline-block", background: h.color, border: "1px solid #888", borderRadius: 2, flexShrink: 0 }} />
-                        <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={h.pattern}>{h.pattern}</span>
-                        <button style={{ padding: "1px 6px" }} onClick={() => persistTextHighlights(textHighlights.filter((x) => x !== h))}>削除</button>
+                        <span className="lf-flex1-ov-hidden-to-ellipsis-ws-nowrap" title={h.pattern}>{h.pattern}</span>
+                        <button className="lf-p1-6" onClick={() => persistTextHighlights(textHighlights.filter((x) => x !== h))}>削除</button>
                       </div>
                     ))}
-                    <div className="settings-row" style={{ marginTop: 4 }}>
+                    <div className="settings-row lf-mt4">
                       <button onClick={() => persistTextHighlights(textHighlights.filter((h) => h.type !== "word"))}>全削除</button>
                     </div>
                   </>
@@ -9158,11 +10962,11 @@ export default function App() {
               <fieldset>
                 <legend>名前ハイライト ({textHighlights.filter((h) => h.type === "name").length}件)</legend>
                 {settingsListFilterRow()}
-                <div className="settings-row" style={{ gap: 4, flexWrap: "wrap", marginBottom: 6 }}>
+                <div className="settings-row lf-gap4-fwrap-wrap-mb6">
                   <input
                     type="text"
                     placeholder="名前を入力..."
-                    style={{ flex: 1, minWidth: 100 }}
+                    className="lf-flex1-minw100"
                     value={hlNameInput}
                     onChange={(e) => setHlNameInput(e.target.value)}
                     onKeyDown={(e) => {
@@ -9180,7 +10984,7 @@ export default function App() {
                     setHlNameInput("");
                   }}>追加</button>
                 </div>
-                <div className="settings-row" style={{ gap: 3, flexWrap: "wrap", marginBottom: 8 }}>
+                <div className="settings-row lf-gap3-fwrap-wrap-mb8">
                   {HIGHLIGHT_COLORS.map((c) => (
                     <div key={c.color} title={c.name}
                       style={{ width: 18, height: 18, background: c.color, border: hlNameColor === c.color ? "2px solid var(--fg)" : "1px solid #888", borderRadius: 2, cursor: "pointer", flexShrink: 0 }}
@@ -9190,17 +10994,17 @@ export default function App() {
                 </div>
                 <div data-search-exclude="1">
                 {textHighlights.filter((h) => h.type === "name").length === 0 ? (
-                  <div style={{ color: "var(--sub)", fontSize: "0.85em" }}>登録なし</div>
+                  <div className="lf-c-sub-fs0_85em">登録なし</div>
                 ) : (
                   <>
                     {textHighlights.filter((h) => h.type === "name" && settingsListMatch(h.pattern)).map((h, i) => (
-                      <div key={i} className="settings-row" style={{ gap: 6 }}>
+                      <div key={i} className="settings-row lf-gap6">
                         <span style={{ width: 16, height: 16, display: "inline-block", background: h.color, border: "1px solid #888", borderRadius: 2, flexShrink: 0 }} />
-                        <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={h.pattern}>{h.pattern}</span>
-                        <button style={{ padding: "1px 6px" }} onClick={() => persistTextHighlights(textHighlights.filter((x) => x !== h))}>削除</button>
+                        <span className="lf-flex1-ov-hidden-to-ellipsis-ws-nowrap" title={h.pattern}>{h.pattern}</span>
+                        <button className="lf-p1-6" onClick={() => persistTextHighlights(textHighlights.filter((x) => x !== h))}>削除</button>
                       </div>
                     ))}
-                    <div className="settings-row" style={{ marginTop: 4 }}>
+                    <div className="settings-row lf-mt4">
                       <button onClick={() => persistTextHighlights(textHighlights.filter((h) => h.type !== "name"))}>全削除</button>
                     </div>
                   </>
@@ -9213,11 +11017,11 @@ export default function App() {
               <fieldset>
                 <legend>ID ハイライト（今日分） ({Object.keys(idHighlights).length}件)</legend>
                 {settingsListFilterRow()}
-                <div className="settings-row" style={{ gap: 4, flexWrap: "wrap", marginBottom: 6 }}>
+                <div className="settings-row lf-gap4-fwrap-wrap-mb6">
                   <input
                     type="text"
                     placeholder="IDを入力..."
-                    style={{ flex: 1, minWidth: 100, fontFamily: "monospace" }}
+                    className="lf-flex1-minw100-font-family-monospace"
                     value={hlIdInput}
                     onChange={(e) => setHlIdInput(e.target.value)}
                     onKeyDown={(e) => {
@@ -9233,7 +11037,7 @@ export default function App() {
                     setHlIdInput("");
                   }}>追加</button>
                 </div>
-                <div className="settings-row" style={{ gap: 3, flexWrap: "wrap", marginBottom: 8 }}>
+                <div className="settings-row lf-gap3-fwrap-wrap-mb8">
                   {HIGHLIGHT_COLORS.map((c) => (
                     <div key={c.color} title={c.name}
                       style={{ width: 18, height: 18, background: c.color, border: hlIdColor === c.color ? "2px solid var(--fg)" : "1px solid #888", borderRadius: 2, cursor: "pointer", flexShrink: 0 }}
@@ -9243,17 +11047,17 @@ export default function App() {
                 </div>
                 <div data-search-exclude="1">
                 {Object.keys(idHighlights).length === 0 ? (
-                  <div style={{ color: "var(--sub)", fontSize: "0.85em" }}>登録なし</div>
+                  <div className="lf-c-sub-fs0_85em">登録なし</div>
                 ) : (
                   <>
                     {Object.entries(idHighlights).filter(([id]) => settingsListMatch(id)).map(([id, color]) => (
-                      <div key={id} className="settings-row" style={{ gap: 6 }}>
+                      <div key={id} className="settings-row lf-gap6">
                         <span style={{ width: 16, height: 16, display: "inline-block", background: color, border: "1px solid #888", borderRadius: 2, flexShrink: 0 }} />
-                        <span style={{ flex: 1, fontFamily: "monospace" }}>ID:{id}</span>
-                        <button style={{ padding: "1px 6px" }} onClick={() => { const next = { ...idHighlights }; delete next[id]; persistIdHighlights(next); }}>削除</button>
+                        <span className="lf-flex1-font-family-monospace">ID:{id}</span>
+                        <button className="lf-p1-6" onClick={() => { const next = { ...idHighlights }; delete next[id]; persistIdHighlights(next); }}>削除</button>
                       </div>
                     ))}
-                    <div className="settings-row" style={{ marginTop: 4 }}>
+                    <div className="settings-row lf-mt4">
                       <button onClick={() => persistIdHighlights({})}>全削除</button>
                     </div>
                   </>
@@ -9265,11 +11069,11 @@ export default function App() {
               )}
               {(settingsSearching || settingsCategory === "ng") && (
               <div className="settings-cat" data-cat="ng">
-              <label className="settings-row" style={{ marginBottom: 8 }} title="登録内容の表示を隠します">
-                <input type="checkbox" checked={streamMaskEnabled} onChange={(e) => setStreamMaskEnabled(e.target.checked)} />
-                <span>登録項目のマスク</span>
-              </label>
-              <label className="settings-row" style={{ marginBottom: 8 }} title="OFFにすると、通常あぼ～んのレスは前置き含め完全に読み上げをスキップします(透明あぼ～んと同じ扱い)">
+              <div className="settings-row settings-hint mask-note">
+                <span>登録項目のマスク: {streamMaskEnabled ? "オン (登録内容を伏せて表示中)" : "オフ"}</span>
+                <button onClick={() => requestSwitchSettingsCategory("display")}>設定 &gt; 表示 で切り替え</button>
+              </div>
+              <label className="settings-row lf-mb8" title="OFFにすると、通常あぼ～んのレスは前置き含め完全に読み上げをスキップします(透明あぼ～んと同じ扱い)">
                 <input type="checkbox" checked={ngAboneSpeakEnabled} onChange={(e) => setNgAboneSpeakEnabled(e.target.checked)} />
                 <span>通常あぼ～んを「あぼーん」と読み上げる</span>
               </label>
@@ -9302,7 +11106,7 @@ export default function App() {
                                 </select>
                               )}
                               {scope !== "global" && <span className="ng-mode-label" style={{ background: scope === "board" ? "#2a7a2a" : "#2a5a9a", color: "#fff" }}>{scope === "board" ? "板" : "スレ"}</span>}
-                              {isRegex && <span className="ng-mode-label" style={{ background: "#6b4c9a", color: "#fff" }}>正規表現</span>}
+                              {isRegex && <span className="ng-mode-label lf-bg6b4c9a-c-fff">正規表現</span>}
                               <span>{maskDisplay(v)}</span>
                               <button className="ng-remove" onClick={() => removeNgEntry(type, v)}>×</button>
                             </li>
@@ -9337,7 +11141,7 @@ export default function App() {
                   <span>現在の値の設定に名前を付けて保存し、あとから読み込めます（NG・辞書・ハイライトなどの登録内容は含みません）</span>
                 </div>
                 <div className="settings-row" data-search-exclude="1">
-                  <input type="text" value={presetNameInput} onChange={(e) => setPresetNameInput(e.target.value)} list="settings-preset-names" placeholder="プリセット名" style={{ width: 220 }} maxLength={64} />
+                  <input type="text" value={presetNameInput} onChange={(e) => setPresetNameInput(e.target.value)} list="settings-preset-names" placeholder="プリセット名" className="lf-w220" maxLength={64} />
                   <datalist id="settings-preset-names">
                     {settingsPresets.map((p) => <option key={p.name} value={p.name} />)}
                   </datalist>
@@ -9446,7 +11250,7 @@ export default function App() {
                 {settingsSectionHeading("info", "main")}
               <fieldset>
                 <legend>情報</legend>
-                <div className="settings-row"><span>バージョン</span><span>{currentVersion}</span>{updateAvailable && <span className="settings-hint" style={{ color: "#cc3300" }}>新しいバージョンがあります{knownLatestVersion ? ` (v${knownLatestVersion})` : ""}</span>}</div>
+                <div className="settings-row"><span>バージョン</span><span>{currentVersion}</span>{updateAvailable && <span className="settings-hint lf-c-cc3300">新しいバージョンがあります{knownLatestVersion ? ` (v${knownLatestVersion})` : ""}</span>}</div>
                 <label className="settings-row" title="オンにすると、起動時に1日1回だけ、公開している最新版の情報 (数百バイト) を確認します。オフにすると、ヘルプ > バージョン情報 を開いたときだけ確認します">
                   <input type="checkbox" checked={autoUpdateCheck} onChange={(e) => setAutoUpdateCheck(e.target.checked)} />
                   <span>起動時に新しいバージョンを確認する (1日1回)</span>
@@ -9464,165 +11268,652 @@ export default function App() {
                   <button onClick={openThirdPartyLicenses}>表示する</button>
                 </div>
               </fieldset>
-              {!obsTabRevealed && (
-                <fieldset>
-                  <legend>隠しタブ</legend>
-                  <div className="settings-row">
-                    <span>OBS連携タブを表示する</span>
-                    <button onClick={() => setObsTabRevealed(true)}>表示する</button>
-                  </div>
-                  <p className="settings-hint">配信ソフト(OBS)と連携するための、ごく一部の人向けの機能を追加で表示します。</p>
-                </fieldset>
-              )}
               </section>
               </div>
               )}
-              {(settingsSearching || settingsCategory === "obs") && obsTabRevealed && (
-              <div className="settings-cat" data-cat="obs">
+              {(settingsSearching || settingsCategory === "connect") && (
+              <div className="settings-cat" data-cat="connect">
               <section className="settings-section" data-section="main">
-                {settingsSectionHeading("obs", "main")}
-              <p className="settings-hint">
-                この機能はホワイトリストに登録したレスを専用ウィンドウに表示し、それをOBSでキャプチャして配信に載せる機能です。
-              </p>
+                {settingsSectionHeading("connect", "main")}
+              <p className="settings-hint">開いているスレのタブと Twitch・YouTube のタブが、巡回・受信の対象です。ここからまとめて追加したり、読み上げをタブごとに切り替えたりできます。</p>
               <fieldset>
-                <legend>有効/無効</legend>
+                <legend>Twitch チャンネル</legend>
                 <div className="settings-row">
-                  <span>OBS連携を有効にする</span>
-                  <label className="switch">
-                    <input type="checkbox" checked={obsIntegrationEnabled} onChange={toggleObsIntegration} />
-                    <span className="track"><span className="knob"></span></span>
-                  </label>
-                </div>
-                {obsToggleError && <p className="settings-hint" style={{ color: "#c44" }}>{obsToggleError}</p>}
-                <p className="settings-hint">オンにするにはOBSが起動している必要があります。OBSが終了すると自動的にオフに戻ります。</p>
-              </fieldset>
-              <fieldset>
-                <legend>ウィンドウ</legend>
-                <div className="settings-row">
-                  <span>ウィンドウ位置</span>
-                  <button onClick={() => { if (isTauriRuntime()) void invoke("broadcast_reset_position").catch((e) => console.warn("broadcast_reset_position:", e)); }}>中央に戻す</button>
-                </div>
-                <div className="settings-row">
-                  <span>背景色 (クロマキー用)</span>
-                  <input type="color" className="color-swatch" value={broadcastBgColor} onChange={(e) => setBroadcastBgColor(e.target.value)} />
-                </div>
-                <div className="settings-row" style={{ flexDirection: "column", alignItems: "stretch", gap: 4 }}>
-                  <span>ヘッダに表示する項目(すべて非表示にすると本文のみ表示)</span>
-                  {headerVisRows(broadcastHeaderVis, setBroadcastHeaderVis, { threadTitle: true })}
+                  <input type="text" value={connectTwitchInput} onChange={(e) => setConnectTwitchInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") submitConnectTwitch(); }} placeholder="チャンネル名 (空白・カンマ区切りで複数)" className="lf-grow" />
+                  <button onClick={submitConnectTwitch}>追加</button>
                 </div>
               </fieldset>
               <fieldset>
-                <legend>文字の見た目</legend>
-                <div className="settings-row" style={{ alignItems: "flex-start" }}>
-                  <span style={{ paddingTop: 4 }}>フォント</span>
-                  <div className="font-picker">
-                    <div style={{ display: "flex", gap: 4 }}>
-                      <input type="text" className="font-picker-input" value={broadcastFontPickerInput}
-                        onChange={(e) => { setBroadcastFontPickerInput(e.target.value); setBroadcastFontPickerOpen(true); }}
-                        onFocus={() => setBroadcastFontPickerOpen(true)}
-                        onBlur={() => setTimeout(() => setBroadcastFontPickerOpen(false), 150)}
-                        placeholder="デフォルト (入力またはクリック)" style={{ flex: 1, minWidth: 0 }} />
-                      {broadcastFontFamily && <button style={{ flexShrink: 0 }} onClick={() => {
-                        setBroadcastFontFamily(""); setBroadcastFontPickerInput("");
-                      }}>×</button>}
-                    </div>
-                    {broadcastFontPickerOpen && (() => {
-                      const q = broadcastFontPickerInput.toLowerCase();
-                      const filtered = q ? systemFonts.filter((f) => f.toLowerCase().includes(q)) : systemFonts;
-                      return filtered.length > 0 ? (
-                        <div className="font-picker-dropdown">
-                          {filtered.slice(0, 120).map((f) => (
-                            <div key={f} className={`font-picker-option${f === broadcastFontFamily ? " selected" : ""}`} style={{ fontFamily: `"${f}", sans-serif` }}
-                              onMouseDown={(e) => {
-                                e.preventDefault();
-                                setBroadcastFontFamily(f); setBroadcastFontPickerInput(f); setBroadcastFontPickerOpen(false);
-                              }}>{f}</div>
-                          ))}
-                        </div>
-                      ) : null;
-                    })()}
-                  </div>
-                </div>
+                <legend>YouTube ライブ配信</legend>
                 <div className="settings-row">
-                  <span>文字サイズ</span>
-                  <input type="number" min={10} max={80} step={1} value={broadcastFontSize} onChange={(e) => setBroadcastFontSize(Math.max(10, Math.min(80, Number(e.target.value))))} style={{ width: 70 }} />
-                  <span>px</span>
-                </div>
-                <div className="settings-row">
-                  <span>文字色</span>
-                  <input type="color" className="color-swatch" value={broadcastTextColor} onChange={(e) => setBroadcastTextColor(e.target.value)} />
-                </div>
-                <div className="settings-row">
-                  <span>縁取りの色</span>
-                  <input type="color" className="color-swatch" value={broadcastOutlineColor} onChange={(e) => setBroadcastOutlineColor(e.target.value)} />
-                </div>
-                <div className="settings-row">
-                  <span>縁取りの太さ</span>
-                  <input type="number" min={0} max={10} step={1} value={broadcastOutlineWidth} onChange={(e) => setBroadcastOutlineWidth(Math.max(0, Math.min(10, Number(e.target.value))))} style={{ width: 70 }} />
-                  <span>px</span>
-                </div>
-                <label className="settings-row" title="OFFにすると、絵文字の部分だけ縁取りを外して表示します">
-                  <input type="checkbox" checked={broadcastEmojiOutline} onChange={(e) => setBroadcastEmojiOutline(e.target.checked)} />
-                  <span>絵文字に縁取りをつける</span>
-                </label>
-              </fieldset>
-              <fieldset>
-                <legend>表示時間・スクロール</legend>
-                <div className="settings-row">
-                  <span>表示秒数</span>
-                  <input type="number" min={0.5} max={60} step={0.1} value={broadcastDisplaySeconds} onChange={(e) => setBroadcastDisplaySeconds(Math.max(0.5, Math.min(60, Number(e.target.value))))} style={{ width: 70 }} />
-                  <span>秒</span>
-                </div>
-                <p className="settings-hint">この秒数のあいだ表示し、次のレスが来なければ空にします(自動スクロールが終わった時点から数えます)。</p>
-                <div className="settings-row">
-                  <span>スクロール開始までの待ち時間</span>
-                  <input type="number" min={0} max={10} step={0.1} value={broadcastTiming.waitSec} onChange={(e) => setBroadcastTiming({ ...broadcastTiming, waitSec: Math.max(0, Math.min(10, Number(e.target.value))) })} style={{ width: 70 }} />
-                  <span>秒</span>
-                </div>
-                <div className="settings-row">
-                  <span>スクロール速度 (1pxあたり)</span>
-                  <input type="number" min={1} max={50} step={1} value={broadcastTiming.msPerPx} onChange={(e) => setBroadcastTiming({ ...broadcastTiming, msPerPx: Math.max(1, Math.min(50, Number(e.target.value))) })} style={{ width: 70 }} />
-                  <span>ms</span>
+                  <input type="text" value={connectYoutubeInput} onChange={(e) => setConnectYoutubeInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") submitConnectYoutube(); }} placeholder={`ライブ配信の URL (空白・カンマ区切りで複数。同時に ${YOUTUBE_MAX_VIDEOS} 個まで)`} className="lf-grow" />
+                  <button onClick={submitConnectYoutube}>追加</button>
                 </div>
               </fieldset>
               <fieldset>
-                <legend>配信ホワイトリスト（本日分・{Object.keys(broadcastWhitelist).length}件）</legend>
-                {Object.keys(broadcastWhitelist).length === 0 ? (
-                  <p className="settings-hint">レスを右クリックして「配信ホワイトリストに追加」で登録できます。</p>
+                <legend>スレッド</legend>
+                <div className="settings-row">
+                  <textarea value={connectThreadInput} onChange={(e) => setConnectThreadInput(e.target.value)} rows={2} placeholder="スレッドの URL (改行・空白区切りで複数)" className="lf-grow" />
+                  <button onClick={submitConnectThreads}>追加</button>
+                </div>
+              </fieldset>
+              <fieldset>
+                <legend>開いているタブ（{threadTabs.length}件）</legend>
+                {threadTabs.length === 0 ? (
+                  <span className="ng-empty">(なし)</span>
                 ) : (
-                  <ul className="ng-list">
-                    {Object.keys(broadcastWhitelist).map((id) => (
-                      <li key={id}>
-                        <span>ID:{id}</span>
-                        <button className="ng-remove" onClick={() => setBroadcastWhitelist((prev) => { const next = { ...prev }; delete next[id]; return next; })} title="削除">×</button>
-                      </li>
-                    ))}
+                  <ul className="ng-list connect-list">
+                    {threadTabs.map((t, i) => {
+                      const ch = twitchChannelFromUrl(t.threadUrl);
+                      const st = ch ? twitchStatusMap[ch] : undefined;
+                      const yt = youtubeVideoFromUrl(t.threadUrl);
+                      const ys = yt ? youtubeStatusMap[yt] : undefined;
+                      const count = tabCacheRef.current.get(t.threadUrl)?.responses.length ?? 0;
+                      const lamp = yt ? (ys?.state === "live" ? "ok" : ys?.state === "stopped" || ys?.state === "ended" ? "ng" : "wait")
+                        : ch ? (st === "connected" ? "ok" : st === "disconnected" ? "ng" : "wait") : (count > 0 ? "ok" : "wait");
+                      const stateLabel = yt ? (ys?.state === "live" ? "受信中" : ys?.state === "connecting" ? "接続中" : ys?.state === "retrying" ? "やり直し中" : ys?.state === "ended" ? "配信終了" : ys?.state === "stopped" ? "停止" : "待機中")
+                        : ch ? (st === "connected" ? "受信中" : st === "disconnected" ? "切断" : st === "connecting" ? "接続中" : "待機中") : (count > 0 ? "取得済み" : "未取得");
+                      return (
+                        <li key={t.threadUrl} className={siteClassOf(t.threadUrl)}>
+                          <span className={`connect-lamp ${lamp}`} />
+                          <span className="connect-title" title={t.threadUrl}>{t.title}</span>
+                          <span className="connect-state" title={ys?.message || undefined}>{stateLabel}</span>
+                          {yt && (ys?.state === "stopped" || ys?.state === "ended" || ys?.state === "retrying") && (
+                            <button onClick={() => reconnectYoutube(yt)} title={ys?.message || "つなぎ直します"}>つなぎ直す</button>
+                          )}
+                          {/* スレの埋まり具合 (TchViewer と同じ。Twitch・YouTube には埋まりが無いので出さない) */}
+                          {!ch && !yt && count > 0 && (
+                            <>
+                              <progress className="connect-fill" max={1000} value={Math.min(count, 1000)} title={`${count}/1000`} />
+                              <span className="connect-count">{count}/1000</span>
+                            </>
+                          )}
+                          <label title="このタブの新着を読み上げる">
+                            <input type="checkbox" checked={!t.ttsOff} onChange={() => toggleTabTts(t.threadUrl)} />読み上げ
+                          </label>
+                          <button onClick={() => { setSettingsOpen(false); onTabClick(i); }}>開く</button>
+                          <button className="ng-remove" onClick={() => closeTab(i)} title="タブを閉じる">×</button>
+                        </li>
+                      );
+                    })}
                   </ul>
                 )}
               </fieldset>
               </section>
               </div>
               )}
+              {(settingsSearching || settingsCategory === "viewer") && (
+              <div className="settings-cat" data-cat="viewer">
+              <section className="settings-section" data-section="display">
+                {settingsSectionHeading("viewer", "display")}
+              <p className="settings-hint">
+                板タブの左端の「ビュワー」に、Twitch・YouTube のチャットと、配信ホワイトリストの ID のレスをまとめて表示します。掲示板の新着の読み上げ方は 設定 &gt; 読み上げ (またはビュワー上部) で選びます。
+              </p>
+              <fieldset>
+                <legend>ビュワーの文字</legend>
+                <p className="settings-hint">ビュワーと下の「スレの最新レス」欄の文字です (OBS 表示の文字は「OBS 表示」のレイアウトで変えます)。</p>
+                <label className="settings-row">
+                  <span>文字サイズ (0=レスの文字サイズに合わせる)</span>
+                  <input type="number" value={viewerFontSize} min={0} max={48} step={1} onChange={(e) => { const n = Math.round(Number(e.target.value)); setViewerFontSize(n >= 8 && n <= 48 ? n : 0); }} className="lf-w60" />
+                  <span>px</span>
+                </label>
+                <label className="settings-row">
+                  <input type="checkbox" checked={viewerFontBold} onChange={(e) => setViewerFontBold(e.target.checked)} />
+                  <span>太字にする</span>
+                </label>
+              </fieldset>
+              <fieldset>
+                <legend>リンクカード・画像</legend>
+                <label className="settings-row">
+                  <input type="checkbox" checked={viewerCards} onChange={(e) => setViewerCards(e.target.checked)} />
+                  <span>リンクカードを表示する</span>
+                </label>
+                <label className="settings-row">
+                  <input type="checkbox" checked={viewerThumbs} onChange={(e) => setViewerThumbs(e.target.checked)} />
+                  <span>画像のサムネイルを表示する</span>
+                </label>
+                <label className="settings-row">
+                  <input type="checkbox" checked={viewerTwitchClickToLoad} onChange={(e) => setViewerTwitchClickToLoad(e.target.checked)} />
+                  <span>Twitch・YouTube のチャットの画像・カードはクリックしてから読み込む</span>
+                </label>
+                <p className="settings-hint">
+                  OBS 表示には出しません。画像・カードを読み込むと、リンク先のサーバーにこの PC の IP アドレスが伝わります。
+                  LiveFake の画面ごと配信に映している場合は、画像も映るので注意してください。画像NG・サイズ上限 (設定 &gt; 表示 &gt; 画像) も効きます。
+                </p>
+              </fieldset>
+              <fieldset>
+                <legend>表示する項目</legend>
+                <p className="settings-hint">ビュワーと「スレの最新レス」欄の見出しに出す項目です (OBS 表示の項目は「OBS 表示」のレイアウトで変えます)。</p>
+                {VIEWER_SHOW_LABELS.map(([k, label]) => (
+                  <label key={k} className="settings-row">
+                    <input type="checkbox" checked={viewerShow[k]} onChange={(e) => setViewerShow((prev) => ({ ...prev, [k]: e.target.checked }))} />
+                    <span>{label}</span>
+                  </label>
+                ))}
+                <label className="settings-row lf-ai-flex-start">
+                  <span className="lf-pt4">フォント</span>
+                  <div className="font-picker">
+                    <div className="lf-d-flex-gap4">
+                      <input type="text" className="font-picker-input lf-grow" value={viewerFontPickerInput}
+                        onChange={(e) => { setViewerFontPickerInput(e.target.value); setViewerFontPickerOpen(true); }}
+                        onFocus={() => setViewerFontPickerOpen(true)}
+                        onBlur={() => setTimeout(() => setViewerFontPickerOpen(false), 150)}
+                        placeholder="アプリ全体と同じ (入力またはクリック)" />
+                      {viewerFontFamily && <button className="lf-shrink0" onClick={() => { setViewerFontFamily(""); setViewerFontPickerInput(""); }}>×</button>}
+                    </div>
+                    {viewerFontPickerOpen && (() => {
+                      const q = viewerFontPickerInput.toLowerCase();
+                      const filtered = q ? systemFonts.filter((f) => f.toLowerCase().includes(q)) : systemFonts;
+                      return filtered.length > 0 ? (
+                        <div className="font-picker-dropdown">
+                          {filtered.slice(0, 120).map((f) => (
+                            <div key={f} className={`font-picker-option${f === viewerFontFamily ? " selected" : ""}`} style={{ fontFamily: `"${f}", sans-serif` }}
+                              onMouseDown={(e) => { e.preventDefault(); setViewerFontFamily(f); setViewerFontPickerInput(f); setViewerFontPickerOpen(false); }}>{f}</div>
+                          ))}
+                        </div>
+                      ) : null;
+                    })()}
+                  </div>
+                </label>
+              </fieldset>
+              </section>
+              <section className="settings-section" data-section="whitelist">
+                {settingsSectionHeading("viewer", "whitelist")}
+              <div className="settings-row settings-hint mask-note">
+                <span>登録項目のマスク: {streamMaskEnabled ? "オン (登録内容を伏せて表示中)" : "オフ"}</span>
+                <button onClick={() => requestSwitchSettingsCategory("display")}>設定 &gt; 表示 で切り替え</button>
               </div>
+              <fieldset>
+                <legend>ID を入れる</legend>
+                <p className="settings-hint">ID を入力するか貼り付けて「追加」を押します。空白・改行・カンマで区切れば複数をまとめて入れられます (先頭の「ID:」は省いてかまいません)。</p>
+                <div className="settings-row">
+                  <input type={maskInputType} value={whitelistInput} onChange={(e) => setWhitelistInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") submitWhitelistInput(); }} placeholder="例: AbCdEfGh0 IjKlMnOp0" className="lf-grow" />
+                  <button onClick={submitWhitelistInput}>追加</button>
+                </div>
+              </fieldset>
+              <fieldset>
+                <legend>自動追加</legend>
+                <label className="settings-row">
+                  <input type="checkbox" checked={whitelistAutoConfig.enabled} onChange={(e) => setWhitelistAutoConfig((c) => ({ ...c, enabled: e.target.checked }))} />
+                  <span>登録した単語を本文に含むレスの ID を自動でホワイトリストに入れる</span>
+                </label>
+                <p className="settings-hint">開いているスレの新着が対象です (Twitch・NG に当たるレスは対象外)。1行に1つ。部分一致で、/…/ で囲むと正規表現として扱います。今日手で外した ID は自動では入れ直しません。</p>
+                <textarea className={[streamMaskEnabled ? "masked-text" : undefined, "lf-full-width"].filter(Boolean).join(" ")} value={whitelistAutoConfig.words} onChange={(e) => setWhitelistAutoConfig((c) => ({ ...c, words: e.target.value }))} rows={4} placeholder={"例:\n配信者さんへ\n/質問[:：]/"} />
+                <div className="settings-row">
+                  <span>1日に自動で入れる上限</span>
+                  <input type="number" min={1} max={100} step={1} value={whitelistAutoConfig.limit} onChange={(e) => setWhitelistAutoConfig((c) => ({ ...c, limit: Math.max(1, Math.min(100, Math.round(Number(e.target.value)) || 1)) }))} className="lf-w70" />
+                  <span>件 (今日 {Object.keys(whitelistAuto).length} 件)</span>
+                </div>
+              </fieldset>
+              <fieldset>
+                <legend>配信ホワイトリスト（本日分・{Object.keys(broadcastWhitelist).length}件）</legend>
+                <p className="settings-hint">レスを右クリックして「配信ホワイトリストに追加」でも登録できます。日本時間の今日の分は保存され、LiveFake を再起動しても残ります (日付が変わると空に戻ります)。</p>
+                {Object.keys(broadcastWhitelist).length === 0 ? (
+                  <span className="ng-empty">(なし)</span>
+                ) : (
+                  <ul className="ng-list">
+                    {Object.keys(broadcastWhitelist).map((id) => (
+                      <li key={id}>
+                        <span>ID:{maskDisplay(id)}</span>
+                        {whitelistAuto[id] && <span className="settings-hint">自動: {maskDisplay(whitelistAuto[id])}</span>}
+                        <button className="ng-remove" onClick={() => removeFromWhitelist(id)} title="削除">×</button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </fieldset>
+              {whitelistRemoved.length > 0 && (
+                <fieldset>
+                  <legend>今日外した ID（{whitelistRemoved.length}件）</legend>
+                  <p className="settings-hint">自動追加では入れ直しません。必要なら「入れ直す」を押してください。</p>
+                  <ul className="ng-list">
+                    {whitelistRemoved.map((id) => (
+                      <li key={id}>
+                        <span>ID:{maskDisplay(id)}</span>
+                        <button onClick={() => addToWhitelist([id])}>入れ直す</button>
+                      </li>
+                    ))}
+                  </ul>
+                </fieldset>
+              )}
+              </section>
+              <section className="settings-section" data-section="obs">
+                {settingsSectionHeading("viewer", "obs")}
+              <fieldset>
+                <legend>OBS 表示 (ブラウザソース)</legend>
+                <p className="settings-hint">ビュワーと同じ内容を OBS に表示します。OBS の「ソース」→「ブラウザ」の URL に下のアドレスを入れてください。このPCの中からだけ見られます (ポート開放は不要です)。</p>
+                <div className="settings-row">
+                  <span>OBS 表示を使う</span>
+                  <label className="switch">
+                    <input type="checkbox" checked={overlayEnabled} onChange={(e) => changeOverlayEnabled(e.target.checked)} />
+                    <span className="track"><span className="knob"></span></span>
+                  </label>
+                  {overlayStatus && <span className="settings-hint">{overlayStatus}</span>}
+                  <span className="settings-hint">(切り替えるとすぐ保存されます)</span>
+                </div>
+                <div className="settings-row">
+                  <span>ポート</span>
+                  <input type="number" min={1024} max={65535} step={1} value={overlayPort} onChange={(e) => { const n = Math.round(Number(e.target.value)); if (n >= 1024 && n <= 65535) setOverlayPort(n); }} className="lf-w90" />
+                  <span className="settings-hint">既定 {OVERLAY_PORT_DEFAULT}</span>
+                </div>
+                <div className="settings-row">
+                  <input type="text" readOnly value={overlayUrl} className="lf-grow" onFocus={(e) => e.currentTarget.select()} />
+                  <button onClick={() => { void navigator.clipboard.writeText(overlayUrl); setStatus("OBS 表示の URL をコピーしました"); }}>コピー</button>
+                  <button disabled={!overlayEnabled} onClick={() => { if (isTauriRuntime()) void invoke("overlay_publish", { items: [{ source: "5ch", site: "5ch", no: 1, name: "テスト", uid: "TEST0000", text: "OBS 表示のテストです", color: "" }, { source: "twitch", site: "Twitch", no: null, name: "テスト", uid: "", text: "Twitch のテストです", color: "#1e90ff" }] }).catch((e) => console.warn("overlay_publish failed", e)); }}>テスト表示</button>
+                </div>
+              </fieldset>
+              <fieldset>
+                <legend>レイアウト</legend>
+                <p className="settings-hint">見た目に名前を付けて複数保存できます。選んだレイアウトを下で編集します。OBS では上の URL (レイアウトを選ぶと ?layout=名前 が付きます) をソースごとに使い分けられます。</p>
+                <div className="settings-row">
+                  <span>編集するレイアウト</span>
+                  <select value={overlayEditingLayout} onChange={(e) => { setOverlayEditingLayout(e.target.value); setOverlayLayoutMsg(null); }}>
+                    {Object.keys(overlayLayouts).sort((a, b) => (a === OVERLAY_DEFAULT_LAYOUT ? -1 : b === OVERLAY_DEFAULT_LAYOUT ? 1 : a.localeCompare(b, "ja"))).map((name) => (
+                      <option key={name} value={name}>{name}</option>
+                    ))}
+                  </select>
+                  <button className="danger" disabled={overlayEditingLayout === OVERLAY_DEFAULT_LAYOUT} onClick={deleteOverlayLayout}>削除</button>
+                </div>
+                <div className="settings-row">
+                  <input type="text" value={overlayLayoutNameInput} onChange={(e) => setOverlayLayoutNameInput(e.target.value)} placeholder="レイアウト名 (空なら自動で付けます)" maxLength={40} className="lf-grow" />
+                  <button onClick={() => addOverlayLayout(null)} title="既定の見た目で新しいレイアウトを作ります">新規</button>
+                  <button onClick={() => addOverlayLayout(overlayEditingLayout)} title="選んでいるレイアウトを複製します">複製</button>
+                  <button disabled={overlayEditingLayout === OVERLAY_DEFAULT_LAYOUT} onClick={renameOverlayLayout}>名前を変更</button>
+                </div>
+                {overlayLayoutMsg && <p className={`settings-hint overlay-layout-msg${overlayLayoutMsg.error ? " error" : ""}`} role="status">{overlayLayoutMsg.text}</p>}
+              </fieldset>
+              <fieldset>
+                <legend>OBS 表示の見た目 (共通)</legend>
+                <div className="settings-row"><span>表示件数</span><input type="number" min={1} max={200} step={1} value={overlayAppearance.maxItems} onChange={(e) => setOverlayAppearance((p) => ({ ...p, maxItems: Math.min(200, Math.max(1, Number(e.target.value) || 0)) }))} className="lf-w70" /><span>件</span></div>
+                <div className="settings-row"><span>消えるまで (0=消さない)</span><input type="number" min={0} max={3600} step={1} value={overlayAppearance.fadeSeconds} onChange={(e) => setOverlayAppearance((p) => ({ ...p, fadeSeconds: Math.min(3600, Math.max(0, Number(e.target.value) || 0)) }))} className="lf-w70" /><span>秒</span></div>
+                <label className="settings-row"><input type="checkbox" checked={overlayAppearance.newestOnTop} onChange={(e) => setOverlayAppearance((p) => ({ ...p, newestOnTop: e.target.checked }))} /><span>新しいものを上に積む</span></label>
+                <div className="settings-row"><span>間隔</span><input type="number" min={0} max={60} step={1} value={overlayAppearance.gap} onChange={(e) => setOverlayAppearance((p) => ({ ...p, gap: Math.min(60, Math.max(0, Number(e.target.value) || 0)) }))} className="lf-w70" /><span>px</span></div>
+                <div className="settings-row"><span>縁取りの太さ (0=なし)</span><input type="number" min={0} max={8} step={0.5} value={overlayAppearance.outlineWidth} onChange={(e) => setOverlayAppearance((p) => ({ ...p, outlineWidth: Math.min(8, Math.max(0, Number(e.target.value) || 0)) }))} className="lf-w70" /><span>px</span></div>
+                <div className="settings-row"><span>縁取りの色</span><input type="color" className="color-swatch" value={overlayAppearance.outlineColor} onChange={(e) => setOverlayAppearance((p) => ({ ...p, outlineColor: e.target.value }))} /></div>
+                <div className="settings-row"><button onClick={() => setOverlayAppearance(() => DEFAULT_OVERLAY_APPEARANCE)}>見た目を既定に戻す</button></div>
+              </fieldset>
+              <fieldset>
+                <legend>OBS 表示の見た目 (掲示板)</legend>
+                <div className="settings-row"><span>文字サイズ</span><input type="number" min={8} max={120} step={1} value={overlayAppearance.board.fontSize} onChange={(e) => setOverlayAppearance((p) => ({ ...p, board: { ...p.board, fontSize: Math.min(120, Math.max(8, Number(e.target.value) || 0)) } }))} className="lf-w70" /><span>px</span></div>
+                <div className="settings-row"><span>本文の色</span><input type="color" className="color-swatch" value={overlayAppearance.board.textColor} onChange={(e) => setOverlayAppearance((p) => ({ ...p, board: { ...p.board, textColor: e.target.value } }))} /></div>
+                <div className="settings-row"><span>名前の色</span><input type="color" className="color-swatch" value={overlayAppearance.board.nameColor} onChange={(e) => setOverlayAppearance((p) => ({ ...p, board: { ...p.board, nameColor: e.target.value } }))} /></div>
+                <div className="settings-row"><span>ID の色</span><input type="color" className="color-swatch" value={overlayAppearance.board.idColor} onChange={(e) => setOverlayAppearance((p) => ({ ...p, board: { ...p.board, idColor: e.target.value } }))} /></div>
+                <div className="settings-row"><span>背景色</span><input type="color" className="color-swatch" value={overlayAppearance.board.bgColor} onChange={(e) => setOverlayAppearance((p) => ({ ...p, board: { ...p.board, bgColor: e.target.value } }))} /></div>
+                <div className="settings-row"><span>背景の濃さ (0〜1)</span><input type="number" min={0} max={1} step={0.05} value={overlayAppearance.board.bgOpacity} onChange={(e) => setOverlayAppearance((p) => ({ ...p, board: { ...p.board, bgOpacity: Math.min(1, Math.max(0, Number(e.target.value) || 0)) } }))} className="lf-w70" /></div>
+                <label className="settings-row"><input type="checkbox" checked={overlayAppearance.board.showSite} onChange={(e) => setOverlayAppearance((p) => ({ ...p, board: { ...p.board, showSite: e.target.checked } }))} /><span>出どころ (5ch など) を表示</span></label>
+                <label className="settings-row"><input type="checkbox" checked={overlayAppearance.board.showNo} onChange={(e) => setOverlayAppearance((p) => ({ ...p, board: { ...p.board, showNo: e.target.checked } }))} /><span>レス番号を表示</span></label>
+                <label className="settings-row"><input type="checkbox" checked={overlayAppearance.board.showName} onChange={(e) => setOverlayAppearance((p) => ({ ...p, board: { ...p.board, showName: e.target.checked } }))} /><span>名前を表示</span></label>
+                <label className="settings-row"><input type="checkbox" checked={overlayAppearance.board.showId} onChange={(e) => setOverlayAppearance((p) => ({ ...p, board: { ...p.board, showId: e.target.checked } }))} /><span>ID を表示</span></label>
+              </fieldset>
+              <fieldset>
+                <legend>OBS 表示の見た目 (Twitch・YouTube)</legend>
+                <p className="settings-hint">YouTube のチャットも、この見た目で表示します (出どころの色は赤)。</p>
+                <div className="settings-row"><span>文字サイズ</span><input type="number" min={8} max={120} step={1} value={overlayAppearance.twitch.fontSize} onChange={(e) => setOverlayAppearance((p) => ({ ...p, twitch: { ...p.twitch, fontSize: Math.min(120, Math.max(8, Number(e.target.value) || 0)) } }))} className="lf-w70" /><span>px</span></div>
+                <div className="settings-row"><span>本文の色</span><input type="color" className="color-swatch" value={overlayAppearance.twitch.textColor} onChange={(e) => setOverlayAppearance((p) => ({ ...p, twitch: { ...p.twitch, textColor: e.target.value } }))} /></div>
+                <div className="settings-row"><span>名前の色</span><input type="color" className="color-swatch" value={overlayAppearance.twitch.nameColor} onChange={(e) => setOverlayAppearance((p) => ({ ...p, twitch: { ...p.twitch, nameColor: e.target.value } }))} /></div>
+                <div className="settings-row"><span>背景色</span><input type="color" className="color-swatch" value={overlayAppearance.twitch.bgColor} onChange={(e) => setOverlayAppearance((p) => ({ ...p, twitch: { ...p.twitch, bgColor: e.target.value } }))} /></div>
+                <div className="settings-row"><span>背景の濃さ (0〜1)</span><input type="number" min={0} max={1} step={0.05} value={overlayAppearance.twitch.bgOpacity} onChange={(e) => setOverlayAppearance((p) => ({ ...p, twitch: { ...p.twitch, bgOpacity: Math.min(1, Math.max(0, Number(e.target.value) || 0)) } }))} className="lf-w70" /></div>
+                <label className="settings-row"><input type="checkbox" checked={overlayAppearance.twitch.showSite} onChange={(e) => setOverlayAppearance((p) => ({ ...p, twitch: { ...p.twitch, showSite: e.target.checked } }))} /><span>出どころ (Twitch) を表示</span></label>
+                <label className="settings-row"><input type="checkbox" checked={overlayAppearance.twitch.showName} onChange={(e) => setOverlayAppearance((p) => ({ ...p, twitch: { ...p.twitch, showName: e.target.checked } }))} /><span>名前を表示</span></label>
+                <label className="settings-row"><input type="checkbox" checked={overlayAppearance.twitch.showBadges} onChange={(e) => setOverlayAppearance((p) => ({ ...p, twitch: { ...p.twitch, showBadges: e.target.checked } }))} /><span>バッジを表示</span></label>
+                <div className="settings-row"><span>バッジの大きさ</span><input type="number" min={8} max={120} step={1} value={overlayAppearance.twitch.badgeSize} onChange={(e) => { const n = Math.round(Number(e.target.value)); if (n >= 8 && n <= 120) setOverlayAppearance((p) => ({ ...p, twitch: { ...p.twitch, badgeSize: n } })); }} className="lf-w70" /><span>px</span></div>
+                <div className="settings-row"><span>スタンプの大きさ</span><input type="number" min={8} max={200} step={1} value={overlayAppearance.twitch.emoteSize} onChange={(e) => { const n = Math.round(Number(e.target.value)); if (n >= 8 && n <= 200) setOverlayAppearance((p) => ({ ...p, twitch: { ...p.twitch, emoteSize: n } })); }} className="lf-w70" /><span>px</span></div>
+                <div className="settings-row"><span>巨大化したスタンプ (ビッツのパワーアップ) の大きさ</span><input type="number" min={16} max={600} step={1} value={overlayAppearance.twitch.giantEmoteSize} onChange={(e) => { const n = Math.round(Number(e.target.value)); if (n >= 16 && n <= 600) setOverlayAppearance((p) => ({ ...p, twitch: { ...p.twitch, giantEmoteSize: n } })); }} className="lf-w70" /><span>px</span></div>
+                <label className="settings-row"><input type="checkbox" checked={overlayAppearance.twitch.useUserColor} onChange={(e) => setOverlayAppearance((p) => ({ ...p, twitch: { ...p.twitch, useUserColor: e.target.checked } }))} /><span>視聴者が設定した名前の色を使う</span></label>
+                <label className="settings-row"><input type="checkbox" checked={overlayAppearance.twitch.fixNameContrast} onChange={(e) => setOverlayAppearance((p) => ({ ...p, twitch: { ...p.twitch, fixNameContrast: e.target.checked } }))} /><span>名前の色が背景に溶けるときは読みやすく調整する</span></label>
+              </fieldset>
+              <fieldset>
+                <legend>追加 CSS (このレイアウトだけに効きます)</legend>
+                <p className="settings-hint">
+                  このレイアウトの OBS 表示に読み込む CSS です。主なクラス: .msg .board .twitch .badge .name .text (詳しくはマニュアル 11.7)。
+                </p>
+                <textarea className="overlay-css-input" value={editingLayout.css} onChange={(e) => setOverlayLayoutCss(e.target.value)} rows={8} spellCheck={false} placeholder={"/* 例 */\n.msg { border-left-width: 8px; }"} />
+              </fieldset>
+              </section>
+              </div>
+              )}
+              {(settingsSearching || settingsCategory === "twitch") && (
+              <div className="settings-cat" data-cat="twitch">
+              <section className="settings-section" data-section="main">
+                {settingsSectionHeading("twitch", "main")}
+              <p className="settings-hint">
+                アドレスバーに twitch.tv/チャンネル名 を入れて移動すると、そのチャンネルのチャットを Twitch タブに表示します (ログイン不要・受信のみ)。
+              </p>
+              <fieldset>
+                <legend>読み上げ</legend>
+                <label className="settings-row" title="オフにすると、名前を付けずに本文だけを読み上げます">
+                  <input type="checkbox" checked={twitchSpeakName} onChange={(e) => setTwitchSpeakName(e.target.checked)} />
+                  <span>名前を読み上げる (「名前さん」+本文)</span>
+                </label>
+                <div className="settings-row">
+                  <span>読み上げが溜まっているときの上限</span>
+                  <input type="number" min={TWITCH_LIMIT_MIN} max={TWITCH_LIMIT_MAX} step={1} value={twitchMaxTtsBacklog} onChange={(e) => setTwitchMaxTtsBacklog(clampTwitchLimit(Number(e.target.value)))} className="lf-w70" />
+                  <span>件</span>
+                </div>
+                <p className="settings-hint">読み上げ待ちがこの件数以上あるときは、新しく届いたチャットを読み上げに加えません (流れが速いときに読み上げが遅れ続けないように)。</p>
+              </fieldset>
+              <fieldset>
+                <legend>新着レスペイン・字幕</legend>
+                <div className="settings-row">
+                  <span>溜めておく Twitch のチャットの上限</span>
+                  <input type="number" min={TWITCH_LIMIT_MIN} max={TWITCH_LIMIT_MAX} step={1} value={twitchMaxQueuedArrivals} onChange={(e) => setTwitchMaxQueuedArrivals(clampTwitchLimit(Number(e.target.value)))} className="lf-w70" />
+                  <span>件</span>
+                </div>
+                <p className="settings-hint">
+                  表示待ちの Twitch のチャットがこの件数を超えたら、古いものから飛ばします (新着レスペインの「残 N」で確認できます)。
+                </p>
+              </fieldset>
+              </section>
+              <section className="settings-section" data-section="emotes">
+                {settingsSectionHeading("twitch", "emotes")}
+              <fieldset>
+                <legend>スタンプ</legend>
+                <p className="settings-hint">
+                  チャットのスタンプを画像で表示します (Twitch タブ・新着レスペイン・ビュワー)。字幕の大きさは 設定 &gt; 字幕、OBS 表示はレイアウトで変えます。
+                </p>
+                <div className="settings-row">
+                  <span>スタンプの大きさ</span>
+                  <input type="number" min={8} max={200} step={1} value={twitchEmoteSize} onChange={(e) => { const n = Math.round(Number(e.target.value)); if (n >= 8 && n <= 200) setTwitchEmoteSize(n); }} className="lf-w70" />
+                  <span>px</span>
+                </div>
+                <div className="settings-row">
+                  <span>巨大化したスタンプ (ビッツのパワーアップ) の大きさ</span>
+                  <input type="number" min={16} max={600} step={1} value={twitchGiantEmoteSize} onChange={(e) => { const n = Math.round(Number(e.target.value)); if (n >= 16 && n <= 600) setTwitchGiantEmoteSize(n); }} className="lf-w70" />
+                  <span>px</span>
+                </div>
+                <div className="settings-row">
+                  <span>スタンプの読み上げ</span>
+                  <select value={twitchEmoteSpeak} onChange={(e) => setTwitchEmoteSpeak(e.target.value === "none" ? "none" : "name")}>
+                    <option value="name">名前を読む</option>
+                    <option value="none">読まない</option>
+                  </select>
+                  {twitchEmoteSpeak === "name" && (
+                    <>
+                      <span>同じスタンプは</span>
+                      <input type="number" min={1} max={TWITCH_EMOTE_MAX_LIMIT} step={1} value={twitchEmoteMax} onChange={(e) => { const n = Math.round(Number(e.target.value)); if (n >= 1 && n <= TWITCH_EMOTE_MAX_LIMIT) setTwitchEmoteMax(n); }} className="lf-w60" />
+                      <span>個まで (1〜{TWITCH_EMOTE_MAX_LIMIT})</span>
+                    </>
+                  )}
+                </div>
+                <label className="settings-row">
+                  <input type="checkbox" checked={boardEmotesEnabled} onChange={(e) => setBoardEmotesEnabled(e.target.checked)} />
+                  <span>掲示板に書かれたスタンプ名も画像にする (スレのタブ・新着レスペイン・字幕・ビュワー・OBS 表示。頭に BIG を付けると巨大表示)</span>
+                </label>
+                <p className="settings-hint">
+                  スタンプ名と大文字小文字まで一致した語を画像にします。
+                  覚えているスタンプ: {emoteNameMapRef.current.size} 件 (24時間見かけないと消えます){emoteNameVersion >= 0 ? "" : ""}
+                  <button className="lf-ml8" onClick={() => { emoteNameMapRef.current.clear(); emoteNameSeenRef.current.clear(); emoteNamesDirtyRef.current = false; saveToFile("twitch-emotes.json", { version: 2, emotes: {} }); setEmoteNameVersion((v) => v + 1); setEmoteFetchMsg(""); }}>覚えたスタンプを消す</button>
+                  <button className="lf-ml4" disabled={twitchAuth.state !== "connected"} title={twitchAuth.state === "connected" ? "公式の窓口から一覧を取り直します" : "Twitch にログインすると使えます"} onClick={() => fetchTwitchEmotesNow(true)}>今すぐ取得</button>
+                  {emoteFetchMsg && <span className="lf-ml6">{emoteFetchMsg}</span>}
+                </p>
+                <p className="settings-hint">
+                  消しても、チャットに流れれば覚え直します。ログイン中は「今すぐ取得」でまとめて取り直せます。
+                </p>
+                <p className="settings-hint">スタンプは名前 (Kappa など) のまま読み上げに送ります。棒読みちゃんの教育や読み上げ辞書で読み方を変えられます。巨大化したスタンプも同じように読みます。</p>
+              </fieldset>
+              <fieldset>
+                <legend>バッジ</legend>
+                <label className="settings-row">
+                  <input type="checkbox" checked={twitchBadgesEnabled} onChange={(e) => setTwitchBadgesEnabled(e.target.checked)} />
+                  <span>バッジの画像とチャンネルポイントの報酬名を取得する</span>
+                </label>
+                <p className="settings-hint">
+                  Twitch のサイトの非公式の取得口 (gql.twitch.tv) から、バッジ画像と報酬名を取得します (送るのはチャンネル名だけ)。仕様変更で使えなくなることがあります。
+                </p>
+              </fieldset>
+              </section>
+              <section className="settings-section" data-section="events">
+                {settingsSectionHeading("twitch", "events")}
+              <fieldset>
+                <legend>イベント (サブスク・ビッツ・レイドなど)</legend>
+                <p className="settings-hint">
+                  お知らせを「【種類】要約」の1件で表示します。入力の無い報酬・自動報酬・フォローは、ログインした配信者本人のチャンネルだけです。
+                  読み上げる文には {"{name}"} {"{months}"} {"{count}"} {"{bits}"} {"{viewers}"} {"{recipient}"} {"{reward}"} {"{message}"} を使えます。
+                </p>
+                <table className="twitch-event-table">
+                  <thead><tr><th>種類</th><th>流す</th><th>読む</th><th>読み上げる文</th><th></th></tr></thead>
+                  <tbody>
+                    {TWITCH_EVENT_KINDS.map((k) => {
+                      const e = twitchEventSettings[k.kind] ?? defaultTwitchEventSettings()[k.kind];
+                      return (
+                        <tr key={k.kind}>
+                          <td>{k.label}</td>
+                          <td><input type="checkbox" checked={e.show} onChange={(ev) => updateTwitchEvent(k.kind, { show: ev.target.checked })} title="ビュワー・OBS・新着レスペインに流す" /></td>
+                          <td><input type="checkbox" checked={e.speak} disabled={!e.show} onChange={(ev) => updateTwitchEvent(k.kind, { speak: ev.target.checked })} title="読み上げる" /></td>
+                          <td><input type="text" value={e.template} maxLength={TWITCH_EVENT_TEMPLATE_MAX} onChange={(ev) => updateTwitchEvent(k.kind, { template: ev.target.value })} onBlur={(ev) => { if (!ev.target.value.trim()) updateTwitchEvent(k.kind, { template: k.template }); }} className="lf-full-width" /></td>
+                          <td><button onClick={() => testTwitchEvent(k.kind)} title="開いている Twitch タブに試しのイベントを流します">テスト</button></td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+                <div className="settings-row">
+                  <button onClick={() => { setTwitchEventSettings(defaultTwitchEventSettings()); setTwitchEventTestMsg("イベントの設定を既定に戻しました"); }}>既定に戻す</button>
+                  {twitchEventTestMsg && <span className="settings-hint">{twitchEventTestMsg}</span>}
+                </div>
+              </fieldset>
+              </section>
+              <section className="settings-section" data-section="teach">
+                {settingsSectionHeading("twitch", "teach")}
+              <fieldset>
+                <legend>教育・忘却コマンド</legend>
+                <label className="settings-row">
+                  <input type="checkbox" checked={twitchTeachEnabled} onChange={(e) => setTwitchTeachEnabled(e.target.checked)} />
+                  <span>Twitch のチャットの「教育(単語=読み)」「忘却(単語)」を受け付ける</span>
+                </label>
+                <label className="settings-row">
+                  <input type="checkbox" checked={twitchTeachAnnounce} onChange={(e) => setTwitchTeachAnnounce(e.target.checked)} disabled={!twitchTeachEnabled} />
+                  <span>「〇〇を覚えました」「〇〇を忘れました」と読み上げる</span>
+                </label>
+                <p className="settings-hint">
+                  Twitch の視聴者が使えます (1人5秒に1回・掲示板からは不可)。VOICEVOX・SAPI は下の辞書に登録し、棒読みちゃんにはコマンドをそのまま渡します (棒読みちゃん側で管理)。
+                </p>
+              </fieldset>
+              <fieldset>
+                <legend>Twitch 教育辞書 ({twitchTeachDict.length}件)</legend>
+                {settingsListFilterRow()}
+                <div className="settings-note settings-note-block">
+                  視聴者が教えた単語です。直す・手で追加・削除ができます (単語30字・読み50字・{TWITCH_TEACH_MAX}件まで。あなたの読み上げ辞書の単語は不可)。
+                </div>
+                <table data-search-exclude="1" className="settings-table">
+                  <thead>
+                    <tr className="settings-table-head">
+                      <th className="lf-p2-6">単語</th>
+                      <th className="lf-p2-6">読み</th>
+                      <th className="lf-p2-6">教えた人</th>
+                      <th className="lf-p2-6">日時</th>
+                      <th className="lf-p2-6"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {twitchTeachDict.map((entry, i) => ({ entry, i })).reverse().filter(({ entry }) => settingsListMatch(entry.word, entry.reading)).map(({ entry, i }) => (
+                      <tr key={`${i}-${entry.at}`} className="settings-table-row">
+                        <td className="lf-p3-6">
+                          <input type="text" value={entry.word} maxLength={30} onChange={(e) => updateTwitchTeachDict(twitchTeachDict.map((x, j) => (j === i ? { ...x, word: e.target.value } : x)))} className="lf-w120" />
+                        </td>
+                        <td className="lf-p3-6">
+                          <input type="text" value={entry.reading} maxLength={50} onChange={(e) => updateTwitchTeachDict(twitchTeachDict.map((x, j) => (j === i ? { ...x, reading: e.target.value } : x)))} className="lf-w150" />
+                        </td>
+                        <td className="lf-p3-6-maxw110-ov-hidden-to-ellipsis-ws-nowrap" title={entry.by}>{maskDisplay(entry.by || "(手で追加)")}</td>
+                        <td className="lf-p3-6-ws-nowrap">{entry.at ? (() => { const d = new Date(entry.at); const p2 = (n: number) => String(n).padStart(2, "0"); return `${p2(d.getMonth() + 1)}/${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`; })() : ""}</td>
+                        <td className="lf-p3-6">
+                          <button onClick={() => updateTwitchTeachDict(twitchTeachDict.filter((_, j) => j !== i))}>削除</button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <div className="lf-d-flex-gap4-ai-center-mt4-fwrap-wrap">
+                  <input type="text" value={twitchTeachNewWord} maxLength={30} onChange={(e) => setTwitchTeachNewWord(e.target.value)} placeholder="単語" className="lf-w120" />
+                  <span>→</span>
+                  <input type="text" value={twitchTeachNewReading} maxLength={50} onChange={(e) => setTwitchTeachNewReading(e.target.value)} placeholder="読み" className="lf-w150" />
+                  <button onClick={() => {
+                    const word = twitchTeachNewWord.trim();
+                    const reading = twitchTeachNewReading.trim();
+                    if (!teachWordOk(word, 30) || !teachWordOk(reading, 50)) { setTwitchTeachMsg("単語は1〜30文字、読みは1〜50文字で、URL は使えません"); return; }
+                    if (ttsDictEntries.some((e) => e.from === word)) { setTwitchTeachMsg("あなたの読み上げ辞書にある単語です"); return; }
+                    updateTwitchTeachDict([...twitchTeachDict.filter((e) => e.word !== word), { word, reading, by: "", at: Date.now() }].slice(-TWITCH_TEACH_MAX));
+                    setTwitchTeachNewWord(""); setTwitchTeachNewReading(""); setTwitchTeachMsg("");
+                  }}>追加</button>
+                  <button className="danger" disabled={twitchTeachDict.length === 0} onClick={() => setAppConfirm({ title: "Twitch 教育辞書", message: "Twitch 教育辞書をすべて消しますか?", buttons: [{ label: "すべて消す", danger: true, onClick: () => updateTwitchTeachDict([]) }, { label: "キャンセル", onClick: () => {} }] })}>すべて消す</button>
+                  {twitchTeachMsg && <span className="overlay-layout-msg error">{twitchTeachMsg}</span>}
+                </div>
+              </fieldset>
+              </section>
+              <section className="settings-section" data-section="login">
+                {settingsSectionHeading("twitch", "login")}
+              <fieldset>
+                <legend>Twitch にログイン (任意)</legend>
+                <p className="settings-hint">
+                  入力の無い報酬・自動報酬・フォローを表示するには、配信者本人のアカウントでログインします (読み取りの許可のみ。ログイン情報は暗号化して保存)。
+                </p>
+                <div className="settings-row">
+                  <span>状態</span>
+                  <span>{twitchAuth.state === "connected" ? `ログイン中: ${twitchAuth.login} (受信中)`
+                    : twitchAuth.state === "connecting" ? `ログイン中: ${twitchAuth.login} (接続しています)`
+                    : twitchAuth.state === "waiting" ? "許可を待っています"
+                    : twitchAuth.state === "error" ? (twitchAuth.loggedIn ? `ログイン中: ${twitchAuth.login} (エラー)` : "ログインしていません")
+                    : "ログインしていません"}</span>
+                </div>
+                {twitchAuth.state === "waiting" && twitchAuth.userCode && (
+                  <div className="twitch-login-code">
+                    <div className="settings-hint">ブラウザで開いた Twitch のページに、次のコードを入力して「許可」を押してください。</div>
+                    <div className="twitch-login-code-value">{twitchAuth.userCode}</div>
+                    <button onClick={() => openTwitchActivatePage(twitchAuth.verificationUri)}>ページをもう一度開く</button>
+                  </div>
+                )}
+                {twitchAuth.message && <p className={`settings-hint${twitchAuth.state === "error" ? " overlay-layout-msg error" : ""}`}>{twitchAuth.message}</p>}
+                <div className="settings-row">
+                  <button disabled={twitchAuthBusy || twitchAuth.state === "waiting"} onClick={() => void startTwitchLogin()}>{twitchAuth.loggedIn ? "ログインし直す" : "Twitch にログイン"}</button>
+                  <button disabled={twitchAuthBusy || (!twitchAuth.loggedIn && twitchAuth.state !== "waiting")} onClick={logoutTwitch}>ログアウト</button>
+                </div>
+              </fieldset>
+              </section>
+              </div>
+              )}
+              {(settingsSearching || settingsCategory === "youtube") && (
+              <div className="settings-cat" data-cat="youtube">
+              <section className="settings-section" data-section="main">
+                {settingsSectionHeading("youtube", "main")}
+              <p className="settings-hint">
+                アドレスバーに YouTube のライブ配信の URL (youtube.com/watch?v=… / youtube.com/live/… / youtu.be/…) を入れて移動すると、
+                その配信のチャットを YouTube タブに表示します (受信のみ)。チャンネルの URL・アーカイブ・普通の動画には対応していません。
+              </p>
+              <fieldset>
+                <legend>取得方法</legend>
+                {youtubeMethods.length <= 1 ? (
+                  <p className="settings-hint">{youtubeMethods[0] ? `${youtubeMethods[0].label}: ${youtubeMethods[0].description}` : "(読み込み中)"}</p>
+                ) : youtubeMethods.map((m) => (
+                  <label key={m.id} className="settings-row youtube-method" title={m.description}>
+                    <input type="radio" name="youtube-method" checked={youtubeEffectiveMethod === m.id} onChange={() => setYoutubeMethod(m.id)} />
+                    <span><b>{m.label}</b><br /><span className="settings-hint">{m.description}</span></span>
+                  </label>
+                ))}
+              </fieldset>
+              {youtubeEffectiveMethod === "api" && (
+              <fieldset>
+                <legend>API キー (YouTube Data API)</legend>
+                <p className="settings-hint">
+                  Google Cloud のコンソールでプロジェクトを作り、「YouTube Data API v3」を有効にして API キーを作ってください。
+                  キーは「API の制限」で YouTube Data API v3 だけに絞っておくと安全です。キーはこの PC に暗号化して保存し、YouTube の API にだけ送ります。
+                </p>
+                <div className="settings-row">
+                  <span>状態: {youtubeKeySet ? "設定済み" : "未設定"}</span>
+                </div>
+                <div className="settings-row">
+                  <input type="password" value={youtubeKeyInput} onChange={(e) => setYoutubeKeyInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") saveYoutubeKey(); }} placeholder={youtubeKeySet ? "新しいキーで置き換える" : "API キー"} autoComplete="off" spellCheck={false} className="lf-grow" />
+                  <button onClick={saveYoutubeKey}>保存</button>
+                  <button disabled={!youtubeKeySet} onClick={clearYoutubeKey}>削除</button>
+                </div>
+                {youtubeKeyMsg && <p className={`settings-hint overlay-layout-msg${youtubeKeyMsg.error ? " error" : ""}`}>{youtubeKeyMsg.text}</p>}
+                <div className="settings-row">
+                  <span>取得の間隔</span>
+                  <input type="number" min={YOUTUBE_API_INTERVAL_MIN} max={YOUTUBE_API_INTERVAL_MAX} step={1} value={youtubeApiInterval} onChange={(e) => { const n = Math.round(Number(e.target.value)); if (n >= YOUTUBE_API_INTERVAL_MIN && n <= YOUTUBE_API_INTERVAL_MAX) setYoutubeApiInterval(n); }} className="lf-w70" />
+                  <span>秒 ({YOUTUBE_API_INTERVAL_MIN}〜{YOUTUBE_API_INTERVAL_MAX})</span>
+                </div>
+                <p className="settings-hint">
+                  1回の取得で 5 クォータ使います。1日の上限が既定の 10,000 クォータなら、この間隔で配信1つを約 {Math.floor((YOUTUBE_API_DAILY_QUOTA / 5) * youtubeApiInterval / 3600 * 10) / 10} 時間受信できます
+                  (配信を2つ開くと半分になります)。YouTube から指示された間隔のほうが長いときは、そちらに合わせます。上限は太平洋時間の0時 (日本時間の16〜17時) に戻ります。
+                </p>
+              </fieldset>
+              )}
+              <fieldset>
+                <legend>読み上げ</legend>
+                <label className="settings-row" title="オフにすると、名前を付けずに本文だけを読み上げます">
+                  <input type="checkbox" checked={youtubeSpeakName} onChange={(e) => setYoutubeSpeakName(e.target.checked)} />
+                  <span>名前を読み上げる (「名前さん」+本文)</span>
+                </label>
+                <p className="settings-hint">
+                  絵文字 (:_名前: の形) は読み上げません。読み上げが溜まっているときの上限と、新着レスペイン・字幕に溜めておく上限は 設定 &gt; Twitch と同じ値を使います。
+                </p>
+              </fieldset>
+              <fieldset>
+                <legend>YouTube の規約</legend>
+                <p className="settings-hint">
+                  チャットは YouTube から取得しています。LiveFake はチャットを保存しません (タブを閉じる・終了すると消えます)。
+                </p>
+                <div className="settings-row">
+                  <button onClick={() => { if (isTauriRuntime()) void invoke("open_external_url", { url: "https://www.youtube.com/t/terms" }).catch((e) => console.warn("open_external_url failed", e)); }}>YouTube 利用規約</button>
+                  <button onClick={() => { if (isTauriRuntime()) void invoke("open_external_url", { url: "https://policies.google.com/privacy" }).catch((e) => console.warn("open_external_url failed", e)); }}>Google プライバシー ポリシー</button>
+                </div>
+              </fieldset>
+              </section>
+              <section className="settings-section" data-section="events">
+                {settingsSectionHeading("youtube", "events")}
+              <fieldset>
+                <legend>イベント (スーパーチャット・メンバー加入など)</legend>
+                <p className="settings-hint">
+                  お知らせを「【種類】要約」の1件で表示します。金額は表示するだけです。
+                  読み上げる文には {"{name}"} {"{amount}"} {"{months}"} {"{count}"} {"{level}"} {"{item}"} {"{message}"} を使えます。
+                </p>
+                <table className="twitch-event-table">
+                  <thead><tr><th>種類</th><th>流す</th><th>読む</th><th>読み上げる文</th><th></th></tr></thead>
+                  <tbody>
+                    {YOUTUBE_EVENT_KINDS.map((k) => {
+                      const e = youtubeEventSettings[k.kind] ?? defaultYoutubeEventSettings()[k.kind];
+                      return (
+                        <tr key={k.kind}>
+                          <td>{k.label}</td>
+                          <td><input type="checkbox" checked={e.show} onChange={(ev) => updateYoutubeEvent(k.kind, { show: ev.target.checked })} title="ビュワー・OBS・新着レスペインに流す" /></td>
+                          <td><input type="checkbox" checked={e.speak} disabled={!e.show} onChange={(ev) => updateYoutubeEvent(k.kind, { speak: ev.target.checked })} title="読み上げる" /></td>
+                          <td><input type="text" value={e.template} maxLength={TWITCH_EVENT_TEMPLATE_MAX} onChange={(ev) => updateYoutubeEvent(k.kind, { template: ev.target.value })} onBlur={(ev) => { if (!ev.target.value.trim()) updateYoutubeEvent(k.kind, { template: k.template }); }} className="lf-full-width" /></td>
+                          <td><button onClick={() => testYoutubeEvent(k.kind)} title="開いている YouTube タブに試しのイベントを流します">テスト</button></td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+                <div className="settings-row">
+                  <button onClick={() => { setYoutubeEventSettings(defaultYoutubeEventSettings()); setYoutubeEventTestMsg("イベントの設定を既定に戻しました"); }}>既定に戻す</button>
+                  {youtubeEventTestMsg && <span className="settings-hint">{youtubeEventTestMsg}</span>}
+                </div>
+              </fieldset>
+              </section>
+              </div>
+              )}
+              </div>
+            </div>
+            <div className="settings-footer-note" title="NG・辞書・ハイライト・ホワイトリスト・教育辞書・OBS のレイアウトなどの一覧への登録・削除はその場で保存されます。それ以外の設定は「設定を保存」を押すと保存されます。">
+              ※ NG・辞書・ハイライト・ホワイトリスト・教育辞書・OBS のレイアウトの登録はその場で保存。ほかは「設定を保存」で保存
             </div>
           </div>
         </div>
       )}
       {showExternalBoardDialog && (
         <div className="lightbox-overlay" onClick={() => setShowExternalBoardDialog(false)}>
-          <div className="settings-panel" onClick={(e) => e.stopPropagation()} style={{ width: 360, padding: 16 }}>
+          <div className="settings-panel lf-w360-p16" onClick={(e) => e.stopPropagation()}>
             <header className="settings-header">
               <strong>外部板を追加</strong>
               <button onClick={() => setShowExternalBoardDialog(false)}>閉じる</button>
             </header>
-            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8 }}>
+            <div className="lf-d-flex-fd-column-gap8-mt8">
               <label>板URL
-                <input type="text" value={externalBoardUrl} onChange={(e) => setExternalBoardUrl(e.target.value)} placeholder="https://jbbs.shitaraba.net/internet/12345/" style={{ width: "100%", marginTop: 2 }} />
+                <input type="text" value={externalBoardUrl} onChange={(e) => setExternalBoardUrl(e.target.value)} placeholder="https://jbbs.shitaraba.net/internet/12345/" className="lf-w100pc-mt2" />
               </label>
               <label>板名
-                <input type="text" value={externalBoardName} onChange={(e) => setExternalBoardName(e.target.value)} placeholder="したらば実況板" style={{ width: "100%", marginTop: 2 }} />
+                <input type="text" value={externalBoardName} onChange={(e) => setExternalBoardName(e.target.value)} placeholder="したらば実況板" className="lf-w100pc-mt2" />
               </label>
-              <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
+              <div className="lf-d-flex-gap8-jc-flex-end-mt4">
                 <button onClick={() => setShowExternalBoardDialog(false)}>キャンセル</button>
                 <button onClick={() => addExternalBoard(externalBoardUrl, externalBoardName)} disabled={!externalBoardUrl.trim() || !externalBoardName.trim()}>追加</button>
               </div>
@@ -9645,7 +11936,7 @@ export default function App() {
               <strong>スレ立て</strong>
               <button onClick={() => { setShowNewThreadDialog(false); setNewThreadResult(null); }}>閉じる</button>
             </header>
-            <div style={{ padding: "12px", display: "flex", flexDirection: "column", gap: 8, flex: 1, overflow: "hidden" }}>
+            <div className="lf-p12-d-flex-fd-column-gap8-flex1-ov-hidden">
               <label>
                 スレタイ
                 <input
@@ -9653,48 +11944,48 @@ export default function App() {
                   onChange={(e) => setNewThreadSubject(e.target.value)}
                   list="input-history-newThreadSubject"
                   placeholder="スレッドタイトル"
-                  style={{ width: "100%", boxSizing: "border-box" }}
+                  className="lf-full-width"
                 />
               </label>
-              <div style={{ display: "flex", gap: 8 }}>
-                <label style={{ flex: 1 }}>
+              <div className="lf-d-flex-gap8">
+                <label className="lf-flex1">
                   名前
                   <input
                     value={newThreadName}
                     onChange={(e) => setNewThreadName(e.target.value)}
                     list="name-history-list-newthread"
-                    style={{ width: "100%", boxSizing: "border-box" }}
+                    className="lf-full-width"
                   />
                   <datalist id="name-history-list-newthread">
                     {nameHistory.map((n) => <option key={n} value={n} />)}
                   </datalist>
                 </label>
-                <label style={{ flex: 1 }}>
+                <label className="lf-flex1">
                   メール
                   <input
                     value={newThreadMail}
                     onChange={(e) => setNewThreadMail(e.target.value)}
                     list="input-history-newThreadMail"
-                    style={{ width: "100%", boxSizing: "border-box" }}
+                    className="lf-full-width"
                   />
                   {inputHistoryDatalist("newThreadSubject")}
                   {inputHistoryDatalist("newThreadMail")}
                 </label>
               </div>
-              <label style={{ flex: 1, display: "flex", flexDirection: "column" }}>
+              <label className="lf-flex1-d-flex-fd-column">
                 本文
                 <textarea
                   value={newThreadBody}
                   onChange={(e) => setNewThreadBody(e.target.value)}
                   placeholder="本文を入力"
-                  style={{ width: "100%", boxSizing: "border-box", flex: 1, minHeight: 100 }}
+                  className="lf-w100pc-bs-border-box-flex1-minh100"
                 />
               </label>
-              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <div className="lf-d-flex-gap8-ai-center">
                 <button onClick={submitNewThread} disabled={newThreadSubmitting}>
                   {newThreadSubmitting ? "送信中..." : "スレ立て"}
                 </button>
-                <span style={{ fontSize: "0.85em", color: "var(--sub)" }}>
+                <span className="lf-fs0_85em-c-sub">
                   板: {getBoardUrlFromThreadUrl(threadUrl)}
                 </span>
               </div>
@@ -9716,7 +12007,7 @@ export default function App() {
             </header>
             <div className="post-history-body">
               {postHistory.length === 0 ? (
-                <p style={{ padding: "8px", color: "var(--sub)" }}>まだ書き込みがありません</p>
+                <p className="lf-p8-c-sub">まだ書き込みがありません</p>
               ) : (
                 postHistory.map((h, i) => (
                   <div key={i} className={`post-history-item ${h.ok ? "post-ok" : "post-ng"}`} title={h.threadUrl}>
@@ -9734,8 +12025,7 @@ export default function App() {
       )}
       <div
         ref={hoverPreviewRef}
-        className="hover-preview"
-        style={{ display: "none" }}
+        className="hover-preview lf-d-none"
         onClick={() => {
           hoverPreviewSrcRef.current = null;
           if (hoverPreviewHideTimerRef.current) {
@@ -9764,7 +12054,7 @@ export default function App() {
             }
             if (hoverPreviewRef.current) hoverPreviewRef.current.style.display = "none";
           }}
-          style={{ width: "auto", transformOrigin: "left top", transform: "scale(1)" }}
+          className="lf-w-auto-transform-origin-left-top-transform-scale-1"
         />
         {isTauriRuntime() && (
           <button

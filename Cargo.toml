@@ -5,6 +5,9 @@ members = [
   "crates/core-store",
   "crates/core-tts",
   "crates/core-proxy",
+  "crates/core-twitch",
+  "crates/core-overlay",
+  "crates/core-youtube",
   "apps/desktop/src-tauri"
 ]
 resolver = "2"
@@ -16,10 +19,14 @@ version = "0.1.0"
 
 [workspace.dependencies]
 anyhow = "1"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+# OBS 表示用のサーバー (core-overlay)。127.0.0.1 だけで待ち受ける
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "ws", "json", "query"] }
 base64 = "0.22"
 chrono = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 url = "2"
 rusqlite = { version = "0.31", features = ["bundled"] }

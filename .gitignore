@@ -60,3 +60,7 @@ apps/desktop/pnpm-lock.yaml
 # Session/test artifacts
 .claude/scheduled_tasks.lock
 apps/desktop/test-results/
+
+# 暗号化して置くソースのカギと、暗号化する前のソース (どちらも公開しない。公開するのは暗号化した sealed.bin だけ)
+crates/core-youtube/sealed.key
+crates/core-youtube/sealed_plain.rs

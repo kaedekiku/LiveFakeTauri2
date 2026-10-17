@@ -1,0 +1,83 @@
+/* 以前は要素に直接書いていた (インラインスタイル) 見た目を、利用者の CSS で上書きできるようクラスにしたもの。
+   app.css から CSS レイヤー lf-inline として読み込まれ、標準の見た目 (lf-base) より優先される
+   (直接書いていたときと同じ強さ)。利用者の CSS (レイヤーの外) はこれよりさらに優先される。
+   lf- で始まる名前は見た目そのものを表すクラス (例: lf-w70 = 幅 70px)。 */
+.lf-w200 { width: 200px; }
+.lf-d-flex-fwrap-wrap-gap2-10-fs11 { display: flex; flex-wrap: wrap; gap: 2px 10px; font-size: 11px; }
+.lf-d-flex-ai-center-gap2 { display: flex; align-items: center; gap: 2px; }
+.lf-w70 { width: 70px; }
+.lf-flex1 { flex: 1; }
+.lf-fs0_85em { font-size: 0.85em; }
+.lf-bg6b4c9a-c-fff { background: #6b4c9a; color: #fff; }
+.lf-w360-ta-center { width: 360px; text-align: center; }
+.lf-p24-16-d-flex-fd-column-ai-center-gap12 { padding: 24px 16px; display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.lf-w64-h64 { width: 64px; height: 64px; }
+.lf-fs1_3em-fw-bold { font-size: 1.3em; font-weight: bold; }
+.lf-c-sub { color: var(--sub); }
+.lf-fs0_85em-c-sub-lh1_6 { font-size: 0.85em; color: var(--sub); line-height: 1.6; }
+.lf-mt4 { margin-top: 4px; }
+.lf-d-flex-gap8-mt4 { display: flex; gap: 8px; margin-top: 4px; }
+.lf-ai-flex-start { align-items: flex-start; }
+.lf-pt4 { padding-top: 4px; }
+.lf-d-flex-gap4 { display: flex; gap: 4px; }
+.lf-grow { flex: 1; min-width: 0; }
+.lf-shrink0 { flex-shrink: 0; }
+.settings-row-stack { flex-direction: column; align-items: stretch; gap: 4px; }
+.lf-w60 { width: 60px; }
+.lf-flex1-ov-hidden-to-ellipsis-ws-nowrap-fs11-c-text-secondary { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--text-secondary); }
+.lf-gap8 { gap: 8px; }
+.lf-fs0_8em-c-sub-mt4 { font-size: 0.8em; color: var(--sub); margin-top: 4px; }
+.settings-note { font-size: 11px; color: var(--text-secondary, #888); }
+.lf-d-flex-gap4-ai-center { display: flex; gap: 4px; align-items: center; }
+.lf-w180 { width: 180px; }
+.lf-fs11 { font-size: 11px; }
+.lf-d-inline-flex-ai-center-gap2-mr6 { display: inline-flex; align-items: center; gap: 2px; margin-right: 6px; }
+.lf-fs10-p0-4 { font-size: 10px; padding: 0 4px; }
+.lf-w120 { width: 120px; }
+.lf-w160 { width: 160px; }
+.settings-note-block { margin-bottom: 6px; }
+.settings-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 6px; }
+.settings-table-head { border-bottom: 1px solid var(--border, #ccc); text-align: left; }
+.lf-p2-6 { padding: 2px 6px; }
+.lf-p2-6-ta-center { padding: 2px 6px; text-align: center; }
+.settings-table-row { border-bottom: 1px solid var(--border-light, #eee); }
+.lf-p3-6 { padding: 3px 6px; }
+.lf-w220 { width: 220px; }
+.lf-p3-6-ta-center { padding: 3px 6px; text-align: center; }
+.lf-d-flex-gap4-ai-center-mt4 { display: flex; gap: 4px; align-items: center; margin-top: 4px; }
+.lf-d-flex-ai-center-gap2-fs11 { display: flex; align-items: center; gap: 2px; font-size: 11px; }
+.lf-p3-6-ws-nowrap { padding: 3px 6px; white-space: nowrap; }
+.lf-d-flex-gap4-ai-center-mt4-fwrap-wrap { display: flex; gap: 4px; align-items: center; margin-top: 4px; flex-wrap: wrap; }
+.lf-w80 { width: 80px; }
+.lf-w140 { width: 140px; }
+.lf-gap4-fwrap-wrap-mb6 { gap: 4px; flex-wrap: wrap; margin-bottom: 6px; }
+.lf-flex1-minw100 { flex: 1; min-width: 100px; }
+.lf-gap3-fwrap-wrap-mb8 { gap: 3px; flex-wrap: wrap; margin-bottom: 8px; }
+.lf-c-sub-fs0_85em { color: var(--sub); font-size: 0.85em; }
+.lf-gap6 { gap: 6px; }
+.lf-flex1-ov-hidden-to-ellipsis-ws-nowrap { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lf-p1-6 { padding: 1px 6px; }
+.lf-flex1-minw100-font-family-monospace { flex: 1; min-width: 100px; font-family: monospace; }
+.lf-flex1-font-family-monospace { flex: 1; font-family: monospace; }
+.lf-mb8 { margin-bottom: 8px; }
+.lf-c-cc3300 { color: #cc3300; }
+.lf-full-width { width: 100%; box-sizing: border-box; }
+.lf-w90 { width: 90px; }
+.lf-ml8 { margin-left: 8px; }
+.lf-ml4 { margin-left: 4px; }
+.lf-ml6 { margin-left: 6px; }
+.lf-w150 { width: 150px; }
+.lf-p3-6-maxw110-ov-hidden-to-ellipsis-ws-nowrap { padding: 3px 6px; max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lf-w360-p16 { width: 360px; padding: 16px; }
+.lf-d-flex-fd-column-gap8-mt8 { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.lf-w100pc-mt2 { width: 100%; margin-top: 2px; }
+.lf-d-flex-gap8-jc-flex-end-mt4 { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; }
+.lf-p12-d-flex-fd-column-gap8-flex1-ov-hidden { padding: 12px; display: flex; flex-direction: column; gap: 8px; flex: 1; overflow: hidden; }
+.lf-d-flex-gap8 { display: flex; gap: 8px; }
+.lf-flex1-d-flex-fd-column { flex: 1; display: flex; flex-direction: column; }
+.lf-w100pc-bs-border-box-flex1-minh100 { width: 100%; box-sizing: border-box; flex: 1; min-height: 100px; }
+.lf-d-flex-gap8-ai-center { display: flex; gap: 8px; align-items: center; }
+.lf-fs0_85em-c-sub { font-size: 0.85em; color: var(--sub); }
+.lf-p8-c-sub { padding: 8px; color: var(--sub); }
+.lf-d-none { display: none; }
+.lf-w-auto-transform-origin-left-top-transform-scale-1 { width: auto; transform-origin: left top; transform: scale(1); }

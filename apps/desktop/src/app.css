@@ -1,0 +1,6 @@
+/* LiveFake の見た目の読み込み口 (main.tsx から読み込む)。
+   アプリの標準の見た目を CSS レイヤーにまとめ、利用者の CSS (custom.css・data/theme/*.css。レイヤーの外) が
+   指定の強さに関係なく常に優先されるようにする。後に書いたレイヤーほど優先: lf-base < lf-inline < 利用者の CSS */
+@layer lf-base, lf-inline;
+@import url("./styles.css") layer(lf-base);
+@import url("./inline-classes.css") layer(lf-inline);
