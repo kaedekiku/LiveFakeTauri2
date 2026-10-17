@@ -54,7 +54,9 @@ type FavoriteThread = { threadUrl: string; title: string; boardUrl: string };
 type FavoritesData = { boards: FavoriteBoard[]; threads: FavoriteThread[] };
 type NgMode = "hide" | "hide-images" | "abone";
 type NgEntry = { value: string; mode: NgMode; scope?: "global" | "board" | "thread"; scopeUrl?: string };
-type NgFilters = { words: (string | NgEntry)[]; ids: (string | NgEntry)[]; names: (string | NgEntry)[]; mails: (string | NgEntry)[]; thread_words: (string | NgEntry)[]; image_words: (string | NgEntry)[] };
+type NgFilters = { words: (string | NgEntry)[]; ids: (string | NgEntry)[]; names: (string | NgEntry)[]; mails: (string | NgEntry)[]; thread_words: (string | NgEntry)[]; image_words: (string | NgEntry)[]; invisible?: NgInvisibleMode };
+// NG「見えない文字を含むレス」の設定 (範囲は全体のみ)
+type NgInvisibleMode = "off" | "abone" | "hide";
 type NgCategory = "words" | "ids" | "names" | "mails" | "thread_words" | "image_words";
 const ngVal = (e: string | NgEntry): string => typeof e === "string" ? e : e.value;
 const ngEntryMode = (e: string | NgEntry): NgMode => typeof e === "string" ? "hide" : e.mode;
@@ -201,6 +203,23 @@ const decodeHtmlEntities = (s: string) =>
       const cp = Number.parseInt(hex, 16);
       return isValidCodePoint(cp) ? String.fromCodePoint(cp) : _m;
     });
+// NG「見えない文字を含むレス」の対象 (TchViewer の判定と同じ文字)。幅ゼロの空白・単語結合子・BOM、
+// 文字の向きを変える制御文字 (LRM/RLM・埋め込み/上書き・分離)、空白に見えるハングルの埋め文字。
+// U+200D (合成絵文字の接合子) と U+FE00〜FE0F (異体字セレクタ) は絵文字に普通に使われるので対象にしない
+const INVISIBLE_CHAR_RE = /[\u200B\u200C\u2060\uFEFF\u200E\u200F\u202A-\u202E\u2066-\u2069\u115F\u1160\u3164\uFFA0]/;
+// 判定用: 数字の文字参照 (&#8203; / &#x200B;) だけを文字に戻す。dat は Shift_JIS / EUC-JP のため、
+// これらの文字は必ず文字参照の形で届く。&amp; は戻さない (「&#8203;」という書き方を説明しているだけの
+// 文章 = &amp;#8203; を見えない文字と誤判定しないため)。範囲外の値は戻さず元のまま残す
+const decodeNumericCharRefs = (s: string) =>
+  s.indexOf("&#") < 0
+    ? s
+    : s.replace(/&#x([0-9a-fA-F]{1,6});|&#(\d{1,7});/g, (m: string, hex: string | undefined, dec: string | undefined) => {
+        const cp = hex !== undefined ? Number.parseInt(hex, 16) : Number.parseInt(dec ?? "", 10);
+        return isValidCodePoint(cp) ? String.fromCodePoint(cp) : m;
+      });
+const hasInvisibleChar = (s: string) => INVISIBLE_CHAR_RE.test(decodeNumericCharRefs(s));
+// 空文字や不明な値 (古い設定ファイル・手で書き換えたファイル) は "off" として扱う
+const normalizeInvisibleMode = (v: unknown): NgInvisibleMode => (v === "abone" || v === "hide" ? v : "off");
 const escapeHtml = (s: string) =>
   s
     .replace(/&/g, "&amp;")
@@ -768,7 +787,7 @@ export default function App() {
   const [externalBoardName, setExternalBoardName] = useState("");
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
   const [favorites, setFavorites] = useState<FavoritesData>({ boards: [], threads: [] });
-  const [ngFilters, setNgFilters] = useState<NgFilters>({ words: [], ids: [], names: [], mails: [], thread_words: [], image_words: [] });
+  const [ngFilters, setNgFilters] = useState<NgFilters>({ words: [], ids: [], names: [], mails: [], thread_words: [], image_words: [], invisible: "off" });
   // customTitles: boardUrl -> threadKey -> customTitle
   const [customTitles, setCustomTitles] = useState<Record<string, Record<string, string>>>({});
   const [ngAddMode, setNgAddMode] = useState<NgMode>("hide");
@@ -1012,7 +1031,7 @@ export default function App() {
     "tts-dict": [{ id: "dict", label: "辞書" }, { id: "allow", label: "許可リスト" }, { id: "mute", label: "読み上げない辞書" }],
     subtitle: [{ id: "view", label: "表示" }, { id: "cards", label: "カード" }, { id: "scroll", label: "スクロール" }],
     proxy: [],
-    ng: [{ id: "words", label: "ワード" }, { id: "ids", label: "ID" }, { id: "names", label: "名前" }, { id: "mails", label: "メール" }, { id: "thread_words", label: "スレタイ" }, { id: "image_words", label: "画像NG" }],
+    ng: [{ id: "words", label: "ワード" }, { id: "ids", label: "ID" }, { id: "names", label: "名前" }, { id: "mails", label: "メール" }, { id: "thread_words", label: "スレタイ" }, { id: "image_words", label: "画像NG" }, { id: "invisible", label: "見えない文字" }],
     highlights: [{ id: "word", label: "ワード" }, { id: "name", label: "名前" }, { id: "id", label: "ID" }],
     presets: [],
     reset: [],
@@ -1794,7 +1813,7 @@ export default function App() {
     if (!isTauriRuntime()) return;
     try {
       const data = await invoke<NgFilters>("load_ng_filters");
-      setNgFilters({ ...data, mails: data.mails ?? [], thread_words: data.thread_words ?? [] });
+      setNgFilters({ ...data, mails: data.mails ?? [], thread_words: data.thread_words ?? [], invisible: normalizeInvisibleMode(data.invisible) });
     } catch {
       // no saved NG filters yet
     }
@@ -1859,6 +1878,19 @@ export default function App() {
     });
   };
 
+  // NG「見えない文字を含むレス」の選択欄 (NGフィルタのダイアログと 設定 > NG の両方で使う)
+  const NG_INVISIBLE_HINT = "幅ゼロの空白・文字の向きを変える制御文字・空白に見えるハングルの埋め文字など、画面に見えない文字を名前か本文に含むレスをNGにします。絵文字に使われる文字は対象にしません。範囲は全体のみです。";
+  const ngInvisibleSelect = () => (
+    <select
+      className="ng-mode-select"
+      value={normalizeInvisibleMode(ngFilters.invisible)}
+      onChange={(e) => void persistNgFilters({ ...ngFilters, invisible: normalizeInvisibleMode(e.target.value) })}
+    >
+      <option value="off">NGにしない</option>
+      <option value="abone">通常あぼ～ん</option>
+      <option value="hide">透明あぼ～ん</option>
+    </select>
+  );
   const NG_TYPE_LABELS: Record<NgCategory, string> = {
     words: "ワード", ids: "ID", names: "名前", mails: "メール", thread_words: "スレタイ", image_words: "画像NG",
   };
@@ -1908,7 +1940,8 @@ export default function App() {
   type NgHit = { mode: NgMode; reason: string };
   const NG_MODE_RANK: Record<NgMode, number> = { "hide-images": 0, abone: 1, hide: 2 };
   const getNgResult = (resp: { name: string; mail?: string; time: string; text: string }, threadUrlForScope?: string): NgHit | null => {
-    if (ngFilters.words.length === 0 && ngFilters.ids.length === 0 && ngFilters.names.length === 0 && ngFilters.mails.length === 0) return null;
+    const invisibleMode = normalizeInvisibleMode(ngFilters.invisible);
+    if (ngFilters.words.length === 0 && ngFilters.ids.length === 0 && ngFilters.names.length === 0 && ngFilters.mails.length === 0 && invisibleMode === "off") return null;
     const curThread = (threadUrlForScope ?? threadUrl).trim();
     const curBoard = getBoardUrlFromThreadUrl(curThread);
     let best: NgHit | null = null;
@@ -1924,6 +1957,11 @@ export default function App() {
         const hit = consider(ngEntryMode(w), `NGワード: ${ngVal(w)}`);
         if (hit) return hit;
       }
+    }
+    // 見えない文字を含むレス (範囲は全体のみ。名前と本文を見る)。文字参照を戻した文字列はこの判定にだけ使う
+    if (invisibleMode !== "off" && (hasInvisibleChar(resp.text) || hasInvisibleChar(resp.name))) {
+      const hit = consider(invisibleMode, "NG: 見えない文字");
+      if (hit) return hit;
     }
     for (const n of ngFilters.names) {
       if (!ngScopeMatches(n, curBoard, curThread)) continue;
@@ -5599,6 +5637,7 @@ export default function App() {
           mails: Array.isArray(ng.mails) ? ng.mails : [],
           thread_words: Array.isArray(ng.thread_words) ? ng.thread_words : [],
           image_words: Array.isArray(ng.image_words) ? ng.image_words : [],
+          invisible: normalizeInvisibleMode(ng.invisible),
         });
       }
       if (isStringMap(l.idHighlights)) persistIdHighlights(l.idHighlights);
@@ -5638,7 +5677,7 @@ export default function App() {
     applyLayoutPrefs(JSON.stringify(layout));
     persistSettingsNow(layout, defaultsApp);
     if (resetIncludeLists) {
-      void persistNgFilters({ words: [], ids: [], names: [], mails: [], thread_words: [], image_words: [] });
+      void persistNgFilters({ words: [], ids: [], names: [], mails: [], thread_words: [], image_words: [], invisible: "off" });
       persistIdHighlights({});
       persistTextHighlights([]);
       setTtsDictEntries(DEFAULT_TTS_DICT);
@@ -7278,6 +7317,10 @@ export default function App() {
             <button onClick={() => addNgFromInput()}>追加</button>
           </div>
           <div className="ng-panel-lists">
+            <div className="ng-list-section">
+              <h4>見えない文字を含むレス {ngInvisibleSelect()}</h4>
+              <p className="ng-hint">{NG_INVISIBLE_HINT}</p>
+            </div>
             {(["words", "ids", "names", "mails", "thread_words", "image_words"] as const).map((type) => (
               <div key={type} className="ng-list-section">
                 <h4>{NG_TYPE_LABELS[type]} ({ngFilters[type].length})</h4>
@@ -9182,6 +9225,17 @@ export default function App() {
                   </fieldset>
                 </section>
               ))}
+              <section className="settings-section" data-section="invisible">
+                {settingsSectionHeading("ng", "invisible")}
+                <fieldset>
+                  <legend>見えない文字を含むレス</legend>
+                  <div className="settings-row">
+                    <span>見えない文字を含むレス</span>
+                    {ngInvisibleSelect()}
+                  </div>
+                  <p className="settings-hint">{NG_INVISIBLE_HINT}</p>
+                </fieldset>
+              </section>
               </div>
               )}
               {(settingsSearching || settingsCategory === "presets") && (

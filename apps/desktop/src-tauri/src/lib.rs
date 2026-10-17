@@ -1183,6 +1183,10 @@ struct NgFilters {
     thread_words: Vec<NgEntry>,
     #[serde(default)]
     image_words: Vec<NgEntry>,
+    /// 見えない文字を含むレスの NG ("off" / "abone" / "hide")。古い設定ファイルには無いので既定は空文字
+    /// (フロント側で空文字や不明な値は "off" として扱う)
+    #[serde(default)]
+    invisible: String,
 }
 
 #[tauri::command]
