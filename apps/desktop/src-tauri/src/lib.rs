@@ -1125,6 +1125,7 @@ fn save_generic_json(filename: String, data: serde_json::Value) -> Result<(), St
         "thread-fetch-times.json",
         "expanded-categories.json",
         "ui-state.json",
+        "post-history.json",
     ];
     if !ALLOWED.contains(&filename.as_str()) {
         return Err(format!("Filename not allowed: {}", filename));
@@ -1143,6 +1144,7 @@ fn load_generic_json(filename: String) -> Result<serde_json::Value, String> {
         "thread-fetch-times.json",
         "expanded-categories.json",
         "ui-state.json",
+        "post-history.json",
     ];
     if !ALLOWED.contains(&filename.as_str()) {
         return Err(format!("Filename not allowed: {}", filename));

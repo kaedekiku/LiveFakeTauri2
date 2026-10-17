@@ -174,6 +174,11 @@ const isSameSiteBoardUrl = (url: string): boolean => {
     host === "bbs.jpnkn.com"
   );
 };
+// タブの左端の色の線に使うクラス (site-5ch / site-shitaraba / site-jpnkn …)
+const siteClassOf = (url: string) => {
+  const site = detectSiteType(url);
+  return site === "fiveCh" ? "site-5ch" : `site-${site}`;
+};
 const isTypingTarget = (target: EventTarget | null) => {
   if (!(target instanceof HTMLElement)) return false;
   const tag = target.tagName.toLowerCase();
@@ -770,7 +775,33 @@ export default function App() {
   const [newThreadSubmitting, setNewThreadSubmitting] = useState(false);
   const [newThreadDialogSize, setNewThreadDialogSize] = useState<{ w: number; h: number }>({ w: 520, h: 420 });
   const newThreadPanelRef = useRef<HTMLDivElement>(null);
-  const [postHistory, setPostHistory] = useState<{ time: string; threadUrl: string; body: string; ok: boolean }[]>([]);
+  // 書き込み履歴 (新しい順に最大50件)。data/post-history.json に保存し、再起動しても残す。返信とスレ立ての両方を記録する
+  type PostHistoryEntry = { time: string; threadUrl: string; title: string; kind: "reply" | "thread"; body: string; ok: boolean };
+  const [postHistory, setPostHistory] = useState<PostHistoryEntry[]>([]);
+  const postHistoryLoadedRef = useRef(false);
+  useEffect(() => {
+    let cancelled = false;
+    void loadFromFile<unknown>("post-history.json").then((d) => {
+      if (cancelled) return;
+      if (Array.isArray(d)) {
+        const rows = d.filter((x): x is PostHistoryEntry => !!x && typeof x === "object"
+          && typeof (x as PostHistoryEntry).time === "string" && typeof (x as PostHistoryEntry).body === "string").slice(0, 50)
+          .map((x) => ({ ...x, title: typeof x.title === "string" ? x.title : "", kind: x.kind === "thread" ? "thread" as const : "reply" as const, threadUrl: typeof x.threadUrl === "string" ? x.threadUrl : "", ok: !!x.ok }));
+        setPostHistory((prev) => [...prev, ...rows].slice(0, 50));
+      }
+      postHistoryLoadedRef.current = true;
+    });
+    return () => { cancelled = true; };
+  }, []);
+  useEffect(() => {
+    if (postHistoryLoadedRef.current) saveToFile("post-history.json", postHistory);
+  }, [postHistory]);
+  const recordPostHistory = (threadUrl: string, title: string, kind: "reply" | "thread", body: string, ok: boolean) => {
+    const d = new Date();
+    const p2 = (n: number) => String(n).padStart(2, "0");
+    const time = `${d.getFullYear()}/${p2(d.getMonth() + 1)}/${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`;
+    setPostHistory((prev) => [{ time, threadUrl, title, kind, body: body.slice(0, 100), ok }, ...prev].slice(0, 50));
+  };
   const [postHistoryOpen, setPostHistoryOpen] = useState(false);
   const [myPosts, setMyPosts] = useState<Record<string, number[]>>({});
   const pendingMyPostRef = useRef<{ threadUrl: string; body: string; prevCount: number } | null>(null);
@@ -798,6 +829,8 @@ export default function App() {
   const [threadNgInput, setThreadNgInput] = useState("");
   const [ngPanelOpen, setNgPanelOpen] = useState(false);
   const [showBoardButtons, setShowBoardButtons] = useState(false);
+  // 板タブ・スレタブの左端に、サイトごとの色の線を付ける (色は TchViewer と同じ)
+  const [tabSiteColors, setTabSiteColors] = useState(true);
   const [keepSortOnRefresh, setKeepSortOnRefresh] = useState(false);
   const keepSortOnRefreshRef = useRef(keepSortOnRefresh);
   keepSortOnRefreshRef.current = keepSortOnRefresh;
@@ -999,7 +1032,7 @@ export default function App() {
   const [aboutOpen, setAboutOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   type SettingsCategory = "display" | "posting" | "tts" | "tts-dict" | "proxy" | "ng" | "subtitle" | "highlights" | "presets" | "reset" | "info" | "obs";
-  const SETTINGS_CATEGORIES: SettingsCategory[] = ["display", "posting", "tts", "tts-dict", "subtitle", "proxy", "ng", "highlights", "presets", "reset", "info", ...(obsTabRevealed ? (["obs"] as const) : [])];
+  const SETTINGS_CATEGORIES: SettingsCategory[] = ["display", "posting", "tts", "tts-dict", "ng", "highlights", "subtitle", "proxy", "presets", "reset", "info", ...(obsTabRevealed ? (["obs"] as const) : [])];
   const SETTINGS_CATEGORY_LABELS: Record<SettingsCategory, string> = { display: "表示", posting: "書き込み", tts: "読み上げ", "tts-dict": "読み上げ辞書", subtitle: "字幕", proxy: "プロキシ", ng: "NG", highlights: "ハイライト", presets: "プリセット", reset: "リセット", info: "情報", obs: "OBS連携" };
   // 設定画面の保存まわりの状態 (詳細は「設定画面の保存 / 復元 / リセット / プリセット」の節)
   const settingsOpenRef = useRef(false);
@@ -2851,12 +2884,12 @@ export default function App() {
         message: composeBody || "",
       });
       setComposeResult({ ok: true, message: `Post submitted: ${result}` });
-      setPostHistory((prev) => [{ time: new Date().toLocaleTimeString(), threadUrl: postTargetUrl, body: composeBody.slice(0, 100), ok: true }, ...prev].slice(0, 50));
+      recordPostHistory(postTargetUrl, threadTabs.find((t) => t.threadUrl === postTargetUrl)?.title ?? "", "reply", composeBody, true);
       await postSuccessCleanup(composeBody);
     } catch (error) {
       const msg = String(error);
       setComposeResult({ ok: false, message: `NG: ${msg}` });
-      setPostHistory((prev) => [{ time: new Date().toLocaleTimeString(), threadUrl: postTargetUrl, body: composeBody.slice(0, 100), ok: false }, ...prev].slice(0, 50));
+      recordPostHistory(postTargetUrl, threadTabs.find((t) => t.threadUrl === postTargetUrl)?.title ?? "", "reply", composeBody, false);
     } finally {
       setComposeSubmitting(false);
     }
@@ -2909,9 +2942,11 @@ export default function App() {
           message: body,
         });
         if (r.containsError || !r.threadUrl) {
+          recordPostHistory(boardUrl, subject, "thread", body, false);
           reportResult(false, `スレッド作成失敗: ${r.bodyPreview}`);
           return;
         }
+        recordPostHistory(r.threadUrl, subject, "thread", body, true);
         if (name.trim()) {
           setNameHistory((prev) => {
             const next = [name.trim(), ...prev.filter((n) => n !== name.trim())].slice(0, 20);
@@ -2930,13 +2965,13 @@ export default function App() {
     }
     try {
       const result = await invoke<string>("post_reply_multisite", { threadUrl: postTargetUrl, from: name || null, mail: mail || null, message: body });
-      setPostHistory((prev) => [{ time: new Date().toLocaleTimeString(), threadUrl: postTargetUrl, body: body.slice(0, 100), ok: true }, ...prev].slice(0, 50));
+      recordPostHistory(postTargetUrl, threadTabs.find((t) => t.threadUrl === postTargetUrl)?.title ?? "", "reply", body, true);
       void result;
       await applyPostSuccessBookkeeping(postTargetUrl.trim(), name, body);
       if (isTauriRuntime()) void invoke("compose_popup_hide").catch(() => {});
     } catch (error) {
       const msg = String(error);
-      setPostHistory((prev) => [{ time: new Date().toLocaleTimeString(), threadUrl: postTargetUrl, body: body.slice(0, 100), ok: false }, ...prev].slice(0, 50));
+      recordPostHistory(postTargetUrl, threadTabs.find((t) => t.threadUrl === postTargetUrl)?.title ?? "", "reply", body, false);
       reportResult(false, `NG: ${msg}`);
     }
   };
@@ -3284,8 +3319,10 @@ export default function App() {
         message: newThreadBody,
       });
       if (r.containsError) {
+        recordPostHistory(boardUrl, newThreadSubject, "thread", newThreadBody, false);
         setNewThreadResult({ ok: false, message: `エラー: ${r.bodyPreview}` });
       } else {
+        recordPostHistory(r.threadUrl ?? boardUrl, newThreadSubject, "thread", newThreadBody, true);
         setNewThreadResult({ ok: true, message: `スレ立て成功 (status=${r.status})` });
         recordInputHistory("newThreadSubject", newThreadSubject);
         recordInputHistory("newThreadMail", newThreadMail);
@@ -4991,6 +5028,7 @@ export default function App() {
       if (map["App.autoScroll"]) setAutoScrollEnabled(map["App.autoScroll"] === "true");
       if (map["App.smoothScroll"]) setSmoothScroll(map["App.smoothScroll"] === "true");
       if (map["App.maxOpenTabs"]) { const n = parseInt(map["App.maxOpenTabs"], 10); if (!isNaN(n) && n >= 1) setMaxOpenTabs(n); }
+      if (map["App.tabSiteColors"]) setTabSiteColors(map["App.tabSiteColors"] !== "false");
       if (map["App.logRetentionDays"]) { const n = parseInt(map["App.logRetentionDays"], 10); if (!isNaN(n) && n >= 0) setLogRetentionDays(n); }
       if (map["App.webviewCacheMb"]) { const n = parseInt(map["App.webviewCacheMb"], 10); if (!isNaN(n)) setWebviewCacheMb(Math.max(10, Math.min(1000, n))); }
       if (map["App.imageSaveFolder"] !== undefined) setImageSaveFolder(map["App.imageSaveFolder"]);
@@ -5359,6 +5397,7 @@ export default function App() {
       "App.smoothScroll": String(smoothScroll),
       "App.maxOpenTabs": String(maxOpenTabs),
       "App.logRetentionDays": String(logRetentionDays),
+      "App.tabSiteColors": String(tabSiteColors),
       "App.webviewCacheMb": String(webviewCacheMb),
       "App.imageSaveFolder": imageSaveFolder,
       "App.bbsmenuUrl": bbsmenuUrl,
@@ -5404,7 +5443,7 @@ export default function App() {
   useEffect(() => {
     if (!isTauriRuntime() || !appSettingsLoadedRef.current || settingsOpenRef.current) return;
     void invoke("save_app_settings", { settings: buildAppSettingsMap() }).catch(() => {});
-  }, [responsesFontSize, responseGap, autoRefreshInterval, autoRefreshEnabled, autoScrollEnabled, smoothScroll, maxOpenTabs, logRetentionDays, webviewCacheMb, imageSaveFolder, bbsmenuUrl, shitarabaHost, jpnknHost,
+  }, [responsesFontSize, responseGap, autoRefreshInterval, autoRefreshEnabled, autoScrollEnabled, smoothScroll, maxOpenTabs, logRetentionDays, tabSiteColors, webviewCacheMb, imageSaveFolder, bbsmenuUrl, shitarabaHost, jpnknHost,
       mainAlwaysOnBottom, obsTabRevealed, broadcastFontFamily, broadcastFontSize, broadcastTextColor, broadcastOutlineColor, broadcastOutlineWidth, broadcastEmojiOutline, broadcastBgColor, broadcastDisplaySeconds, cssAllowExternalUrls, streamMaskEnabled, ngAboneSpeakEnabled,
       ttsMode, ttsEnabled, ttsMaxReadLength, ttsUrlOmitEnabled, sapiVoiceIndex, sapiRate, sapiVolume,
       voicevoxEndpoint, voicevoxSpeakerId, voicevoxSpeedScale, voicevoxPitchScale, voicevoxIntonationScale, voicevoxVolumeScale,
@@ -5784,9 +5823,6 @@ export default function App() {
       <header className="menu-bar">
         {[
           { label: "ファイル", items: [
-            { text: "スレ取得", action: () => fetchThreadListFromCurrent() },
-            { text: "レス取得", action: () => fetchResponsesFromCurrent() },
-            { text: "sep" },
             { text: "書き込み", action: () => { setComposeOpen(true); setComposeBody(""); setComposeResult(null); } },
             { text: "書き込み履歴", action: () => setPostHistoryOpen(true) },
             ...(navigator.userAgent.includes("Windows") ? [
@@ -5795,10 +5831,15 @@ export default function App() {
             ] : []),
           ]},
           { label: "編集", items: [
-            { text: "スレURLをコピー", action: () => { void navigator.clipboard.writeText(threadUrl); setStatus("copied thread url"); } },
+            { text: "スレURLをコピー", action: () => {
+              const url = threadTabs[activeTabIndex]?.threadUrl;
+              if (!url) { setStatus("スレのタブが開かれていません"); return; }
+              void navigator.clipboard.writeText(url);
+              setStatus("スレURLをコピーしました");
+            } },
           ]},
           { label: "表示", items: [
-            { text: `文字サイズ (${paneLabel(focusedPane)}): ${paneFontSize(focusedPane)[0]}px`, action: () => {} },
+            { text: `文字サイズ (${paneLabel(focusedPane)}): ${paneFontSize(focusedPane)[0]}px`, label: true },
             { text: "文字サイズ拡大", action: () => paneFontSize(focusedPane)[1]((v) => Math.min(v + 1, 20)) },
             { text: "文字サイズ縮小", action: () => paneFontSize(focusedPane)[1]((v) => Math.max(v - 1, 8)) },
             { text: "文字サイズリセット", action: () => paneFontSize(focusedPane)[1](12) },
@@ -5812,7 +5853,7 @@ export default function App() {
             { text: showBoardButtons ? "板ボタンを非表示" : "板ボタンを表示", action: () => setShowBoardButtons((v) => !v) },
           ]},
           { label: "板", items: [
-            { text: "板一覧を取得", action: () => fetchBoardCategories() },
+            { text: "板一覧を取得", action: () => { void fetchMenu(); void fetchBoardCategories(); } },
             { text: "sep" },
             { text: "板一覧タブ", action: () => setBoardPaneTab("boards") },
             { text: "お気に入りタブ", action: () => setBoardPaneTab("fav-threads") },
@@ -5844,9 +5885,11 @@ export default function App() {
             </span>
             {openMenu === label && (
               <div className="menu-dropdown">
-                {items.map((item, i) =>
+                {items.map((item: { text: string; action?: () => void; label?: boolean }, i) =>
                   item.text === "sep" ? (
                     <div key={i} className="menu-sep" />
+                  ) : item.label ? (
+                    <div key={item.text} className="menu-label">{item.text}</div>
                   ) : (
                     <button
                       key={item.text}
@@ -6244,7 +6287,7 @@ export default function App() {
           )}
         <div
           ref={responseLayoutRef}
-          className="right-pane"
+          className={`right-pane${tabSiteColors ? " tab-site-colors" : ""}`}
         >
         {/* Board tab bar (upper) */}
         <div className="board-tab-bar-wrap">
@@ -6257,7 +6300,7 @@ export default function App() {
             {boardTabs.map((tab, i) => (
               <div
                 key={tab.boardUrl}
-                className={`board-tab tab ${i === activeBoardTabIndex ? "active" : ""} ${boardTabDragIndex !== null && boardTabDragIndex !== i ? "drag-target" : ""}`}
+                className={`board-tab tab ${siteClassOf(tab.boardUrl)} ${i === activeBoardTabIndex ? "active" : ""} ${boardTabDragIndex !== null && boardTabDragIndex !== i ? "drag-target" : ""}`}
                 onClick={() => {
                   if (boardTabDragSuppressClickRef.current) return;
                   setActiveBoardTabIndex(i);
@@ -6354,7 +6397,7 @@ export default function App() {
             {threadTabs.map((tab, i) => (
               <div
                 key={tab.threadUrl}
-                className={`thread-tab tab ${i === activeTabIndex ? "active" : ""} ${tabDragIndex !== null && tabDragIndex !== i ? "drag-target" : ""}`}
+                className={`thread-tab tab ${siteClassOf(tab.threadUrl)} ${i === activeTabIndex ? "active" : ""} ${tabDragIndex !== null && tabDragIndex !== i ? "drag-target" : ""}`}
                 onClick={() => { if (tabDragSuppressClickRef.current) return; onTabClick(i); }}
                 onDoubleClick={() => { void fetchResponsesFromCurrent(tab.threadUrl, { keepSelection: true }); }}
                 onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); closeTab(i); } }}
@@ -8226,6 +8269,10 @@ export default function App() {
                   <input type="checkbox" checked={showBoardButtons} onChange={(e) => setShowBoardButtons(e.target.checked)} />
                   <span>板ボタンバー</span>
                 </label>
+                <label className="settings-row" title="板タブ・スレタブの左端に、サイトごとの色の線を付けます (5ch=橙 / したらば=緑 / JPNKN=青)">
+                  <input type="checkbox" checked={tabSiteColors} onChange={(e) => setTabSiteColors(e.target.checked)} />
+                  <span>タブの左端にサイトごとの色の線を付ける</span>
+                </label>
                 <label className="settings-row">
                   <input type="checkbox" checked={keepSortOnRefresh} onChange={(e) => setKeepSortOnRefresh(e.target.checked)} />
                   <span>スレ一覧の更新時にソートを維持</span>
@@ -9626,10 +9673,12 @@ export default function App() {
                 <p style={{ padding: "8px", color: "var(--sub)" }}>まだ書き込みがありません</p>
               ) : (
                 postHistory.map((h, i) => (
-                  <div key={i} className={`post-history-item ${h.ok ? "post-ok" : "post-ng"}`}>
+                  <div key={i} className={`post-history-item ${h.ok ? "post-ok" : "post-ng"}`} title={h.threadUrl}>
                     <span className="post-history-time">{h.time}</span>
                     <span className={`post-history-status ${h.ok ? "" : "post-ng-status"}`}>{h.ok ? "OK" : "NG"}</span>
-                    <span className="post-history-body">{h.body}</span>
+                    <span className="post-history-kind">{h.kind === "thread" ? "スレ立て" : "返信"}</span>
+                    {h.title && <span className="post-history-title">{h.title}</span>}
+                    <span className="post-history-text">{h.body}</span>
                   </div>
                 ))
               )}

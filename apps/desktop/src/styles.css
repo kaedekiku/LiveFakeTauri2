@@ -2414,7 +2414,8 @@ button.search-history-btn:hover {
   border: 1px solid var(--line);
   box-shadow: 0 12px 24px rgba(20, 20, 20, 0.3);
   width: min(480px, 90vw);
-  height: 560px;
+  /* ウィンドウが低いときに上下がはみ出してスクロールでも届かなくならないよう、画面の高さに収める */
+  height: min(560px, calc(100vh - 24px));
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -3308,6 +3309,9 @@ button.search-history-btn:hover {
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
+  /* 分類が増えても下の項目が切れないよう、分類の一覧もスクロールできるようにする */
+  overflow-y: auto;
+  min-height: 0;
   border-right: 1px solid var(--line);
   background: #eaeaea;
   padding: 4px 0;
@@ -3892,3 +3896,18 @@ button.search-history-btn:hover {
 .dark .settings-match {
   background: rgba(255, 220, 0, 0.12);
 }
+
+/* メニューの中の、押せない表示だけの行 (例: 文字サイズ (…): 12px) */
+.menu-dropdown .menu-label { padding: 4px 12px; color: var(--sub, #666); font-size: 0.92em; cursor: default; }
+/* 書き込み履歴: 種類とスレ名 */
+.post-history-kind { font-size: 0.9em; color: var(--sub, #666); margin-right: 6px; }
+.post-history-title { font-weight: 700; margin-right: 6px; }
+/* タブの左端の色の線 (設定 > 表示 でオンオフ)。ドラッグ中の印 (border-left) と重ならないよう box-shadow で描く */
+.tab-site-colors .board-tab-bar .board-tab.site-5ch,
+.tab-site-colors .thread-tab.site-5ch { box-shadow: inset 4px 0 0 #e05a2b; }
+.tab-site-colors .board-tab-bar .board-tab.site-shitaraba,
+.tab-site-colors .thread-tab.site-shitaraba { box-shadow: inset 4px 0 0 #2f8f4e; }
+.tab-site-colors .board-tab-bar .board-tab.site-jpnkn,
+.tab-site-colors .thread-tab.site-jpnkn { box-shadow: inset 4px 0 0 #2a7bd6; }
+.tab-site-colors .board-tab-bar .board-tab.site-twitch,
+.tab-site-colors .thread-tab.site-twitch { box-shadow: inset 4px 0 0 #9147ff; }
