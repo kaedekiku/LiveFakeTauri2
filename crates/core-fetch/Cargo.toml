@@ -6,6 +6,8 @@ license = "MIT"
 
 [dependencies]
 core-parse = { path = "../core-parse" }
+# 掲示板の読み込み・書き込みにプロキシを使う (設定 > プロキシ)
+core-proxy = { path = "../core-proxy" }
 reqwest = { version = "0.12", default-features = false, features = ["cookies", "json", "rustls-tls"] }
 encoding_rs = "0.8"
 serde = { workspace = true }

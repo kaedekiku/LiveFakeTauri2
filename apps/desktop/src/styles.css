@@ -1544,6 +1544,21 @@ button:active:not(:disabled) {
   background: #d0d0d0;
 }
 
+/* ダークモードのボタンの既定の見た目。場所ごとの指定が無いボタンだけに効く (:where で強さを上げない)。
+   これが無いと、明るい背景のままダークモードの明るい文字になり、文字が背景に溶ける (REQUIREMENTS 13.1) */
+:where(.dark) button {
+  background: #3a3a3a;
+  color: var(--ink);
+  border-color: #555;
+}
+:where(.dark) button:hover:not(:disabled) {
+  background: #4a4a4a;
+  border-color: #777;
+}
+:where(.dark) button:active:not(:disabled) {
+  background: #555;
+}
+
 button:disabled {
   opacity: 0.45;
   cursor: default;
@@ -4102,6 +4117,114 @@ img.twitch-emote.giant { height: var(--tw-giant, 112px); display: inline-block; 
 img.twitch-emote.youtube-emoji { height: var(--tw-emote, 28px); }
 /* 設定 > YouTube の取得方法 */
 .youtube-method { align-items: flex-start; }
+
+/* 設定 > プロキシ (JaneXeno の設定に近い並び: 名前 | ホスト | ポート、その下にユーザー名 | パスワード) */
+.proxy-top { display: flex; flex-wrap: wrap; gap: 4px 18px; margin-bottom: 8px; }
+.proxy-top label { display: inline-flex; align-items: center; gap: 4px; }
+.proxy-grid { display: grid; grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr) 80px; gap: 4px 6px; align-items: center; max-width: 520px; }
+.proxy-grid.proxy-off { opacity: 0.6; }
+.proxy-label { padding-right: 6px; white-space: nowrap; }
+.proxy-type { grid-column: 2 / span 3; justify-self: start; }
+.proxy-head { font-size: 0.9em; color: var(--sub, #666); }
+.proxy-head-host { grid-column: 2 / span 2; text-align: center; }
+.proxy-head-port { grid-column: 4; text-align: center; }
+.proxy-host { grid-column: 2 / span 2; min-width: 0; }
+.proxy-port { grid-column: 4; min-width: 0; }
+.proxy-user { grid-column: 2; min-width: 0; }
+.proxy-pass { grid-column: 3 / span 2; min-width: 0; }
+
+/* チャット (Twitch・YouTube) への書き込み欄: 送信先を色と文字ではっきり示す */
+.compose-chat--twitch { border-top: 3px solid #9147ff; box-shadow: inset 4px 0 0 #9147ff; }
+.compose-chat--youtube { border-top: 3px solid #ff0033; box-shadow: inset 4px 0 0 #ff0033; }
+.compose-chat-target { margin-left: 8px; font-size: 1.05em; white-space: nowrap; }
+.compose-chat--twitch .compose-chat-target b { color: #7b3fe0; }
+.compose-chat--youtube .compose-chat-target b { color: #d00020; }
+.dark .compose-chat--twitch .compose-chat-target b { color: #bf94ff; }
+.dark .compose-chat--youtube .compose-chat-target b { color: #ff6b6b; }
+.compose-chat-login { color: var(--sub, #666); font-size: 0.9em; margin-left: 4px; }
+.compose-chat-body { display: flex; flex-direction: column; gap: 4px; padding: 4px 6px; overflow: auto; min-height: 0; flex: 1; }
+.compose-chat-input { resize: none; }
+/* 上の行 (文字数・スタンプ・送信)。書き込み領域はその下で残りの高さいっぱい (スレの書き込み欄と同じ並び) */
+.compose-chat-row { flex-wrap: wrap; padding: 4px 0; row-gap: 4px; }
+.compose-chat-row .compose-chat-target { margin-left: 0; }
+.compose-chat-actions { display: inline-flex; gap: 6px; margin-left: auto; min-width: 0; }
+.compose-chat-target-closed { font-size: 0.95em; }
+.compose-chat-spacer { flex: 1; }
+.compose-chat--twitch .compose-row .compose-chat-send { background: #7b3fe0; color: #fff; border-color: #7b3fe0; }
+.compose-chat--twitch .compose-row .compose-chat-send:hover:not(:disabled) { background: #6a2fd0; border-color: #6a2fd0; }
+.compose-chat--youtube .compose-row .compose-chat-send { background: #cc0000; color: #fff; border-color: #cc0000; }
+.compose-chat--youtube .compose-row .compose-chat-send:hover:not(:disabled) { background: #b00000; border-color: #b00000; }
+.compose-chat-over { color: #d00; font-weight: 700; }
+.dark .compose-chat-over { color: #ff6b6b; }
+.compose-chat-note { color: var(--sub, #666); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.compose-chat-reply { font-size: 0.92em; background: rgba(145, 71, 255, 0.12); border-radius: 3px; padding: 2px 6px; display: flex; gap: 6px; align-items: center; }
+.compose-chat-body .compose-chat-input { width: 100%; margin: 0; box-sizing: border-box; flex: 1; min-height: 3em; }
+/* スタンプボタン: 送信ボタンと同じ高さで、紫の枠と文字。開いているときは薄い紫で塗る (両モードでコントラスト比 4.5 以上) */
+.compose-row .compose-chat-stamp-btn { display: inline-flex; align-items: center; gap: 4px; font-weight: 700; background: #fff; color: #6a2fd0; border: 1px solid #7b3fe0; }
+.compose-row .compose-chat-stamp-btn:hover:not(:disabled) { background: #f1eaff; color: #5a22bd; border-color: #6a2fd0; }
+.compose-row .compose-chat-stamp-btn.active { background: #e4d6ff; color: #4b1aa3; border-color: #6a2fd0; }
+.dark .compose-row .compose-chat-stamp-btn { background: #2a2338; color: #d5bcff; border-color: #a970ff; }
+.dark .compose-row .compose-chat-stamp-btn:hover:not(:disabled) { background: #3a2f52; color: #e6d6ff; }
+.dark .compose-row .compose-chat-stamp-btn.active { background: #4a3a6e; color: #f0e6ff; }
+.compose-chat-send { font-weight: 700; white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.compose-chat-meta { display: flex; gap: 8px; align-items: center; font-size: 0.9em; color: var(--sub, #666); min-height: 1.2em; }
+.compose-chat-meta .compose-chat-preview { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--ink); }
+.compose-chat-meta .compose-chat-preview img { max-height: 1.6em; vertical-align: middle; }
+/* スタンプ・絵文字の一覧: 書き込み欄の上に重ねて開く (位置と大きさは開いたときに計算する) */
+.chat-picker { position: fixed; z-index: 2000; display: flex; flex-direction: column; box-sizing: border-box; padding: 6px; gap: 4px;
+  background: var(--panel, #fff); border: 1px solid var(--line, #c8c8c8); border-right: none; border-radius: 6px 0 0 6px; box-shadow: -4px 4px 16px rgba(0, 0, 0, 0.22); }
+.dark .chat-picker { background: #252526; border-color: #555; }
+.chat-picker-scroll { flex: 1; min-height: 0; overflow-y: auto; margin: -6px -6px 0; padding: 0 6px 4px; }
+/* チャンネルごとの見出しの帯 (絵・名前・右端に「Twitch」)。一覧の背景より少し濃く、上下に線 */
+.chat-picker-group + .chat-picker-group { margin-top: 2px; }
+.chat-picker-group-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 6px; margin: 0 -6px 4px; padding: 4px 8px;
+  background: #ece8f5; border-top: 1px solid #d6cfe6; border-bottom: 1px solid #d6cfe6; font-weight: 700; font-size: 0.9em; }
+.dark .chat-picker-group-head { background: #322b40; border-color: #4a4060; }
+.chat-picker-group-head img { width: 20px; height: 20px; object-fit: contain; }
+.chat-picker-group-icon { width: 20px; text-align: center; }
+.chat-picker-group-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat-picker-platform { font-size: 0.85em; font-weight: 400; color: var(--sub, #666); }
+.chat-picker-subtitle { font-size: 0.8em; color: var(--sub, #666); margin: 2px 0; }
+.chat-picker-grid { display: grid; grid-template-columns: repeat(auto-fill, var(--chat-cell, 32px)); gap: 2px; }
+.chat-picker-item { width: var(--chat-cell, 32px); height: var(--chat-cell, 32px); padding: 1px; display: inline-flex; align-items: center; justify-content: center; background: transparent; border: 1px solid transparent; border-radius: 4px; }
+.chat-picker-item:hover:not(:disabled) { border-color: var(--line, #c8c8c8); background: rgba(127, 127, 127, 0.15); }
+.chat-picker-item img { max-width: calc(var(--chat-cell, 32px) - 4px); max-height: calc(var(--chat-cell, 32px) - 4px); }
+.chat-picker-emoji { font-size: calc(var(--chat-cell, 32px) * 0.62); line-height: 1; }
+.chat-picker-foot { font-size: 0.85em; color: var(--sub, #666); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-height: 1.3em; border-top: 1px solid var(--line, #c8c8c8); padding-top: 3px; }
+.chat-picker-search { width: 100%; box-sizing: border-box; }
+/* 一覧が低いときは中身 (スクロールする部分) だけを縮め、案内・検索欄・切り替えは縮めない */
+.chat-picker-foot, .chat-picker-search, .chat-picker-tabs { flex: none; }
+/* 下の切り替え (選んでいるものは紫で塗る) */
+.chat-picker-tabs { display: flex; justify-content: space-around; gap: 2px; border-top: 1px solid var(--line, #c8c8c8); padding-top: 4px; }
+.chat-picker-tab { flex: 1; max-width: 48px; height: 30px; padding: 0; display: inline-flex; align-items: center; justify-content: center; background: transparent; border: 1px solid transparent; border-radius: 4px; color: var(--ink); }
+.chat-picker-tab:hover:not(:disabled) { background: rgba(145, 71, 255, 0.12); border-color: transparent; }
+.chat-picker-tab.active, .chat-picker-tab.active:hover:not(:disabled) { background: #7b3fe0; color: #fff; }
+
+/* アドレスバーの右の新着レスの操作 (次へ・字幕・クリア・新着レスペインの開閉) */
+.arrival-tools { display: inline-flex; align-items: center; gap: 2px; flex: none; }
+.tool-bar .arrival-tools button { gap: 3px; }
+.tool-bar .arrival-tools button.active { background: #dde4ff; border-color: #9aa8e0; }
+.dark .tool-bar .arrival-tools button.active { background: #33405e; border-color: #5a6a9a; }
+.tool-bar .arrival-tools button:disabled { opacity: 0.5; cursor: default; }
+
+/* ビュワーの見出し (掲示板のレス): 板・メール欄・書き込み回数 */
+.viewer-board { color: #555; font-weight: 700; }
+.dark .viewer-board { color: #bbb; }
+.viewer-mail { color: #777; }
+.dark .viewer-mail { color: #aaa; }
+.viewer-id-count { font-size: 0.95em; }
+/* 最新レス欄: 本文以外は縮めない (1行に収まらないときは本文だけを省く) */
+.viewer-latest-item > * { flex-shrink: 0; }
+.viewer-latest-item > .viewer-latest-text { flex: 1 1 auto; flex-shrink: 1; min-width: 2em; }
+.viewer-latest-title { max-width: 16em; overflow: hidden; text-overflow: ellipsis; color: var(--sub, #666); }
+/* NG の一括切り替え */
+.ng-bulk-row { gap: 6px; flex-wrap: wrap; }
+/* 確認ダイアログのボタンのキーの案内 */
+.app-confirm-key { margin-left: 6px; padding: 0 4px; font-size: 0.8em; border: 1px solid currentColor; border-radius: 3px; opacity: 0.75; }
+
+/* アドレスバーの行の、掲示板の新着の読み上げ方 */
+.tts-board-mode { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; color: var(--sub); flex: none; }
+.tts-board-mode select { font-size: 11px; padding: 0 2px; }
 
 /* ここまで。このファイル全体は app.css から CSS レイヤー lf-base として読み込まれる
    (利用者の CSS はレイヤーの外なので、指定の強さに関係なくこのファイルより優先される) */

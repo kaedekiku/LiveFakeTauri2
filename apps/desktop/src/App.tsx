@@ -16,7 +16,8 @@ import {
   ClipboardList, RefreshCw, Pencil, FilePenLine, Save,
   Star, X, ChevronLeft, ChevronRight, ChevronDown, Ban,
   Image, Film, ExternalLink,
-  Subtitles, Volume2, VolumeX, Ear, EarOff, ChevronUp, Search, PanelLeftClose, PanelLeftOpen,
+  Subtitles, Volume2, VolumeX, Ear, EarOff, ChevronUp, Search, PanelLeftClose, PanelLeftOpen, Smile,
+  Tv, LayoutGrid, Globe,
 } from "lucide-react";
 
 type MenuInfo = { topLevelKeys: number; normalizedSample: string };
@@ -420,6 +421,13 @@ const YOUTUBE_API_INTERVAL_MAX = 120;
 const YOUTUBE_API_DAILY_QUOTA = 10000;
 // 同時に受信できる配信の数 (Rust 側と同じ)
 const YOUTUBE_MAX_VIDEOS = 10;
+// ----- チャットの書き込み欄の絵文字の一覧 (Unicode。Windows の絵文字パネル Win+. も使える) -----
+const CHAT_EMOJI_GROUPS: { label: string; list: string[] }[] = [
+  { label: "顔", list: ["😀", "😁", "😂", "🤣", "😊", "😇", "🙂", "😉", "😍", "🥰", "😘", "😋", "😛", "😜", "🤪", "🤔", "🤨", "😐", "😑", "😶", "🙄", "😏", "😮", "😲", "😳", "🥺", "😢", "😭", "😤", "😡", "🤯", "😱", "😨", "😰", "😴", "🤤", "😵", "🥳", "😎", "🤓", "😈", "💀", "🤡", "👻", "👀"] },
+  { label: "手", list: ["👍", "👎", "👏", "🙌", "🙏", "👋", "🤝", "✌️", "🤞", "👌", "🤌", "👉", "👈", "☝️", "💪", "🫶"] },
+  { label: "記号", list: ["❤️", "🧡", "💛", "💚", "💙", "💜", "🖤", "🤍", "💕", "💖", "💔", "✨", "⭐", "🌟", "🔥", "💯", "💢", "💤", "💦", "‼️", "⁉️", "❓", "❗", "⭕", "❌", "✅", "🎉", "🎊", "🎵", "🎶"] },
+  { label: "その他", list: ["🍣", "🍜", "🍺", "🍻", "☕", "🍰", "🍙", "🎮", "🏆", "⚽", "⚾", "🐱", "🐶", "🐸", "🦀", "🌸", "🌈", "☀️", "🌙", "⚡", "💩", "🍀", "🎂", "📢"] },
+];
 // ----- YouTube のイベント (スーパーチャット・メンバー加入など。表示と読み上げだけで、お金のやり取りはしない) -----
 const YOUTUBE_EVENT_KINDS: { kind: string; label: string; template: string }[] = [
   { kind: "superchat", label: "スーパーチャット", template: "{name}さんがスーパーチャット（{amount}） {message}" },
@@ -1390,8 +1398,8 @@ export default function App() {
   // Twitch タブのスタンプ (タブの URL → レス番号 → スタンプ名と ID)。表示のときに画像へ置き換える
   const twitchEmoteMapRef = useRef<Map<string, Map<number, { emotes: { id: string; name: string; giant?: boolean; url?: string }[]; giant: boolean }>>>(new Map());
   // Twitch ログイン (任意。EventSub で入力の無い報酬・自動報酬・フォローを受け取る)。トークンは Rust 側だけが持つ
-  type TwitchAuthStatus = { loggedIn: boolean; login: string; state: string; message: string; userCode: string; verificationUri: string };
-  const [twitchAuth, setTwitchAuth] = useState<TwitchAuthStatus>({ loggedIn: false, login: "", state: "none", message: "", userCode: "", verificationUri: "" });
+  type TwitchAuthStatus = { loggedIn: boolean; login: string; state: string; message: string; userCode: string; verificationUri: string; canChat?: boolean };
+  const [twitchAuth, setTwitchAuth] = useState<TwitchAuthStatus>({ loggedIn: false, login: "", state: "none", message: "", userCode: "", verificationUri: "", canChat: false });
   const [twitchAuthBusy, setTwitchAuthBusy] = useState(false);
   useEffect(() => {
     if (!isTauriRuntime()) return;
@@ -1564,12 +1572,26 @@ export default function App() {
   const maxOpenTabsRef = useRef(20);
   maxOpenTabsRef.current = maxOpenTabs;
   // Proxy settings state
+  // 設定 > プロキシ: 受信用 (掲示板の読み込み) と送信用 (書き込み・スレ立て)。「保存」を押した時点で保存して次の通信から使う
+  type ProxyEndpoint = { host: string; port: string; username: string; password: string };
+  const emptyProxyEndpoint: ProxyEndpoint = { host: "", port: "", username: "", password: "" };
   const [proxyEnabled, setProxyEnabled] = useState(false);
   const [proxyType, setProxyType] = useState<"http" | "socks5" | "socks4">("http");
-  const [proxyHost, setProxyHost] = useState("");
-  const [proxyPort, setProxyPort] = useState("");
-  const [proxyUsername, setProxyUsername] = useState("");
-  const [proxyPassword, setProxyPassword] = useState("");
+  const [proxyNoCache, setProxyNoCache] = useState(false);
+  const [proxyHttpMode, setProxyHttpMode] = useState(false);
+  const [proxyReceive, setProxyReceive] = useState<ProxyEndpoint>(emptyProxyEndpoint);
+  const [proxySend, setProxySend] = useState<ProxyEndpoint>(emptyProxyEndpoint);
+  const [proxyMsg, setProxyMsg] = useState<{ text: string; error: boolean } | null>(null);
+  // この PC を指すホスト (2chAPIProxy などのローカルのプロキシ)。http で渡すのはこのときだけ (Rust 側でも同じ検査)
+  const isLocalProxyHost = (h: string) => /^(localhost|::1|\[::1\]|127(\.\d{1,3}){3})$/i.test(h.trim());
+  const saveProxySettings = () => {
+    if (!isTauriRuntime()) return;
+    const badPort = [proxyReceive, proxySend].some((e) => e.host.trim() && e.port.trim() && !/^\d{1,5}$/.test(e.port.trim()));
+    if (badPort) { setProxyMsg({ text: "ポートは数字で入力してください", error: true }); return; }
+    invoke("save_proxy_settings", { settings: { enabled: proxyEnabled, proxyType, noCache: proxyNoCache, httpMode: proxyHttpMode, receive: proxyReceive, send: proxySend } })
+      .then(() => setProxyMsg({ text: "保存しました (次の通信から使います)", error: false }))
+      .catch((e) => { console.warn("save_proxy_settings:", e); setProxyMsg({ text: `保存できませんでした: ${String(e)}`, error: true }); });
+  };
   // ImageViewURLReplace rules
   type UrlReplaceRule = UrlReplaceRuleOpts;
   const [imageUrlRules, setImageUrlRules] = useState<UrlReplaceRule[]>([]);
@@ -1770,6 +1792,29 @@ export default function App() {
   const defaultAppSettingsRef = useRef<Record<string, string> | null>(null);
   type AppConfirm = { title?: string; message: string; buttons: { label: string; onClick: () => void; primary?: boolean; danger?: boolean }[] };
   const [appConfirm, setAppConfirm] = useState<AppConfirm | null>(null);
+  // 確認ダイアログのキー操作: Enter で決定 (取り消しのきかないボタン (danger) だけのときは決定しない)・Esc でキャンセル。
+  // ダイアログを出したキーの押しっぱなし (Ctrl+Enter の長押しなど) では決定しない
+  useEffect(() => {
+    if (!appConfirm) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        setAppConfirm(null);
+        return;
+      }
+      if (e.key === "Enter" && !e.repeat && !e.isComposing) {
+        e.preventDefault();
+        e.stopPropagation();
+        const primary = appConfirm.buttons.find((b) => b.primary && !b.danger);
+        if (!primary) return;
+        setAppConfirm(null);
+        primary.onClick();
+      }
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, [appConfirm]);
   // 「情報」タブのサードパーティライセンス表示。本文 (public/THIRD_PARTY_LICENSES.txt、約600KB) は初回に開いたときだけ読み込む
   const [licensesOpen, setLicensesOpen] = useState(false);
   const [licensesText, setLicensesText] = useState<string | null>(null);
@@ -1976,7 +2021,8 @@ export default function App() {
   type ViewerSource = "twitch" | "youtube" | "5ch" | "shitaraba" | "jpnkn";
   // Twitch・YouTube のチャット (掲示板のレスと違い、すべてビュワー・OBS 表示に流す。番号・ID は出さない)
   const isChatSource = (src: ViewerSource) => src === "twitch" || src === "youtube";
-  type ViewerItem = { seq: number; source: ViewerSource; site: string; where: string; threadUrl: string; no: number; name: string; uid: string; time: string; text: string; color: string;
+  // board: 板の名前 / where: スレタイ (Twitch・YouTube はチャンネル) / mail・idSeq・idCount: 掲示板のレスの見出し用
+  type ViewerItem = { seq: number; source: ViewerSource; site: string; board?: string; where: string; threadUrl: string; no: number; name: string; mail?: string; uid: string; time: string; text: string; color: string; idSeq?: number; idCount?: number;
     event?: { kind: string; label: string; summary: string };
     badges?: TwitchBadge[];
     // Twitch のスタンプ・YouTube の絵文字 (text の中の位置)
@@ -2005,11 +2051,22 @@ export default function App() {
   const [viewerRevealed, setViewerRevealed] = useState<Set<number>>(() => new Set());
   const URL_IN_TEXT_RE = /(?:https?|ttps?):\/\//i;
   // ビュワー (と最新レス欄) の見出しに出す項目
-  type ViewerShow = { time: boolean; site: boolean; where: boolean; id: boolean; badges: boolean };
-  const VIEWER_SHOW_LABELS: [keyof ViewerShow, string][] = [["time", "時間"], ["site", "プラットフォーム (Twitch / YouTube / 5ch / したらば / JPNKN)"], ["where", "板・スレ・チャンネル"], ["id", "ID"], ["badges", "Twitch のバッジ"]];
-  const [viewerShow, setViewerShow] = useState<ViewerShow>({ time: true, site: true, where: true, id: true, badges: true });
+  // ビュワーの見出しに出す項目 (掲示板のレス: プラットフォーム・板・スレタイ・レス番・名前・メール欄・日時・ID・書き込み回数の順。
+  // Twitch・YouTube のチャットは今までどおり プラットフォーム・チャンネル・バッジ・名前・ID・日時)
+  type ViewerShow = { site: boolean; board: boolean; where: boolean; no: boolean; name: boolean; mail: boolean; time: boolean; id: boolean; count: boolean; badges: boolean };
+  const VIEWER_SHOW_LABELS: [keyof ViewerShow, string][] = [
+    ["site", "プラットフォーム (Twitch / YouTube / 5ch / したらば / JPNKN)"], ["board", "板"], ["where", "スレタイ (Twitch・YouTube ではチャンネル)"], ["no", "レス番"],
+    ["name", "名前"], ["mail", "メール欄"], ["time", "日時"], ["id", "ID"], ["count", "書き込み回数"], ["badges", "Twitch のバッジ"],
+  ];
+  const [viewerShow, setViewerShow] = useState<ViewerShow>({ site: true, board: true, where: true, no: true, name: true, mail: true, time: true, id: true, count: true, badges: true });
+  // ビュワーの下の「スレの最新レス」欄に出す項目 (板・スレタイ・レス番・本文・日時・ID・書き込み回数の順。1行に収まらないときは本文を省く)
+  type LatestShow = { board: boolean; title: boolean; no: boolean; text: boolean; time: boolean; id: boolean; count: boolean };
+  const LATEST_SHOW_LABELS: [keyof LatestShow, string][] = [["board", "板"], ["title", "スレタイ"], ["no", "レス番"], ["text", "本文"], ["time", "日時"], ["id", "ID"], ["count", "書き込み回数"]];
+  const [latestShow, setLatestShow] = useState<LatestShow>({ board: true, title: true, no: true, text: true, time: true, id: true, count: true });
+  // 書き込み回数の色 (スレのタブと同じ: 2回以上で青系・5回以上で赤系)
+  const idCountClass = (n: number) => (n >= 5 ? " id-count-many" : n >= 2 ? " id-count-some" : "");
   // ビュワーの下の「スレの最新レス」欄: 開いているスレの新着のうち、配信ホワイトリストに無い ID のもの (OBS には出さない)
-  type LatestItem = { seq: number; source: ViewerSource; site: string; threadUrl: string; no: number; uid: string; time: string; text: string };
+  type LatestItem = { seq: number; source: ViewerSource; site: string; board: string; title: string; threadUrl: string; no: number; uid: string; time: string; text: string; idSeq: number; idCount: number };
   const LATEST_MAX_ITEMS = 300;
   const [latestItems, setLatestItems] = useState<LatestItem[]>([]);
   const [latestPanelOpen, setLatestPanelOpen] = useState(true);
@@ -2119,6 +2176,38 @@ export default function App() {
       ],
     });
   };
+  // 板・スレの URL → 板を見分ける印 (5ch は板の英字の名前、したらばは カテゴリ/番号、JPNKN は板の英字の名前)
+  const boardKeyOfUrl = (url: string): string | null => {
+    let u: URL;
+    try { u = new URL(url); } catch { return null; }
+    const host = u.hostname.toLowerCase();
+    const seg = u.pathname.split("/").filter(Boolean);
+    if (host === "jbbs.shitaraba.net" || host === "jbbs.livedoor.jp") {
+      const rest = seg[0] === "bbs" ? seg.slice(2) : seg;
+      return rest.length >= 2 ? `s:${rest[0]}/${rest[1]}` : null;
+    }
+    const dir = seg[0] === "test" ? seg[2] : seg[0];
+    if (!dir) return null;
+    return host === "bbs.jpnkn.com" ? `j:${dir}` : `5:${dir}`;
+  };
+  // 板の名前 (板一覧・外部板・お気に入りの板・板タブから引く。見つからなければ板の英字の名前)
+  const boardNameMap = useMemo(() => {
+    const m = new Map<string, string>();
+    const add = (url: string, name: string) => { const k = boardKeyOfUrl(url); if (k && name && !m.has(k)) m.set(k, name); };
+    for (const c of boardCategories) for (const b of c.boards) add(b.url, b.boardName);
+    for (const b of externalBoards) add(b.url, b.boardName);
+    for (const b of favorites.boards) add(b.url, b.boardName);
+    for (const t of boardTabs) add(t.boardUrl, t.title);
+    return m;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boardCategories, externalBoards, favorites.boards, boardTabs]);
+  const boardNameMapRef = useRef(boardNameMap);
+  boardNameMapRef.current = boardNameMap;
+  const boardNameOfUrl = (url: string): string => {
+    const k = boardKeyOfUrl(url);
+    if (!k) return "";
+    return boardNameMapRef.current.get(k) ?? k.slice(2);
+  };
   const viewerSourceOf = (url: string): ViewerSource => {
     const site = detectSiteType(url);
     return site === "fiveCh" ? "5ch" : site;
@@ -2166,7 +2255,7 @@ export default function App() {
       if (a.isAbone) continue;
       const source = viewerSourceOf(a.threadUrl);
       if (isChatSource(source) || broadcastWhitelistRef.current[a.id]) continue;
-      add.push({ seq: ++viewerSeqRef.current, source, site: VIEWER_SITE_LABEL[source], threadUrl: a.threadUrl, no: a.responseNo, uid: a.id, time: a.time, text: a.plain.replace(/\s+/g, " ").slice(0, 300) });
+      add.push({ seq: ++viewerSeqRef.current, source, site: VIEWER_SITE_LABEL[source], board: boardNameOfUrl(a.threadUrl), title: decodeHtmlEntities(a.threadTitle), idSeq: a.idSeq, idCount: a.idCount, threadUrl: a.threadUrl, no: a.responseNo, uid: a.id, time: a.time, text: a.plain.replace(/\s+/g, " ").slice(0, 300) });
     }
     if (add.length === 0) return;
     setLatestItems((prev) => {
@@ -2187,6 +2276,7 @@ export default function App() {
         source,
         site: VIEWER_SITE_LABEL[source],
         where: decodeHtmlEntities(a.threadTitle),
+        ...(!isChatSource(source) ? { board: boardNameOfUrl(a.threadUrl), mail: decodeHtmlEntities(a.mail), idSeq: a.idSeq, idCount: a.idCount } : {}),
         threadUrl: a.threadUrl,
         no: a.responseNo,
         name: decodeHtmlEntities(a.name),
@@ -2920,6 +3010,24 @@ export default function App() {
         if (ngVal(e) !== value) return e;
         return typeof e === "string" ? { value: e, mode } : { ...e, mode };
       }),
+    });
+  };
+
+  // 設定 > NG の節の中のすべてを、通常あぼ～ん / 透明あぼ～んに切り替える (押したときは確認する)
+  const setAllNgModes = (type: NgCategory, mode: NgMode) => {
+    const n = ngFilters[type].length;
+    if (n === 0) return;
+    const label = mode === "abone" ? "通常あぼ～ん" : "透明あぼ～ん";
+    setAppConfirm({
+      title: "NG の一括切り替え",
+      message: `NG ${NG_TYPE_LABELS[type]} の ${n} 件を、すべて${label}にしますか？`,
+      buttons: [
+        { label: `すべて${label}にする`, primary: true, onClick: () => {
+          void persistNgFilters({ ...ngFilters, [type]: ngFilters[type].map((e) => (typeof e === "string" ? { value: e, mode } : { ...e, mode })) });
+          setStatus(`NG ${NG_TYPE_LABELS[type]} の ${n} 件を${label}にしました`);
+        } },
+        { label: "キャンセル", onClick: () => {} },
+      ],
     });
   };
 
@@ -3864,7 +3972,9 @@ export default function App() {
   // Rust 側 (twitch_sync) が受信したチャットを "twitch-message" イベントで受け取り、Twitch タブのレスとして積む。
   // 1件 = 1レスとし、ID 欄にログイン名を入れる (ID の NG・ハイライト・書き込み回数・配信ホワイトリストがそのまま効く)。
   // 本文と名前は HTML として解釈されないようエスケープしてから積む (表示時に文字参照が戻されて文字として出る)
-  type TwitchChatPayload = { channel: string; login: string; name: string; color: string; text: string; receivedAt: number; event?: TwitchEventData | null; badges?: unknown; emotes?: unknown; giant?: unknown };
+  type TwitchChatPayload = { channel: string; id?: unknown; login: string; name: string; color: string; text: string; receivedAt: number; event?: TwitchEventData | null; badges?: unknown; emotes?: unknown; giant?: unknown };
+  // Twitch タブのレス番号 → 発言 ID (返信に使う。タブに残っている分だけ)
+  const twitchMsgIdRef = useRef<Map<string, Map<number, string>>>(new Map());
   const twitchPendingRef = useRef<TwitchChatPayload[]>([]);
   const twitchFlushTimerRef = useRef<number | null>(null);
   const formatChatTime = (ms: number) => {
@@ -3934,6 +4044,7 @@ export default function App() {
       const badgeLists: TwitchBadge[][] = [];
       const raws: { text: string; emotes: TwitchEmote[]; giant: boolean }[] = [];
       const emoteMap = twitchEmoteMapRef.current.get(url) ?? new Map<number, { emotes: { id: string; name: string; giant?: boolean }[]; giant: boolean }>();
+      const idMap = twitchMsgIdRef.current.get(url) ?? new Map<number, string>();
       const added: ThreadResponseItem[] = [];
       for (const m of msgs) {
         const kindInfo = m.event ? TWITCH_EVENT_KINDS.find((k) => k.kind === m.event!.kind) : undefined;
@@ -3966,9 +4077,12 @@ export default function App() {
           dateAndId: `${formatChatTime(m.receivedAt)} ID:${m.login}`,
           body: ev ? `【${escapeHtml(ev.label)}】${escapeHtml(ev.summary)}${m.text ? ` <br> ${escapeHtml(m.text)}` : ""}` : escapeHtml(m.text),
         });
+        if (typeof m.id === "string" && /^[A-Za-z0-9-]{1,64}$/.test(m.id)) idMap.set(no, m.id);
       }
       if (added.length === 0) continue;
       const rows = [...prev, ...added].slice(-TWITCH_MAX_ROWS);
+      for (const k of idMap.keys()) if (k < (rows[0]?.responseNo ?? 0)) idMap.delete(k);
+      twitchMsgIdRef.current.set(url, idMap);
       // 画面から消えたレスのスタンプ情報は捨てる
       const oldest = rows[0]?.responseNo ?? 0;
       for (const k of emoteMap.keys()) if (k < oldest) emoteMap.delete(k);
@@ -4265,6 +4379,234 @@ export default function App() {
     await applyPostSuccessBookkeeping(threadUrl.trim(), composeName, postedBody);
   };
 
+  // ===== Twitch・YouTube のチャットへの書き込み =====
+  // 書き込み先を間違えないための仕組み:
+  //  ① 書き込み欄の中身はタブごとに分ける (タブを切り替えると入れ替わる。別のタブで書いた文がほかのタブの欄に出ない)
+  //  ② 書き込み欄の中身がどのタブのものかを覚え、送るときに表示中のタブと違えば送らない
+  //  ③ 送り先を大きく・色で示す (Twitch=紫・YouTube=赤)。送信ボタンにも送り先を書く
+  //  ④ 送る前に毎回確認する (設定 > 書き込み でオフにできる)
+  //  ⑤ Enter では送らない (Ctrl+Enter か送信ボタンだけ)
+  //  ⑥ Rust 側でも、送り先が受信中の (開いている) タブかを確かめる
+  //  ⑦ 送信は書き込み欄のボタン・Ctrl+Enter からだけ呼ぶ (読み上げ・新着などの処理からは呼ばない)
+  const composeDraftsRef = useRef<Map<string, string>>(new Map());
+  const composeDraftUrlRef = useRef<string>("");
+  const composeTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const [chatSendConfirm, setChatSendConfirm] = useState(true);
+  const [composeReply, setComposeReply] = useState<{ url: string; id: string; name: string; text: string } | null>(null);
+  const activeComposeUrl = threadTabs[activeTabIndex]?.threadUrl ?? "";
+  useEffect(() => {
+    // タブが変わったら、いまの中身を前のタブの下書きにしまい、新しいタブの下書きを出す
+    const prevUrl = composeDraftUrlRef.current;
+    if (prevUrl === activeComposeUrl) return;
+    composeDraftsRef.current.set(prevUrl, composeBody);
+    if (composeDraftsRef.current.size > 200) composeDraftsRef.current.delete(composeDraftsRef.current.keys().next().value ?? "");
+    composeDraftUrlRef.current = activeComposeUrl;
+    setComposeBody(composeDraftsRef.current.get(activeComposeUrl) ?? "");
+    setComposeResult(null);
+    setChatPicker(false);
+    chatCompleteRef.current = null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeComposeUrl]);
+  // チャットの送り先 (表示中のタブが Twitch・YouTube のとき)
+  type ChatTarget = { platform: "twitch"; channel: string; url: string } | { platform: "youtube"; video: string; url: string; title: string };
+  const chatTarget: ChatTarget | null = (() => {
+    const ch = twitchChannelFromUrl(activeComposeUrl);
+    if (ch) return { platform: "twitch", channel: ch, url: activeComposeUrl };
+    const v = youtubeVideoFromUrl(activeComposeUrl);
+    if (v) return { platform: "youtube", video: v, url: activeComposeUrl, title: threadTabs[activeTabIndex]?.title ?? "" };
+    return null;
+  })();
+  const chatTargetLabel = (t: ChatTarget) => (t.platform === "twitch" ? `Twitch #${t.channel}` : `YouTube ${t.title.replace(/^YouTube\s*/, "") || t.video}`);
+  const CHAT_MAX_CHARS_TWITCH = 500;
+  // 使えるスタンプ (ログインしている人が使えるもの。チャンネルごとに10分覚える)
+  type UserEmote = { id: string; name: string; owner: string; ownerLogin?: string; emoteType: string; animated: boolean };
+  const [userEmotes, setUserEmotes] = useState<{ channel: string; list: UserEmote[]; at: number; error: string }>({ channel: "", list: [], at: 0, error: "" });
+  const [chatPicker, setChatPicker] = useState(false);
+  // 一覧の位置と大きさ (書き込み欄の上に重ねる。開いたとき・ウィンドウや書き込み欄の大きさが変わったときに計算し直す)
+  const [chatPickerPos, setChatPickerPos] = useState<{ right: number; bottom: number; width: number; maxHeight: number; narrow: boolean } | null>(null);
+  const [chatPickerHover, setChatPickerHover] = useState("");
+  // 一覧の下の切り替え (最近使ったもの・このチャンネル・すべて・グローバル・絵文字)。開いたときは「すべて」
+  type ChatPickerTab = "recent" | "channel" | "all" | "global" | "emoji";
+  const [chatPickerTab, setChatPickerTab] = useState<ChatPickerTab>("all");
+  const composeSectionRef = useRef<HTMLElement | null>(null);
+  const chatStampBtnRef = useRef<HTMLButtonElement | null>(null);
+  const chatPickerRef = useRef<HTMLDivElement | null>(null);
+  const chatPickerScrollRef = useRef<HTMLDivElement | null>(null);
+  const [chatPickerQuery, setChatPickerQuery] = useState("");
+  const [recentChatEmotes, setRecentChatEmotes] = useState<string[]>([]);
+  const chatCompleteRef = useRef<{ start: number; end: number; list: string[]; index: number } | null>(null);
+  useEffect(() => {
+    if (!isTauriRuntime() || !composeOpen || chatTarget?.platform !== "twitch" || !twitchAuth.canChat) return;
+    const ch = chatTarget.channel;
+    if (userEmotes.channel === ch && Date.now() - userEmotes.at < 10 * 60 * 1000) return;
+    let cancelled = false;
+    void invoke<UserEmote[]>("twitch_user_emotes", { channel: ch })
+      .then((list) => {
+        if (cancelled) return;
+        const seen = new Set<string>();
+        const uniq = (Array.isArray(list) ? list : []).filter((e) => TWITCH_EMOTE_ID_RE.test(e.id) && !seen.has(e.id) && (seen.add(e.id), true));
+        setUserEmotes({ channel: ch, list: uniq, at: Date.now(), error: "" });
+      })
+      .catch((e) => { if (!cancelled) setUserEmotes({ channel: ch, list: [], at: Date.now(), error: String(e) }); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [composeOpen, chatTarget?.platform === "twitch" ? chatTarget.channel : "", twitchAuth.canChat]);
+  // 一覧の位置: 右端は LiveFake のウィンドウの右端にぴったり付け、書き込み欄の上端のすぐ上に開く。
+  // 幅は約 300px (ウィンドウがそれより狭いときは幅いっぱい)。高さは書き込み欄の上の空きに収める (最大 360px。100px より小さくはしない)
+  const updateChatPickerPos = () => {
+    const sec = composeSectionRef.current;
+    if (!sec) return;
+    const sr = sec.getBoundingClientRect();
+    const vw = document.documentElement.clientWidth || window.innerWidth;
+    const vh = window.innerHeight;
+    const width = Math.min(300, vw);
+    setChatPickerPos({ right: 0, bottom: Math.max(0, vh - sr.top + 2), width, maxHeight: Math.min(360, Math.max(100, sr.top - 4)), narrow: width < 240 });
+  };
+  useEffect(() => {
+    if (!chatPicker) { setChatPickerPos(null); return; }
+    updateChatPickerPos();
+    const onResize = () => updateChatPickerPos();
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node | null;
+      // 一覧・スタンプボタン・書き込み領域を押したときは閉じない (書き込み領域でカーソルを動かしながら続けて選べるように)
+      if (!t || chatPickerRef.current?.contains(t) || chatStampBtnRef.current?.contains(t) || composeTextareaRef.current?.contains(t)) return;
+      setChatPicker(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { e.preventDefault(); setChatPicker(false); composeTextareaRef.current?.focus(); } };
+    window.addEventListener("resize", onResize);
+    document.addEventListener("mousedown", onDown, true);
+    document.addEventListener("keydown", onKey, true);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      document.removeEventListener("mousedown", onDown, true);
+      document.removeEventListener("keydown", onKey, true);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatPicker, composePanelPx, composeOpen]);
+  // 一覧の1マスの大きさ (設定 > Twitch の「スタンプの大きさ」に合わせる)。画像は画面の細かさに合わせて 1倍・2倍・3倍を選ぶ
+  const chatCell = Math.max(24, Math.min(64, twitchEmoteSize + 4));
+  const chatEmoteImg = (id: string) => {
+    const need = chatCell * (window.devicePixelRatio || 1);
+    const scale = need <= 30 ? "1.0" : need <= 60 ? "2.0" : "3.0";
+    return `https://static-cdn.jtvnw.net/emoticons/v2/${encodeURIComponent(id)}/default/${darkMode ? "dark" : "light"}/${scale}`;
+  };
+  // 書き込み欄の、カーソルの位置に文字を入れる (前後に空白を足して、スタンプの名前が前後の文字とつながらないようにする)
+  const insertIntoCompose = (text: string) => {
+    const ta = composeTextareaRef.current;
+    const cur = composeBody;
+    const start = ta ? ta.selectionStart : cur.length;
+    const end = ta ? ta.selectionEnd : cur.length;
+    const before = cur.slice(0, start);
+    const after = cur.slice(end);
+    const pre = before && !/\s$/.test(before) ? " " : "";
+    const post = after && !/^\s/.test(after) ? " " : " ";
+    const next = before + pre + text + post + after;
+    setComposeBody(next);
+    const pos = (before + pre + text + post).length;
+    window.setTimeout(() => { const t = composeTextareaRef.current; if (t) { t.focus(); t.setSelectionRange(pos, pos); } }, 0);
+  };
+  const pickChatEmote = (name: string) => {
+    insertIntoCompose(name);
+    setRecentChatEmotes((prev) => [name, ...prev.filter((n) => n !== name)].slice(0, 24));
+  };
+  // Tab で補完: @ で始まる語はこのタブで最近書き込んだ人の名前、それ以外は使えるスタンプの名前。続けて Tab を押すと次の候補
+  const completeInCompose = (ta: HTMLTextAreaElement) => {
+    const st = chatCompleteRef.current;
+    if (st && st.list.length > 0 && ta.selectionStart === st.end) {
+      const index = (st.index + 1) % st.list.length;
+      const word = st.list[index];
+      const next = composeBody.slice(0, st.start) + word + composeBody.slice(st.end);
+      chatCompleteRef.current = { ...st, end: st.start + word.length, index };
+      setComposeBody(next);
+      window.setTimeout(() => ta.setSelectionRange(st.start + word.length, st.start + word.length), 0);
+      return;
+    }
+    const pos = ta.selectionStart;
+    const before = composeBody.slice(0, pos);
+    const m = before.match(/(\S+)$/);
+    if (!m) return;
+    const word = m[1];
+    const start = pos - word.length;
+    let list: string[] = [];
+    if (word.startsWith("@")) {
+      const q = word.slice(1).toLowerCase();
+      const names = [...fetchedResponses].reverse().map((r) => decodeHtmlEntities(r.name.replace(/<[^>]*>/g, "")).trim()).filter(Boolean);
+      list = [...new Set(names)].filter((n) => n.toLowerCase().startsWith(q)).slice(0, 30).map((n) => `@${n}`);
+    } else {
+      const q = word.toLowerCase();
+      const recent = recentChatEmotes.filter((n) => n.toLowerCase().startsWith(q));
+      const all = userEmotes.list.map((e) => e.name).filter((n) => n.toLowerCase().startsWith(q)).sort((a, b) => a.length - b.length || a.localeCompare(b));
+      list = [...new Set([...recent, ...all])].slice(0, 50);
+    }
+    if (list.length === 0) return;
+    const next = composeBody.slice(0, start) + list[0] + composeBody.slice(pos);
+    chatCompleteRef.current = { start, end: start + list[0].length, list, index: 0 };
+    setComposeBody(next);
+    window.setTimeout(() => ta.setSelectionRange(start + list[0].length, start + list[0].length), 0);
+  };
+  // 送信前の見た目: 自分が使えるスタンプの名前を画像にする
+  const chatComposePreviewHtml = (): string => {
+    const text = composeBody.replace(/\s*\n\s*/g, " ");
+    const html = escapeHtml(text);
+    if (chatTarget?.platform !== "twitch" || userEmotes.list.length === 0) return html;
+    const names = new Set(text.split(/\s+/));
+    const used = userEmotes.list.filter((e) => names.has(e.name)).map((e) => ({ id: e.id, name: e.name }));
+    return used.length > 0 ? injectTwitchEmotes(html, used, false, darkMode) : html;
+  };
+  const sendChatFromCompose = () => {
+    if (composeSubmitting || !chatTarget) return;
+    const target = chatTarget;
+    // ② 書き込み欄の中身が、表示中のタブのものか
+    if (composeDraftUrlRef.current !== target.url) {
+      setComposeResult({ ok: false, message: "送り先のタブと書き込み欄が食い違ったため、送りませんでした。もう一度確かめてください" });
+      return;
+    }
+    if (target.platform !== "twitch") {
+      setComposeResult({ ok: false, message: "YouTube への書き込みは準備中です" });
+      return;
+    }
+    const text = composeBody.replace(/\s*\n\s*/g, " ").trim();
+    if (!text) { setComposeResult({ ok: false, message: "本文が空です" }); return; }
+    if (Array.from(text).length > CHAT_MAX_CHARS_TWITCH) { setComposeResult({ ok: false, message: `長すぎます (${CHAT_MAX_CHARS_TWITCH} 文字まで)` }); return; }
+    if (!twitchAuth.loggedIn || !twitchAuth.canChat) {
+      setComposeResult({ ok: false, message: "Twitch に書き込むには、設定 > Twitch > ログイン でログイン (またはログインし直し) してください" });
+      return;
+    }
+    const reply = composeReply && composeReply.url === target.url ? composeReply : null;
+    const doSend = async () => {
+      // 確認の間にタブが変わっていないか、もう一度確かめる
+      if ((threadTabsRef.current[activeTabIndexRef.current]?.threadUrl ?? "") !== target.url || composeDraftUrlRef.current !== target.url) {
+        setComposeResult({ ok: false, message: "送り先のタブが変わったため、送りませんでした" });
+        return;
+      }
+      setComposeSubmitting(true);
+      try {
+        await invoke<string>("twitch_send_chat", { channel: target.channel, message: text, replyTo: reply?.id ?? null });
+        setComposeBody("");
+        composeDraftsRef.current.delete(target.url);
+        setComposeReply(null);
+        setChatPicker(false);
+        setComposeResult({ ok: true, message: `送信しました: ${chatTargetLabel(target)}` });
+        const usedNames = new Set(text.split(/\s+/));
+        const used = userEmotes.list.filter((e) => usedNames.has(e.name)).map((e) => e.name);
+        if (used.length > 0) setRecentChatEmotes((prev) => [...new Set([...used, ...prev])].slice(0, 24));
+      } catch (e) {
+        setComposeResult({ ok: false, message: String(e) });
+      } finally {
+        setComposeSubmitting(false);
+      }
+    };
+    if (!chatSendConfirm) { void doSend(); return; }
+    setAppConfirm({
+      title: "チャットへの送信の確認",
+      message: `送信先: ${chatTargetLabel(target)}\nログイン: ${twitchAuth.login}${reply ? `\n返信先: ${reply.name}「${Array.from(reply.text).slice(0, 40).join("")}」` : ""}\n\n${text}`,
+      buttons: [
+        { label: `${chatTargetLabel(target)} に送信`, primary: true, onClick: () => { void doSend(); } },
+        { label: "キャンセル", onClick: () => {} },
+      ],
+    });
+  };
+
   const probePostFlowTraceFromCompose = async () => {
     if (composeSubmitting) return;
     if (isChatUrl(threadTabs[activeTabIndex]?.threadUrl ?? threadUrl)) {
@@ -4303,12 +4645,9 @@ export default function App() {
   // 下部の書き込みパネルとは独立で、名前・スレ情報などの初期値だけを渡す
   const openComposePopup = () => {
     if (isChatUrl(threadTabs[activeTabIndex]?.threadUrl ?? threadUrl)) {
-      const where = isTwitchUrl(threadTabs[activeTabIndex]?.threadUrl ?? threadUrl) ? "Twitch" : "YouTube";
-      setAppConfirm({
-        title: `${where} には書き込めません`,
-        message: `このブラウザからは ${where} のチャットに書き込めません (受信のみ)。`,
-        buttons: [{ label: "OK", primary: true, onClick: () => {} }],
-      });
+      // チャットへは、送り先を取り違えないよう下の書き込み欄からだけ送る
+      setComposeOpen(true);
+      setStatus("チャットへは下の書き込み欄から送ります");
       return;
     }
     if (!isTauriRuntime()) { setComposeOpen(true); setComposeBody(""); setComposeResult(null); return; }
@@ -4906,6 +5245,19 @@ export default function App() {
     : "UPDATE N/A";
 
   const onComposeBodyKeyDown: KeyboardEventHandler<HTMLTextAreaElement> = (e) => {
+    if (chatTarget) {
+      if (e.key === "Tab" && !e.shiftKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        completeInCompose(e.currentTarget);
+        return;
+      }
+      chatCompleteRef.current = null;
+      if (e.key === "Enter") {
+        e.preventDefault();
+        if (e.ctrlKey || e.metaKey) sendChatFromCompose();
+      }
+      return;
+    }
     if (e.key === "Enter" && ((composeSubmitKey === "shift" && e.shiftKey) || (composeSubmitKey === "ctrl" && (e.ctrlKey || e.metaKey)))) {
       e.preventDefault();
       void probePostFlowTraceFromCompose();
@@ -6232,14 +6584,15 @@ export default function App() {
     }
     if (isTauriRuntime()) {
       // Load proxy settings
-      invoke<{ enabled: boolean; proxyType: string; host: string; port: string; username: string; password: string }>("load_proxy_settings").then((s) => {
+      invoke<{ enabled: boolean; proxyType: string; noCache: boolean; httpMode: boolean; receive: ProxyEndpoint; send: ProxyEndpoint }>("load_proxy_settings").then((s) => {
         setProxyEnabled(s.enabled);
-        setProxyType((s.proxyType as "http" | "socks5" | "socks4") || "http");
-        setProxyHost(s.host || "");
-        setProxyPort(s.port || "");
-        setProxyUsername(s.username || "");
-        setProxyPassword(s.password || "");
-      }).catch(() => {});
+        setProxyType(s.proxyType === "socks5" || s.proxyType === "socks4" ? s.proxyType : "http");
+        setProxyNoCache(s.noCache === true);
+        setProxyHttpMode(s.httpMode === true);
+        const ep = (e: Partial<ProxyEndpoint> | undefined): ProxyEndpoint => ({ host: e?.host ?? "", port: e?.port ?? "", username: e?.username ?? "", password: e?.password ?? "" });
+        setProxyReceive(ep(s.receive));
+        setProxySend(ep(s.send));
+      }).catch((e) => console.warn("load_proxy_settings:", e));
       // Load ImageViewURLReplace rules
       invoke<UrlReplaceRule[]>("load_image_url_replace").then((rules) => {
         setImageUrlRules(rules);
@@ -6595,6 +6948,14 @@ export default function App() {
         }
         return next;
       });
+      setLatestShow((prev) => {
+        const next = { ...prev };
+        for (const [k] of LATEST_SHOW_LABELS) {
+          const v = map[`App.latestShow${k[0].toUpperCase()}${k.slice(1)}`];
+          if (v !== undefined) next[k] = v !== "false";
+        }
+        return next;
+      });
       if (map["App.viewerFontSize"] !== undefined) { const n = parseInt(map["App.viewerFontSize"], 10); setViewerFontSize(!isNaN(n) && n >= 8 && n <= 48 ? n : 0); }
       if (map["App.overlayPort"]) { const n = parseInt(map["App.overlayPort"], 10); if (!isNaN(n) && n >= 1024 && n <= 65535) setOverlayPort(n); }
       if (map["App.twitchMaxQueuedArrivals"]) { const n = parseInt(map["App.twitchMaxQueuedArrivals"], 10); if (!isNaN(n)) setTwitchMaxQueuedArrivals(clampTwitchLimit(n)); }
@@ -6602,6 +6963,7 @@ export default function App() {
       if (map["App.youtubeMethod"] && /^[a-z]{1,20}$/.test(map["App.youtubeMethod"])) setYoutubeMethod(map["App.youtubeMethod"]);
       { const n = parseInt(map["App.youtubeApiInterval"] ?? "", 10); if (!isNaN(n)) setYoutubeApiInterval(Math.max(YOUTUBE_API_INTERVAL_MIN, Math.min(YOUTUBE_API_INTERVAL_MAX, n))); }
       if (map["App.youtubeSpeakName"]) setYoutubeSpeakName(map["App.youtubeSpeakName"] !== "false");
+      if (map["App.chatSendConfirm"] !== undefined) setChatSendConfirm(map["App.chatSendConfirm"] !== "false");
       if (map["App.tabSiteColors"]) setTabSiteColors(map["App.tabSiteColors"] !== "false");
       if (map["App.autoUpdateCheck"]) setAutoUpdateCheck(map["App.autoUpdateCheck"] !== "false");
       if (map["App.lastUpdateCheck"] !== undefined) setLastUpdateCheck(map["App.lastUpdateCheck"]);
@@ -6835,7 +7197,64 @@ export default function App() {
   // コンテナ内の .ogp-card-slot を IntersectionObserver で監視し、画面に入ったものだけ取得して埋める
   // (スレ内の全 URL へ一斉に通信しない)。React が innerHTML を差し替えるたびにスロットは白紙で
   // 作り直されるため、MutationObserver で未処理スロットを拾い直す。戻り値は解除関数。
+  // 取ったカードの HTML と高さを覚えておく (同じカードは次からすぐに・同じ高さで描く。上限を超えたら古いものから忘れる)
+  const cardHtmlCacheRef = useRef<Map<string, string>>(new Map());
+  const cardHeightCacheRef = useRef<Map<string, number>>(new Map());
+  // コンテナ内の .ogp-card-slot を監視し、画面の1つ分手前まで来たものから取得して埋める。
+  // 見ている位置がずれないように:
+  //  ① カードの高さが変わったとき (読み込み・取れなかった・中の画像の読み込み)、画面の上端より上から始まるカードなら、その差だけスクロール位置を足し引きする
+  //     (一番下にいるときは一番下に付いたままにする)。ブラウザのずれの補正 (overflow-anchor) が効いている場所 (ビュワーなど) では、
+  //     二重に動かないよう何もしない (補正を切ってあるレス表示欄で働く)
+  //  ② 一度取ったカードは、画面に入るのを待たずにすぐ描く
+  //  ③ 取ったカードの高さを覚え、次からは読み込み中の枠をその高さで空ける
+  //  ④ 画面の1つ分手前から取りに行く
   const setupOgpFill = (container: HTMLElement, ogpFallback: boolean): (() => void) => {
+    const keyOf = (slot: HTMLElement) => `${ogpFallback ? 1 : 0}|${slot.dataset.tweetId ?? ""}|${slot.dataset.ogpUrl ?? ""}`;
+    const remember = <T,>(map: Map<string, T>, key: string, value: T, max: number) => {
+      map.delete(key);
+      map.set(key, value);
+      if (map.size > max) map.delete(map.keys().next().value ?? "");
+    };
+    const heights = new WeakMap<Element, number>();
+    const browserAnchors = getComputedStyle(container).overflowAnchor !== "none";
+    const ro = new ResizeObserver((entries) => {
+      if (browserAnchors) return;
+      const rootTop = container.getBoundingClientRect().top;
+      let adjust = 0;
+      let stick = false;
+      for (const en of entries) {
+        const el = en.target as HTMLElement;
+        const r = el.getBoundingClientRect();
+        const prev = heights.get(el) ?? r.height;
+        heights.set(el, r.height);
+        const delta = r.height - prev;
+        if (Math.abs(delta) < 0.5) continue;
+        if (delta > 0 && container.scrollTop + container.clientHeight >= container.scrollHeight - delta - 4) { stick = true; continue; }
+        // 見ている位置 (画面の上端) より上から始まるカード (全体が隠れているもの・上端にまたがるもの)。
+        // その下の、見えているレスが動かないように差を足し引きする
+        if (r.top < rootTop) adjust += delta;
+      }
+      if (stick) container.scrollTop = container.scrollHeight;
+      else if (adjust) container.scrollTop += adjust;
+    });
+    const watch = (slot: HTMLElement) => {
+      heights.set(slot, slot.getBoundingClientRect().height);
+      ro.observe(slot);
+    };
+    const fill = (slot: HTMLElement, htmlText: string) => {
+      watch(slot); // 埋める前の高さを覚えてから埋める (差は ResizeObserver で足し引きする)
+      slot.style.minHeight = "";
+      if (htmlText) {
+        slot.innerHTML = htmlText;
+        slot.dataset.ogpState = "done";
+        window.requestAnimationFrame(() => {
+          const h = slot.getBoundingClientRect().height;
+          if (h > 0 && slot.isConnected) remember(cardHeightCacheRef.current, keyOf(slot), h, 3000);
+        });
+      } else {
+        slot.dataset.ogpState = "empty";
+      }
+    };
     const io = new IntersectionObserver(
       (entries, obs) => {
         for (const entry of entries) {
@@ -6846,26 +7265,36 @@ export default function App() {
           const url = slot.dataset.ogpUrl;
           if (!url) { slot.dataset.ogpState = "empty"; continue; }
           slot.dataset.ogpState = "loading";
+          const key = keyOf(slot);
           void resolveCardHtml(url, slot.dataset.tweetId, ogpFallback).then((htmlText) => {
+            remember(cardHtmlCacheRef.current, key, htmlText, 500);
             if (!slot.isConnected) return; // 再レンダーでノードが差し替わっている可能性があるので生存確認
-            if (htmlText) {
-              slot.innerHTML = htmlText;
-              slot.dataset.ogpState = "done";
-            } else {
-              slot.dataset.ogpState = "empty";
-            }
+            fill(slot, htmlText);
           });
         }
       },
-      { root: container, rootMargin: "200px" }
+      { root: container, rootMargin: "100% 0px 100% 0px" }
     );
     const observeNewSlots = () => {
-      container.querySelectorAll<HTMLElement>(".ogp-card-slot:not([data-ogp-state])").forEach((slot) => io.observe(slot));
+      container.querySelectorAll<HTMLElement>(".ogp-card-slot:not([data-ogp-state])").forEach((slot) => {
+        const key = keyOf(slot);
+        const cached = cardHtmlCacheRef.current.get(key);
+        if (cached !== undefined) {
+          // ② 取ったことのあるカードはすぐ描く (読み込み中の枠を出さないので、ずれない)
+          if (cached) { slot.innerHTML = cached; slot.dataset.ogpState = "done"; } else { slot.dataset.ogpState = "empty"; }
+          watch(slot);
+          return;
+        }
+        // ③ 覚えている高さで枠を空ける
+        const h = cardHeightCacheRef.current.get(key);
+        if (h) slot.style.minHeight = `${Math.round(h)}px`;
+        io.observe(slot);
+      });
     };
     observeNewSlots();
     const mo = new MutationObserver(observeNewSlots);
     mo.observe(container, { childList: true, subtree: true });
-    return () => { mo.disconnect(); io.disconnect(); };
+    return () => { mo.disconnect(); io.disconnect(); ro.disconnect(); };
   };
   // 字幕ウィンドウからの「表示終了までの残り時間」報告を受け取り、同期 ON なら新着ペインの「次へ進む」を延長する
   useEffect(() => {
@@ -7130,7 +7559,8 @@ export default function App() {
     const container = newArrivalScrollRef.current;
     if (!container) return;
     return setupOgpFill(container, ogpCardsEnabled);
-  }, [arrivalCardsEnabled, ogpCardsEnabled, tweetCardsEnabled, newArrivalPaneOpen]);
+    // 新着レスペインはビュワーでは出さないので、タブの種類が変わったら付け直す
+  }, [arrivalCardsEnabled, ogpCardsEnabled, tweetCardsEnabled, newArrivalPaneOpen, activePaneView]);
 
   // settings.ini に保存する内容 (キー → 文字列)
   const buildAppSettingsMap = (): Record<string, string> => ({
@@ -7163,12 +7593,14 @@ export default function App() {
       "App.viewerThumbs": String(viewerThumbs),
       "App.viewerTwitchClickToLoad": String(viewerTwitchClickToLoad),
       ...Object.fromEntries(VIEWER_SHOW_LABELS.map(([k]) => [`App.viewerShow${k[0].toUpperCase()}${k.slice(1)}`, String(viewerShow[k])])),
+      ...Object.fromEntries(LATEST_SHOW_LABELS.map(([k]) => [`App.latestShow${k[0].toUpperCase()}${k.slice(1)}`, String(latestShow[k])])),
       "App.overlayPort": String(overlayPort),
       "App.twitchMaxQueuedArrivals": String(twitchMaxQueuedArrivals),
       "App.twitchMaxTtsBacklog": String(twitchMaxTtsBacklog),
       "App.youtubeMethod": youtubeMethod,
       "App.youtubeApiInterval": String(youtubeApiInterval),
       "App.youtubeSpeakName": String(youtubeSpeakName),
+      "App.chatSendConfirm": String(chatSendConfirm),
       "App.tabSiteColors": String(tabSiteColors),
       "App.autoUpdateCheck": String(autoUpdateCheck),
       "App.lastUpdateCheck": lastUpdateCheck,
@@ -7210,7 +7642,7 @@ export default function App() {
   useEffect(() => {
     if (!isTauriRuntime() || !appSettingsLoadedRef.current || settingsOpenRef.current) return;
     void invoke("save_app_settings", { settings: buildAppSettingsMap() }).catch(() => {});
-  }, [responsesFontSize, responseGap, autoRefreshInterval, autoRefreshEnabled, autoScrollEnabled, smoothScroll, maxOpenTabs, logRetentionDays, tabSiteColors, autoUpdateCheck, lastUpdateCheck, knownLatestVersion, webviewCacheMb, overlayEnabled, overlayPort, latestPanelHeight, latestPanelOpen, viewerFontFamily, viewerFontSize, viewerFontBold, viewerShow, viewerCards, viewerThumbs, viewerTwitchClickToLoad, twitchSpeakName, twitchBadgesEnabled, twitchEmoteSize, twitchGiantEmoteSize, twitchEmoteSpeak, twitchEmoteMax, subtitleEmoteSize, subtitleGiantEmoteSize, boardEmotesEnabled, twitchTeachEnabled, twitchTeachAnnounce, twitchMaxQueuedArrivals, twitchMaxTtsBacklog, youtubeMethod, youtubeApiInterval, youtubeSpeakName, imageSaveFolder, bbsmenuUrl, shitarabaHost, jpnknHost,
+  }, [responsesFontSize, responseGap, autoRefreshInterval, autoRefreshEnabled, autoScrollEnabled, smoothScroll, maxOpenTabs, logRetentionDays, tabSiteColors, autoUpdateCheck, lastUpdateCheck, knownLatestVersion, webviewCacheMb, overlayEnabled, overlayPort, latestPanelHeight, latestPanelOpen, viewerFontFamily, viewerFontSize, viewerFontBold, viewerShow, latestShow, viewerCards, viewerThumbs, viewerTwitchClickToLoad, twitchSpeakName, twitchBadgesEnabled, twitchEmoteSize, twitchGiantEmoteSize, twitchEmoteSpeak, twitchEmoteMax, subtitleEmoteSize, subtitleGiantEmoteSize, boardEmotesEnabled, twitchTeachEnabled, twitchTeachAnnounce, twitchMaxQueuedArrivals, twitchMaxTtsBacklog, youtubeMethod, youtubeApiInterval, youtubeSpeakName, chatSendConfirm, imageSaveFolder, bbsmenuUrl, shitarabaHost, jpnknHost,
       mainAlwaysOnBottom, cssAllowExternalUrls, streamMaskEnabled, ngAboneSpeakEnabled,
       ttsMode, ttsEnabled, ttsMaxReadLength, ttsUrlOmitEnabled, ttsBoardMode, sapiVoiceIndex, sapiRate, sapiVolume,
       voicevoxEndpoint, voicevoxSpeakerId, voicevoxSpeedScale, voicevoxPitchScale, voicevoxIntonationScale, voicevoxVolumeScale,
@@ -7696,6 +8128,61 @@ export default function App() {
           自動更新
         </label>
         <button onClick={() => setNgPanelOpen((v) => !v)}>NG</button>
+        <span className="tool-sep" />
+        {/* 掲示板の新着の読み上げ方 (どのタブでも切り替えられる。設定 > 読み上げ と同じもの) */}
+        <label className="tts-board-mode" title="掲示板の新着レスの読み上げ方 (設定 > 読み上げ と同じもの)。「レス番のみ」では、配信ホワイトリストの ID のレスは本文まで、それ以外は「レスN番さん」だけを読みます。Twitch・YouTube のチャットには関係しません">
+          読み上げ:
+          <select value={ttsBoardMode} onChange={(e) => setTtsBoardMode(e.target.value === "whitelist" ? "whitelist" : "full")}>
+            <option value="full">全文</option>
+            <option value="whitelist">レス番のみ</option>
+          </select>
+        </label>
+        <span className="tool-sep" />
+        {/* 新着レスの操作 (新着レスペインの開閉はここだけ。ビュワーでは新着レスペインを出さない) */}
+        <span className="arrival-tools">
+          <button title="次の新着レスを表示" onClick={() => {
+            arrivalPausedRef.current = false;
+            setArrivalPaused(false);
+            advanceToNextArrival();
+          }}>▶</button>
+          <button
+            className={subtitleVisible ? "active" : ""}
+            title={subtitleVisible ? "字幕ウィンドウを閉じる" : "字幕ウィンドウを開く"}
+            onClick={() => {
+              if (!subtitleVisible) {
+                setSubtitleVisible(true);
+                if (isTauriRuntime()) invoke("subtitle_show").then(() => {
+                  setTimeout(() => {
+                    invoke("subtitle_opacity", { opacity: subtitleOpacity }).catch(() => {});
+                    invoke("subtitle_font_size", { size: subtitleBodyFontSize }).catch(() => {});
+                    invoke("subtitle_meta_font_size", { size: subtitleMetaFontSize }).catch(() => {});
+                    invoke("subtitle_topmost", { enabled: subtitleAlwaysOnTop }).catch(() => {});
+                    invoke("subtitle_id_font_size", { size: subtitleIdFontSize }).catch(() => {});
+                    if (subtitleIdFontFamily) invoke("subtitle_id_font_family", { family: subtitleIdFontFamily }).catch(() => {});
+                  }, 400);
+                }).catch((e) => console.warn("subtitle_show:", e));
+              } else {
+                setSubtitleVisible(false);
+                if (isTauriRuntime()) invoke("subtitle_hide").catch((e) => console.warn("subtitle_hide:", e));
+              }
+            }}
+          ><Subtitles size={14} /></button>
+          <button onClick={() => {
+            arrivalQueueRef.current = [];
+            setArrivalQueueCount(0);
+            arrivalPausedRef.current = false;
+            setArrivalPaused(false);
+            if (arrivalTimerRef.current) { clearTimeout(arrivalTimerRef.current); arrivalTimerRef.current = null; }
+            currentArrivalItemRef.current = null;
+            setCurrentArrivalItem(null);
+          }} title="新着レスの待ち行列と表示中のレスを消す"><X size={13} />クリア</button>
+          <button
+            className={`arrival-pane-toggle${newArrivalPaneOpen && activePaneView !== "viewer" ? " active" : ""}`}
+            onClick={() => setNewArrivalPaneOpen((v) => !v)}
+            disabled={activePaneView === "viewer"}
+            title={activePaneView === "viewer" ? "ビュワーでは新着レスペインを出しません (下に最新レスの欄があります)" : newArrivalPaneOpen ? "新着レスペインを閉じる" : "新着レスペインを開く"}
+          >{newArrivalPaneOpen ? <ChevronDown size={13} /> : <ChevronUp size={13} />}新着レス</button>
+        </span>
       </div>
       {showBoardButtons && favorites.boards.length > 0 && (
         <div className="board-button-bar" ref={boardBtnBarRef}>
@@ -7964,48 +8451,11 @@ export default function App() {
         />}
         <div className="right-body">
           {/* New arrivals pane — inside right-body, above tab bar */}
-          {newArrivalPaneOpen && (
+          {newArrivalPaneOpen && activePaneView !== "viewer" && (
             <>
               <div className="new-arrival-pane" style={{ height: newArrivalPaneHeight }}>
                 <div className="new-arrival-header">
                   <span className="new-arrival-title">新着レス {arrivalQueueCount > 0 ? `(残 ${arrivalQueueCount})` : ""}{arrivalPaused ? " ⏸停止中" : ""}</span>
-                  <button className="title-action-btn" title="次のレスを表示" onClick={() => {
-                    arrivalPausedRef.current = false;
-                    setArrivalPaused(false);
-                    advanceToNextArrival();
-                  }}>▶</button>
-                  <button
-                    className={`title-action-btn${subtitleVisible ? " active" : ""}`}
-                    title="字幕"
-                    onClick={() => {
-                      if (!subtitleVisible) {
-                        setSubtitleVisible(true);
-                        if (isTauriRuntime()) invoke("subtitle_show").then(() => {
-                          setTimeout(() => {
-                            invoke("subtitle_opacity", { opacity: subtitleOpacity }).catch(() => {});
-                            invoke("subtitle_font_size", { size: subtitleBodyFontSize }).catch(() => {});
-                            invoke("subtitle_meta_font_size", { size: subtitleMetaFontSize }).catch(() => {});
-                            invoke("subtitle_topmost", { enabled: subtitleAlwaysOnTop }).catch(() => {});
-                            invoke("subtitle_id_font_size", { size: subtitleIdFontSize }).catch(() => {});
-                            if (subtitleIdFontFamily) invoke("subtitle_id_font_family", { family: subtitleIdFontFamily }).catch(() => {});
-                          }, 400);
-                        }).catch((e) => console.warn("subtitle_show:", e));
-                      } else {
-                        setSubtitleVisible(false);
-                        if (isTauriRuntime()) invoke("subtitle_hide").catch((e) => console.warn("subtitle_hide:", e));
-                      }
-                    }}
-                  ><Subtitles size={12} /></button>
-                  <button className="title-action-btn" onClick={() => {
-                    arrivalQueueRef.current = [];
-                    setArrivalQueueCount(0);
-                    arrivalPausedRef.current = false;
-                    setArrivalPaused(false);
-                    if (arrivalTimerRef.current) { clearTimeout(arrivalTimerRef.current); arrivalTimerRef.current = null; }
-                    currentArrivalItemRef.current = null;
-                    setCurrentArrivalItem(null);
-                  }} title="クリア"><X size={12} /></button>
-                  <button className="title-action-btn" onClick={() => setNewArrivalPaneOpen(false)} title="閉じる"><ChevronDown size={12} /></button>
                 </div>
                 <div className="new-arrival-scroll" ref={newArrivalScrollRef}>
                   {currentArrivalItem === null && <div className="new-arrival-empty">新着レスはありません</div>}
@@ -8268,13 +8718,6 @@ export default function App() {
               </label>
             ))}
             <span className="viewer-grow" />
-            <label className="viewer-toggle" title="掲示板の新着レスの読み上げ方 (設定 > 読み上げ と同じもの)">
-              読み上げ:
-              <select value={ttsBoardMode} onChange={(e) => setTtsBoardMode(e.target.value === "whitelist" ? "whitelist" : "full")}>
-                <option value="full">全文</option>
-                <option value="whitelist">レス番のみ</option>
-              </select>
-            </label>
             <label className="viewer-toggle" title="ビュワーの下に、ホワイトリストに無い ID の新着レスを表示する (OBS には出ません)">
               <input type="checkbox" checked={latestPanelOpen} onChange={(e) => setLatestPanelOpen(e.target.checked)} />
               最新レス欄
@@ -8305,8 +8748,21 @@ export default function App() {
               >
                 <div className="viewer-meta">
                   {it.event ? <span className="viewer-site">{it.event.label}</span> : viewerShow.site && <span className="viewer-site">{it.site}</span>}
+                  {!isChatSource(it.source) ? (
+                    <>
+                      {/* 掲示板のレス: 板・スレタイ・レス番・名前・メール欄・日時・ID・書き込み回数 */}
+                      {viewerShow.board && it.board && <span className="viewer-board">{it.board}</span>}
+                      {viewerShow.where && <span className="viewer-where">{it.where}</span>}
+                      {viewerShow.no && <span className="viewer-no">{it.no}</span>}
+                      {viewerShow.name && <span className="viewer-name">{it.name}</span>}
+                      {viewerShow.mail && it.mail && <span className="viewer-mail">[{it.mail}]</span>}
+                      {viewerShow.time && <span className="viewer-time">{it.time}</span>}
+                      {viewerShow.id && it.uid && <span className="viewer-uid" style={{ color: idHighlights[it.uid] ?? undefined }}>ID:{it.uid}</span>}
+                      {viewerShow.count && (it.idCount ?? 0) > 0 && <span className={`viewer-id-count${idCountClass(it.idCount ?? 0)}`}>({it.idSeq}/{it.idCount})</span>}
+                    </>
+                  ) : (
+                  <>
                   {viewerShow.where && <span className="viewer-where">{it.where}</span>}
-                  {!isChatSource(it.source) && <span className="viewer-no">{it.no}</span>}
                   {viewerShow.badges && it.badges && it.badges.length > 0 && (
                     <span className="viewer-badges">
                       {it.badges.map((b, i) => <img key={i} src={`${b.url}/1`} srcSet={`${b.url}/1 1x, ${b.url}/2 2x`} alt={b.title} title={b.title} referrerPolicy="no-referrer" />)}
@@ -8315,6 +8771,8 @@ export default function App() {
                   <span className="viewer-name" style={it.color ? { color: it.color } : undefined}>{it.name}</span>
                   {viewerShow.id && it.uid && <span className="viewer-uid" style={{ color: idHighlights[it.uid] ?? undefined }}>ID:{it.uid}</span>}
                   {viewerShow.time && <span className="viewer-time">{it.time}</span>}
+                  </>
+                  )}
                 </div>
                 {it.event && <div className="viewer-event-summary">{it.event.summary}</div>}
                 {(!it.event || it.text) && <div className="viewer-text" dangerouslySetInnerHTML={{ __html: viewerBodyHtml(it) }} />}
@@ -8346,11 +8804,14 @@ export default function App() {
                     }}
                     title={it.text}
                   >
-                    {viewerShow.time && <span className="viewer-time">{it.time.replace(/^\S+\s+/, "")}</span>}
                     {viewerShow.site && <span className="viewer-site">{it.site}</span>}
-                    <span className="viewer-no">{it.no}</span>
-                    {viewerShow.id && it.uid && <span className="viewer-uid">ID:{it.uid}</span>}
-                    <span className="viewer-latest-text">{it.text}</span>
+                    {latestShow.board && it.board && <span className="viewer-board">{it.board}</span>}
+                    {latestShow.title && it.title && <span className="viewer-latest-title" title={it.title}>{it.title}</span>}
+                    {latestShow.no && <span className="viewer-no">{it.no}</span>}
+                    {latestShow.text ? <span className="viewer-latest-text">{it.text}</span> : <span className="viewer-grow" />}
+                    {latestShow.time && <span className="viewer-time">{it.time.replace(/^\S+\s+/, "")}</span>}
+                    {latestShow.id && it.uid && <span className="viewer-uid">ID:{it.uid}</span>}
+                    {latestShow.count && it.idCount > 0 && <span className={`viewer-id-count${idCountClass(it.idCount)}`}>({it.idSeq}/{it.idCount})</span>}
                     {it.uid && !broadcastWhitelist[it.uid] && (
                       <button
                         className="viewer-latest-wl"
@@ -8712,9 +9173,6 @@ export default function App() {
                   onClick={() => void ttsStop()}
                   title="読み上げを今すぐ停止 (待機中の分もまとめて破棄)"
                 ><VolumeX size={14} /></button>
-                {!newArrivalPaneOpen && (
-                  <button className="title-action-btn" onClick={() => setNewArrivalPaneOpen(true)} title="新着ペイン表示"><ChevronUp size={14} /></button>
-                )}
                 <button className="title-action-btn" onClick={() => {
                   const tab = threadTabs[activeTabIndex];
                   if (tab) toggleFavoriteThread({ threadUrl: tab.threadUrl, title: tab.title });
@@ -9011,7 +9469,8 @@ export default function App() {
         </div>{/* /right-body */}
       </main>
       <section
-        className={`compose-window postform${composeOpen ? " compose-window--open" : ""}`}
+        ref={composeSectionRef}
+        className={`compose-window postform${composeOpen ? " compose-window--open" : ""}${chatTarget ? ` compose-chat compose-chat--${chatTarget.platform}` : ""}`}
         aria-label="書き込み"
         style={composeOpen ? { height: composePanelPx } : undefined}
       >
@@ -9034,14 +9493,166 @@ export default function App() {
           }}
         >
           {composeOpen ? <ChevronDown size={13} /> : <ChevronUp size={13} />}
-          {composeOpen && (
+          {composeOpen && !chatTarget && (
             <>
               <button className={`compose-mode-btn ${!composePreview ? "active" : ""}`} onClick={() => setComposePreview(false)}>本文</button>
               <button className={`compose-mode-btn ${composePreview ? "active" : ""}`} onClick={() => setComposePreview(true)}>プレビュー</button>
             </>
           )}
+          {chatTarget && !composeOpen && <span className="compose-chat-target compose-chat-target-closed">送信先: <b>{chatTargetLabel(chatTarget)}</b></span>}
         </header>
-        {composeOpen && (
+        {composeOpen && chatTarget && (
+          <div className="compose-chat-body">
+            {(() => {
+              const targetEl = (
+                <span className="compose-chat-target" title={chatTarget.url}>
+                  送信先: <b>{chatTargetLabel(chatTarget)}</b>
+                  {chatTarget.platform === "twitch" && twitchAuth.loggedIn && <span className="compose-chat-login">（ログイン: {twitchAuth.login}）</span>}
+                </span>
+              );
+              const canWrite = chatTarget.platform === "twitch" && twitchAuth.loggedIn && !!twitchAuth.canChat;
+              return canWrite ? (
+                <div className="compose-row compose-chat-row">
+                  {targetEl}
+                  <span className="compose-meta-inline">
+                    <span className={Array.from(composeBody.trim()).length > CHAT_MAX_CHARS_TWITCH ? "compose-chat-over" : ""}>{Array.from(composeBody.trim()).length}/{CHAT_MAX_CHARS_TWITCH}文字</span>
+                  </span>
+                  <span className="compose-chat-spacer" />
+                  <span className="compose-chat-actions">
+                    <button
+                      ref={chatStampBtnRef}
+                      className={`compose-chat-stamp-btn${chatPicker ? " active" : ""}`}
+                      onClick={() => { setChatPicker((v) => !v); setChatPickerTab("all"); }}
+                      title="スタンプ・絵文字の一覧を開く"
+                      aria-expanded={chatPicker}
+                    ><Smile size={15} aria-hidden="true" />スタンプ</button>
+                    <button className="postform-write compose-chat-send" onClick={sendChatFromCompose} disabled={composeSubmitting} title={`${chatTargetLabel(chatTarget)} に送信 (Ctrl+Enter)`}>{composeSubmitting ? "送信中..." : `${chatTargetLabel(chatTarget)} に送信 (Ctrl+Enter)`}</button>
+                  </span>
+                </div>
+              ) : <div className="compose-row compose-chat-row">{targetEl}</div>;
+            })()}
+            {chatTarget.platform === "youtube" ? (
+              <div className="compose-chat-note">YouTube への書き込みは準備中です。</div>
+            ) : !twitchAuth.loggedIn || !twitchAuth.canChat ? (
+              <div className="compose-chat-note">
+                {twitchAuth.loggedIn ? "書き込むには、Twitch にログインし直してください (書き込みの許可を追加しました)。" : "Twitch に書き込むには、Twitch にログインしてください。"}
+                <button onClick={() => { setSettingsOpen(true); switchSettingsCategory("twitch"); setSettingsSection("login"); }}>設定 &gt; Twitch &gt; ログイン を開く</button>
+              </div>
+            ) : (
+              <>
+                {composeReply && composeReply.url === chatTarget.url && (
+                  <div className="compose-chat-reply">
+                    返信先: <b>{composeReply.name}</b>「{Array.from(composeReply.text).slice(0, 60).join("")}」
+                    <button onClick={() => setComposeReply(null)} title="返信をやめる">×</button>
+                  </div>
+                )}
+                <textarea
+                  ref={composeTextareaRef}
+                  className="compose-body compose-chat-input"
+                  value={composeBody}
+                  onChange={(e) => { setComposeBody(e.target.value); chatCompleteRef.current = null; }}
+                  onKeyDown={onComposeBodyKeyDown}
+                  placeholder={`${chatTargetLabel(chatTarget)} へのメッセージ (Ctrl+Enter で送信・Enter では送りません・Tab でスタンプ名と @名前 を補完)`}
+                  autoFocus
+                  style={{ fontSize: `${composeFontSize}px` }}
+                />
+                {(() => {
+                  const html = composeBody.trim() ? chatComposePreviewHtml() : "";
+                  return html.includes("<img") ? <div className="compose-chat-meta">見た目: <span className="compose-chat-preview" dangerouslySetInnerHTML={{ __html: html }} /></div> : null;
+                })()}
+                {chatPicker && chatPickerPos && (() => {
+                  const q = chatPickerQuery.trim().toLowerCase();
+                  const match = (e: UserEmote) => !q || e.name.toLowerCase().includes(q);
+                  const byName = new Map(userEmotes.list.map((e) => [e.name, e]));
+                  type Group = { key: string; label: string; emotes?: UserEmote[]; emoji?: { label: string; list: string[] }[] };
+                  // チャンネルごと (開いているチャンネルを先頭に。持ち主のチャンネル名で比べる)
+                  const owners = new Map<string, UserEmote[]>();
+                  for (const e of userEmotes.list) {
+                    if (!match(e)) continue;
+                    const k = e.owner || "";
+                    if (!owners.has(k)) owners.set(k, []);
+                    owners.get(k)!.push(e);
+                  }
+                  const isHere = (k: string) => ((owners.get(k)?.[0]?.ownerLogin ?? k.toLowerCase()) === chatTarget.channel ? 0 : 1);
+                  const ownerKeys = [...owners.keys()].filter((k) => k).sort((x, y) => isHere(x) - isHere(y) || x.localeCompare(y));
+                  const channelGroups: Group[] = ownerKeys.map((k) => ({ key: `o:${k}`, label: k, emotes: owners.get(k)! }));
+                  const globalGroup: Group[] = owners.get("")?.length ? [{ key: "global", label: "グローバル・その他", emotes: owners.get("")! }] : [];
+                  const recent = recentChatEmotes.map((n) => byName.get(n)).filter((e): e is UserEmote => !!e && match(e));
+                  const groups: Group[] =
+                    chatPickerTab === "recent" ? (recent.length ? [{ key: "recent", label: "最近使ったもの", emotes: recent }] : [])
+                    : chatPickerTab === "channel" ? channelGroups.filter((g) => isHere(g.label) === 0)
+                    : chatPickerTab === "global" ? globalGroup
+                    : chatPickerTab === "emoji" ? [{ key: "emoji", label: "絵文字", emoji: CHAT_EMOJI_GROUPS }]
+                    : [...channelGroups, ...globalGroup];
+                  const emptyText = chatPickerTab === "recent" ? "まだ使ったスタンプはありません"
+                    : chatPickerTab === "channel" ? `#${chatTarget.channel} のスタンプで使えるものはありません`
+                    : q ? "見つかりません" : "";
+                  const TABS: { id: ChatPickerTab; label: string; icon: React.ReactNode }[] = [
+                    { id: "recent", label: "最近使ったもの", icon: <Star size={16} /> },
+                    { id: "channel", label: `このチャンネル (#${chatTarget.channel})`, icon: <Tv size={16} /> },
+                    { id: "all", label: "すべて", icon: <LayoutGrid size={16} /> },
+                    { id: "global", label: "グローバル", icon: <Globe size={16} /> },
+                    { id: "emoji", label: "絵文字", icon: <Smile size={16} /> },
+                  ];
+                  return (
+                    <div
+                      ref={chatPickerRef}
+                      className="chat-picker"
+                      style={{ right: chatPickerPos.right, bottom: chatPickerPos.bottom, width: chatPickerPos.width, maxHeight: chatPickerPos.maxHeight, "--chat-cell": `${chatCell}px` } as React.CSSProperties}
+                      role="dialog"
+                      aria-label="スタンプ・絵文字"
+                    >
+                      <div className="chat-picker-scroll" ref={chatPickerScrollRef}>
+                        {userEmotes.error && chatPickerTab !== "emoji" && <div className="compose-chat-note">{userEmotes.error}</div>}
+                        {!userEmotes.error && userEmotes.at === 0 && chatPickerTab !== "emoji" && <div className="compose-chat-note">スタンプの一覧を読み込んでいます…</div>}
+                        {groups.length === 0 && emptyText && userEmotes.at > 0 && <div className="compose-chat-note">{emptyText}</div>}
+                        {groups.map((g) => (
+                          <div key={g.key} className="chat-picker-group">
+                            <div className="chat-picker-group-head">
+                              {g.emotes?.[0] ? <img src={chatEmoteImg(g.emotes[0].id)} alt="" referrerPolicy="no-referrer" /> : <span className="chat-picker-group-icon">{g.key === "emoji" ? "😀" : "★"}</span>}
+                              <span className="chat-picker-group-name">{g.label}</span>
+                              {g.emotes && g.key !== "recent" && <span className="chat-picker-platform">Twitch</span>}
+                            </div>
+                            {g.emotes && (
+                              <div className="chat-picker-grid">
+                                {g.emotes.slice(0, 600).map((e) => (
+                                  <button key={e.id} className="chat-picker-item" title={e.name} onClick={() => pickChatEmote(e.name)} onMouseEnter={() => setChatPickerHover(e.name)}>
+                                    <img src={chatEmoteImg(e.id)} alt={e.name} loading="lazy" referrerPolicy="no-referrer" />
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                            {g.emoji?.map((eg) => (
+                              <div key={eg.label}>
+                                <div className="chat-picker-subtitle">{eg.label}</div>
+                                <div className="chat-picker-grid">
+                                  {eg.list.map((em) => <button key={em} className="chat-picker-item chat-picker-emoji" onClick={() => insertIntoCompose(em)} onMouseEnter={() => setChatPickerHover(em)}>{em}</button>)}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ))}
+                      </div>
+                      <div className="chat-picker-foot">{chatPickerHover || "押すと入力欄に入ります (続けて選べます。Esc で閉じる)"}</div>
+                      <input type="text" className="chat-picker-search" value={chatPickerQuery} onChange={(e) => setChatPickerQuery(e.target.value)} placeholder="スタンプを検索" disabled={chatPickerTab === "emoji"} />
+                      <div className="chat-picker-tabs" role="tablist">
+                        {TABS.map((t) => (
+                          <button key={t.id} role="tab" aria-selected={chatPickerTab === t.id} className={`chat-picker-tab${chatPickerTab === t.id ? " active" : ""}`} title={t.label} onClick={() => { setChatPickerTab(t.id); chatPickerScrollRef.current?.scrollTo({ top: 0 }); }}>{t.icon}</button>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
+              </>
+            )}
+            {composeResult && (
+              <div className={`compose-result ${composeResult.ok ? "compose-result-ok" : "compose-result-err"}`}>
+                {composeResult.ok ? "OK" : "NG"}: {composeResult.message}
+              </div>
+            )}
+          </div>
+        )}
+        {composeOpen && !chatTarget && (
           <>
             <div className="compose-row postform-foot">
               <span className="compose-label">名前</span>
@@ -9419,7 +10030,21 @@ export default function App() {
           {responseMenu.selection && (
             <button onClick={() => { void navigator.clipboard.writeText(responseMenu.selection!); setResponseMenu(null); setStatus("コピーしました"); }}>選択テキストをコピー</button>
           )}
-          <button onClick={() => void runResponseAction("quote")}>ここにレス</button>
+          {!isChatUrl(threadTabs[activeTabIndex]?.threadUrl ?? threadUrl) && <button onClick={() => void runResponseAction("quote")}>ここにレス</button>}
+          {(() => {
+            const url = threadTabs[activeTabIndex]?.threadUrl ?? "";
+            const msgId = isTwitchUrl(url) ? twitchMsgIdRef.current.get(url)?.get(responseMenu.responseId) : undefined;
+            if (!msgId) return null;
+            return (
+              <button onClick={() => {
+                const r = fetchedResponses.find((x) => x.responseNo === responseMenu.responseId);
+                setComposeReply({ url, id: msgId, name: r ? decodeHtmlEntities(r.name.replace(/<[^>]*>/g, "")) : "", text: r ? decodeHtmlEntities(r.body.replace(/<[^>]*>/g, " ")) : "" });
+                setComposeOpen(true);
+                setResponseMenu(null);
+                window.setTimeout(() => composeTextareaRef.current?.focus(), 0);
+              }}>このコメントに返信</button>
+            );
+          })()}
           <button onClick={() => void runResponseAction("quote-with-name")}>名前付き引用</button>
           <button onClick={() => void runResponseAction("copy-body")}>本文をコピー</button>
           <button onClick={() => void runResponseAction("copy-url")}>レスURLをコピー</button>
@@ -9913,7 +10538,11 @@ export default function App() {
             <div className="app-confirm-message">{appConfirm.message}</div>
             <div className="app-confirm-buttons">
               {appConfirm.buttons.map((b) => (
-                <button key={b.label} className={b.primary ? "primary" : b.danger ? "danger" : ""} onClick={() => { setAppConfirm(null); b.onClick(); }}>{b.label}</button>
+                <button key={b.label} className={b.primary ? "primary" : b.danger ? "danger" : ""} onClick={() => { setAppConfirm(null); b.onClick(); }}>
+                  {b.label}
+                  {b.primary && !b.danger && <span className="app-confirm-key">Enter</span>}
+                  {b.label === "キャンセル" && <span className="app-confirm-key">Esc</span>}
+                </button>
               ))}
             </div>
           </div>
@@ -10453,6 +11082,17 @@ export default function App() {
                   <input type="number" value={composeFontSize} min={10} max={24} onChange={(e) => setComposeFontSize(Number(e.target.value))} />
                 </label>
               </fieldset>
+              <fieldset>
+                <legend>Twitch・YouTube のチャットへの書き込み</legend>
+                <label className="settings-row">
+                  <input type="checkbox" checked={chatSendConfirm} onChange={(e) => setChatSendConfirm(e.target.checked)} />
+                  <span>送る前に毎回、送信先と本文を確認する</span>
+                </label>
+                <p className="settings-hint">
+                  チャットのタブを開いているときは、下の書き込み欄からそのチャットに送ります (Ctrl+Enter か送信ボタン。Enter では送りません)。
+                  書き込み欄の中身はタブごとに別々で、送信先は欄の上に表示します。オフにすると確認なしで送ります。
+                </p>
+              </fieldset>
               </section>
               </div>
               )}
@@ -10860,41 +11500,54 @@ export default function App() {
               <div className="settings-cat" data-cat="proxy">
               <section className="settings-section" data-section="main">
                 {settingsSectionHeading("proxy", "main")}
-              <fieldset>
+              <fieldset className="proxy-box">
                 <legend>プロキシ</legend>
-                <label className="settings-row">
-                  <span>有効</span>
-                  <input type="checkbox" checked={proxyEnabled} onChange={(e) => setProxyEnabled(e.target.checked)} />
-                </label>
-                <label className="settings-row">
-                  <span>タイプ</span>
-                  <select value={proxyType} onChange={(e) => setProxyType(e.target.value as "http" | "socks5" | "socks4")}>
+                <div className="proxy-top">
+                  <label><input type="checkbox" checked={proxyEnabled} onChange={(e) => setProxyEnabled(e.target.checked)} />Proxy を使う</label>
+                  <label title="プロキシに古い控え (キャッシュ) を返さないよう頼みます"><input type="checkbox" checked={proxyNoCache} onChange={(e) => setProxyNoCache(e.target.checked)} disabled={!proxyEnabled} />Proxy 使用時にキャッシュを使用しない</label>
+                </div>
+                <div className={`proxy-grid${proxyEnabled ? "" : " proxy-off"}`}>
+                  <span className="proxy-label">種類</span>
+                  <select value={proxyType} onChange={(e) => setProxyType(e.target.value === "socks5" || e.target.value === "socks4" ? e.target.value : "http")} className="proxy-type" aria-label="プロキシの種類">
                     <option value="http">HTTP</option>
                     <option value="socks5">SOCKS5</option>
                     <option value="socks4">SOCKS4</option>
                   </select>
-                </label>
+                  <span className="proxy-head proxy-head-host">ホスト</span>
+                  <span className="proxy-head proxy-head-port">ポート</span>
+                  <span className="proxy-label">受信用</span>
+                  <input type="text" value={proxyReceive.host} onChange={(e) => setProxyReceive((p) => ({ ...p, host: e.target.value }))} placeholder="localhost" className="proxy-host" aria-label="受信用のホスト" spellCheck={false} />
+                  <input type="text" value={proxyReceive.port} onChange={(e) => setProxyReceive((p) => ({ ...p, port: e.target.value }))} placeholder="8080" className="proxy-port" aria-label="受信用のポート" inputMode="numeric" />
+                  <span />
+                  <input type="text" value={proxyReceive.username} onChange={(e) => setProxyReceive((p) => ({ ...p, username: e.target.value }))} placeholder="ユーザー名" className="proxy-user" aria-label="受信用のユーザー名" autoComplete="off" spellCheck={false} />
+                  <input type="password" value={proxyReceive.password} onChange={(e) => setProxyReceive((p) => ({ ...p, password: e.target.value }))} placeholder="パスワード" className="proxy-pass" aria-label="受信用のパスワード" autoComplete="off" />
+                  <span className="proxy-label">送信用</span>
+                  <input type="text" value={proxySend.host} onChange={(e) => setProxySend((p) => ({ ...p, host: e.target.value }))} placeholder="localhost" className="proxy-host" aria-label="送信用のホスト" spellCheck={false} />
+                  <input type="text" value={proxySend.port} onChange={(e) => setProxySend((p) => ({ ...p, port: e.target.value }))} placeholder="8080" className="proxy-port" aria-label="送信用のポート" inputMode="numeric" />
+                  <span />
+                  <input type="text" value={proxySend.username} onChange={(e) => setProxySend((p) => ({ ...p, username: e.target.value }))} placeholder="ユーザー名" className="proxy-user" aria-label="送信用のユーザー名" autoComplete="off" spellCheck={false} />
+                  <input type="password" value={proxySend.password} onChange={(e) => setProxySend((p) => ({ ...p, password: e.target.value }))} placeholder="パスワード" className="proxy-pass" aria-label="送信用のパスワード" autoComplete="off" />
+                </div>
+                <p className="settings-hint">
+                  受信用は掲示板 (5ch・したらば・JPNKN) の板一覧・スレ一覧・レスの読み込み、送信用は書き込み・スレ立てに使います。
+                  ホストが空欄の欄はプロキシを通しません。画像・リンクカード・Twitch・YouTube・更新の確認はプロキシを通しません。
+                  ホストに http:// は付けず、ポートは数字だけを入れます。SOCKS は名前の問い合わせ (DNS) もプロキシに任せます。
+                </p>
                 <label className="settings-row">
-                  <span>ホスト</span>
-                  <input type="text" value={proxyHost} onChange={(e) => setProxyHost(e.target.value)} placeholder="127.0.0.1" className="lf-w160" />
+                  <input type="checkbox" checked={proxyHttpMode} onChange={(e) => setProxyHttpMode(e.target.checked)} disabled={!proxyEnabled} />
+                  <span>5ch の通信を http でプロキシに渡す (2chAPIProxy などのローカルプロキシ用)</span>
                 </label>
-                <label className="settings-row">
-                  <span>ポート</span>
-                  <input type="text" value={proxyPort} onChange={(e) => setProxyPort(e.target.value)} placeholder="8080" className="lf-w80" />
-                </label>
-                <label className="settings-row">
-                  <span>ユーザー名</span>
-                  <input type="text" value={proxyUsername} onChange={(e) => setProxyUsername(e.target.value)} className="lf-w140" />
-                </label>
-                <label className="settings-row">
-                  <span>パスワード</span>
-                  <input type="password" value={proxyPassword} onChange={(e) => setProxyPassword(e.target.value)} className="lf-w140" />
-                </label>
+                <p className="settings-hint">
+                  2chAPIProxy は https の通信を素通しするため、5ch の読み込み・書き込みを処理させるにはこれをオンにします (5ch のアドレスを http の 5ch.net の形で渡します)。
+                  種類が HTTP で、ホストが localhost / 127.0.0.1 の欄だけに効きます。2chAPIProxy の「2chへのアクセスにhttps(TLS)を利用する」を必ずオンにしてください
+                  (オフだと、書き込みの内容や Cookie が暗号化されずにネットに出ます)。5ch.io への移転に対応した版 (2026.03.07 以降) の 2chAPIProxy が必要です。
+                </p>
+                {proxyEnabled && proxyHttpMode && (proxyType !== "http" || ![proxyReceive, proxySend].some((e) => isLocalProxyHost(e.host))) && (
+                  <p className="settings-hint overlay-layout-msg error">種類が HTTP で、ホストが localhost / 127.0.0.1 の欄が無いため、http では渡しません。</p>
+                )}
                 <div className="settings-row">
-                  <button onClick={() => {
-                    if (!isTauriRuntime()) return;
-                    invoke("save_proxy_settings", { settings: { enabled: proxyEnabled, proxyType, host: proxyHost, port: proxyPort, username: proxyUsername, password: proxyPassword } }).catch((e) => console.warn("save_proxy_settings:", e));
-                  }}>保存</button>
+                  <button onClick={saveProxySettings}>保存</button>
+                  {proxyMsg && <span className={`overlay-layout-msg${proxyMsg.error ? " error" : ""}`}>{proxyMsg.text}</span>}
                 </div>
               </fieldset>
               </section>
@@ -11084,6 +11737,13 @@ export default function App() {
                     <legend>NG {NG_TYPE_LABELS[type]} ({ngFilters[type].length}件)</legend>
                     {type === "image_words" && <p className="settings-hint">本文に指定した単語を含むレスの画像だけを非表示にします。レス自体や本文は通常どおり表示されます。レス全体を隠したい場合はワードNGなどで「透明あぼ～ん」「通常あぼ～ん」を選んでください。</p>}
                     {ngAddFormFor(type)}
+                    {type !== "image_words" && ngFilters[type].length > 0 && (
+                      <div className="settings-row ng-bulk-row">
+                        <span>この節のすべてを</span>
+                        <button onClick={() => setAllNgModes(type, "abone")}>通常あぼ～んにする</button>
+                        <button onClick={() => setAllNgModes(type, "hide")}>透明あぼ～んにする</button>
+                      </div>
+                    )}
                     {settingsListFilterRow()}
                     <div data-search-exclude="1">
                     {ngFilters[type].length === 0 ? (
@@ -11383,10 +12043,20 @@ export default function App() {
               </fieldset>
               <fieldset>
                 <legend>表示する項目</legend>
-                <p className="settings-hint">ビュワーと「スレの最新レス」欄の見出しに出す項目です (OBS 表示の項目は「OBS 表示」のレイアウトで変えます)。</p>
+                <p className="settings-hint">ビュワーの見出しに出す項目です (この順に並びます。Twitch・YouTube のチャットは プラットフォーム・チャンネル・バッジ・名前・ID・日時)。OBS 表示の項目は「OBS 表示」のレイアウトで変えます。</p>
                 {VIEWER_SHOW_LABELS.map(([k, label]) => (
                   <label key={k} className="settings-row">
                     <input type="checkbox" checked={viewerShow[k]} onChange={(e) => setViewerShow((prev) => ({ ...prev, [k]: e.target.checked }))} />
+                    <span>{label}</span>
+                  </label>
+                ))}
+              </fieldset>
+              <fieldset>
+                <legend>「スレの最新レス」欄に出す項目</legend>
+                <p className="settings-hint">この順に1行で並べます。1行に収まらないときは本文を省きます (プラットフォームは上の設定に従います)。</p>
+                {LATEST_SHOW_LABELS.map(([k, label]) => (
+                  <label key={k} className="settings-row">
+                    <input type="checkbox" checked={latestShow[k]} onChange={(e) => setLatestShow((prev) => ({ ...prev, [k]: e.target.checked }))} />
                     <span>{label}</span>
                   </label>
                 ))}
@@ -11765,7 +12435,10 @@ export default function App() {
               <fieldset>
                 <legend>Twitch にログイン (任意)</legend>
                 <p className="settings-hint">
-                  入力の無い報酬・自動報酬・フォローを表示するには、配信者本人のアカウントでログインします (読み取りの許可のみ。ログイン情報は暗号化して保存)。
+                  チャットに書き込む・自分が使えるスタンプを一覧から選ぶにはログインします (視聴者のアカウントでも構いません)。
+                  配信者本人のアカウントでログインすると、入力の無い報酬・自動報酬・フォローも表示できます。
+                  求める許可は、報酬の引き換えとフォロワーの読み取り・チャットへの書き込み・使えるスタンプの一覧の読み取りです (ログイン情報は暗号化して保存)。
+                  {twitchAuth.loggedIn && !twitchAuth.canChat && <><br /><b>書き込みの許可を追加しました。書き込むには「ログインし直す」を押してください。</b></>}
                 </p>
                 <div className="settings-row">
                   <span>状態</span>

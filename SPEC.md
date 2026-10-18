@@ -182,10 +182,13 @@ Tauri App (livefake)
 - レス番プレフィックスはサイト別 (レス/したらば/ジャパンくん N番さん)
 - 読み上げ辞書: キーワード→読みの置換。「全置換」でレス全体を置換 (`tts-dict.json`)
 
-### 4.11 プロキシ (未動作)
+### 4.11 プロキシ
 
-- 設定 UI と保存 (`settings.ini` [Proxy]) 、`core-proxy` のクライアント生成 (HTTP/SOCKS5/SOCKS4) は実装済み
-- **ただし `core-fetch` の HTTP クライアントがプロキシ設定を参照していないため、現バージョンでは通信に適用されない** (既知の制限・対応予定)
+- `core-proxy` が設定を持ち (`update_proxy_settings`)、`core_proxy::apply(builder, ProxyRole::Receive | Send)` でクライアントにプロキシを足す。
+  受信用は掲示板の読み込みのクライアント (`fetch_bbsmenu_cached` / `fetch_thread_list` / `fetch_thread_responses_command`)、
+  送信用は書き込み・スレ立て (`post_reply_multisite` / `create_thread_command` / `core-fetch` の `build_cookie_client`)
+- `core_proxy::transport_url` で、5ch を http で渡す設定のときだけ送る直前のアドレスを `http://○○.5ch.net/…` にする (dat・subject.txt・read.cgi・書き込みの各段階)
+- 詳しくは REQUIREMENTS 15.2
 - プロキシパスワードは Windows では DPAPI (ユーザースコープ) で暗号化して settings.ini に保存 (`dpapi:<base64>` 形式)。旧形式の平文値も読み込み時に後方互換で受理
 
 ### 4.12 アップデートチェック
@@ -259,7 +262,7 @@ OBS 表示から削除された発言を消す `overlay_retract`
 | [App] | maxOpenTabs=20, fontSize=14, responseGap=10, autoReloadIntervalSec=15, autoScroll=true, smoothScroll=true, logRetentionDays=7, cssAllowExternalUrls=false (実行時に autoReload, imageSaveFolder 等を追記) |
 | [Speech] | mode=off, enabled=false, maxReadLength=0, sapiVoiceIndex=0, sapiRate=0, sapiVolume=100, bouyomiPath=, voicevoxEndpoint=http://127.0.0.1:50021, voicevoxSpeakerId=0, voicevoxSpeedScale=1.0, voicevoxPitchScale=0.0, voicevoxIntonationScale=1.0, voicevoxVolumeScale=1.0 |
 | [Posting] | name=, mail=, sage=false, fontSize=13 (実行時に composeOpen を追記) |
-| [Proxy] | (実行時追記) ProxyEnabled / ProxyType / ProxyHost / ProxyPort / ProxyUsername / ProxyPassword (DPAPI 暗号化、旧平文値も後方互換で読込可) |
+| [Proxy] | ProxyEnabled / ProxyType / NoCache / HttpMode / 受信用 ProxyHost / ProxyPort / ProxyUsername / ProxyPassword / 送信用 SendHost / SendPort / SendUsername / SendPassword (パスワードは DPAPI 暗号化、旧平文値も後方互換で読込可) |
 
 ### 6.3 JSON ファイル
 
@@ -324,7 +327,7 @@ connect-src 'self' https: http: ws: wss:
 ### 7.4 Cookie・認証情報
 
 - Cookie 値 (Be3M / Be3D / sid) は DEBUG 以上のログに記録しない
-- プロキシパスワードは settings.ini に平文保存 (現状の制限)
+- プロキシのパスワードは DPAPI で暗号化して settings.ini に保存する
 
 ### 7.5 外部プロセス連携
 

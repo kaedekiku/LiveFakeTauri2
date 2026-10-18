@@ -42,6 +42,8 @@ pub enum TwitchError {
 /// 受信した1件の発言
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChatMessage {
+    /// 発言 ID (id タグ。英数字と - だけ。返信に使う。無ければ空)
+    pub id: String,
     /// ログイン名 (英数字と `_`。ID 代わりに使う)
     pub login: String,
     /// 表示名 (無ければログイン名)
@@ -261,7 +263,7 @@ fn parse_line(line: &str) -> Option<(ChatMessage, Vec<String>)> {
         let name = if display.trim().is_empty() { login.clone() } else { display.to_string() };
         let badges = sanitize_badges(tag("badges"));
         let emotes = parse_emotes(tag("emotes"), text.chars().count());
-        return Some((ChatMessage { login, name, color: sanitize_color(tag("color")), text, event: Some(event), badges, emotes, giant: false }, gift_ids));
+        return Some((ChatMessage { id: message_id(&tag("id")), login, name, color: sanitize_color(tag("color")), text, event: Some(event), badges, emotes, giant: false }, gift_ids));
     }
     let rest = rest.strip_prefix("PRIVMSG ")?;
     let (_, text) = rest.split_once(" :")?;
@@ -295,7 +297,16 @@ fn parse_line(line: &str) -> Option<(ChatMessage, Vec<String>)> {
     let emotes = parse_emotes(tag("emotes"), text.chars().count());
     // パワーアップでスタンプを巨大化したメッセージには msg-id=gigantified-emote-message が付く
     let giant = !emotes.is_empty() && tag("msg-id") == "gigantified-emote-message";
-    Some((ChatMessage { login, name, color: sanitize_color(tag("color")), text, event, badges: sanitize_badges(tag("badges")), emotes, giant }, gift_ids))
+    Some((ChatMessage { id: message_id(&tag("id")), login, name, color: sanitize_color(tag("color")), text, event, badges: sanitize_badges(tag("badges")), emotes, giant }, gift_ids))
+}
+
+/// 発言 ID (英数字と - の 1〜64 文字。形が違えば空)
+fn message_id(v: &str) -> String {
+    if (1..=64).contains(&v.len()) && v.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+        v.to_string()
+    } else {
+        String::new()
+    }
 }
 
 fn now_ms() -> u64 {

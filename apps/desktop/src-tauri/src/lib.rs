@@ -110,6 +110,8 @@ const TWITCH_MAX_CHANNELS: usize = 20;
 #[serde(rename_all = "camelCase")]
 struct TwitchChatEvent {
     channel: String,
+    /// 発言 ID (返信に使う。無ければ空)
+    id: String,
     login: String,
     name: String,
     color: String,
@@ -172,6 +174,30 @@ async fn twitch_fetch_emotes(state: tauri::State<'_, twitch_auth::TwitchAuthStat
     state.fetch_emotes(channels).await
 }
 
+/// Twitch のチャットに書き込む。送り先は、いま受信している (開いている Twitch タブの) チャンネルだけ。
+/// 画面で確かめた送り先と同じかを、ここでも確かめる (閉じたタブ・知らないチャンネルには送らない)
+#[tauri::command]
+async fn twitch_send_chat(
+    twitch: tauri::State<'_, TwitchState>,
+    auth: tauri::State<'_, twitch_auth::TwitchAuthState>,
+    channel: String,
+    message: String,
+    reply_to: Option<String>,
+) -> Result<String, String> {
+    let channel = core_twitch::normalize_channel(&channel).ok_or("送り先のチャンネル名が正しくありません")?;
+    let open = twitch.0.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&channel);
+    if !open {
+        return Err(format!("#{channel} のタブが開いていないため送りませんでした"));
+    }
+    auth.send_chat(&channel, &message, reply_to).await
+}
+
+/// ログインしている人が使えるスタンプの一覧 (書き込み欄のスタンプの一覧)
+#[tauri::command]
+async fn twitch_user_emotes(auth: tauri::State<'_, twitch_auth::TwitchAuthState>, channel: String) -> Result<Vec<twitch_auth::UserEmote>, String> {
+    auth.user_emotes(&channel).await
+}
+
 /// Twitch からログアウトする (Twitch 側の許可も取り消し、保存したログイン情報を消す)
 #[tauri::command]
 async fn twitch_logout(state: tauri::State<'_, twitch_auth::TwitchAuthState>) -> Result<(), String> {
@@ -232,6 +258,7 @@ fn twitch_sync(app: AppHandle, state: tauri::State<'_, TwitchState>, channels: V
                         badges,
                         emotes: m.emotes.into_iter().map(|e| TwitchEmote { id: e.id, start: e.start, end: e.end }).collect(),
                         giant: m.giant,
+                        id: m.id,
                         channel: ch_msg.clone(),
                         login: m.login,
                         name: m.name,
@@ -400,9 +427,10 @@ struct FetchResponsesResult {
 /// するため。取得に成功した bbsmenu の中身に実際に登場するホスト名は `set_extra_allowed_hosts`
 /// で許可リストに追加登録される (既存のハードコードされた許可リストを置き換えるのではなく上乗せ)。
 async fn fetch_bbsmenu_cached() -> Result<serde_json::Value, String> {
-    let client = reqwest::Client::builder()
+    let client = core_proxy::apply(reqwest::Client::builder()
         .user_agent("Monazilla/1.00 LiveFake/0.1")
-        .timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(10)), core_proxy::ProxyRole::Receive)
+        .map_err(|e| e.to_string())?
         .build()
         .map_err(|e| e.to_string())?;
 
@@ -472,9 +500,10 @@ async fn fetch_thread_list(thread_url: String, limit: Option<usize>) -> Result<V
         return Err(format!("URL not allowed: {}", thread_url));
     }
     let _ = core_store::append_log(&format!("fetch_thread_list: {}", thread_url));
-    let client = reqwest::Client::builder()
+    let client = core_proxy::apply(reqwest::Client::builder()
         .user_agent("Monazilla/1.00 LiveFake/0.1")
-        .timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(30)), core_proxy::ProxyRole::Receive)
+        .map_err(|e| e.to_string())?
         .build()
         .map_err(|e| e.to_string())?;
     let limit = limit.unwrap_or(usize::MAX);
@@ -520,9 +549,10 @@ async fn fetch_thread_responses_command(
         return Err(format!("URL not allowed: {}", thread_url));
     }
     let _ = core_store::append_log(&format!("fetch_responses: {}", thread_url));
-    let client = reqwest::Client::builder()
+    let client = core_proxy::apply(reqwest::Client::builder()
         .user_agent("Monazilla/1.00 LiveFake/0.1")
-        .timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(30)), core_proxy::ProxyRole::Receive)
+        .map_err(|e| e.to_string())?
         .build()
         .map_err(|e| e.to_string())?;
     let limit = limit.unwrap_or(usize::MAX);
@@ -825,9 +855,10 @@ async fn post_reply_multisite(
     let site = detect_site_type(&thread_url);
     match site {
         Some(SiteType::Shitaraba) => {
-            let client = reqwest::Client::builder()
+            let client = core_proxy::apply(reqwest::Client::builder()
                 .user_agent("Monazilla/1.00 LiveFake/0.1")
-                .timeout(std::time::Duration::from_secs(30))
+                .timeout(std::time::Duration::from_secs(30)), core_proxy::ProxyRole::Send)
+                .map_err(|e| e.to_string())?
                 .build()
                 .map_err(|e| e.to_string())?;
             let result = post_shitaraba_reply(
@@ -842,9 +873,10 @@ async fn post_reply_multisite(
             Ok(format!("status={}", result.status))
         }
         Some(SiteType::Jpnkn) => {
-            let client = reqwest::Client::builder()
+            let client = core_proxy::apply(reqwest::Client::builder()
                 .user_agent("Monazilla/1.00 LiveFake/0.1")
-                .timeout(std::time::Duration::from_secs(30))
+                .timeout(std::time::Duration::from_secs(30)), core_proxy::ProxyRole::Send)
+                .map_err(|e| e.to_string())?
                 .build()
                 .map_err(|e| e.to_string())?;
             let result = post_jpnkn_reply(
@@ -895,8 +927,9 @@ async fn create_thread_command(
 
     match detect_site_type(&board_url) {
         Some(SiteType::Shitaraba) => {
-            let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
+            let client = core_proxy::apply(reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30)), core_proxy::ProxyRole::Send)
+                .map_err(|e| e.to_string())?
                 .build()
                 .map_err(|e| e.to_string())?;
             create_shitaraba_thread(&client, &board_url, &subject, &from_str, &mail_str, &message)
@@ -904,8 +937,9 @@ async fn create_thread_command(
                 .map_err(|e| format!("{:?}", e))
         }
         Some(SiteType::Jpnkn) => {
-            let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
+            let client = core_proxy::apply(reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30)), core_proxy::ProxyRole::Send)
+                .map_err(|e| e.to_string())?
                 .build()
                 .map_err(|e| e.to_string())?;
             create_jpnkn_thread(&client, &board_url, &subject, &from_str, &mail_str, &message)
@@ -2322,51 +2356,120 @@ fn save_text_highlights(data: serde_json::Value) -> Result<(), String> {
 
 // ===== Proxy Commands =====
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// プロキシ1組 (画面とのやりとり用)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
-struct ProxySettingsPayload {
-    enabled: bool,
-    proxy_type: String,
+struct ProxyEndpointPayload {
     host: String,
     port: String,
     username: String,
     password: String,
 }
 
-#[tauri::command]
-fn load_proxy_settings() -> Result<ProxySettingsPayload, String> {
+/// 設定 > プロキシ (受信用 = 掲示板の読み込み・送信用 = 書き込み)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProxySettingsPayload {
+    enabled: bool,
+    proxy_type: String,
+    #[serde(default)]
+    no_cache: bool,
+    #[serde(default)]
+    http_mode: bool,
+    receive: ProxyEndpointPayload,
+    send: ProxyEndpointPayload,
+}
+
+impl ProxySettingsPayload {
+    fn to_settings(&self) -> ProxySettings {
+        let ep = |e: &ProxyEndpointPayload| core_proxy::ProxyEndpoint {
+            host: e.host.trim().to_string(),
+            port: e.port.trim().to_string(),
+            username: e.username.clone(),
+            password: e.password.clone(),
+        };
+        ProxySettings {
+            enabled: self.enabled,
+            proxy_type: ProxyType::from_str(&self.proxy_type),
+            no_cache: self.no_cache,
+            http_mode: self.http_mode,
+            receive: ep(&self.receive),
+            send: ep(&self.send),
+        }
+    }
+}
+
+/// settings.ini の [Proxy] から読む。受信用は以前の1組の設定のキーをそのまま使い、
+/// 送信用のキーがまだ無ければ (以前の版の設定) 受信用と同じものにする
+fn proxy_payload_from_ini(map: &HashMap<String, String>) -> ProxySettingsPayload {
+    let get = |k: &str| map.get(k).cloned().unwrap_or_default();
+    let receive = ProxyEndpointPayload {
+        host: get("Proxy.ProxyHost"),
+        port: get("Proxy.ProxyPort"),
+        username: get("Proxy.ProxyUsername"),
+        password: unprotect_password(&get("Proxy.ProxyPassword")),
+    };
+    let send = if map.contains_key("Proxy.SendHost") {
+        ProxyEndpointPayload {
+            host: get("Proxy.SendHost"),
+            port: get("Proxy.SendPort"),
+            username: get("Proxy.SendUsername"),
+            password: unprotect_password(&get("Proxy.SendPassword")),
+        }
+    } else {
+        receive.clone()
+    };
+    ProxySettingsPayload {
+        enabled: map.get("Proxy.ProxyEnabled").map(|v| v == "true").unwrap_or(false),
+        proxy_type: map.get("Proxy.ProxyType").cloned().unwrap_or_else(|| "http".into()),
+        no_cache: map.get("Proxy.NoCache").map(|v| v == "true").unwrap_or(false),
+        http_mode: map.get("Proxy.HttpMode").map(|v| v == "true").unwrap_or(false),
+        receive,
+        send,
+    }
+}
+
+/// 起動時: 保存してあるプロキシの設定を通信に反映する
+fn init_proxy_settings() {
     let map = core_store::load_settings_ini().unwrap_or_default();
-    let enabled = map.get("Proxy.ProxyEnabled").map(|v| v == "true").unwrap_or(false);
-    let proxy_type = map.get("Proxy.ProxyType").cloned().unwrap_or_else(|| "http".into());
-    let host = map.get("Proxy.ProxyHost").cloned().unwrap_or_default();
-    let port = map.get("Proxy.ProxyPort").cloned().unwrap_or_default();
-    let username = map.get("Proxy.ProxyUsername").cloned().unwrap_or_default();
-    let stored_pw = map.get("Proxy.ProxyPassword").cloned().unwrap_or_default();
-    let password = unprotect_password(&stored_pw);
-    Ok(ProxySettingsPayload { enabled, proxy_type, host, port, username, password })
+    let payload = proxy_payload_from_ini(&map);
+    if payload.enabled {
+        let _ = core_store::append_log(&format!(
+            "proxy: enabled type={} receive={} send={} http_mode={}",
+            payload.proxy_type,
+            !payload.receive.host.trim().is_empty(),
+            !payload.send.host.trim().is_empty(),
+            payload.http_mode
+        ));
+    }
+    update_proxy_settings(payload.to_settings());
 }
 
 #[tauri::command]
+fn load_proxy_settings() -> Result<ProxySettingsPayload, String> {
+    let map = core_store::load_settings_ini().unwrap_or_default();
+    Ok(proxy_payload_from_ini(&map))
+}
+
+/// 保存して、次の通信から使う (パスワードは DPAPI で暗号化して保存。ログには出さない)
+#[tauri::command]
 fn save_proxy_settings(settings: ProxySettingsPayload) -> Result<(), String> {
-    let encrypted_pw = protect_password(&settings.password);
     let mut updates = HashMap::new();
     updates.insert("Proxy.ProxyEnabled".to_string(), settings.enabled.to_string());
-    updates.insert("Proxy.ProxyType".to_string(), settings.proxy_type.clone());
-    updates.insert("Proxy.ProxyHost".to_string(), settings.host.clone());
-    updates.insert("Proxy.ProxyPort".to_string(), settings.port.clone());
-    updates.insert("Proxy.ProxyUsername".to_string(), settings.username.clone());
-    updates.insert("Proxy.ProxyPassword".to_string(), encrypted_pw);
+    updates.insert("Proxy.ProxyType".to_string(), ProxyType::from_str(&settings.proxy_type).as_scheme().to_string());
+    updates.insert("Proxy.NoCache".to_string(), settings.no_cache.to_string());
+    updates.insert("Proxy.HttpMode".to_string(), settings.http_mode.to_string());
+    updates.insert("Proxy.ProxyHost".to_string(), settings.receive.host.trim().to_string());
+    updates.insert("Proxy.ProxyPort".to_string(), settings.receive.port.trim().to_string());
+    updates.insert("Proxy.ProxyUsername".to_string(), settings.receive.username.clone());
+    updates.insert("Proxy.ProxyPassword".to_string(), protect_password(&settings.receive.password));
+    updates.insert("Proxy.SendHost".to_string(), settings.send.host.trim().to_string());
+    updates.insert("Proxy.SendPort".to_string(), settings.send.port.trim().to_string());
+    updates.insert("Proxy.SendUsername".to_string(), settings.send.username.clone());
+    updates.insert("Proxy.SendPassword".to_string(), protect_password(&settings.send.password));
     core_store::save_settings_ini(&updates).map_err(|e| e.to_string())?;
-
-    // Push new settings into global proxy state so next build_client picks it up
-    update_proxy_settings(ProxySettings {
-        enabled: settings.enabled,
-        proxy_type: ProxyType::from_str(&settings.proxy_type),
-        host: settings.host,
-        port: settings.port,
-        username: settings.username,
-        password: settings.password,
-    });
+    update_proxy_settings(settings.to_settings());
+    let _ = core_store::append_log(&format!("proxy: saved enabled={} type={} http_mode={}", settings.enabled, settings.proxy_type, settings.http_mode));
     Ok(())
 }
 
@@ -3275,6 +3378,8 @@ pub fn run() {
             }
         }))
         .setup(|app| {
+            // 保存してあるプロキシの設定を、掲示板の読み込み・書き込みに反映する
+            init_proxy_settings();
             // 保存済みの Twitch ログインがあれば EventSub (入力の無い報酬・自動報酬・フォロー) を始める
             app.state::<twitch_auth::TwitchAuthState>().init(app.handle().clone());
             // メインウィンドウは tauri.conf.json で "create": false にしておき、ここで作る。
@@ -3355,6 +3460,8 @@ pub fn run() {
             twitch_login_start,
             twitch_logout,
             twitch_fetch_emotes,
+            twitch_send_chat,
+            twitch_user_emotes,
             youtube::youtube_methods,
             youtube::youtube_key_status,
             youtube::youtube_set_key,

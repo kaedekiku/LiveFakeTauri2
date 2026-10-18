@@ -12,7 +12,7 @@
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -21,7 +21,15 @@ use tokio_tungstenite::tungstenite::Message;
 
 /// LiveFake の公開型クライアント ID (秘密の値ではない。dev.twitch.tv で「公開」として登録したもの)
 pub const CLIENT_ID: &str = "hctqgizcwg8scjj9tsh47bs162uy2q";
-const SCOPES: &str = "channel:read:redemptions moderator:read:followers";
+/// 求める許可: 報酬の引き換え・フォロー (自分のチャンネルのイベント)・チャットへの書き込み・自分が使えるスタンプの一覧
+const SCOPES: &str = "channel:read:redemptions moderator:read:followers user:write:chat user:read:emotes";
+/// 書き込みに要る許可 (以前の版でログインした人は持っていないので、ログインし直しが要る)
+const CHAT_SCOPES: [&str; 2] = ["user:write:chat", "user:read:emotes"];
+/// 書き込みの上限 (ふつうのアカウントは 30 秒に 20 件。超えると Twitch 側で無視されるので手前で止める)
+const SEND_LIMIT: usize = 20;
+const SEND_WINDOW: Duration = Duration::from_secs(30);
+/// 1件の長さの上限 (Twitch の決まり)
+pub const CHAT_MAX_CHARS: usize = 500;
 const EVENTSUB_URL: &str = "wss://eventsub.wss.twitch.tv/ws";
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -35,6 +43,15 @@ struct AuthData {
     /// 発行を受けたクライアント ID (違うクライアントで発行されたものは使わない)
     #[serde(default)]
     client_id: String,
+    /// 許可された範囲 (ログインの確認で受け取る。以前の版の保存には無い)
+    #[serde(default)]
+    scopes: Vec<String>,
+}
+
+impl AuthData {
+    fn can_chat(&self) -> bool {
+        CHAT_SCOPES.iter().all(|s| self.scopes.iter().any(|x| x == s))
+    }
 }
 
 /// 画面に出す状態 (トークンは含めない)
@@ -48,6 +65,8 @@ pub struct AuthStatus {
     pub message: String,
     pub user_code: String,
     pub verification_uri: String,
+    /// チャットに書き込める (書き込みの許可を持っている)
+    pub can_chat: bool,
 }
 
 /// 画面へ送るイベント ("twitch-message" と同じ形。lib.rs の TwitchChatEvent と揃える)
@@ -150,7 +169,7 @@ fn login_ok(s: &str) -> bool {
     (1..=25).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
 }
 
-async fn validate(http: &reqwest::Client, token: &str) -> Result<(String, String), String> {
+async fn validate(http: &reqwest::Client, token: &str) -> Result<(String, String, Vec<String>), String> {
     let r = http
         .get("https://id.twitch.tv/oauth2/validate")
         .header("Authorization", format!("OAuth {token}"))
@@ -166,7 +185,17 @@ async fn validate(http: &reqwest::Client, token: &str) -> Result<(String, String
     if !login_ok(&login) || id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
         return Err("ログインの確認結果の形式が違います".into());
     }
-    Ok((id, login))
+    let scopes = v
+        .get("scopes")
+        .and_then(|x| x.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|s| s.as_str())
+        .filter(|s| s.len() <= 64 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b':' || b == b'_'))
+        .take(30)
+        .map(str::to_string)
+        .collect();
+    Ok((id, login, scopes))
 }
 
 async fn refresh(http: &reqwest::Client, a: &AuthData) -> Result<AuthData, String> {
@@ -194,6 +223,10 @@ pub struct Inner {
     auth: Mutex<Option<AuthData>>,
     status: Mutex<AuthStatus>,
     login_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+    /// チャンネル名 → ユーザー ID (書き込みの送り先)
+    broadcaster_ids: Mutex<HashMap<String, String>>,
+    /// 最近書き込んだ時刻 (30 秒に 20 件までにするため)
+    sent_at: Mutex<VecDeque<std::time::Instant>>,
     eventsub_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     eventsub_connected: AtomicBool,
 }
@@ -212,6 +245,7 @@ impl TwitchAuthState {
                 s.logged_in = true;
                 s.login = a.login.clone();
                 s.state = "connecting".into();
+                s.can_chat = a.can_chat();
             });
             self.0.restart_eventsub();
         } else {
@@ -240,6 +274,46 @@ impl TwitchAuthState {
     pub async fn fetch_emotes(&self, channels: Vec<String>) -> Result<Vec<EmoteName>, String> {
         Inner::fetch_emotes(&self.0, channels).await
     }
+
+    /// チャットに書き込む (送り先のチャンネルが開いているタブかどうかは呼ぶ側で確かめる)
+    pub async fn send_chat(&self, channel: &str, message: &str, reply_to: Option<String>) -> Result<String, String> {
+        Inner::send_chat(&self.0, channel, message, reply_to).await
+    }
+
+    /// ログインしている人が使えるスタンプの一覧 (指定チャンネルのフォロワー限定スタンプも含める)
+    pub async fn user_emotes(&self, channel: &str) -> Result<Vec<UserEmote>, String> {
+        Inner::user_emotes(&self.0, channel).await
+    }
+}
+
+/// 使えるスタンプ1つ (書き込み欄のスタンプの一覧に出す)
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserEmote {
+    pub id: String,
+    pub name: String,
+    /// スタンプの持ち主 (チャンネルの表示名。グローバルなどは空)
+    pub owner: String,
+    /// 持ち主のチャンネル名 (英小文字。開いているチャンネルのスタンプを一覧の先頭にするのに使う)
+    pub owner_login: String,
+    pub emote_type: String,
+    pub animated: bool,
+}
+
+/// 書き込みに失敗した理由を、利用者向けの文に直す
+fn send_error(status: u16, body: &[u8]) -> String {
+    let msg = serde_json::from_slice::<Value>(body)
+        .ok()
+        .and_then(|v| v.get("message").and_then(|m| m.as_str()).map(|m| m.chars().filter(|c| !c.is_control()).take(120).collect::<String>()))
+        .unwrap_or_default();
+    let head = match status {
+        401 => "書き込む許可がありません。設定 > Twitch でログインし直してください",
+        403 => "このチャンネルには書き込めません (BAN・タイムアウト・フォロワー限定・サブスク限定など)",
+        422 => "長すぎます (500 文字まで)",
+        429 => "書き込みが多すぎます。少し待ってから送ってください",
+        _ => "書き込めませんでした",
+    };
+    if msg.is_empty() { format!("{head} (HTTP {status})") } else { format!("{head} (HTTP {status}: {msg})") }
 }
 
 /// スタンプの名前と ID (掲示板に書かれたスタンプ名を画像にするのに使う)
@@ -373,7 +447,7 @@ impl Inner {
                 return;
             };
             match validate(&http, &t.access_token).await {
-                Ok((user_id, login)) => {
+                Ok((user_id, login, scopes)) => {
                     let a = AuthData {
                         access_token: t.access_token,
                         refresh_token: t.refresh_token,
@@ -381,7 +455,9 @@ impl Inner {
                         user_id,
                         login: login.clone(),
                         client_id: CLIENT_ID.to_string(),
+                        scopes,
                     };
+                    let can_chat = a.can_chat();
                     let save_note = save_auth(&a).err();
                     *lock(&self.auth) = Some(a);
                     self.set_status(|s| {
@@ -390,6 +466,7 @@ impl Inner {
                         s.state = "connecting".into();
                         s.message = save_note.clone().unwrap_or_default();
                         s.user_code.clear();
+                        s.can_chat = can_chat;
                     });
                     self.log(&format!("ログインしました: {login}"));
                     self.restart_eventsub();
@@ -480,6 +557,173 @@ impl Inner {
         }
         out.truncate(10000);
         Ok(out)
+    }
+
+    /// チャンネル名 → ユーザー ID (書き込みの送り先に使う。覚えておく)
+    async fn broadcaster_id(self: &Arc<Self>, channel: &str) -> Result<String, String> {
+        if let Some(id) = lock(&self.broadcaster_ids).get(channel).cloned() {
+            return Ok(id);
+        }
+        let v = self.helix_get(&format!("https://api.twitch.tv/helix/users?login={channel}")).await?;
+        let id = v
+            .get("data")
+            .and_then(|d| d.as_array())
+            .and_then(|a| a.first())
+            .and_then(|u| u.get("id")?.as_str().map(str::to_string))
+            .filter(|id| !id.is_empty() && id.len() <= 20 && id.bytes().all(|b| b.is_ascii_digit()))
+            .ok_or("チャンネルが見つかりません")?;
+        let mut map = lock(&self.broadcaster_ids);
+        if map.len() > 200 {
+            map.clear();
+        }
+        map.insert(channel.to_string(), id.clone());
+        Ok(id)
+    }
+
+    async fn send_chat(self: &Arc<Self>, channel: &str, message: &str, reply_to: Option<String>) -> Result<String, String> {
+        let channel = channel.to_ascii_lowercase();
+        if !login_ok(&channel) {
+            return Err("送り先のチャンネル名が正しくありません".into());
+        }
+        // 改行は送れないので空白にする。前後の空白は落とす
+        let message: String = message.chars().map(|c| if c == '\n' || c == '\r' { ' ' } else { c }).filter(|c| !c.is_control()).collect();
+        let message = message.trim();
+        if message.is_empty() {
+            return Err("本文が空です".into());
+        }
+        if message.chars().count() > CHAT_MAX_CHARS {
+            return Err(format!("長すぎます ({CHAT_MAX_CHARS} 文字まで)"));
+        }
+        let reply_to = reply_to.filter(|r| (1..=64).contains(&r.len()) && r.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'));
+        let a = self.valid_token().await?;
+        if !a.can_chat() {
+            return Err("書き込む許可がありません。設定 > Twitch でログインし直してください".into());
+        }
+        // 30 秒に 20 件まで (超えると Twitch に無視されるので手前で止める)
+        {
+            let mut sent = lock(&self.sent_at);
+            let now = std::time::Instant::now();
+            while sent.front().is_some_and(|t| now.duration_since(*t) > SEND_WINDOW) {
+                sent.pop_front();
+            }
+            if sent.len() >= SEND_LIMIT {
+                return Err("書き込みが多すぎます (30 秒に 20 件まで)。少し待ってから送ってください".into());
+            }
+            sent.push_back(now);
+        }
+        let broadcaster_id = self.broadcaster_id(&channel).await?;
+        let mut body = json!({ "broadcaster_id": broadcaster_id, "sender_id": a.user_id, "message": message });
+        if let Some(r) = reply_to {
+            body["reply_parent_message_id"] = Value::String(r);
+        }
+        let r = self
+            .http()
+            .post("https://api.twitch.tv/helix/chat/messages")
+            .header("Client-Id", CLIENT_ID)
+            .header("Authorization", format!("Bearer {}", a.access_token))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("Twitch に接続できません: {}", e.without_url()))?;
+        let status = r.status().as_u16();
+        let bytes = r.bytes().await.map_err(|e| e.to_string())?;
+        if !(200..300).contains(&status) {
+            let e = send_error(status, &bytes);
+            self.log(&format!("書き込み失敗 #{channel}: HTTP {status}"));
+            return Err(e);
+        }
+        let v: Value = serde_json::from_slice(&bytes).map_err(|_| "応答の形式が違います".to_string())?;
+        let d = v.get("data").and_then(|d| d.as_array()).and_then(|a| a.first()).cloned().unwrap_or(Value::Null);
+        if d.get("is_sent").and_then(|x| x.as_bool()) != Some(true) {
+            let reason = d
+                .get("drop_reason")
+                .and_then(|r| r.get("message").and_then(|m| m.as_str()).or_else(|| r.get("code").and_then(|c| c.as_str())))
+                .unwrap_or("理由は分かりません");
+            let reason: String = reason.chars().filter(|c| !c.is_control()).take(160).collect();
+            self.log(&format!("書き込みが届きませんでした #{channel}"));
+            return Err(format!("Twitch に届きませんでした: {reason}"));
+        }
+        self.log(&format!("書き込みました #{channel}"));
+        Ok(d.get("message_id").and_then(|x| x.as_str()).unwrap_or("").chars().take(64).collect())
+    }
+
+    async fn user_emotes(self: &Arc<Self>, channel: &str) -> Result<Vec<UserEmote>, String> {
+        let a = self.valid_token().await?;
+        if !a.can_chat() {
+            return Err("スタンプの一覧を見る許可がありません。設定 > Twitch でログインし直してください".into());
+        }
+        let channel = channel.to_ascii_lowercase();
+        let bid = if login_ok(&channel) { self.broadcaster_id(&channel).await.ok() } else { None };
+        let mut out: Vec<(UserEmote, String)> = Vec::new();
+        // 同じスタンプが2回届くことがある (フォロワー限定のスタンプ) ので、ID で1つにまとめる
+        let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut after: Option<String> = None;
+        for _ in 0..30 {
+            let mut url = format!("https://api.twitch.tv/helix/chat/emotes/user?user_id={}", a.user_id);
+            if let Some(b) = &bid {
+                url.push_str(&format!("&broadcaster_id={b}"));
+            }
+            if let Some(c) = &after {
+                url.push_str(&format!("&after={c}"));
+            }
+            let v = self.helix_get(&url).await?;
+            for e in v.get("data").and_then(|d| d.as_array()).into_iter().flatten() {
+                let (Some(id), Some(name)) = (e.get("id").and_then(|x| x.as_str()), e.get("name").and_then(|x| x.as_str())) else { continue };
+                // ID は画像のアドレスに使うので英数字と _ - だけ。名前は空白・制御文字を含まないもの
+                if id.is_empty() || id.len() > 64 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
+                    continue;
+                }
+                if name.is_empty() || name.chars().count() > 64 || name.chars().any(|c| c.is_whitespace() || c.is_control()) {
+                    continue;
+                }
+                let owner_id: String = e.get("owner_id").and_then(|x| x.as_str()).unwrap_or("").chars().filter(|c| c.is_ascii_digit()).take(20).collect();
+                let emote_type: String = e.get("emote_type").and_then(|x| x.as_str()).unwrap_or("").chars().filter(|c| c.is_ascii_alphanumeric()).take(20).collect();
+                let animated = e.get("format").and_then(|f| f.as_array()).is_some_and(|f| f.iter().any(|x| x.as_str() == Some("animated")));
+                if !seen_ids.insert(id.to_string()) {
+                    continue;
+                }
+                out.push((UserEmote { id: id.into(), name: name.into(), owner: String::new(), owner_login: String::new(), emote_type, animated }, owner_id));
+                if out.len() >= 5000 {
+                    break;
+                }
+            }
+            after = v
+                .get("pagination")
+                .and_then(|p| p.get("cursor"))
+                .and_then(|c| c.as_str())
+                // 続きの印は 600〜700 文字ほどある (長さで切ると2ページ目以降が取れず、チャンネルのスタンプが抜ける)
+                .filter(|c| !c.is_empty() && c.len() <= 4096 && c.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b == b'=' || b == b'.'))
+                .map(str::to_string);
+            if after.is_none() || out.len() >= 5000 {
+                break;
+            }
+        }
+        // 持ち主の表示名 (100 件ずつ)
+        let mut owner_ids: Vec<String> = out.iter().map(|(_, o)| o.clone()).filter(|o| !o.is_empty() && o != "0").collect();
+        owner_ids.sort();
+        owner_ids.dedup();
+        let mut names: HashMap<String, (String, String)> = HashMap::new();
+        for chunk in owner_ids.chunks(100).take(10) {
+            let q = chunk.iter().map(|id| format!("id={id}")).collect::<Vec<_>>().join("&");
+            if let Ok(v) = self.helix_get(&format!("https://api.twitch.tv/helix/users?{q}")).await {
+                for u in v.get("data").and_then(|d| d.as_array()).into_iter().flatten() {
+                    if let (Some(id), Some(dn)) = (u.get("id").and_then(|x| x.as_str()), u.get("display_name").and_then(|x| x.as_str())) {
+                        let login = u.get("login").and_then(|x| x.as_str()).map(str::to_ascii_lowercase).filter(|l| login_ok(l)).unwrap_or_default();
+                        names.insert(id.to_string(), (dn.chars().filter(|c| !c.is_control()).take(40).collect(), login));
+                    }
+                }
+            }
+        }
+        Ok(out
+            .into_iter()
+            .map(|(mut e, owner_id)| {
+                if let Some((display, login)) = names.get(&owner_id) {
+                    e.owner = display.clone();
+                    e.owner_login = login.clone();
+                }
+                e
+            })
+            .collect())
     }
 
     fn restart_eventsub(self: &Arc<Self>) {
@@ -759,11 +1003,25 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn auth_roundtrip_is_encrypted() {
-        let a = AuthData { access_token: "tok".into(), refresh_token: "ref".into(), expires_at: 1, user_id: "1".into(), login: "x".into(), client_id: CLIENT_ID.into() };
+        let a = AuthData { access_token: "tok".into(), refresh_token: "ref".into(), expires_at: 1, user_id: "1".into(), login: "x".into(), client_id: CLIENT_ID.into(), scopes: vec!["user:write:chat".into()] };
         let enc = core_proxy::protect_password(&serde_json::to_string(&a).unwrap());
         assert!(enc.starts_with("dpapi:"));
         assert!(!enc.contains("tok"));
         let back: AuthData = serde_json::from_str(&core_proxy::unprotect_password(&enc)).unwrap();
         assert_eq!(back.access_token, "tok");
+        // 書き込みには、書き込みとスタンプの一覧の両方の許可が要る
+        assert!(!back.can_chat());
+        let full = AuthData { scopes: CHAT_SCOPES.iter().map(|s| s.to_string()).collect(), ..back };
+        assert!(full.can_chat());
+        // 以前の版の保存 (scopes が無い) も読める
+        let old: AuthData = serde_json::from_str(r#"{"access_token":"a","refresh_token":"b","expires_at":1,"user_id":"1","login":"x","client_id":"c"}"#).unwrap();
+        assert!(old.scopes.is_empty() && !old.can_chat());
+    }
+
+    #[test]
+    fn send_error_messages() {
+        assert!(send_error(403, b"{}").contains("書き込めません"));
+        assert!(send_error(401, br#"{"message":"Missing scope"}"#).contains("ログインし直して"));
+        assert!(send_error(429, b"").contains("多すぎます"));
     }
 }

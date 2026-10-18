@@ -381,6 +381,7 @@ LiveFake の配色は以下の CSS 変数で構成されており、これを上
 | `.connect-list` → `.connect-lamp` (`.ok` / `.wait` / `.ng`) / `.connect-title` / `.connect-state` / `.connect-fill` / `.connect-count` | 設定 > 接続 の開いているタブの一覧 / 状態ランプ / 題名 / 状態の文字 / 埋まり具合のバー / N/1000 |
 | `.twitch-event-table` | 設定 > Twitch > イベント・設定 > YouTube > イベント の種類ごとの表 |
 | `.youtube-method` | 設定 > YouTube の取得方法の選択肢 |
+| `.proxy-box` / `.proxy-top` / `.proxy-grid` (`.proxy-off`) / `.proxy-label` `.proxy-head` `.proxy-host` `.proxy-port` `.proxy-user` `.proxy-pass` `.proxy-type` | 設定 > プロキシ の枠・上の切り替え・入力欄の並び (オフのときは `.proxy-off`) |
 | `.twitch-login-code` / `.twitch-login-code-value` | Twitch ログインのコード表示 |
 | `.overlay-css-input` / `.overlay-layout-msg` (`.error`) | OBS 表示のレイアウトの追加 CSS 入力欄 / 操作のメッセージ（エラーは `.error`） |
 | `lf-` で始まるクラス | 以前は要素に直接書いていた見た目をクラスにしたもの。名前が見た目そのものを表します (例: `lf-w70` = 幅 70px、`lf-grow` = 残りの幅いっぱい、`lf-full-width` = 横幅いっぱい)。一覧は `src/inline-classes.css` |

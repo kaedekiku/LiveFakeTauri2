@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -41,6 +40,25 @@ impl ProxyType {
 }
 
 // ===== ProxySettings =====
+//
+// 受信用 (掲示板の読み込み) と送信用 (書き込み・スレ立て) で別のプロキシを使える (JaneXeno の設定と同じ考え方)。
+// 画像・リンクカード・Twitch・YouTube・更新の確認はプロキシを通さない (家庭内アドレスへの接続を防ぐ検査を保つため)。
+//
+// http_mode: 2chAPIProxy などのローカルのプロキシに 5ch の通信を処理させるため、5ch へのアドレスを
+// `http://○○.5ch.net/…` の形にしてプロキシへ渡す (2chAPIProxy は https の通信を中身を見ずに通すため)。
+// 暗号化しない通信を外へ出さないよう、プロキシの種類が HTTP で、ホストがこの PC (localhost など) のときだけ働く。
+// プロキシから 5ch までを https にするかはプロキシ側の設定 (2chAPIProxy の「2chへのアクセスにhttps(TLS)を利用する」)。
+
+/// プロキシ1組 (ホスト・ポート・認証)
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyEndpoint {
+    pub host: String,
+    pub port: String,
+    pub username: String,
+    /// Always plaintext in memory; encryption happens only at persist time.
+    pub password: String,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -48,11 +66,82 @@ pub struct ProxySettings {
     pub enabled: bool,
     #[serde(default)]
     pub proxy_type: ProxyType,
-    pub host: String,
-    pub port: String,
-    pub username: String,
-    /// Always plaintext in memory; encryption happens only at persist time.
-    pub password: String,
+    /// プロキシに古い控え (キャッシュ) を返さないよう頼む (Cache-Control: no-cache)
+    #[serde(default)]
+    pub no_cache: bool,
+    /// 5ch の通信を http でローカルのプロキシに渡す
+    #[serde(default)]
+    pub http_mode: bool,
+    #[serde(default)]
+    pub receive: ProxyEndpoint,
+    #[serde(default)]
+    pub send: ProxyEndpoint,
+}
+
+/// どの通信か
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProxyRole {
+    /// 掲示板の読み込み (板一覧・スレ一覧・レス)
+    Receive,
+    /// 書き込み・スレ立て
+    Send,
+}
+
+impl ProxySettings {
+    fn endpoint(&self, role: ProxyRole) -> &ProxyEndpoint {
+        match role {
+            ProxyRole::Receive => &self.receive,
+            ProxyRole::Send => &self.send,
+        }
+    }
+
+    /// この通信でプロキシを使うか (有効で、ホストが書いてある)
+    pub fn uses_proxy(&self, role: ProxyRole) -> bool {
+        self.enabled && !self.endpoint(role).host.trim().is_empty()
+    }
+
+    /// この通信で 5ch を http で渡すか (HTTP 形式のローカルのプロキシのときだけ)
+    pub fn http_mode_active(&self, role: ProxyRole) -> bool {
+        self.uses_proxy(role) && self.http_mode && self.proxy_type == ProxyType::Http && is_local_host(&self.endpoint(role).host)
+    }
+
+    /// プロキシのアドレス (例: `http://user:pass@127.0.0.1:8080`)。SOCKS は名前の問い合わせ (DNS) もプロキシに任せる形にする
+    pub fn proxy_url(&self, role: ProxyRole) -> Option<String> {
+        if !self.uses_proxy(role) {
+            return None;
+        }
+        let ep = self.endpoint(role);
+        let scheme = match self.proxy_type {
+            ProxyType::Http => "http",
+            ProxyType::Socks5 => "socks5h",
+            ProxyType::Socks4 => "socks4a",
+        };
+        let port = port_or_default(&ep.port);
+        let host = ep.host.trim();
+        let host = if host.contains(':') && !host.starts_with('[') { format!("[{host}]") } else { host.to_string() };
+        Some(if ep.username.is_empty() {
+            format!("{scheme}://{host}:{port}")
+        } else {
+            format!("{scheme}://{}:{}@{host}:{port}", percent_encode(&ep.username), percent_encode(&ep.password))
+        })
+    }
+}
+
+/// ポート (数字でなければ 8080)
+fn port_or_default(port: &str) -> u16 {
+    port.trim().parse::<u16>().ok().filter(|p| *p > 0).unwrap_or(8080)
+}
+
+/// この PC を指すホストか (localhost・127.x.x.x・::1)
+pub fn is_local_host(host: &str) -> bool {
+    let h = host.trim().trim_start_matches('[').trim_end_matches(']').to_ascii_lowercase();
+    h == "localhost" || h == "::1" || h.parse::<std::net::Ipv4Addr>().map(|ip| ip.is_loopback()).unwrap_or(false)
+}
+
+/// 5ch (5ch.io / 5ch.net / 2ch.net / bbspink.com) のホストか
+fn is_5ch_host(host: &str) -> bool {
+    let h = host.to_ascii_lowercase();
+    ["5ch.io", "5ch.net", "2ch.net", "bbspink.com"].iter().any(|d| h == *d || h.ends_with(&format!(".{d}")))
 }
 
 // ===== Global proxy state =====
@@ -62,61 +151,66 @@ pub fn proxy_settings() -> &'static Mutex<ProxySettings> {
     SETTINGS.get_or_init(|| Mutex::new(ProxySettings::default()))
 }
 
-/// Replace the global proxy settings. Called when the user saves proxy config.
+/// Replace the global proxy settings. Called when the user saves proxy config and at startup.
 pub fn update_proxy_settings(settings: ProxySettings) {
     if let Ok(mut guard) = proxy_settings().lock() {
         *guard = settings;
     }
 }
 
-// ===== Client builder =====
-
-/// Build a reqwest Client using the current global proxy settings.
-pub fn build_client(
-    user_agent: &str,
-    timeout_secs: u64,
-) -> Result<reqwest::Client, ProxyError> {
-    let settings = proxy_settings()
-        .lock()
-        .map(|g| g.clone())
-        .unwrap_or_default();
-    build_proxied_client(&settings, user_agent, timeout_secs)
+fn current() -> ProxySettings {
+    proxy_settings().lock().map(|g| g.clone()).unwrap_or_default()
 }
 
-/// Build a reqwest Client with explicit proxy settings.
-pub fn build_proxied_client(
-    settings: &ProxySettings,
-    user_agent: &str,
-    timeout_secs: u64,
-) -> Result<reqwest::Client, ProxyError> {
-    let mut builder = reqwest::Client::builder()
-        .user_agent(user_agent)
-        .timeout(Duration::from_secs(timeout_secs));
+// ===== 通信への反映 =====
 
-    if settings.enabled && !settings.host.is_empty() {
-        let port = settings.port.parse::<u16>().unwrap_or(8080);
-        let proxy_url = if settings.username.is_empty() {
-            format!(
-                "{}://{}:{}",
-                settings.proxy_type.as_scheme(),
-                settings.host,
-                port
-            )
-        } else {
-            format!(
-                "{}://{}:{}@{}:{}",
-                settings.proxy_type.as_scheme(),
-                percent_encode(&settings.username),
-                percent_encode(&settings.password),
-                settings.host,
-                port
-            )
-        };
-        let proxy = reqwest::Proxy::all(&proxy_url).map_err(ProxyError::Reqwest)?;
-        builder = builder.proxy(proxy);
+/// クライアントの作り方にプロキシ (と、キャッシュを使わない指定) を足す。プロキシを使わない設定なら何もしない
+pub fn apply(builder: reqwest::ClientBuilder, role: ProxyRole) -> Result<reqwest::ClientBuilder, ProxyError> {
+    apply_with(&current(), builder, role)
+}
+
+pub fn apply_with(settings: &ProxySettings, builder: reqwest::ClientBuilder, role: ProxyRole) -> Result<reqwest::ClientBuilder, ProxyError> {
+    let Some(url) = settings.proxy_url(role) else {
+        return Ok(builder);
+    };
+    let proxy = reqwest::Proxy::all(&url).map_err(|_| ProxyError::Other("プロキシの設定が正しくありません (ホスト・ポートを確かめてください)".into()))?;
+    let mut builder = builder.proxy(proxy);
+    if settings.no_cache {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(reqwest::header::CACHE_CONTROL, reqwest::header::HeaderValue::from_static("no-cache"));
+        headers.insert(reqwest::header::PRAGMA, reqwest::header::HeaderValue::from_static("no-cache"));
+        builder = builder.default_headers(headers);
     }
+    Ok(builder)
+}
 
-    Ok(builder.build()?)
+/// 実際に送るときのアドレス。http_mode が働くときは、5ch の https のアドレスを `http://○○.5ch.net/…` にする
+/// (2chAPIProxy が処理するのは http の 5ch.net 形式。5ch.io への置き換えと https 化はプロキシ側が行う)。
+/// それ以外はそのまま返す。画面に出す・保存するアドレスには使わない (送る直前だけに使う)
+pub fn transport_url(url: &str, role: ProxyRole) -> String {
+    transport_url_with(&current(), url, role)
+}
+
+pub fn transport_url_with(settings: &ProxySettings, url: &str, role: ProxyRole) -> String {
+    if !settings.http_mode_active(role) {
+        return url.to_string();
+    }
+    // https のほか、リダイレクトで返ってきた http の 5ch.io も 5ch.net の形にそろえる
+    let Some(rest) = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://")) else {
+        return url.to_string();
+    };
+    let (host, path) = match rest.find('/') {
+        Some(i) => (&rest[..i], &rest[i..]),
+        None => (rest, ""),
+    };
+    if host.contains('@') || host.contains(':') || !is_5ch_host(host) {
+        return url.to_string();
+    }
+    let host = match host.to_ascii_lowercase().strip_suffix(".5ch.io") {
+        Some(sub) => format!("{sub}.5ch.net"),
+        None => host.to_string(),
+    };
+    format!("http://{host}{path}")
 }
 
 fn percent_encode(s: &str) -> String {
@@ -130,6 +224,72 @@ fn percent_encode(s: &str) -> String {
         }
     }
     result
+}
+
+#[cfg(test)]
+mod proxy_tests {
+    use super::*;
+
+    fn settings(ty: ProxyType, host: &str, http_mode: bool) -> ProxySettings {
+        let ep = ProxyEndpoint { host: host.into(), port: "8080".into(), username: String::new(), password: String::new() };
+        ProxySettings { enabled: true, proxy_type: ty, no_cache: false, http_mode, receive: ep.clone(), send: ep }
+    }
+
+    #[test]
+    fn proxy_urls() {
+        let s = settings(ProxyType::Http, "localhost", false);
+        assert_eq!(s.proxy_url(ProxyRole::Receive).as_deref(), Some("http://localhost:8080"));
+        let mut s5 = settings(ProxyType::Socks5, "127.0.0.1", false);
+        s5.send.port = "abc".into();
+        s5.send.username = "u@x".into();
+        s5.send.password = "p:w".into();
+        assert_eq!(s5.proxy_url(ProxyRole::Receive).as_deref(), Some("socks5h://127.0.0.1:8080"));
+        assert_eq!(s5.proxy_url(ProxyRole::Send).as_deref(), Some("socks5h://u%40x:p%3Aw@127.0.0.1:8080"));
+        assert_eq!(settings(ProxyType::Socks4, "::1", false).proxy_url(ProxyRole::Send).as_deref(), Some("socks4a://[::1]:8080"));
+        let mut off = settings(ProxyType::Http, "localhost", false);
+        off.enabled = false;
+        assert_eq!(off.proxy_url(ProxyRole::Receive), None);
+        let mut no_send = settings(ProxyType::Http, "localhost", false);
+        no_send.send.host = " ".into();
+        assert!(no_send.uses_proxy(ProxyRole::Receive) && !no_send.uses_proxy(ProxyRole::Send));
+    }
+
+    #[test]
+    fn http_mode_only_for_local_http_proxy() {
+        let s = settings(ProxyType::Http, "localhost", true);
+        assert_eq!(transport_url_with(&s, "https://mi.5ch.io/news4vip/dat/1.dat", ProxyRole::Receive), "http://mi.5ch.net/news4vip/dat/1.dat");
+        assert_eq!(transport_url_with(&s, "https://mi.5ch.io/test/bbs.cgi", ProxyRole::Send), "http://mi.5ch.net/test/bbs.cgi");
+        assert_eq!(transport_url_with(&s, "https://mi.5ch.net/test/read.cgi/a/1/", ProxyRole::Send), "http://mi.5ch.net/test/read.cgi/a/1/");
+        assert_eq!(transport_url_with(&s, "https://kilauea.bbspink.com/x/dat/1.dat", ProxyRole::Receive), "http://kilauea.bbspink.com/x/dat/1.dat");
+        assert_eq!(transport_url_with(&s, "http://mi.5ch.io/test/bbs.cgi?guid=ON", ProxyRole::Send), "http://mi.5ch.net/test/bbs.cgi?guid=ON");
+        // 5ch 以外・偽装したホストはそのまま
+        assert_eq!(transport_url_with(&s, "https://jbbs.shitaraba.net/bbs/write.cgi", ProxyRole::Send), "https://jbbs.shitaraba.net/bbs/write.cgi");
+        assert_eq!(transport_url_with(&s, "https://5ch.io.evil.example/x", ProxyRole::Send), "https://5ch.io.evil.example/x");
+        assert_eq!(transport_url_with(&s, "https://evil.example@mi.5ch.io/x", ProxyRole::Send), "https://evil.example@mi.5ch.io/x");
+        // 外のプロキシ・SOCKS・切り替えオフでは http にしない
+        assert_eq!(transport_url_with(&settings(ProxyType::Http, "proxy.example.com", true), "https://mi.5ch.io/x", ProxyRole::Receive), "https://mi.5ch.io/x");
+        assert_eq!(transport_url_with(&settings(ProxyType::Socks5, "localhost", true), "https://mi.5ch.io/x", ProxyRole::Receive), "https://mi.5ch.io/x");
+        assert_eq!(transport_url_with(&settings(ProxyType::Http, "localhost", false), "https://mi.5ch.io/x", ProxyRole::Receive), "https://mi.5ch.io/x");
+    }
+
+    #[test]
+    fn local_hosts() {
+        for h in ["localhost", "127.0.0.1", "127.0.0.2", "::1", "[::1]", " LOCALHOST "] {
+            assert!(is_local_host(h), "{h}");
+        }
+        for h in ["192.168.0.1", "proxy.example.com", "localhost.evil.example", ""] {
+            assert!(!is_local_host(h), "{h}");
+        }
+    }
+
+    #[test]
+    fn apply_builds_client() {
+        let mut s = settings(ProxyType::Http, "localhost", true);
+        s.no_cache = true;
+        assert!(apply_with(&s, reqwest::Client::builder(), ProxyRole::Receive).and_then(|b| b.build().map_err(ProxyError::from)).is_ok());
+        s.receive.host = "bad host!".into();
+        assert!(apply_with(&s, reqwest::Client::builder(), ProxyRole::Receive).is_err());
+    }
 }
 
 // ===== Password storage (DPAPI on Windows) =====

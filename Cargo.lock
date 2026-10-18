@@ -618,6 +618,7 @@ name = "core-fetch"
 version = "0.1.0"
 dependencies = [
  "core-parse",
+ "core-proxy",
  "encoding_rs",
  "reqwest 0.12.28",
  "serde",
@@ -2224,7 +2225,7 @@ checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 
 [[package]]
 name = "livefake"
-version = "0.0.119"
+version = "0.0.120"
 dependencies = [
  "base64 0.22.1",
  "chrono",

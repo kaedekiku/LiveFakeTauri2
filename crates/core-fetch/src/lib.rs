@@ -149,7 +149,7 @@ pub async fn fetch_subject_threads(
     _limit: usize,
 ) -> Result<Vec<SubjectThread>, FetchError> {
     let subject_url = resolve_subject_url_from_thread_url(thread_url)?;
-    let response = client.get(&subject_url).send().await?;
+    let response = client.get(receive_url(&subject_url)).send().await?;
     let status = response.status();
     if !status.is_success() {
         return Err(FetchError::HttpStatus(status));
@@ -192,15 +192,27 @@ pub async fn fetch_subject_threads(
     Ok(out)
 }
 
+/// 書き込み用のクライアント (Cookie を持ち、リダイレクトは自分でたどる)。設定 > プロキシ の送信用のプロキシを使う
 pub fn build_cookie_client(user_agent: &str) -> Result<(Client, Arc<Jar>), FetchError> {
     let jar = Arc::new(Jar::default());
-    let client = Client::builder()
+    let builder = Client::builder()
         .user_agent(user_agent)
         .cookie_provider(jar.clone())
         .redirect(Policy::none())
-        .timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(30));
+    let client = core_proxy::apply(builder, core_proxy::ProxyRole::Send)
+        .map_err(|e| FetchError::Parse(e.to_string()))?
         .build()?;
     Ok((client, jar))
+}
+
+/// 実際に送るときのアドレス (2chAPIProxy などに 5ch を処理させる設定のときは http の 5ch.net 形式にする)
+fn send_url(url: &str) -> String {
+    core_proxy::transport_url(url, core_proxy::ProxyRole::Send)
+}
+
+fn receive_url(url: &str) -> String {
+    core_proxy::transport_url(url, core_proxy::ProxyRole::Receive)
 }
 
 pub fn normalize_5ch_url(input: &str) -> String {
@@ -1285,7 +1297,7 @@ pub async fn fetch_thread_responses(
     limit: usize,
 ) -> Result<(Vec<ThreadResponse>, Option<String>), FetchError> {
     let dat_url = resolve_dat_url_from_thread_url(thread_url)?;
-    let response = client.get(&dat_url).send().await?;
+    let response = client.get(receive_url(&dat_url)).send().await?;
     let status = response.status();
 
     if status.is_success() {
@@ -1318,7 +1330,7 @@ pub async fn fetch_thread_responses(
     }
 
     // Fallback: fetch read.cgi HTML (for archived/過去ログ threads)
-    let html_response = client.get(thread_url).send().await?;
+    let html_response = client.get(receive_url(thread_url)).send().await?;
     if !html_response.status().is_success() {
         return Err(FetchError::HttpStatus(html_response.status()));
     }
@@ -1849,12 +1861,12 @@ async fn reqwest_post_5ch(
     seed_extra_cookies(&jar, post_url, extra_cookies);
 
     // Step 1: GET thread page to collect session cookies
-    let _ = client.get(thread_url).send().await;
+    let _ = client.get(send_url(thread_url)).send().await;
 
     let body = build_sjis_form_body(fields);
 
     // Step 2: POST to bbs.cgi
-    let resp = client.post(post_url)
+    let resp = client.post(send_url(post_url))
         .header("Content-Type", "application/x-www-form-urlencoded")
         .header("Referer", thread_url)
         .body(body.clone())
@@ -1865,7 +1877,7 @@ async fn reqwest_post_5ch(
     for _ in 0..5 {
         if (status == 301 || status == 302) && redir.is_some() {
             let next_url = normalize_5ch_url(&redir.take().unwrap());
-            let r = client.get(&next_url).header("Referer", post_url).send().await?;
+            let r = client.get(send_url(&next_url)).header("Referer", post_url).send().await?;
             let (s, c, b, rd) = decode_5ch_response(r).await?;
             status = s; ct = c; resp_body = b; redir = rd;
         } else {
@@ -1880,7 +1892,7 @@ async fn reqwest_post_5ch(
             let confirm_body = build_sjis_form_body(
                 &form.fields.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect::<Vec<_>>(),
             );
-            let r = client.post(&form.action_url)
+            let r = client.post(send_url(&form.action_url))
                 .header("Content-Type", "application/x-www-form-urlencoded")
                 .header("Referer", post_url)
                 .body(confirm_body)
@@ -1890,7 +1902,7 @@ async fn reqwest_post_5ch(
             for _ in 0..5 {
                 if (status == 301 || status == 302) && rd2.is_some() {
                     let next_url = normalize_5ch_url(&rd2.take().unwrap());
-                    let r = client.get(&next_url).header("Referer", post_url).send().await?;
+                    let r = client.get(send_url(&next_url)).header("Referer", post_url).send().await?;
                     let (s, c, b, rd) = decode_5ch_response(r).await?;
                     status = s; ct = c; resp_body = b; rd2 = rd;
                 } else { break; }
@@ -1910,13 +1922,13 @@ async fn reqwest_post_5ch(
                     format!("{}={}", k, url_encode_sjis_bytes(&sjis))
                 })
                 .collect::<Vec<_>>().join("&");
-            let _ = client.post(&consent_url)
+            let _ = client.post(send_url(&consent_url))
                 .header("Content-Type", "application/x-www-form-urlencoded")
                 .header("Referer", post_url)
                 .body(consent_body)
                 .send().await;
         }
-        let r = client.post(post_url)
+        let r = client.post(send_url(post_url))
             .header("Content-Type", "application/x-www-form-urlencoded")
             .header("Referer", thread_url)
             .body(body)
@@ -1926,7 +1938,7 @@ async fn reqwest_post_5ch(
         for _ in 0..5 {
             if (status == 301 || status == 302) && rd2.is_some() {
                 let next_url = normalize_5ch_url(&rd2.take().unwrap());
-                let r = client.get(&next_url).header("Referer", post_url).send().await?;
+                let r = client.get(send_url(&next_url)).header("Referer", post_url).send().await?;
                 let (s, c, b, rd) = decode_5ch_response(r).await?;
                 status = s; ct = c; resp_body = b; rd2 = rd;
             } else { break; }
