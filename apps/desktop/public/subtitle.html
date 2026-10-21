@@ -65,6 +65,20 @@
     text-shadow: none;
   }
   #subtitleNextBtn:hover { background: rgba(255,255,255,0.3); }
+  /* 枠: 四隅だけのときは四隅に L 字の印 (つかむと大きさを変えられる)。通常・枠なしでは出さない */
+  .frame-corner { position: fixed; width: 14px; height: 14px; display: none; z-index: 5; pointer-events: auto; border-color: rgba(255,255,255,0.75); border-style: solid; border-width: 0; }
+  body[data-frame="corners"] .frame-corner { display: block; }
+  .frame-corner.tl { top: 0; left: 0; border-top-width: 2px; border-left-width: 2px; cursor: nwse-resize; }
+  .frame-corner.tr { top: 0; right: 0; border-top-width: 2px; border-right-width: 2px; cursor: nesw-resize; }
+  .frame-corner.bl { bottom: 0; left: 0; border-bottom-width: 2px; border-left-width: 2px; cursor: nesw-resize; }
+  .frame-corner.br { bottom: 0; right: 0; border-bottom-width: 2px; border-right-width: 2px; cursor: nwse-resize; }
+  /* 右クリックのメニュー */
+  #subtitleMenu { position: fixed; display: none; z-index: 10; pointer-events: auto; background: #2b2b30; color: #fff; border: 1px solid #66666e; border-radius: 4px; padding: 3px 0; font-size: 13px; text-shadow: none; box-shadow: 0 2px 8px rgba(0,0,0,0.5); }
+  #subtitleMenu button { display: block; width: 100%; text-align: left; padding: 4px 14px; background: transparent; color: inherit; border: 0; font: inherit; cursor: pointer; white-space: nowrap; }
+  #subtitleMenu button:hover { background: #3d5f8f; }
+  body.no-shadow #subtitleMeta,
+  body.no-shadow #subtitleBody,
+  body.no-shadow #subtitleBody * { text-shadow: none; }
   #subtitleBody {
     font-size: 28px;
     line-height: 1.4;
@@ -294,8 +308,62 @@
   window.__setOpacity = function(value) {
     // 0 (背景を完全に透明) も受け付ける。数値でないときだけ既定の 1
     var n = Number(value);
-    var a = Math.max(0, Math.min(1.0, isNaN(n) ? 1.0 : n));
+    // 0 でも、目に見えないほど薄い背景を敷く (透明な所の右クリックが下のアプリへ素通りしないように)
+    var a = Math.max(0.01, Math.min(1.0, isNaN(n) ? 1.0 : n));
     rootEl.style.background = "rgba(26, 26, 46, " + a + ")";
+  };
+
+  // 枠: normal / corners / none (Rust 側で Windows の線と影も切り替える)
+  window.__setFrameMode = function(mode) {
+    document.body.dataset.frame = (mode === "corners" || mode === "none") ? mode : "normal";
+  };
+  (function setupCorners() {
+    var dirs = { tl: "NorthWest", tr: "NorthEast", bl: "SouthWest", br: "SouthEast" };
+    Object.keys(dirs).forEach(function(k) {
+      var c = document.createElement("div");
+      c.className = "frame-corner " + k;
+      c.title = "ドラッグで大きさを変えます";
+      c.addEventListener("mousedown", function(e) {
+        if (e.button !== 0 || !window.__TAURI_INTERNALS__) return;
+        e.stopPropagation();
+        e.preventDefault();
+        window.__TAURI_INTERNALS__.invoke("plugin:window|start_resize_dragging", { label: "subtitle", value: dirs[k] }).catch(function(err) { console.warn("resize", err); });
+      });
+      document.body.appendChild(c);
+    });
+  })();
+  // 右クリックのメニュー (枠・大きさの設定を開く / 位置をリセット)
+  (function setupMenu() {
+    var menu = document.createElement("div");
+    menu.id = "subtitleMenu";
+    [["open-settings", "枠・大きさの設定を開く"], ["reset-position", "位置をリセット (画面の中央へ)"]].forEach(function(it) {
+      var b = document.createElement("button");
+      b.textContent = it[1];
+      b.addEventListener("mousedown", function(e) { e.stopPropagation(); });
+      b.addEventListener("click", function(e) {
+        e.stopPropagation();
+        menu.style.display = "none";
+        if (window.__TAURI_INTERNALS__) window.__TAURI_INTERNALS__.invoke("subtitle_control", { action: it[0] }).catch(function(err) { console.warn("menu", err); });
+      });
+      menu.appendChild(b);
+    });
+    document.body.appendChild(menu);
+    document.addEventListener("contextmenu", function(e) {
+      e.preventDefault();
+      menu.style.display = "block";
+      var x = Math.min(e.clientX, window.innerWidth - menu.offsetWidth - 2);
+      var y = Math.min(e.clientY, window.innerHeight - menu.offsetHeight - 2);
+      menu.style.left = Math.max(0, x) + "px";
+      menu.style.top = Math.max(0, y) + "px";
+    });
+    document.addEventListener("mousedown", function(e) { if (!menu.contains(e.target)) menu.style.display = "none"; }, true);
+    document.addEventListener("keydown", function(e) { if (e.key === "Escape") menu.style.display = "none"; });
+    window.addEventListener("blur", function() { menu.style.display = "none"; });
+  })();
+
+  // 文字の影 (ドロップシャドウ) のオンオフ。オフは body に no-shadow を付けて影を消す
+  window.__setTextShadow = function(enabled) {
+    document.body.classList.toggle("no-shadow", enabled === false);
   };
 
   window.__setFontSize = function(size) {

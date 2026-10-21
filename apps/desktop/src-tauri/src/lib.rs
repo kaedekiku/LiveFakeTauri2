@@ -24,6 +24,7 @@ use tauri::{AppHandle, Emitter, Manager};
 mod twitch_auth;
 mod twitch_badges;
 mod youtube;
+mod youtube_auth;
 use tauri::webview::WebviewWindowBuilder;
 use tauri::window::Color;
 use std::sync::Mutex;
@@ -2920,6 +2921,10 @@ async fn subtitle_show(app: AppHandle) -> Result<(), String> {
         win.on_window_event(move |event| {
             if let tauri::WindowEvent::Resized(_) = event {
                 capture_subtitle_size(&w2);
+                // 設定画面の幅・高さの表示を合わせる
+                if let Some((w, h)) = *SUBTITLE_SAVED_SIZE.lock().unwrap_or_else(|e| e.into_inner()) {
+                    let _ = w2.app_handle().emit_to("main", "subtitle-size", serde_json::json!({ "width": w.round(), "height": h.round() }));
+                }
             }
         });
     }
@@ -3044,11 +3049,62 @@ fn subtitle_timing_report(
 /// 字幕ウィンドウからの操作 (手動スクロールによる一時停止 / ▶ 次のレス) をメインウィンドウへ中継する。
 #[tauri::command]
 fn subtitle_control(app: AppHandle, action: String) -> Result<(), String> {
-    if action != "pause" && action != "next" {
-        return Err("unknown action".to_string());
+    match action.as_str() {
+        "pause" | "next" => {}
+        // 字幕の右クリックのメニュー: 本体を前に出して 設定 > 字幕 > 枠・大きさ を開く
+        "open-settings" => {
+            if let Some(main) = app.get_webview_window("main") {
+                let _ = main.unminimize();
+                let _ = main.show();
+                let _ = main.set_focus();
+            }
+        }
+        "reset-position" => {
+            if let Some(win) = app.get_webview_window("subtitle") {
+                if let Ok(Some(monitor)) = app.primary_monitor() {
+                    let ms = monitor.size();
+                    let ws = win.outer_size().unwrap_or(tauri::PhysicalSize::new(800, 200));
+                    let _ = win.set_position(tauri::PhysicalPosition::new((ms.width as i32 - ws.width as i32) / 2, (ms.height as i32 - ws.height as i32) / 2));
+                }
+            }
+            return Ok(());
+        }
+        _ => return Err("unknown action".to_string()),
     }
     let _ = app.emit_to("main", "subtitle-control", serde_json::json!({ "action": action }));
     Ok(())
+}
+
+/// 字幕の枠: "normal" (Windows の線と影あり) / "corners" (線と影を消し、四隅に印) / "none" (文字とボタンだけ)
+#[tauri::command]
+fn subtitle_frame(app: AppHandle, mode: String) -> Result<(), String> {
+    if !matches!(mode.as_str(), "normal" | "corners" | "none") {
+        return Err("unknown frame mode".to_string());
+    }
+    if let Some(win) = app.get_webview_window("subtitle") {
+        let _ = win.set_shadow(mode == "normal");
+        let _ = win.eval(&format!("if(window.__setFrameMode)window.__setFrameMode(\"{mode}\")"));
+    }
+    Ok(())
+}
+
+/// 字幕ウィンドウの大きさを変える (論理ピクセル)
+#[tauri::command]
+fn subtitle_set_size(app: AppHandle, width: f64, height: f64) -> Result<(), String> {
+    if !subtitle_size_ok(width, height) {
+        return Err("大きさは 幅 120〜10000・高さ 40〜10000 で指定してください".to_string());
+    }
+    if let Some(win) = app.get_webview_window("subtitle") {
+        win.set_size(tauri::LogicalSize::new(width, height)).map_err(|e| e.to_string())?;
+    }
+    *SUBTITLE_SAVED_SIZE.lock().unwrap_or_else(|e| e.into_inner()) = Some((width, height));
+    Ok(())
+}
+
+/// 覚えている字幕ウィンドウの大きさ (論理ピクセル。まだ無ければ既定の 800×200)
+#[tauri::command]
+fn subtitle_get_size() -> (f64, f64) {
+    SUBTITLE_SAVED_SIZE.lock().unwrap_or_else(|e| e.into_inner()).unwrap_or((800.0, 200.0))
 }
 
 // ===== 設定のプリセット / 自動バックアップ =====
@@ -3223,6 +3279,15 @@ fn subtitle_font_size(app: AppHandle, size: u32) -> Result<(), String> {
     Ok(())
 }
 
+/// 字幕の文字の影 (ドロップシャドウ) のオンオフ
+#[tauri::command]
+fn subtitle_text_shadow(app: AppHandle, enabled: bool) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("subtitle") {
+        let _ = win.eval(&format!("if(window.__setTextShadow)window.__setTextShadow({enabled})"));
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn subtitle_meta_font_size(app: AppHandle, size: u32) -> Result<(), String> {
     if let Some(win) = app.get_webview_window("subtitle") {
@@ -3369,6 +3434,7 @@ pub fn run() {
         .manage(twitch_badges::BadgeState::default())
         .manage(twitch_auth::TwitchAuthState::default())
         .manage(youtube::YoutubeState::default())
+        .manage(youtube_auth::YoutubeAuthState::default())
         .manage(OverlayState { hub: std::sync::Arc::new(core_overlay::OverlayHub::new()), server: Mutex::new(None) })
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             // Focus the existing window when a second instance is launched
@@ -3382,6 +3448,7 @@ pub fn run() {
             init_proxy_settings();
             // 保存済みの Twitch ログインがあれば EventSub (入力の無い報酬・自動報酬・フォロー) を始める
             app.state::<twitch_auth::TwitchAuthState>().init(app.handle().clone());
+            app.state::<youtube_auth::YoutubeAuthState>().init(app.handle().clone());
             // メインウィンドウは tauri.conf.json で "create": false にしておき、ここで作る。
             // 設定ファイルからでは WebView2 のデータフォルダを AppData 配下にしか指定できないため
             if app.get_webview_window("main").is_none() {
@@ -3468,6 +3535,16 @@ pub fn run() {
             youtube::youtube_clear_key,
             youtube::youtube_sync,
             youtube::youtube_reconnect,
+            youtube::youtube_quota_status,
+            youtube::youtube_quota_config,
+            youtube::youtube_quota_set_used,
+            youtube::youtube_quota_restart_target,
+            youtube::youtube_auth_status,
+            youtube::youtube_auth_set_client,
+            youtube::youtube_auth_clear_client,
+            youtube::youtube_auth_login,
+            youtube::youtube_auth_logout,
+            youtube::youtube_send_chat,
             overlay_start,
             overlay_stop,
             overlay_publish,
@@ -3566,6 +3643,10 @@ pub fn run() {
             main_set_always_on_bottom,
             subtitle_font_size,
             subtitle_meta_font_size,
+            subtitle_text_shadow,
+            subtitle_frame,
+            subtitle_set_size,
+            subtitle_get_size,
             subtitle_id_font_size,
             subtitle_id_font_family,
             list_system_fonts

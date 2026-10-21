@@ -3482,7 +3482,7 @@ button.search-history-btn:hover {
 .new-arrival-body .ogp-card-slot[data-ogp-state="loading"],
 .viewer-list .ogp-card-slot:not([data-ogp-state]),
 .viewer-list .ogp-card-slot[data-ogp-state="loading"] {
-  min-height: 100px;
+  min-height: 98px;
 }
 .ogp-card-slot[data-ogp-state="empty"] {
   display: none;
@@ -3493,6 +3493,9 @@ button.search-history-btn:hover {
   display: flex;
   align-items: stretch;
   max-width: 460px;
+  /* カードの高さをそろえる (サムネイル 96px + 枠 2px)。読み込み前の枠と同じ高さなので、表示されてもずれない */
+  box-sizing: border-box;
+  min-height: 98px;
   border: 1px solid #dcdcdc;
   border-radius: 8px;
   overflow: hidden;
@@ -3544,10 +3547,10 @@ button.search-history-btn:hover {
   display: flex;
   background: #eeeeee;
 }
+/* サムネイルは最初から 96×96 の場所を取る (画像が届いてからカードが縦に伸びて、下のレスがずれないように) */
 .ogp-card-thumb img {
   width: 96px;
-  height: 100%;
-  max-height: 108px;
+  height: 96px;
   object-fit: cover;
   display: block;
 }
@@ -3637,6 +3640,9 @@ button.search-history-btn:hover {
 .tweet-card-video-el {
   width: 100%;
   max-height: 260px;
+  /* 動画の情報が届く前から 16:9 の場所を取る (届いてから高さが変わってずれないように) */
+  aspect-ratio: 16 / 9;
+  object-fit: contain;
   border-radius: 10px;
   background: #000000;
   display: block;
@@ -4225,6 +4231,79 @@ img.twitch-emote.youtube-emoji { height: var(--tw-emote, 28px); }
 /* アドレスバーの行の、掲示板の新着の読み上げ方 */
 .tts-board-mode { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; color: var(--sub); flex: none; }
 .tts-board-mode select { font-size: 11px; padding: 0 2px; }
+
+/* 状態欄の YouTube API の使用量 (80% を超えたら注意の色、95% で警告の色) */
+.youtube-quota-meter.warn { color: #b26a00; font-weight: 600; }
+.youtube-quota-meter.danger { color: #c62828; font-weight: 600; }
+.dark .youtube-quota-meter.warn { color: #ffb74d; }
+.dark .youtube-quota-meter.danger { color: #ff8a80; }
+
+/* 設定 > YouTube > 使用量・間隔: 選んだ設定で実際にどの間隔になるか */
+.youtube-interval-input { padding-left: 22px; }
+.youtube-interval-result { margin: 6px 0 4px 22px; padding: 6px 8px; border-left: 3px solid var(--accent, #3b82f6); background: rgba(59, 130, 246, 0.08); font-size: 12px; line-height: 1.6; }
+
+/* 設定 > YouTube > 使用量・間隔: 「もたせる時間」と、それに合わせて変わる値を同じ色にする。値が変わったときは一瞬黄色く光らせる
+   (文字と背景の明暗比はライト・ダークとも 4.5 以上) */
+.yt-linked { color: #0b4f96; background: #e2efff; border: 1px solid #9cc3ef; border-radius: 3px; padding: 0 4px; font-weight: 700; animation: yt-linked-flash 1.2s ease-out; }
+.yt-linked-sample { animation: none; font-weight: 600; }
+.yt-linked-label { color: #0b4f96; font-weight: 700; }
+.settings-row input.yt-linked-input { border: 2px solid #2f78c4; background: #f3f8ff; color: #0b2c52; font-weight: 700; }
+.dark .yt-linked { color: #b3d7ff; background: #1d3553; border-color: #3f6fa3; animation-name: yt-linked-flash-dark; }
+.dark .yt-linked-sample { animation: none; }
+.dark .yt-linked-label { color: #9ecbff; }
+/* ダークの入力欄は .dark input の !important が効くので、そこで使う変数を変える */
+.dark .settings-row input.yt-linked-input { --dark-input-bg: #16263a; --dark-input-border: #5f9fe0; --ink: #e3f0ff; }
+@keyframes yt-linked-flash { from { background: #ffe58a; border-color: #d9a400; } to { background: #e2efff; border-color: #9cc3ef; } }
+@keyframes yt-linked-flash-dark { from { background: #5c4a0c; border-color: #c99a1a; } to { background: #1d3553; border-color: #3f6fa3; } }
+@media (prefers-reduced-motion: reduce) { .yt-linked { animation: none; } }
+
+/* タブの幅をそろえる (設定 > 表示 > 全般)。板タブ (ビュワー・板未選択を含む) とスレタブで別の幅。
+   長い名前は「…」で切る。選んだタブが太字になっても幅は変わらない */
+.tab-width-fixed .board-tab { width: var(--board-tab-w, 140px); min-width: var(--board-tab-w, 140px); max-width: var(--board-tab-w, 140px); flex: none; box-sizing: border-box; }
+.tab-width-fixed .thread-tab { width: var(--thread-tab-w, 180px); min-width: var(--thread-tab-w, 180px); max-width: var(--thread-tab-w, 180px); flex: none; box-sizing: border-box; }
+.tab-width-fixed .board-tab-title,
+.tab-width-fixed .thread-tab-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tab-width-fixed .board-tab > *:not(.board-tab-title),
+.tab-width-fixed .thread-tab > *:not(.thread-tab-title) { flex: none; }
+
+/* リンクカードの高さをそろえる: タイトル・説明はいつも2行分、サイト名は1行分の場所を取る
+   (行数がカードごとに違うと、読み込み前の枠と高さが合わず、表示されたときにずれるため) */
+.ogp-card .ogp-card-title,
+.ogp-card .ogp-card-desc { min-height: calc(2 * 1.35em); }
+.ogp-card .ogp-card-site { line-height: 1.35; min-height: 1.35em; }
+/* 読み込み中の仮のカード */
+.ogp-card-skel-img { display: block; width: 96px; height: 96px; }
+.ogp-card.ogp-card-skeleton { background: #f3f3f3; border-color: #e4e4e4; pointer-events: none; }
+.ogp-card-skeleton .ogp-card-thumb { background: #e8e8e8; }
+.dark .ogp-card.ogp-card-skeleton { background: #262628; border-color: #38383b; }
+.dark .ogp-card-skeleton .ogp-card-thumb { background: #303033; }
+
+/* YouTube の使用量の目安 (YouTube タブの上部・ビュワーの上の段)。80% で橙、95% で赤 */
+.youtube-quota-chip { flex: none; font-size: 11px; line-height: 1.4; padding: 0 6px; margin: 0 6px; border: 1px solid #b9c7d8; border-radius: 10px; background: #eef4fb; color: #1d3f66; cursor: pointer; white-space: nowrap; }
+.youtube-quota-chip:hover { background: #dfeaf7; }
+.youtube-quota-chip.warn { background: #fff1db; border-color: #e0a64a; color: #7a4600; }
+.youtube-quota-chip.danger { background: #fde4e4; border-color: #d9534f; color: #8a1414; font-weight: 600; }
+.dark .youtube-quota-chip { background: #1f2b3a; border-color: #3d5573; color: #cfe2f7; }
+.dark .youtube-quota-chip:hover { background: #283849; }
+.dark .youtube-quota-chip.warn { background: #3a2a10; border-color: #a8772a; color: #ffd28a; }
+.dark .youtube-quota-chip.danger { background: #3d1717; border-color: #b94545; color: #ffb3b3; }
+/* 止まっている YouTube タブの帯 (理由とつなぎ直す) */
+.yt-status-banner { display: flex; align-items: center; gap: 8px; padding: 4px 8px; font-size: 12px; background: #fff4e0; color: #5c3b00; border-bottom: 1px solid #e8c88a; }
+.yt-status-banner > span { flex: 1 1 auto; min-width: 0; }
+.yt-status-banner.yt-status-retrying { background: #eef4fb; color: #1d3f66; border-bottom-color: #b9c7d8; }
+.dark .yt-status-banner { background: #3a2a10; color: #ffe1ad; border-bottom-color: #6b4f1d; }
+.dark .yt-status-banner.yt-status-retrying { background: #1f2b3a; color: #cfe2f7; border-bottom-color: #3d5573; }
+
+/* 使用量の表示の YouTube の印 */
+.youtube-quota-chip .yt-mark { display: inline-block; margin-right: 4px; padding: 0 3px; border-radius: 3px; background: #e00000; color: #ffffff; font-size: 8px; line-height: 12px; vertical-align: 1px; }
+/* ビュワー: 開いているスレのレスをすべて流す (オンのときは目立たせる) */
+.viewer-chip.viewer-all-toggle.on { background: #e6f0ff; border-color: #6d9de0; color: #123f78; font-weight: 600; }
+.dark .viewer-chip.viewer-all-toggle.on { background: #1f2f45; border-color: #4b77ad; color: #cfe2ff; }
+
+/* ビュワーのときに上の段 (新着レスペインの場所) に出す「スレの最新レス」の欄 */
+.viewer-latest.viewer-latest-top { border-top: none; min-height: 0; overflow: hidden; }
+.viewer-latest-note { padding: 2px 8px; font-size: 0.9em; color: #1d3f66; background: #eef4fb; border-bottom: 1px solid #c9d8ea; }
+.dark .viewer-latest-note { color: #cfe2f7; background: #1f2b3a; border-bottom-color: #3d5573; }
 
 /* ここまで。このファイル全体は app.css から CSS レイヤー lf-base として読み込まれる
    (利用者の CSS はレイヤーの外なので、指定の強さに関係なくこのファイルより優先される) */

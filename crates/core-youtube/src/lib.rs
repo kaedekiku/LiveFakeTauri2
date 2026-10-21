@@ -3,14 +3,18 @@
 //! - 公式 API: YouTube Data API v3 (利用者が自分で用意した API キー)。videos.list でチャットの ID を調べ (1 クォータ)、
 //!   liveChatMessages.list を繰り返し呼ぶ (1回 5 クォータ)。呼ぶ間隔は API が指示する間隔と設定した最短間隔の長いほう。
 //!   API キーは URL に入れず `x-goog-api-key` ヘッダーで送る (エラー文やログに出ないように)
+//! - 使った量 (クォータ) はアプリ側の [`QuotaPlan`] に知らせ、呼ぶ間隔もそこに聞く (目標の時間もつように延ばすため)。
+//!   日の区切り (太平洋時間の0時) と、目標の時間から間隔を決める計算は [`quota`] にある
 //! - 暗号化して置く取得方法は、カギがあるときだけ組み込まれる (build.rs)。リリース版には入らない
 //!
 //! 開けるのはライブ配信 (配信中・配信予定) の URL だけ。アーカイブや普通の動画、チャンネルの URL は扱わない。
 //! 最初に取れる「接続前の発言」は流さない (Twitch と同じく、つないだ後の発言だけ)。
 
 use serde_json::Value;
+use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
+
 
 /// 再接続までの待ち時間 (失敗が続くと倍々に延ばす)
 const RETRY_MIN: Duration = Duration::from_secs(5);
@@ -26,6 +30,9 @@ pub const API_MIN_INTERVAL_SECS: u64 = 5;
 pub const API_MAX_INTERVAL_SECS: u64 = 120;
 
 const API_BASE: &str = "https://www.googleapis.com/youtube/v3";
+/// 公式 API の1回の呼び出しで使うクォータ (videos.list / liveChatMessages.list)
+pub const COST_VIDEOS_LIST: u32 = 1;
+pub const COST_CHAT_LIST: u32 = 5;
 
 /// 公式 API の ID (画面の設定と Rust の間で使う)
 pub const API_METHOD_ID: &str = "api";
@@ -166,10 +173,20 @@ pub enum Status {
     Stopped { reason: String },
 }
 
+/// 公式 API の使用量を数え、呼ぶ間隔を決めるもの (アプリ側が持つ。同じ API キーの配信すべてで1つを使う)
+pub trait QuotaPlan: Send + Sync {
+    /// 呼んだ分を足す (応答が返ってきた呼び出しだけ)
+    fn charge(&self, units: u32);
+    /// 今日の上限に達したと API に言われた
+    fn exhausted(&self);
+    /// 次に呼ぶまでの間隔 (設定した最短の間隔より短くはしない)
+    fn interval(&self, min_interval: Duration) -> Duration;
+}
+
 /// 取得方法と、その設定
 #[derive(Clone)]
 pub enum Method {
-    Api { key: String, min_interval: Duration },
+    Api { key: String, min_interval: Duration, quota: Option<Arc<dyn QuotaPlan>> },
     #[cfg(yt_sealed)]
     Sealed,
 }
@@ -185,13 +202,14 @@ impl std::fmt::Debug for Method {
     }
 }
 
-/// 画面で選ばれた方式の ID から取得方法を作る
-pub fn method_from_id(id: &str, api_key: Option<String>, min_interval_secs: u64) -> Result<Method, String> {
+/// 画面で選ばれた方式の ID から取得方法を作る (quota は公式 API の使用量を数えるもの)
+pub fn method_from_id(id: &str, api_key: Option<String>, min_interval_secs: u64, quota: Option<Arc<dyn QuotaPlan>>) -> Result<Method, String> {
     if id == API_METHOD_ID {
         let key = api_key.filter(|k| api_key_ok(k)).ok_or_else(|| "API キーが設定されていません (設定 > YouTube)".to_string())?;
         let secs = min_interval_secs.clamp(API_MIN_INTERVAL_SECS, API_MAX_INTERVAL_SECS);
-        return Ok(Method::Api { key, min_interval: Duration::from_secs(secs) });
+        return Ok(Method::Api { key, min_interval: Duration::from_secs(secs), quota });
     }
+    let _ = &quota;
     #[cfg(yt_sealed)]
     if id == sealed::ID {
         return Ok(Method::Sealed);
@@ -216,7 +234,7 @@ where
         return;
     }
     match method {
-        Method::Api { key, min_interval } => run_api(&video_id, &key, min_interval, &mut on_updates, &mut on_status).await,
+        Method::Api { key, min_interval, quota } => run_api(&video_id, &key, min_interval, quota.as_deref(), &mut on_updates, &mut on_status).await,
         #[cfg(yt_sealed)]
         Method::Sealed => sealed::run(&video_id, &mut on_updates, &mut on_status).await,
     }
@@ -422,7 +440,17 @@ fn classify_api_error(status: u16, body: &[u8]) -> ApiFail {
     }
 }
 
-async fn api_get(client: &reqwest::Client, key: &str, path: &str, query: &[(&str, &str)]) -> Result<Value, ApiFail> {
+/// 上限に達したというエラーか
+fn is_quota_error(body: &[u8]) -> bool {
+    let v: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+    let err = &v["error"];
+    [&err["errors"], &err["details"]].iter().filter_map(|l| l.as_array()).flatten().filter_map(|e| e["reason"].as_str()).any(|r| {
+        r.eq_ignore_ascii_case("quotaExceeded") || r.eq_ignore_ascii_case("dailyLimitExceeded")
+    })
+}
+
+/// API を呼ぶ。応答が返ってきたら (エラーでも) 使った分を quota に足す
+async fn api_get(client: &reqwest::Client, key: &str, path: &str, query: &[(&str, &str)], quota: Option<&dyn QuotaPlan>, cost: u32) -> Result<Value, ApiFail> {
     let resp = client
         .get(format!("{API_BASE}/{path}"))
         .query(query)
@@ -431,15 +459,21 @@ async fn api_get(client: &reqwest::Client, key: &str, path: &str, query: &[(&str
         .await
         .map_err(|e| ApiFail::Retry(net_error(e)))?;
     let status = resp.status().as_u16();
+    if let Some(q) = quota {
+        q.charge(cost);
+    }
     let body = read_body(resp).await.map_err(|e| ApiFail::Retry(e.to_string()))?;
     if !(200..300).contains(&status) {
+        if let Some(q) = quota.filter(|_| is_quota_error(&body)) {
+            q.exhausted();
+        }
         return Err(classify_api_error(status, &body));
     }
     serde_json::from_slice(&body).map_err(|_| ApiFail::Retry("API の応答を読めませんでした".into()))
 }
 
 /// 動画からチャットの ID とタイトルを調べる。ライブ配信 (配信中・配信予定) でなければ止める
-async fn api_resolve(client: &reqwest::Client, key: &str, video_id: &str) -> Result<(String, String), ApiFail> {
+async fn api_resolve(client: &reqwest::Client, key: &str, video_id: &str, quota: Option<&dyn QuotaPlan>) -> Result<(String, String), ApiFail> {
     let v = api_get(
         client,
         key,
@@ -449,6 +483,8 @@ async fn api_resolve(client: &reqwest::Client, key: &str, video_id: &str) -> Res
             ("id", video_id),
             ("fields", "items(snippet(title,liveBroadcastContent),liveStreamingDetails(activeLiveChatId,actualEndTime))"),
         ],
+        quota,
+        COST_VIDEOS_LIST,
     )
     .await?;
     resolve_from_videos(&v)
@@ -592,6 +628,7 @@ async fn run_api(
     video_id: &str,
     key: &str,
     min_interval: Duration,
+    quota: Option<&dyn QuotaPlan>,
     on_updates: &mut (dyn FnMut(Vec<Update>) + Send),
     on_status: &mut (dyn FnMut(Status) + Send),
 ) {
@@ -605,7 +642,7 @@ async fn run_api(
     let mut backoff = RETRY_MIN;
     on_status(Status::Connecting);
     let (chat_id, title) = loop {
-        match api_resolve(&client, key, video_id).await {
+        match api_resolve(&client, key, video_id, quota).await {
             Ok(v) => break v,
             Err(ApiFail::Retry(reason)) => {
                 on_status(Status::Retrying { reason, retry_in_secs: backoff.as_secs() });
@@ -632,7 +669,7 @@ async fn run_api(
         if let Some(t) = page_token.as_deref() {
             query.push(("pageToken", t));
         }
-        match api_get(&client, key, "liveChat/messages", &query).await {
+        match api_get(&client, key, "liveChat/messages", &query, quota, COST_CHAT_LIST).await {
             Ok(v) => {
                 if retrying {
                     retrying = false;
@@ -652,7 +689,9 @@ async fn run_api(
                 if token.is_some() {
                     page_token = token;
                 }
-                let wait = wait.unwrap_or(min_interval).max(min_interval).min(Duration::from_secs(API_MAX_INTERVAL_SECS));
+                // API が指示する間隔・設定した最短の間隔・目標の時間もたせるための間隔の、いちばん長いもの
+                let planned = quota.map(|q| q.interval(min_interval)).unwrap_or(min_interval);
+                let wait = wait.unwrap_or(min_interval).max(min_interval).max(planned).min(Duration::from_secs(API_MAX_INTERVAL_SECS));
                 tokio::time::sleep(wait).await;
             }
             Err(ApiFail::Retry(reason)) => {
@@ -669,6 +708,231 @@ async fn run_api(
                 on_status(Status::Stopped { reason });
                 return;
             }
+        }
+    }
+}
+
+// ===== 公式 API の使用量 =====
+
+pub mod quota {
+    //! 公式 API の使用量 (クォータ) の計算 (通信はしない)。
+    //!
+    //! - 1日の上限は太平洋時間の0時に戻る (夏時間: 3月の第2日曜 2:00 から 11月の第1日曜 2:00 まで。UTC で 10:00 / 9:00)
+    //! - 目標の時間もたせる: 残りのクォータを、目標の終わり (か、上限が戻るとき) までの時間に割り振って、呼ぶ間隔を決める
+
+    use crate::{API_MAX_INTERVAL_SECS, COST_CHAT_LIST};
+
+    const DAY: i64 = 86_400;
+    const HOUR: i64 = 3_600;
+
+    /// 1970-01-01 からの日数 → (年, 月, 日)
+    fn civil_from_days(z: i64) -> (i64, u32, u32) {
+        let z = z + 719_468;
+        let era = z.div_euclid(146_097);
+        let doe = z.rem_euclid(146_097);
+        let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+        let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+        let y = yoe + era * 400 + i64::from(m <= 2);
+        (y, m, d)
+    }
+
+    /// (年, 月, 日) → 1970-01-01 からの日数
+    fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+        let y = if m <= 2 { y - 1 } else { y };
+        let era = y.div_euclid(400);
+        let yoe = y.rem_euclid(400);
+        let m = i64::from(m);
+        let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + i64::from(d) - 1;
+        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+        era * 146_097 + doe - 719_468
+    }
+
+    /// その月の第 n 日曜日 (1970-01-01 からの日数)
+    fn nth_sunday(y: i64, m: u32, n: i64) -> i64 {
+        let first = days_from_civil(y, m, 1);
+        let weekday = (first + 4).rem_euclid(7); // 0 = 日曜 (1970-01-01 は木曜)
+        first + (7 - weekday) % 7 + 7 * (n - 1)
+    }
+
+    /// 太平洋時間と UTC の差 (秒。夏時間は -7 時間、それ以外は -8 時間)
+    pub fn pacific_offset_secs(utc: i64) -> i64 {
+        let (y, _, _) = civil_from_days(utc.div_euclid(DAY));
+        let start = nth_sunday(y, 3, 2) * DAY + 10 * HOUR;
+        let end = nth_sunday(y, 11, 1) * DAY + 9 * HOUR;
+        if (start..end).contains(&utc) { -7 * HOUR } else { -8 * HOUR }
+    }
+
+    /// 上限を数える日 (太平洋時間の日付。"YYYY-MM-DD")
+    pub fn pacific_day(utc: i64) -> String {
+        let (y, m, d) = civil_from_days((utc + pacific_offset_secs(utc)).div_euclid(DAY));
+        format!("{y:04}-{m:02}-{d:02}")
+    }
+
+    /// 次に上限が戻る時刻 (UTC の秒。太平洋時間の次の0時)
+    pub fn next_pacific_reset(utc: i64) -> i64 {
+        let local_midnight = ((utc + pacific_offset_secs(utc)).div_euclid(DAY) + 1) * DAY;
+        // 夏時間の切り替えは 2:00 なので、0時の前後で差は変わらない
+        local_midnight - pacific_offset_secs(local_midnight + 8 * HOUR)
+    }
+
+    /// 間隔を決めるのに使う値
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct PlanInput {
+        /// 今 (UTC の秒)
+        pub now: i64,
+        /// 目標の終わり (UTC の秒)。None は目標なし (いつも最短の間隔)
+        pub target_end: Option<i64>,
+        /// 今日使った量
+        pub used: u32,
+        /// 1日の上限
+        pub limit: u32,
+        /// 取得に使わず残しておく量 (書き込み用など)
+        pub reserve: u32,
+        /// 公式 API で受信している配信の数
+        pub active: u32,
+        /// 設定した最短の間隔 (秒)
+        pub min_secs: u64,
+    }
+
+    /// 決めた間隔と、その見込み
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct PlanOutput {
+        /// 呼ぶ間隔 (秒)
+        pub interval_secs: u64,
+        /// 目標の時間もつ見込みか (目標なしのときは true)
+        pub reachable: bool,
+        /// この間隔のまま受信すると、残りを使い切るまでの時間 (秒)
+        pub lasts_secs: u64,
+        /// 上限が戻るまでの時間 (秒)
+        pub until_reset_secs: u64,
+    }
+
+    pub fn plan(p: PlanInput) -> PlanOutput {
+        let max = API_MAX_INTERVAL_SECS;
+        let min = p.min_secs.clamp(1, max);
+        let per_round = u64::from(COST_CHAT_LIST) * u64::from(p.active.max(1));
+        let remaining = u64::from(p.limit.saturating_sub(p.used).saturating_sub(p.reserve));
+        let rounds = remaining / per_round;
+        let reset = next_pacific_reset(p.now);
+        let until_reset_secs = (reset - p.now).max(0) as u64;
+        let (interval_secs, reachable) = match p.target_end.filter(|end| *end > p.now) {
+            Some(end) => {
+                // 目標の終わりより先に上限が戻るなら、戻るときまでもてばよい (戻った後は、また残りから決め直す)
+                let horizon = (end.min(reset) - p.now).max(1) as u64;
+                if rounds == 0 {
+                    (max, false)
+                } else {
+                    let need = horizon.div_ceil(rounds);
+                    (need.clamp(min, max), need <= max)
+                }
+            }
+            None => (min, true),
+        };
+        PlanOutput { interval_secs, reachable, lasts_secs: rounds * interval_secs, until_reset_secs }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// UTC の日時 → 秒
+        fn utc(y: i64, m: u32, d: u32, h: i64, min: i64) -> i64 {
+            days_from_civil(y, m, d) * DAY + h * HOUR + min * 60
+        }
+
+        #[test]
+        fn civil_round_trip() {
+            for z in [-1, 0, 1, 10_957, 20_744, 20_758, 47_482] {
+                let (y, m, d) = civil_from_days(z);
+                assert_eq!(days_from_civil(y, m, d), z);
+            }
+            assert_eq!(civil_from_days(0), (1970, 1, 1));
+            assert_eq!(nth_sunday(2026, 3, 2), days_from_civil(2026, 3, 8));
+            assert_eq!(nth_sunday(2026, 11, 1), days_from_civil(2026, 11, 1));
+            assert_eq!(nth_sunday(2027, 3, 2), days_from_civil(2027, 3, 14));
+        }
+
+        #[test]
+        fn pacific_dst_edges() {
+            // 2026年: 夏時間は 3/8 10:00 UTC から 11/1 9:00 UTC まで
+            assert_eq!(pacific_offset_secs(utc(2026, 3, 8, 9, 59)), -8 * HOUR);
+            assert_eq!(pacific_offset_secs(utc(2026, 3, 8, 10, 0)), -7 * HOUR);
+            assert_eq!(pacific_offset_secs(utc(2026, 10, 18, 5, 0)), -7 * HOUR);
+            assert_eq!(pacific_offset_secs(utc(2026, 11, 1, 8, 59)), -7 * HOUR);
+            assert_eq!(pacific_offset_secs(utc(2026, 11, 1, 9, 0)), -8 * HOUR);
+            assert_eq!(pacific_offset_secs(utc(2026, 1, 15, 0, 0)), -8 * HOUR);
+        }
+
+        #[test]
+        fn pacific_day_and_reset() {
+            // 日本時間 2026-10-18 14:00 (UTC 05:00) は太平洋時間 10/17 22:00。次に戻るのは日本時間 16:00 (UTC 07:00)
+            let now = utc(2026, 10, 18, 5, 0);
+            assert_eq!(pacific_day(now), "2026-10-17");
+            assert_eq!(next_pacific_reset(now), utc(2026, 10, 18, 7, 0));
+            assert_eq!(pacific_day(utc(2026, 10, 18, 7, 0)), "2026-10-18");
+            assert_eq!(pacific_day(utc(2026, 10, 18, 6, 59)), "2026-10-17");
+            // 冬は日本時間 17:00 (UTC 08:00)
+            assert_eq!(next_pacific_reset(utc(2026, 12, 1, 3, 0)), utc(2026, 12, 1, 8, 0));
+            // 夏時間が終わる日: 太平洋時間 11/1 0:00 は夏時間 (UTC 07:00)、11/2 0:00 は冬時間 (UTC 08:00)
+            assert_eq!(next_pacific_reset(utc(2026, 11, 1, 3, 0)), utc(2026, 11, 1, 7, 0));
+            assert_eq!(next_pacific_reset(utc(2026, 11, 1, 7, 0)), utc(2026, 11, 2, 8, 0));
+        }
+
+        #[test]
+        fn plan_without_target_uses_min() {
+            let now = utc(2026, 10, 18, 8, 0);
+            let o = plan(PlanInput { now, target_end: None, used: 0, limit: 10_000, reserve: 0, active: 1, min_secs: 10 });
+            assert_eq!(o.interval_secs, 10);
+            assert!(o.reachable);
+            assert_eq!(o.lasts_secs, 2_000 * 10); // 10,000 / 5 回 × 10 秒 = 約 5.6 時間
+        }
+
+        #[test]
+        fn plan_target_stretches_interval() {
+            // 上限が戻った直後に 8 時間の目標: 10,000 / 5 = 2,000 回を 8 時間に → 15 秒ごと
+            let now = utc(2026, 10, 18, 7, 0);
+            let o = plan(PlanInput { now, target_end: Some(now + 8 * HOUR), used: 0, limit: 10_000, reserve: 0, active: 1, min_secs: 10 });
+            assert_eq!(o.interval_secs, 15);
+            assert!(o.reachable);
+            // 書き込み用に 1,200 残す → 1,760 回 → 17 秒ごと
+            let o = plan(PlanInput { now, target_end: Some(now + 8 * HOUR), used: 0, limit: 10_000, reserve: 1_200, active: 1, min_secs: 10 });
+            assert_eq!(o.interval_secs, 17);
+            // 配信が2つ → 1回り 10 → 1,000 回 → 29 秒ごと
+            let o = plan(PlanInput { now, target_end: Some(now + 8 * HOUR), used: 0, limit: 10_000, reserve: 0, active: 2, min_secs: 10 });
+            assert_eq!(o.interval_secs, 29);
+            // 目標が短ければ最短の間隔のまま
+            let o = plan(PlanInput { now, target_end: Some(now + HOUR), used: 0, limit: 10_000, reserve: 0, active: 1, min_secs: 10 });
+            assert_eq!(o.interval_secs, 10);
+        }
+
+        #[test]
+        fn plan_target_until_reset() {
+            // 上限が戻るまで 1 時間・目標は 6 時間先: 戻るまでもてばよいので、残り 500 (100 回) を 1 時間に → 36 秒ごと
+            let now = utc(2026, 10, 18, 6, 0);
+            let o = plan(PlanInput { now, target_end: Some(now + 6 * HOUR), used: 9_500, limit: 10_000, reserve: 0, active: 1, min_secs: 10 });
+            assert_eq!(o.interval_secs, 36);
+            assert!(o.reachable);
+            assert_eq!(o.until_reset_secs, 3_600);
+        }
+
+        #[test]
+        fn plan_target_unreachable() {
+            let now = utc(2026, 10, 18, 7, 0);
+            // 残り 100 (20 回) で 8 時間はもたない → いちばん長い間隔にして、もたないと知らせる
+            let o = plan(PlanInput { now, target_end: Some(now + 8 * HOUR), used: 9_900, limit: 10_000, reserve: 0, active: 1, min_secs: 10 });
+            assert_eq!(o.interval_secs, API_MAX_INTERVAL_SECS);
+            assert!(!o.reachable);
+            assert_eq!(o.lasts_secs, 20 * API_MAX_INTERVAL_SECS);
+            // 使い切っている
+            let o = plan(PlanInput { now, target_end: Some(now + HOUR), used: 10_000, limit: 10_000, reserve: 0, active: 1, min_secs: 10 });
+            assert!(!o.reachable);
+            assert_eq!(o.lasts_secs, 0);
+            // 目標の時刻を過ぎたら最短の間隔に戻す
+            let o = plan(PlanInput { now, target_end: Some(now - 1), used: 9_900, limit: 10_000, reserve: 0, active: 1, min_secs: 10 });
+            assert_eq!(o.interval_secs, 10);
         }
     }
 }
@@ -714,16 +978,16 @@ mod tests {
 
     #[test]
     fn method_needs_valid_key() {
-        assert!(method_from_id(API_METHOD_ID, None, 10).is_err());
-        assert!(method_from_id(API_METHOD_ID, Some("bad key!".into()), 10).is_err());
-        let m = method_from_id(API_METHOD_ID, Some("AIzaSyA-abcdefghijklmnopqrstuvwxyz0123".into()), 1).unwrap();
+        assert!(method_from_id(API_METHOD_ID, None, 10, None).is_err());
+        assert!(method_from_id(API_METHOD_ID, Some("bad key!".into()), 10, None).is_err());
+        let m = method_from_id(API_METHOD_ID, Some("AIzaSyA-abcdefghijklmnopqrstuvwxyz0123".into()), 1, None).unwrap();
         match m {
             Method::Api { min_interval, .. } => assert_eq!(min_interval, Duration::from_secs(API_MIN_INTERVAL_SECS)),
             #[allow(unreachable_patterns)]
             _ => panic!(),
         }
-        assert!(!format!("{:?}", method_from_id(API_METHOD_ID, Some("AIzaSyA-abcdefghijklmnopqrstuvwxyz0123".into()), 10).unwrap()).contains("AIza"));
-        assert!(method_from_id("nope", None, 10).is_err());
+        assert!(!format!("{:?}", method_from_id(API_METHOD_ID, Some("AIzaSyA-abcdefghijklmnopqrstuvwxyz0123".into()), 10, None).unwrap()).contains("AIza"));
+        assert!(method_from_id("nope", None, 10, None).is_err());
         assert_eq!(methods()[0].id, API_METHOD_ID);
     }
 
@@ -738,6 +1002,9 @@ mod tests {
         assert!(matches!(classify_api_error(400, invalid.as_bytes()), ApiFail::Stop(m) if m.contains("API キー")));
         assert!(matches!(classify_api_error(503, b"oops"), ApiFail::Retry(_)));
         assert!(matches!(classify_api_error(404, &body("liveChatNotFound")), ApiFail::Stop(_)));
+        assert!(is_quota_error(&body("quotaExceeded")));
+        assert!(!is_quota_error(&body("rateLimitExceeded")));
+        assert!(!is_quota_error(b"oops"));
     }
 
     #[test]

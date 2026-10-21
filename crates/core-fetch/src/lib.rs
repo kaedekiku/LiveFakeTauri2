@@ -1850,7 +1850,50 @@ async fn decode_5ch_response(
 }
 
 /// reqwest-based 5ch POST flow — replaces curl_post_5ch for the main posting path.
+/// 5ch の書き込みの応答の種類 (送り直してよいかを決める)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Post5chPage {
+    /// 書き込めた (送り直さない)
+    Done,
+    /// エラー (送り直さない)
+    Error,
+    /// 確認画面 (隠し項目 bbs を含むフォーム。同じセッションで確認を送る)
+    Confirm,
+    /// 同意画面などの別のフォーム (同意を送ってから、1回だけ送り直す)
+    Consent,
+    /// どれでもない (送り直さない。送れたかどうか分からないので、二重にしないほうを選ぶ)
+    Unknown,
+}
+
+/// 書き込めたときの文言
+fn is_5ch_post_done(body: &str) -> bool {
+    ["書きこみが終わりました", "書き込みが終わりました", "書きこみました", "投稿が完了"].iter().any(|w| body.contains(w))
+}
+
+/// 応答を分ける。成功の文言を最初に見る (成功したのに送り直して二重に書き込まないように。
+/// 2chAPIProxy などのプロキシは確認のやりとりを代わりに済ませ、いきなり成功のページを返すことがある)
+fn classify_5ch_post_page(status: u16, body: &str) -> Post5chPage {
+    if is_5ch_post_done(body) {
+        return Post5chPage::Done;
+    }
+    // 確認画面は前と同じく先に見る (確認画面の説明文に「エラー」などの語があっても確認を送れるように)
+    if status == 200 && (body.contains("name=\"bbs\"") || body.contains("name=bbs ")) {
+        return Post5chPage::Confirm;
+    }
+    if status >= 400 || body.contains("ERROR") || body.contains("エラー") {
+        return Post5chPage::Error;
+    }
+    if status != 200 {
+        return Post5chPage::Unknown;
+    }
+    if find_first_generic_form(body).is_some() {
+        return Post5chPage::Consent;
+    }
+    Post5chPage::Unknown
+}
+
 /// Same steps as curl_post_5ch_inner: GET thread → POST → redirect → confirm → uplift.
+/// 送り直すのは「同意画面のフォームが見つかって同意を送ったとき」の1回だけ
 async fn reqwest_post_5ch(
     thread_url: &str,
     post_url: &str,
@@ -1886,8 +1929,8 @@ async fn reqwest_post_5ch(
     }
 
     // Step 4: Confirm form (has hidden name="bbs") — auto-submit in same session
-    let has_confirm = resp_body.contains("name=\"bbs\"") || resp_body.contains("name=bbs ");
-    if has_confirm && status == 200 {
+    let page = classify_5ch_post_page(status, &resp_body);
+    if page == Post5chPage::Confirm {
         if let Ok(form) = parse_confirm_submit_form_internal(&resp_body, post_url) {
             let confirm_body = build_sjis_form_body(
                 &form.fields.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect::<Vec<_>>(),
@@ -1908,8 +1951,8 @@ async fn reqwest_post_5ch(
                 } else { break; }
             }
         }
-    } else if !has_confirm && status == 200 {
-        // Step 5: Uplift/consent form — submit consent then retry original POST
+    } else if page == Post5chPage::Consent {
+        // Step 5: Uplift/consent form — submit consent then retry original POST (1回だけ)
         if let Some(consent_form) = find_first_generic_form(&resp_body) {
             let consent_url = if consent_form.action.starts_with("http") {
                 normalize_5ch_url(&consent_form.action)
@@ -3108,6 +3151,26 @@ mod tests {
         assert_eq!(tokens.time, "1741320000");
         assert_eq!(tokens.oekaki_thread1, Some("1".to_string()));
         assert!(tokens.has_message_textarea);
+    }
+
+    #[test]
+    fn classify_5ch_post_page_does_not_retry_after_success() {
+        use super::{classify_5ch_post_page, Post5chPage};
+        // 成功 (プロキシ経由でいきなり返ってくる形も含む) → 送り直さない
+        let done = "<html><head><title>書きこみました。</title></head><body>書きこみが終わりました。<br><a href=\"../test/read.cgi/ngt/1/\">戻る</a></body></html>";
+        assert_eq!(classify_5ch_post_page(200, done), Post5chPage::Done);
+        assert_eq!(classify_5ch_post_page(200, "<form action=\"x\"><input name=a value=b></form>書き込みが終わりました"), Post5chPage::Done);
+        // 確認画面
+        let confirm = "<form method=POST action=\"../test/bbs.cgi\"><input type=hidden name=bbs value=ngt><input type=submit></form>";
+        assert_eq!(classify_5ch_post_page(200, confirm), Post5chPage::Confirm);
+        // 同意画面 (bbs を含まないフォーム) → 同意を送ってから1回だけ送り直す
+        let consent = "<form action=\"https://uplift.5ch.io/agree\"><input type=hidden name=agree value=1></form>";
+        assert_eq!(classify_5ch_post_page(200, consent), Post5chPage::Consent);
+        // エラー・どれでもない → 送り直さない
+        assert_eq!(classify_5ch_post_page(200, "<title>ＥＲＲＯＲ</title>ERROR: 本文がありません"), Post5chPage::Error);
+        assert_eq!(classify_5ch_post_page(403, "Forbidden"), Post5chPage::Error);
+        assert_eq!(classify_5ch_post_page(200, "<html><body>なにか</body></html>"), Post5chPage::Unknown);
+        assert_eq!(classify_5ch_post_page(204, ""), Post5chPage::Unknown);
     }
 
     #[test]

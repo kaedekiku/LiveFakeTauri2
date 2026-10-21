@@ -179,6 +179,7 @@ LiveFake の配色は以下の CSS 変数で構成されており、これを上
 | `.thread-tab-bar` / `.thread-tab-bar-wrap` / `.thread-tab` / `.thread-tab.active` | スレタブバー / そのラップ / スレタブ / アクティブスレタブ |
 | `.thread-tab-title` / `.thread-tab-close` / `.tab-close-btn` / `.tab-res-count` | タブのタイトル / ×ボタン / 閉じるボタン共通 / レス数バッジ |
 | `.tab.drag-target` | ドラッグでの並べ替え中、ドロップ先になっているタブ |
+| `.right-pane.tab-width-fixed` | 「タブの幅をそろえる」(設定 > 表示 > 全般) がオンのとき付く。板タブ (ビュワー・板未選択を含む) は `--board-tab-w`、スレタブは `--thread-tab-w` の幅になる (設定画面の値が入る) |
 
 ### 3.4 スレッド一覧
 
@@ -316,6 +317,14 @@ LiveFake の配色は以下の CSS 変数で構成されており、これを上
 | `img.twitch-emote.youtube-emoji` | YouTube のチャンネル独自の絵文字（Twitch のスタンプと同じ大きさ） |
 | `.id-count-some` / `.id-count-many` | 書き込み回数 (n/回数) の 2回以上 (青) / 5回以上 (赤)。メインのレス表示の `.response-id-count` にも付く |
 
+新着レスペインの操作は、アドレスバーの行の右にあります:
+
+| クラス | 要素 |
+|--------|------|
+| `.tts-board-mode` | 掲示板の新着の読み上げ方 (全文 / レス番のみ) の選択 |
+| `.arrival-tools` | ▶ (次の新着レス)・字幕・クリア・「新着レス」ボタンのまとまり |
+| `.arrival-pane-toggle` (`.active`) | 「新着レス」ボタン。スレを見ているときは新着レスペイン、ビュワーのときは「スレの最新レス」の欄を開閉する (開いているとき `.active`) |
+
 ### 3.8 書き込みウィンドウ
 
 下部の書き込みウィンドウは**返信専用**です（新スレ立てはスレッドタイトルバーの「書き込み」から開く別ウィンドウで行います。3.10 参照）。
@@ -341,6 +350,40 @@ LiveFake の配色は以下の CSS 変数で構成されており、これを上
 |--------|------|
 | `.compose-input-full` | 幅いっぱいの入力欄（浮遊ウィンドウのスレタイ欄など） |
 | `.post-history-item` / `.post-history-time` / `.post-history-body` / `.post-history-status` | 書き込み履歴の 1 件 / 時刻 / 本文 / 結果 |
+
+#### Twitch・YouTube のタブを見ているときの書き込み欄
+
+Twitch・YouTube のタブでは、同じ `.compose-window` がチャットの書き込み欄に切り替わります。
+
+```text
+.compose-window.compose-chat.compose-chat--twitch / .compose-chat--youtube   ← 送り先で色が変わる (Twitch=紫・YouTube=赤)
+├─ .compose-header
+│   └─ .compose-chat-target.compose-chat-target-closed     閉じているときの「送信先: …」
+└─ .compose-chat-body
+    ├─ .compose-row.compose-chat-row                       上の行
+    │   ├─ .compose-chat-target (> b) / .compose-chat-login     送信先 / (ログイン: 名前)
+    │   ├─ .compose-meta-inline (> .compose-chat-over)          文字数 (上限を超えると .compose-chat-over)
+    │   ├─ .compose-chat-spacer                                 間を空ける要素
+    │   └─ .compose-chat-actions
+    │       ├─ .compose-chat-stamp-btn (.active)                    「スタンプ」(YouTube は「絵文字」) ボタン
+    │       └─ .postform-write.compose-chat-send                    送信ボタン
+    ├─ .compose-chat-note                                  ログインしていないときなどの案内
+    ├─ .compose-chat-reply                                 返信先 (Twitch)
+    ├─ .compose-body.compose-chat-input                    入力欄
+    └─ .compose-chat-meta > .compose-chat-preview          送る前の見た目 (スタンプを含むとき)
+```
+
+スタンプ・絵文字の一覧 (書き込み欄の上に開く):
+
+| クラス | 要素 |
+|--------|------|
+| `.chat-picker` | 一覧全体 (幅・位置は画面の大きさから計算して `style` で渡す。大きさの単位は `--chat-cell`) |
+| `.chat-picker-scroll` / `.chat-picker-group` | スクロールする部分 / チャンネルごとのまとまり |
+| `.chat-picker-group-head` (`.chat-picker-group-icon` / `.chat-picker-group-name` / `.chat-picker-platform`) | まとまりの見出し (アイコン / チャンネル名 / プラットフォーム名) |
+| `.chat-picker-grid` / `.chat-picker-item` | 並び / 1 つのスタンプ (絵文字は `.chat-picker-emoji` も付く) |
+| `.chat-picker-subtitle` | 絵文字の種類の見出し (顔・手など) |
+| `.chat-picker-foot` / `.chat-picker-search` | 下の部分 / 検索欄 |
+| `.chat-picker-tabs` / `.chat-picker-tab` (`.active`) | 下の切り替え (最近使ったもの・このチャンネル・すべて・グローバル・絵文字。YouTube は絵文字だけ) |
 
 ### 3.9 設定パネル
 
@@ -420,31 +463,37 @@ LiveFake の配色は以下の CSS 変数で構成されており、これを上
 
 ### 3.12 ビュワー
 
-板タブの左端の「ビュワー」（Twitch のチャットと配信ホワイトリストの ID のレスをまとめて表示）。
+板タブの左端の「ビュワー」（Twitch・YouTube のチャットと、配信ホワイトリストの ID のレス、「選んだスレを流す」がオンのときは選んだスレのレスをまとめて表示）。
 
 ```text
 .board-tab.viewer-tab                       板タブの「ビュワー」
+.viewer-latest.viewer-latest-top            上の段 (新着レスペインの場所) の「スレの最新レス」の欄 (ビュワーのときだけ)
+├─ .viewer-latest-head / .viewer-latest-hint    見出し / 説明
+├─ .viewer-latest-list                          一覧
+│   ├─ .viewer-latest-note                          「選んだスレのレスはビュワーに流しています」
+│   └─ .viewer-latest-item.src-…                    1件 (1行)
+│       ├─ .viewer-site / .viewer-board / .viewer-latest-title / .viewer-no    出どころ / 板 / スレタイ / レス番号
+│       ├─ .viewer-latest-text                          本文 (収まらないときは省く)
+│       ├─ .viewer-time / .viewer-uid / .viewer-id-count (.id-count-some / .id-count-many)   日時 / ID / 書き込み回数
+│       └─ .viewer-latest-wl                            「WLに入れる」ボタン
+└─ (直後の .splitter-h.new-arrival-splitter)    高さを変えるつまみ
 .pane.viewer (#viewerPane)                  ビュワー全体
 ├─ .viewer-toolbar                              上部の切り替え
 │   ├─ .viewer-chip.src-twitch / .src-youtube / .src-5ch / .src-shitaraba / .src-jpnkn   出どころの切り替え (オンは :has(input:checked))
-│   ├─ .viewer-toggle                               読み上げ方・最新レス欄・自動スクロール
-│   └─ .viewer-grow                                 間を空ける要素
+│   ├─ .viewer-chip.viewer-all-toggle (.on)         「選んだスレを流す」(オンのとき .on)
+│   ├─ .viewer-toggle                               自動スクロール
+│   ├─ .viewer-grow                                 間を空ける要素
+│   └─ .youtube-quota-chip                          YouTube の API の使用量 (YouTube タブを開いているとき。3.13 参照)
 ├─ .viewer-list                                 表示の一覧
 │   ├─ .viewer-empty                                まだ何も無いときの説明
 │   └─ .viewer-item.src-…                           1件 (イベントは .viewer-event .ev-sub などが付く)
 │       ├─ .viewer-meta                                 見出し
-│       │   ├─ .viewer-site / .viewer-where / .viewer-no    出どころ (イベントは種類名) / 板・スレ・チャンネル / レス番号
+│       │   ├─ .viewer-site / .viewer-board / .viewer-where / .viewer-no    出どころ (イベントは種類名) / 板 / スレ・チャンネル / レス番号
 │       │   ├─ .viewer-badges > img                         Twitch のバッジ
-│       │   └─ .viewer-name / .viewer-uid / .viewer-time     名前 / ID / 時刻
+│       │   └─ .viewer-name / .viewer-mail / .viewer-time / .viewer-uid / .viewer-id-count   名前 / メール欄 / 時刻 / ID / 書き込み回数
 │       ├─ .viewer-event-summary                        イベントの要約 (「〇〇さんがサブスクしました」など)
 │       ├─ .viewer-text                                 本文 (img.twitch-emote / .giant、サムネイル .response-thumbs-row・リンクカード .ogp-card を含む)
 │       └─ .viewer-media-reveal                         「画像・カードを表示」ボタン (Twitch をクリックで読み込む設定のとき)
-└─ .viewer-latest                               下の「スレの最新レス」欄
-    ├─ .viewer-latest-resize                        高さを変える上端のつまみ
-    ├─ .viewer-latest-head / .viewer-latest-hint    見出し / 説明
-    └─ .viewer-latest-list → .viewer-latest-item        一覧 → 1件
-        ├─ .viewer-latest-text                          本文
-        └─ .viewer-latest-wl                            「WLに入れる」ボタン
 ```
 
 文字の大きさ・フォント・太字は 設定 > ビュワー > 表示 から `--viewer-fs` / `--viewer-latest-fs` / `--viewer-font` / `--viewer-weight` として渡しています
@@ -458,10 +507,24 @@ LiveFake の配色は以下の CSS 変数で構成されており、これを上
 | `.tab-tts-off` | 読み上げをオフにしたタブの印 |
 | `.menu-badge` | 新しいバージョンがあるときのヘルプメニューの印 |
 | `.ogp-card-thumb-failed` | リンクカードの画像が読み込めなかったとき (既定では画像の枠ごと隠す) |
+| `.ogp-card.ogp-card-skeleton` / `.ogp-card-skel-img` | リンクカードを読み込んでいる間の仮のカード / その画像の枠 (本物のカードと同じ高さ) |
+| `.youtube-quota-chip` (`.warn` / `.danger`) / `.yt-mark` | YouTube の API の使用量 (YouTube タブのタイトルの帯・ビュワーの上の段。80% で `.warn`、95% で `.danger`) / その中の ▶ の印 |
+| `.yt-status-banner` (`.yt-status-stopped` / `.yt-status-ended` / `.yt-status-retrying`) | 受信が止まっている YouTube タブの、タイトルの下の帯 (理由と「つなぎ直す」「タブを閉じる」) |
 | `.thread-tab-close` / `.title-action-btn` / `.tool-bar button` | タブの × / スレタイバー・新着レスペインのボタン / ツールバーのボタン（常に薄い枠が付く） |
 
 字幕ウィンドウ（`floating.css`）では、Twitch のスタンプは `img.twitch-emote` (`.giant`)、バッジは `img.sub-badge` です。
 大きさは 設定 > 字幕 > 表示 の「Twitch のスタンプの大きさ」から `--tw-emote` / `--tw-giant` として渡されます。
+
+字幕ウィンドウのそのほかの部品:
+
+| セレクタ | 要素 |
+|---|---|
+| `#subtitleContent` / `#subtitleMeta` / `#subtitleBody` | 中身全体 / 上の行 (名前・レス番など) / 本文 |
+| `#subtitleNextBtn` / `#subtitleStatus` | ▶ (次のレス) ボタン / 「⏸ 停止中」などの表示 |
+| `body[data-frame="normal"]` / `[data-frame="corners"]` / `[data-frame="none"]` | 字幕の枠 (設定 > 字幕 > 枠・大きさ) |
+| `.frame-corner.tl` / `.tr` / `.bl` / `.br` | 「四隅だけ」のときの四隅の印 (つかむと大きさを変えられる) |
+| `#subtitleMenu` | 右クリックのメニュー (「枠・大きさの設定を開く」「位置をリセット」) |
+| `body.no-shadow` | 文字の影をオフにしたとき (設定 > 字幕 > 表示) |
 
 ---
 
@@ -519,6 +582,10 @@ LiveFake の配色は以下の CSS 変数で構成されており、これを上
 ```
 
 ### 4.7 リンクカードの見た目を変える
+
+リンクカードは、表示されたときに下のレスがずれないよう、高さをそろえています
+(`.ogp-card` は `min-height: 98px`、タイトル・説明はいつも2行分、サイト名は1行分の場所を取り、サムネイルは 96×96px。読み込み中の仮のカードも同じ高さ)。
+高さが変わる指定 (行数・文字の大きさ・サムネイルの大きさ) をすると、読み込み中の仮のカードと高さが合わず、表示されたときにずれることがあります。
 
 ```css
 .ogp-card, .tweet-card {

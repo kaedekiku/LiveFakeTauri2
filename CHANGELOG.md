@@ -2,6 +2,101 @@
 
 リリース済みバージョンの更新内容です (新しい順)。各バージョンの要約は README の「最新の更新」と GitHub のリリースページにあります。
 
+## v0.0.121 (2026/10/22)
+
+### 概要
+
+**YouTube のチャットに書き込めるようになり、API の使用量 (クォータ) を見ながら長い配信でも受信できるようになりました。**
+
+#### YouTube
+
+- **チャットへの書き込み (任意)**: YouTube タブの下の書き込み欄から書き込めます。200 文字まで・絵文字の一覧あり・Ctrl+Enter で送信 (Enter では送りません)。
+  Twitch と同じく送る前に毎回確認し、自分の書き込みはすぐタブに出ます。1回の書き込みで API の使用量を 20 使います
+  - 使うには、**自分の Google Cloud プロジェクトに OAuth クライアント (種類「テレビと入力が限られたデバイス」) を作り**、設定 > YouTube > 書き込み に ID とシークレットを入れて「Google にログイン」します
+    (同意画面を「外部」で作り、テストユーザーに自分のアカウントを追加します。手順は設定画面と [説明書](https://github.com/kaedekiku/LiveFakeTauri2/blob/main/docs/USER_MANUAL.md) にあります)
+  - 「アクセスをブロック」(エラー 403: access_denied) と出たら、テストユーザーに自分のアカウントが入っていません。同意画面が「テスト」のままだと、7 日でログインが切れます (もう一度ログインすれば使えます)
+  - **このログインで与える許可 (YouTube アカウントの管理) は、チャットへの書き込みだけでなくチャンネルの操作全体に及びます。** LiveFake はチャンネル名の確認・チャットの ID の確認・書き込みにしか使いませんが、
+    心配なときは書き込み用のサブのチャンネル (ブランド アカウント) でログインしてください。ログイン情報は暗号化してこの PC に保存します
+- **API の使用量の目安**: YouTube タブのタイトルの帯とビュワーの上の段に「▶ YouTube API 使用量 / 上限 (%)」を出します。80% で橙・95% で赤になり、お知らせも出ます。押すと設定が開きます
+- **長い配信に合わせてコメントを読み込む間隔を自動で決める**: 設定 > YouTube > 使用量・間隔 で「決めた時間もつように」を選び、「もたせる時間」(配信の予定時間) を入れると、
+  1 日の上限 (既定 10,000。日本時間の16時 (冬は17時) に戻る) の残りを割り振って間隔を延ばします (例: 上限が戻った直後に 8 時間なら 15 秒ごと)。
+  値を変えると「実際に読み込む間隔」がその場で変わり、青く光って示します
+- **受信できない理由を知らせる**: youtube.com のトップやチャンネルの URL を入れたとき、開いた配信が普通の動画・終わった配信・チャットがオフだったときに、理由をダイアログで出します。
+  受信が止まっているタブには、理由の帯と「つなぎ直す」「タブを閉じる」が出ます
+- 「取得の間隔」を「コメントを読み込む間隔」に改め、設定 > YouTube を節タブ (受信 / 使用量・間隔 / 書き込み / 読み上げ / イベント) に分けました
+
+#### 新機能
+
+- **ビュワーの「選んだスレを流す」**: 設定 > 接続 の「ビュワー」のチェック (またはタブの右クリック) で選んだスレのレスを、ホワイトリストに関係なくビュワーに流します (開いたスレは既定で選ばれています。OBS 表示には今までどおりチャットとホワイトリストの分だけ)
+- **字幕の枠**: 「通常 / 四隅だけ / 枠なし」から選べます (設定 > 字幕 > 枠・大きさ)。幅・高さの数値での指定、字幕の上の右クリックからのメニューも追加。文字の影 (ドロップシャドウ) もオフにできます
+- **タブの幅をそろえる** (既定オン。板タブ 140px・スレタブ 180px。設定 > 表示 > 全般)
+
+#### 変更
+
+- ビュワーの「スレの最新レス」の欄を、新着レスペインの場所 (上の段) に移しました。開閉はアドレスバーの行の「新着レス」ボタンで行います
+
+#### 修正
+
+- **2chAPIProxy などのプロキシを使っているとき、5ch に同じ書き込みが2回されることがある問題**
+- リンクカードが表示されたときに、下のレスの位置がずれる問題
+
+詳しい内容は [CHANGELOG](https://github.com/kaedekiku/LiveFakeTauri2/blob/main/CHANGELOG.md)、使い方は [説明書](https://github.com/kaedekiku/LiveFakeTauri2/blob/main/docs/USER_MANUAL.md) を参照してください。
+
+### 詳しい内容
+
+#### YouTube
+
+- **チャットに書き込めるようになりました** (任意)。設定 > YouTube > 書き込み で、自分の Google Cloud プロジェクトに作った OAuth クライアント
+  (種類「テレビと入力が限られたデバイス」) の ID とシークレットを入れ、「Google にログイン」→ ブラウザに表示されたコードを入れて許可します。
+  - 準備の手順 (同意画面を「外部」で作る → テストユーザーに自分を追加 → クライアントを作る) は設定画面と説明書に書いてあります
+  - 書き込みは YouTube タブの下の書き込み欄から。200 文字まで・絵文字の一覧あり・Ctrl+Enter で送信 (Enter では送りません)。Twitch と同じく、送る前に毎回確認します
+  - 自分の書き込みは送った時点でタブに出ます (あとで受信に同じ発言が届いても二重には出しません)
+  - 1回の書き込みで API の使用量 (クォータ) を 20 使います (コメントの読み込み 4 回分)
+  - **求める許可 (YouTube アカウントの管理) は、チャットへの書き込みだけでなくチャンネルの操作全体に及びます**。LiveFake はチャンネル名の確認・チャットの ID の確認・書き込みにしか使いませんが、
+    心配なときは書き込み用のサブのチャンネル (ブランド アカウント) でログインしてください。ログイン情報は暗号化してこの PC に保存します
+  - 同意画面が「テスト」のままだと、7 日でログインが切れます (もう一度ログインすれば使えます)。「アクセスをブロック」(403 access_denied) と出たら、テストユーザーに自分のアカウントを追加してください
+- **API の使用量 (クォータ) の目安を出すようにしました**。YouTube タブのタイトルの帯と、ビュワーの上の段 (YouTube タブを開いているとき) に「▶ YouTube API 使用量 / 上限 (%)」を出します。
+  80% で橙・95% で赤になり、そのときにお知らせします。押すと 設定 > YouTube > 使用量・間隔 が開きます。LiveFake が呼んだ分だけを数えます (Google Cloud の値に合わせることもできます)
+- **コメントを読み込む間隔を「決めた時間もつように」自動で決められるようにしました** (設定 > YouTube > 使用量・間隔)。「もたせる時間」を入れると、残りの量を割り振って間隔を延ばします
+  (例: 上限が戻った直後に 8 時間なら 15 秒ごと)。値を変えると「→ 実際に読み込む間隔」がその場で変わり、変わった値は青く光ります。もたないときはそう表示します。
+  ログイン中は「書き込み用に残す量」(既定 20 回分) をこの計算から除きます
+- 「取得の間隔」を「**コメントを読み込む間隔**」に改め、「YouTube に新しいコメントを問い合わせる間隔」と説明を付けました
+- **受信できない理由が分かるようにしました**: youtube.com のトップ・チャンネルなど、ライブ配信でない URL を入れるとダイアログで知らせます (タブは開きません)。
+  開いたあとで「普通の動画・終わった配信・チャットがオフ」などと分かったときも、理由をダイアログで出し、「タブを閉じる」「開いたままにする」を選べます。
+  受信が止まっているタブには、タイトルの下に理由の帯と「つなぎ直す」「タブを閉じる」を出します
+- 設定 > YouTube を節タブ (受信 / 使用量・間隔 / 書き込み / 読み上げ / イベント) に分けました
+
+#### 新機能
+
+- ビュワーに「**選んだスレを流す**」を追加しました (既定オフ)。設定 > 接続 の各スレの「ビュワー」のチェック (またはスレのタブの右クリック →「ビュワーに流す」) で選んだスレのレスを、
+  配信ホワイトリストに関係なくビュワーに流します。開いたスレは既定で選ばれています。OBS 表示には今までどおりチャットとホワイトリストの ID のレスだけを送ります
+- 字幕の枠を「**通常 / 四隅だけ / 枠なし**」から選べるようにしました (設定 > 字幕 > 枠・大きさ)。四隅だけは四隅の印をつかんで大きさを変えられます。
+  幅・高さを数値で指定でき、字幕の上の右クリックから「枠・大きさの設定を開く」「位置をリセット」を選べます
+- 字幕の文字の影 (ドロップシャドウ) をオフにできるようにしました (設定 > 字幕 > 表示。既定はオン)
+- タブの幅をそろえられるようにしました (設定 > 表示 > 全般「タブの幅をそろえる」。既定はオン。板タブ 140px・スレタブ 180px、ビュワーと板未選択も含む)。
+  長い名前は「…」で切り、マウスを乗せると全体を表示します
+
+#### 変更
+
+- ビュワーの「スレの最新レス」の欄を、新着レスペインの場所 (上の段) に移しました。高さは新着レスペインとは別に覚えます。開閉はアドレスバーの行の「新着レス」ボタンで行います
+  (ビュワーの上の段の「最新レス欄」のチェックはなくしました)
+- 読み上げ方「レス番のみ」の説明に、したらば・JPNKN はサイト名が付くこと (「したらばN番さん」「ジャパンくんN番さん」) を書き足しました (読み方は変わっていません)
+
+#### 修正
+
+- **2chAPIProxy などのプロキシを使っているとき、5ch に同じ書き込みが2回されることがある問題を修正しました**
+  (書き込めたページが返ってきても「同意の画面」とみなして送り直していたため。送り直すのは、同意のフォームが見つかって同意を送ったときの1回だけにしました)
+- リンクカードが表示されたときに、下のレスの位置がずれる問題を直しました (カードの高さをそろえ、読み込み中は同じ形の仮のカードを出します。サムネイルは最初から 96px の場所を取ります)
+
+#### 設定ファイルの互換性
+
+- `settings.ini` に追加: `App.viewerAllResponses` (「選んだスレを流す」。既定オフ)・`App.tabWidthFixed` (既定オン)・`App.boardTabWidth` (既定 140)・`App.threadTabWidth` (既定 180)・
+  `App.youtubeTargetOn` (既定オフ)・`App.youtubeTargetHours` (既定 6)・`App.youtubeDailyQuota` (既定 10000)・`App.youtubeWriteReserve` (既定 20)
+- 画面の配置の保存 (`layout_prefs.json`) に追加: `subtitleTextShadow` (既定オン)・`subtitleFrameMode` (既定 normal)
+- 開いているタブの保存 (`session_tabs.json`) に、タブごとの `viewerOn` (未設定はオン) が追加されました
+- 新しいファイル: `data/youtube-quota.json` (使用量の目安。API キーは入れません)・`data/youtube-auth.bin` (書き込みのログイン情報)・`data/youtube-oauth-client.bin` (OAuth クライアント)。
+  どちらの .bin も Windows の機能で暗号化して保存します
+
 ## v0.0.120 (2026/10/18)
 
 ### 概要
@@ -974,7 +1069,6 @@
 
 - ファイル→終了でアプリが正しく終了するように修正
 
-- fix: typo embar -> ember in README
 
 - fix: remove duplicate deb/rpm deps and add package metadata
 
@@ -1390,7 +1484,7 @@
 
 - ui: tab drag-drop via mouse events, show date in last-fetch column
 
--      1	feat: add Linux support (X11/Wayland, RHEL/SLES/openSUSE/Debian)      2      3	- core-store: use XDG data directory on Linux (~/.local/share/Ember)      4	- ci: add rust-check-linux job with Tauri system dependencies      5	- scripts: add build_linux_release.sh (AppImage/deb/rpm)      6	- scripts: add bash test scripts (run_smoke_ui.sh, run_e2e.sh)      7	- latest.json: add linux-x64 platform placeholder      8	- README: document Linux build prerequisites and notes      9     10	Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+-      1	feat: add Linux support (X11/Wayland, RHEL/SLES/openSUSE/Debian)      2      3	- core-store: use XDG data directory on Linux      4	- ci: add rust-check-linux job with Tauri system dependencies      5	- scripts: add build_linux_release.sh (AppImage/deb/rpm)      6	- scripts: add bash test scripts (run_smoke_ui.sh, run_e2e.sh)      7	- latest.json: add linux-x64 platform placeholder      8	- README: document Linux build prerequisites and notes      9     10	Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 
 
 ## v0.0.3 (2026/03/23)
@@ -1423,13 +1517,10 @@
 
 - desktop: add landing and bmc links to about dialog
 
-- landing: switch pages project to ember-5ch
 
 - landing: add cloudflare pages deploy command
 
-- landing: rename page title to Ember
 
-- landing: rename hero brand to Ember
 
 - landing: add github link and favicon
 

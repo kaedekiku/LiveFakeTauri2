@@ -241,6 +241,9 @@ Tauri App (livefake)
 ### YouTube ライブ配信のチャット
 `youtube_methods` (この exe で使える取得方法) `youtube_key_status` `youtube_set_key` `youtube_clear_key` (API キー。DPAPI で暗号化して保存し、画面には設定済みかだけ返す)
 `youtube_sync` (開いている YouTube タブの配信に受信を合わせる) `youtube_reconnect`。受信はイベント `youtube-message` / `youtube-status`。
+公式 API の使用量: `youtube_quota_status` `youtube_quota_config` (何時間もたせるか・1日の上限・取っておく量。つなぎ直さない) `youtube_quota_set_used` `youtube_quota_restart_target`、
+イベント `youtube-quota`。日付と間隔の計算は `core_youtube::quota` (通信しない)。
+書き込み: `youtube_auth_status` `youtube_auth_set_client` `youtube_auth_clear_client` `youtube_auth_login` `youtube_auth_logout` `youtube_send_chat`、イベント `youtube-auth` (`youtube_auth.rs`)。
 OBS 表示から削除された発言を消す `overlay_retract`
 
 ### ウィンドウ・アプリ

@@ -86,6 +86,8 @@ type ThreadTab = {
   title: string;
   /** このタブ (スレ・Twitch チャンネル) の新着を読み上げない */
   ttsOff?: boolean;
+  /** ビュワーの「選んだスレを流す」の対象にする (掲示板のスレだけ)。既定 (未設定) はオン、false でオフ */
+  viewerOn?: boolean;
 };
 
 const stripHtmlForMatch = (html: string): string =>
@@ -419,6 +421,34 @@ const YOUTUBE_API_INTERVAL_DEFAULT = 10;
 const YOUTUBE_API_INTERVAL_MIN = 5;
 const YOUTUBE_API_INTERVAL_MAX = 120;
 const YOUTUBE_API_DAILY_QUOTA = 10000;
+const YOUTUBE_DAILY_QUOTA_MAX = 10000000;
+const YOUTUBE_TARGET_HOURS_DEFAULT = 6;
+const YOUTUBE_TARGET_HOURS_MAX = 48;
+const YOUTUBE_WRITE_RESERVE_DEFAULT = 20;
+const TAB_WIDTH_BOARD_DEFAULT = 140;
+const TAB_WIDTH_THREAD_DEFAULT = 180;
+const TAB_WIDTH_MIN = 60;
+const TAB_WIDTH_MAX = 400;
+const YOUTUBE_WRITE_RESERVE_MAX = 200;
+const YOUTUBE_INSERT_COST = 20;
+/** "youtube-quota" の中身を確かめて読む */
+const parseYoutubeQuota = (v: unknown) => {
+  if (!v || typeof v !== "object") return null;
+  const o = v as Record<string, unknown>;
+  const num = (k: string) => (typeof o[k] === "number" && Number.isFinite(o[k] as number) ? Math.max(0, o[k] as number) : 0);
+  return {
+    day: typeof o.day === "string" ? o.day.slice(0, 10) : "",
+    used: num("used"), limit: num("limit"), reserve: num("reserve"), active: num("active"), targetHours: num("targetHours"),
+    targetEnd: typeof o.targetEnd === "number" && Number.isFinite(o.targetEnd) ? o.targetEnd : null,
+    intervalSecs: num("intervalSecs"), reachable: o.reachable !== false, lastsSecs: num("lastsSecs"), untilResetSecs: num("untilResetSecs"),
+  };
+};
+/** 秒 → 「約N時間M分」 */
+const formatAboutDuration = (secs: number): string => {
+  const m = Math.max(0, Math.floor(secs / 60));
+  if (m < 60) return `約${m}分`;
+  return `約${Math.floor(m / 60)}時間${m % 60 ? `${m % 60}分` : ""}`;
+};
 // 同時に受信できる配信の数 (Rust 側と同じ)
 const YOUTUBE_MAX_VIDEOS = 10;
 // ----- チャットの書き込み欄の絵文字の一覧 (Unicode。Windows の絵文字パネル Win+. も使える) -----
@@ -868,14 +898,19 @@ const buildOgpCardHtml = (card: OgpCardData): string => {
     + `</span>`;
   return `<a class="body-link ogp-card th-cardlist" href="${url}" target="_blank" rel="noopener">`
     + img
+    // タイトル・説明・サイト名の欄は空でも出す (どのカードも同じ高さにして、表示されたときにずれないように)
     + `<span class="ogp-card-main">`
-    + (title ? `<span class="ogp-card-title title">${title}</span>` : "")
-    + (desc ? `<span class="ogp-card-desc description">${desc}</span>` : "")
-    + (site ? `<span class="ogp-card-site">${site}</span>` : "")
+    + `<span class="ogp-card-title title">${title}</span>`
+    + `<span class="ogp-card-desc description">${desc}</span>`
+    + `<span class="ogp-card-site">${site}</span>`
     + `</span>`
     + hover
     + `</a>`;
 };
+
+// 読み込み中に出す仮のカード (本物のカードと同じ高さ。表示されても高さが変わらない)
+const OGP_SKELETON_HTML = `<span class="ogp-card ogp-card-skeleton" aria-hidden="true"><span class="ogp-card-thumb"><span class="ogp-card-skel-img"></span></span>`
+  + `<span class="ogp-card-main"><span class="ogp-card-title"></span><span class="ogp-card-desc"></span><span class="ogp-card-site"></span></span></span>`;
 
 // X ポストカード (fetch_tweet_card コマンドの返却型)
 type TweetPhotoData = { url: string; width: number; height: number };
@@ -1474,6 +1509,79 @@ export default function App() {
   // つなぎ直しの合図 (API キーを変えた・「つなぎ直す」を押した)
   const [youtubeSyncVersion, setYoutubeSyncVersion] = useState(0);
   const [youtubeSpeakName, setYoutubeSpeakName] = useState(true);
+  // 公式 API の使用量 (クォータ): 何時間もたせるか (オフなら設定した間隔のまま)・1日の上限。使用量の目安は Rust 側が数えて "youtube-quota" で知らせる
+  const [youtubeTargetOn, setYoutubeTargetOn] = useState(false);
+  const [youtubeTargetHours, setYoutubeTargetHours] = useState(YOUTUBE_TARGET_HOURS_DEFAULT);
+  const [youtubeDailyQuota, setYoutubeDailyQuota] = useState(YOUTUBE_API_DAILY_QUOTA);
+  type YoutubeQuota = { day: string; used: number; limit: number; reserve: number; active: number; targetHours: number; targetEnd: number | null; intervalSecs: number; reachable: boolean; lastsSecs: number; untilResetSecs: number };
+  const [youtubeQuota, setYoutubeQuota] = useState<YoutubeQuota | null>(null);
+  const [youtubeQuotaUsedInput, setYoutubeQuotaUsedInput] = useState("");
+  // 書き込み (Google アカウントでログイン。トークン・シークレットは Rust 側だけが持つ)
+  type YoutubeAuthStatus = { clientSet: boolean; loggedIn: boolean; channelTitle: string; state: string; message: string; userCode: string; verificationUri: string };
+  const [youtubeAuth, setYoutubeAuth] = useState<YoutubeAuthStatus>({ clientSet: false, loggedIn: false, channelTitle: "", state: "none", message: "", userCode: "", verificationUri: "" });
+  const [youtubeAuthBusy, setYoutubeAuthBusy] = useState(false);
+  const [youtubeClientIdInput, setYoutubeClientIdInput] = useState("");
+  const [youtubeClientSecretInput, setYoutubeClientSecretInput] = useState("");
+  const [youtubeClientMsg, setYoutubeClientMsg] = useState<{ text: string; error: boolean } | null>(null);
+  // 書き込み用に残す回数 (この回数 × 20 を、取得の間隔の計算で使わずに残す。ログインしているときだけ)
+  const [youtubeWriteReserve, setYoutubeWriteReserve] = useState(YOUTUBE_WRITE_RESERVE_DEFAULT);
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void invoke<YoutubeAuthStatus>("youtube_auth_status").then((st) => { if (!disposed && st) setYoutubeAuth(st); }).catch((e) => console.warn("youtube_auth_status failed", e));
+    void listen<YoutubeAuthStatus>("youtube-auth", (ev) => { if (ev.payload) setYoutubeAuth(ev.payload); })
+      .then((u) => { if (disposed) u(); else unlisten = u; })
+      .catch((e) => console.warn("youtube-auth listen failed", e));
+    return () => { disposed = true; unlisten?.(); };
+  }, []);
+  const openGoogleDevicePage = (uri: string) => {
+    // 開くのは Google の確認ページだけ (Rust 側でも確かめている)
+    if (uri !== "https://www.google.com/device" && !uri.startsWith("https://www.google.com/device?")) return;
+    void invoke("open_external_url", { url: uri }).catch((e) => console.warn("open_external_url failed", e));
+  };
+  const saveYoutubeClient = () => {
+    const id = youtubeClientIdInput.trim();
+    const secret = youtubeClientSecretInput.trim();
+    if (!id || !secret) { setYoutubeClientMsg({ text: "クライアント ID とクライアント シークレットの両方を入れてください", error: true }); return; }
+    setYoutubeAuthBusy(true);
+    void invoke<YoutubeAuthStatus>("youtube_auth_set_client", { clientId: id, clientSecret: secret })
+      .then((st) => { setYoutubeAuth(st); setYoutubeClientIdInput(""); setYoutubeClientSecretInput(""); setYoutubeClientMsg({ text: "保存しました (暗号化して保存しています)", error: false }); })
+      .catch((e) => setYoutubeClientMsg({ text: String(e), error: true }))
+      .finally(() => setYoutubeAuthBusy(false));
+  };
+  const clearYoutubeClient = () => {
+    setAppConfirm({
+      title: "YouTube の OAuth クライアント",
+      message: "保存したクライアント ID とシークレットを削除しますか?\nログアウトもします (Google 側の許可も取り消します)。",
+      buttons: [
+        { label: "削除", danger: true, onClick: () => { setYoutubeAuthBusy(true); void invoke<YoutubeAuthStatus>("youtube_auth_clear_client").then((st) => { setYoutubeAuth(st); setYoutubeClientMsg({ text: "削除しました", error: false }); }).catch((e) => setYoutubeClientMsg({ text: String(e), error: true })).finally(() => setYoutubeAuthBusy(false)); } },
+        { label: "キャンセル", onClick: () => {} },
+      ],
+    });
+  };
+  const startYoutubeLogin = async () => {
+    setYoutubeAuthBusy(true);
+    try {
+      const st = await invoke<YoutubeAuthStatus>("youtube_auth_login");
+      setYoutubeAuth(st);
+      openGoogleDevicePage(st.verificationUri);
+    } catch (e) {
+      setYoutubeAuth((prev) => ({ ...prev, state: "error", message: String(e) }));
+    } finally { setYoutubeAuthBusy(false); }
+  };
+  const logoutYoutube = () => {
+    setAppConfirm({
+      title: "YouTube (Google) からログアウト",
+      message: "ログアウトしますか?\nGoogle 側の許可も取り消し、保存したログイン情報を削除します。",
+      buttons: [
+        { label: "ログアウト", danger: true, onClick: () => { setYoutubeAuthBusy(true); void invoke<YoutubeAuthStatus>("youtube_auth_logout").then((st) => setYoutubeAuth(st)).catch((e) => console.warn("youtube_auth_logout failed", e)).finally(() => setYoutubeAuthBusy(false)); } },
+        { label: "キャンセル", onClick: () => {} },
+      ],
+    });
+  };
+  // 使用量が 80% / 95% を超えたことを知らせたか (日ごと)
+  const youtubeQuotaWarnRef = useRef<{ day: string; level: number }>({ day: "", level: 0 });
   // 設定 > YouTube > イベント (data/youtube-events.json。登録した時点で保存)
   const [youtubeEventSettings, setYoutubeEventSettings] = useState<Record<string, TwitchEventSetting>>(defaultYoutubeEventSettings);
   const youtubeEventSettingsLoadedRef = useRef(false);
@@ -1520,6 +1628,10 @@ export default function App() {
   const [showBoardButtons, setShowBoardButtons] = useState(false);
   // 板タブ・スレタブの左端に、サイトごとの色の線を付ける (色は TchViewer と同じ)
   const [tabSiteColors, setTabSiteColors] = useState(true);
+  // タブの幅をそろえる (見た目を整えるため。既定はオン)。板タブ (ビュワー・板未選択を含む) とスレタブで別の幅
+  const [tabWidthFixed, setTabWidthFixed] = useState(true);
+  const [boardTabWidth, setBoardTabWidth] = useState(TAB_WIDTH_BOARD_DEFAULT);
+  const [threadTabWidth, setThreadTabWidth] = useState(TAB_WIDTH_THREAD_DEFAULT);
   const [keepSortOnRefresh, setKeepSortOnRefresh] = useState(false);
   const keepSortOnRefreshRef = useRef(keepSortOnRefresh);
   keepSortOnRefreshRef.current = keepSortOnRefresh;
@@ -1835,7 +1947,7 @@ export default function App() {
     posting: [],
     tts: [],
     "tts-dict": [{ id: "dict", label: "辞書" }, { id: "allow", label: "許可リスト" }, { id: "mute", label: "読み上げない辞書" }],
-    subtitle: [{ id: "view", label: "表示" }, { id: "cards", label: "カード" }, { id: "scroll", label: "スクロール" }],
+    subtitle: [{ id: "view", label: "表示" }, { id: "frame", label: "枠・大きさ" }, { id: "cards", label: "カード" }, { id: "scroll", label: "スクロール" }],
     proxy: [],
     ng: [{ id: "words", label: "ワード" }, { id: "ids", label: "ID" }, { id: "names", label: "名前" }, { id: "mails", label: "メール" }, { id: "thread_words", label: "スレタイ" }, { id: "image_words", label: "画像NG" }, { id: "invisible", label: "見えない文字" }],
     highlights: [{ id: "word", label: "ワード" }, { id: "name", label: "名前" }, { id: "id", label: "ID" }],
@@ -1843,7 +1955,7 @@ export default function App() {
     reset: [],
     info: [],
     twitch: [{ id: "main", label: "受信・読み上げ" }, { id: "emotes", label: "スタンプ・バッジ" }, { id: "events", label: "イベント" }, { id: "teach", label: "教育・忘却" }, { id: "login", label: "ログイン" }],
-    youtube: [{ id: "main", label: "受信・読み上げ" }, { id: "events", label: "イベント" }],
+    youtube: [{ id: "main", label: "受信" }, { id: "quota", label: "使用量・間隔" }, { id: "write", label: "書き込み" }, { id: "tts", label: "読み上げ" }, { id: "events", label: "イベント" }],
     connect: [],
     viewer: [{ id: "display", label: "表示" }, { id: "whitelist", label: "ホワイトリスト" }, { id: "obs", label: "OBS 表示" }],
   };
@@ -2038,6 +2150,11 @@ export default function App() {
   const viewerSeqRef = useRef(0);
   const [viewerFilter, setViewerFilter] = useState<Record<ViewerSource, boolean>>({ twitch: true, youtube: true, "5ch": true, shitaraba: true, jpnkn: true });
   const [viewerAutoScroll, setViewerAutoScroll] = useState(true);
+  // 開いているスレのレスをすべてビュワーに流す (オフのときは配信ホワイトリストの ID のレスだけ)。
+  // OBS 表示へは今までどおりチャットとホワイトリストの ID のレスだけを送る。オンのあいだは「スレの最新レス」の欄に追加しない
+  const [viewerAllResponses, setViewerAllResponses] = useState(false);
+  const viewerAllResponsesRef = useRef(false);
+  viewerAllResponsesRef.current = viewerAllResponses;
   // ビュワー (と最新レス欄) の文字。フォントは空ならアプリ全体のフォント、大きさは 0 ならレスの文字サイズに連動
   const [viewerFontFamily, setViewerFontFamily] = useState("");
   const [viewerFontPickerInput, setViewerFontPickerInput] = useState("");
@@ -2076,9 +2193,9 @@ export default function App() {
     e.preventDefault();
     const startY = e.clientY;
     const startH = latestPanelHeight;
-    const pane = (e.currentTarget as HTMLElement).closest(".pane.viewer") as HTMLElement | null;
-    const maxH = Math.max(100, (pane?.clientHeight ?? 600) - 120);
-    const onMove = (mv: MouseEvent) => setLatestPanelHeight(Math.round(Math.max(80, Math.min(maxH, startH - (mv.clientY - startY)))));
+    const body = (e.currentTarget as HTMLElement).closest(".right-body") as HTMLElement | null;
+    const maxH = Math.max(100, (body?.clientHeight ?? 600) - 150);
+    const onMove = (mv: MouseEvent) => setLatestPanelHeight(Math.round(Math.max(60, Math.min(maxH, startH + (mv.clientY - startY)))));
     const onUp = () => {
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup", onUp);
@@ -2255,6 +2372,8 @@ export default function App() {
       if (a.isAbone) continue;
       const source = viewerSourceOf(a.threadUrl);
       if (isChatSource(source) || broadcastWhitelistRef.current[a.id]) continue;
+      // 「選んだスレを流す」でビュワーに流したスレのレスは、同じものになるので追加しない
+      if (viewerAllResponsesRef.current && isTabViewerOn(a.threadUrl)) continue;
       add.push({ seq: ++viewerSeqRef.current, source, site: VIEWER_SITE_LABEL[source], board: boardNameOfUrl(a.threadUrl), title: decodeHtmlEntities(a.threadTitle), idSeq: a.idSeq, idCount: a.idCount, threadUrl: a.threadUrl, no: a.responseNo, uid: a.id, time: a.time, text: a.plain.replace(/\s+/g, " ").slice(0, 300) });
     }
     if (add.length === 0) return;
@@ -2270,7 +2389,7 @@ export default function App() {
     for (const a of arrivals) {
       if (a.isAbone) continue;
       const source = viewerSourceOf(a.threadUrl);
-      if (!isChatSource(source) && !broadcastWhitelistRef.current[a.id]) continue;
+      if (!isChatSource(source) && !broadcastWhitelistRef.current[a.id] && !(viewerAllResponsesRef.current && isTabViewerOn(a.threadUrl))) continue;
       add.push({
         seq: ++viewerSeqRef.current,
         source,
@@ -2295,9 +2414,11 @@ export default function App() {
       });
     }
     if (add.length === 0) return;
-    // OBS 表示へも同じものを送る (Twitch・YouTube は ID を出さない・番号は無い)
-    if (isTauriRuntime() && overlayEnabledRef.current) {
-      const items = add.map((it) => ({
+    // OBS 表示へも送る (Twitch・YouTube は ID を出さない・番号は無い)。掲示板のレスは配信ホワイトリストの ID のものだけ
+    // (「開いているスレのレスをすべて流す」がオンでも、OBS には全部は出さない)
+    const forOverlay = add.filter((it) => isChatSource(it.source) || broadcastWhitelistRef.current[it.uid]);
+    if (isTauriRuntime() && overlayEnabledRef.current && forOverlay.length > 0) {
+      const items = forOverlay.map((it) => ({
         source: it.source, site: it.site, no: isChatSource(it.source) ? null : it.no,
         name: it.name, uid: isChatSource(it.source) ? "" : it.uid, text: it.text, color: it.color,
         event: it.event ?? null,
@@ -2455,6 +2576,15 @@ export default function App() {
   const [subtitleBodyFontSize, setSubtitleBodyFontSize] = useState(28);
   const [subtitleMetaFontSize, setSubtitleMetaFontSize] = useState(12);
   const [subtitleOpacity, setSubtitleOpacity] = useState(0.85);
+  // 字幕の文字の影 (ドロップシャドウ)。既定はオン (明るい背景でも読めるように)
+  const [subtitleTextShadow, setSubtitleTextShadow] = useState(true);
+  // 字幕の枠: 通常 (Windows の線と影あり) / 四隅だけ / 枠なし
+  type SubtitleFrameMode = "normal" | "corners" | "none";
+  const [subtitleFrameMode, setSubtitleFrameMode] = useState<SubtitleFrameMode>("normal");
+  // 字幕ウィンドウの大きさ (設定画面の表示用。字幕を手で大きさ変更したときも "subtitle-size" で合わせる)
+  const [subtitleWinSize, setSubtitleWinSize] = useState<{ width: number; height: number }>({ width: 800, height: 200 });
+  const [subtitleSizeInput, setSubtitleSizeInput] = useState<{ width: string; height: string }>({ width: "", height: "" });
+  const [subtitleSizeMsg, setSubtitleSizeMsg] = useState("");
   const [subtitleAlwaysOnTop, setSubtitleAlwaysOnTop] = useState(true);
   const [subtitleIdFontSize, setSubtitleIdFontSize] = useState(0); // 0 = メタと同じ
   const [subtitleIdFontFamily, setSubtitleIdFontFamily] = useState("");
@@ -3331,9 +3461,8 @@ export default function App() {
           if (!active) return;
           const elRect = el.getBoundingClientRect();
           const cRect = container.getBoundingClientRect();
-          if (Math.abs(elRect.top - cRect.top) > 20) {
-            el.scrollIntoView({ block: "start", behavior: "instant" });
-          }
+          const delta = elRect.top - cRect.top;
+          if (Math.abs(delta) > 2) container.scrollTop += delta;
         };
 
         // Cancel only on real user input — programmatic scrolls and scrollTop
@@ -3348,7 +3477,7 @@ export default function App() {
           if (container.scrollHeight !== prevScrollHeight) {
             prevScrollHeight = container.scrollHeight;
             if (correctionTimer) clearTimeout(correctionTimer);
-            correctionTimer = setTimeout(correct, 150);
+            correctionTimer = setTimeout(correct, 0);
           }
         }, 100);
 
@@ -4213,6 +4342,8 @@ export default function App() {
       for (const b of batches) {
         for (const m of b.messages) {
           if (!m || typeof m.id !== "string" || typeof m.name !== "string" || typeof m.text !== "string") continue;
+          // 同じ発言 ID がもう出ていれば除く (自分の書き込みは送ったときにすぐ出すので、受信で届いた分は重ねない)
+          if (m.id && index.has(m.id)) continue;
           const channelId = typeof m.channelId === "string" && YT_CHANNEL_ID_RE.test(m.channelId) ? m.channelId : "";
           const color = youtubeRoleColor(m);
           if (channelId) {
@@ -4418,6 +4549,8 @@ export default function App() {
   })();
   const chatTargetLabel = (t: ChatTarget) => (t.platform === "twitch" ? `Twitch #${t.channel}` : `YouTube ${t.title.replace(/^YouTube\s*/, "") || t.video}`);
   const CHAT_MAX_CHARS_TWITCH = 500;
+  const CHAT_MAX_CHARS_YOUTUBE = 200;
+  const chatMaxChars = (t: ChatTarget) => (t.platform === "twitch" ? CHAT_MAX_CHARS_TWITCH : CHAT_MAX_CHARS_YOUTUBE);
   // 使えるスタンプ (ログインしている人が使えるもの。チャンネルごとに10分覚える)
   type UserEmote = { id: string; name: string; owner: string; ownerLogin?: string; emoteType: string; animated: boolean };
   const [userEmotes, setUserEmotes] = useState<{ channel: string; list: UserEmote[]; at: number; error: string }>({ channel: "", list: [], at: 0, error: "" });
@@ -4561,18 +4694,20 @@ export default function App() {
       setComposeResult({ ok: false, message: "送り先のタブと書き込み欄が食い違ったため、送りませんでした。もう一度確かめてください" });
       return;
     }
-    if (target.platform !== "twitch") {
-      setComposeResult({ ok: false, message: "YouTube への書き込みは準備中です" });
-      return;
-    }
     const text = composeBody.replace(/\s*\n\s*/g, " ").trim();
     if (!text) { setComposeResult({ ok: false, message: "本文が空です" }); return; }
-    if (Array.from(text).length > CHAT_MAX_CHARS_TWITCH) { setComposeResult({ ok: false, message: `長すぎます (${CHAT_MAX_CHARS_TWITCH} 文字まで)` }); return; }
-    if (!twitchAuth.loggedIn || !twitchAuth.canChat) {
+    const max = chatMaxChars(target);
+    if (Array.from(text).length > max) { setComposeResult({ ok: false, message: `長すぎます (${max} 文字まで)` }); return; }
+    if (target.platform === "twitch" && (!twitchAuth.loggedIn || !twitchAuth.canChat)) {
       setComposeResult({ ok: false, message: "Twitch に書き込むには、設定 > Twitch > ログイン でログイン (またはログインし直し) してください" });
       return;
     }
-    const reply = composeReply && composeReply.url === target.url ? composeReply : null;
+    if (target.platform === "youtube" && !youtubeAuth.loggedIn) {
+      setComposeResult({ ok: false, message: "YouTube に書き込むには、設定 > YouTube > 書き込み でログインしてください" });
+      return;
+    }
+    const reply = target.platform === "twitch" && composeReply && composeReply.url === target.url ? composeReply : null;
+    const loginName = target.platform === "twitch" ? twitchAuth.login : youtubeAuth.channelTitle;
     const doSend = async () => {
       // 確認の間にタブが変わっていないか、もう一度確かめる
       if ((threadTabsRef.current[activeTabIndexRef.current]?.threadUrl ?? "") !== target.url || composeDraftUrlRef.current !== target.url) {
@@ -4581,7 +4716,8 @@ export default function App() {
       }
       setComposeSubmitting(true);
       try {
-        await invoke<string>("twitch_send_chat", { channel: target.channel, message: text, replyTo: reply?.id ?? null });
+        if (target.platform === "twitch") await invoke<string>("twitch_send_chat", { channel: target.channel, message: text, replyTo: reply?.id ?? null });
+        else await invoke<string>("youtube_send_chat", { video: target.video, message: text });
         setComposeBody("");
         composeDraftsRef.current.delete(target.url);
         setComposeReply(null);
@@ -4599,7 +4735,7 @@ export default function App() {
     if (!chatSendConfirm) { void doSend(); return; }
     setAppConfirm({
       title: "チャットへの送信の確認",
-      message: `送信先: ${chatTargetLabel(target)}\nログイン: ${twitchAuth.login}${reply ? `\n返信先: ${reply.name}「${Array.from(reply.text).slice(0, 40).join("")}」` : ""}\n\n${text}`,
+      message: `送信先: ${chatTargetLabel(target)}\nログイン: ${loginName}${target.platform === "youtube" ? `\n(YouTube の API を ${YOUTUBE_INSERT_COST} 使います)` : ""}${reply ? `\n返信先: ${reply.name}「${Array.from(reply.text).slice(0, 40).join("")}」` : ""}\n\n${text}`,
       buttons: [
         { label: `${chatTargetLabel(target)} に送信`, primary: true, onClick: () => { void doSend(); } },
         { label: "キャンセル", onClick: () => {} },
@@ -4897,6 +5033,11 @@ export default function App() {
   };
   // タブごとの読み上げのオンオフ (スレ・Twitch チャンネル単位)。「このレスから読み上げ」は自分で選んだ操作なので対象外
   const isTabTtsOff = (url: string) => threadTabsRef.current.some((t) => t.threadUrl === url && t.ttsOff);
+  // ビュワーの「選んだスレを流す」の対象か (設定 > 接続 の「ビュワー」のチェック・タブの右クリックで切り替える)
+  const isTabViewerOn = (url: string) => threadTabsRef.current.some((t) => t.threadUrl === url && t.viewerOn !== false);
+  const toggleTabViewer = (url: string) => {
+    setThreadTabs((prev) => prev.map((t) => (t.threadUrl === url ? { ...t, viewerOn: t.viewerOn === false } : t)));
+  };
   const toggleTabTts = (url: string) => {
     setThreadTabs((prev) => prev.map((t) => (t.threadUrl === url ? { ...t, ttsOff: !t.ttsOff } : t)));
   };
@@ -5666,7 +5807,11 @@ export default function App() {
       return;
     }
     if (isYoutubeNonVideoInput(raw)) {
-      setStatus("YouTube はライブ配信の URL (youtube.com/watch?v=… / youtube.com/live/… / youtu.be/…) を入れてください");
+      setAppConfirm({
+        title: "YouTube のライブ配信の URL ではありません",
+        message: "YouTube のトップページ・チャンネルのページなどは開けません。\nライブ配信の URL を入れてください:\n・youtube.com/watch?v=…\n・youtube.com/live/…\n・youtu.be/…",
+        buttons: [{ label: "OK", primary: true, onClick: () => {} }],
+      });
       return;
     }
     const next = rewrite5chNet(raw.trim());
@@ -6312,6 +6457,8 @@ export default function App() {
           subtitleBodyFontSize?: number;
           subtitleMetaFontSize?: number;
           subtitleOpacity?: number;
+          subtitleTextShadow?: boolean;
+          subtitleFrameMode?: string;
           subtitleAlwaysOnTop?: boolean;
         };
         if (typeof parsed.boardPaneVisible === "boolean") setBoardPaneVisible(parsed.boardPaneVisible);
@@ -6390,6 +6537,8 @@ export default function App() {
         if (typeof parsed.subtitleBodyFontSize === "number") setSubtitleBodyFontSize(clamp(parsed.subtitleBodyFontSize, 10, 96));
         if (typeof parsed.subtitleMetaFontSize === "number") setSubtitleMetaFontSize(clamp(parsed.subtitleMetaFontSize, 8, 48));
         if (typeof parsed.subtitleOpacity === "number") setSubtitleOpacity(clamp(parsed.subtitleOpacity, 0, 1));
+        if (typeof parsed.subtitleTextShadow === "boolean") setSubtitleTextShadow(parsed.subtitleTextShadow);
+        if (parsed.subtitleFrameMode === "corners" || parsed.subtitleFrameMode === "none" || parsed.subtitleFrameMode === "normal") setSubtitleFrameMode(parsed.subtitleFrameMode);
         if (typeof parsed.subtitleAlwaysOnTop === "boolean") setSubtitleAlwaysOnTop(parsed.subtitleAlwaysOnTop);
       } catch { /* ignore */ }
   };
@@ -6938,6 +7087,7 @@ export default function App() {
       if (map["App.viewerFontFamily"] !== undefined) { const f = map["App.viewerFontFamily"].replace(/["\\;{}<>]/g, "").slice(0, 100); setViewerFontFamily(f); setViewerFontPickerInput(f); }
       if (map["App.viewerFontBold"] !== undefined) setViewerFontBold(map["App.viewerFontBold"] === "true");
       if (map["App.viewerCards"] !== undefined) setViewerCards(map["App.viewerCards"] !== "false");
+      if (map["App.viewerAllResponses"] !== undefined) setViewerAllResponses(map["App.viewerAllResponses"] === "true");
       if (map["App.viewerThumbs"] !== undefined) setViewerThumbs(map["App.viewerThumbs"] !== "false");
       if (map["App.viewerTwitchClickToLoad"] !== undefined) setViewerTwitchClickToLoad(map["App.viewerTwitchClickToLoad"] === "true");
       setViewerShow((prev) => {
@@ -6963,8 +7113,15 @@ export default function App() {
       if (map["App.youtubeMethod"] && /^[a-z]{1,20}$/.test(map["App.youtubeMethod"])) setYoutubeMethod(map["App.youtubeMethod"]);
       { const n = parseInt(map["App.youtubeApiInterval"] ?? "", 10); if (!isNaN(n)) setYoutubeApiInterval(Math.max(YOUTUBE_API_INTERVAL_MIN, Math.min(YOUTUBE_API_INTERVAL_MAX, n))); }
       if (map["App.youtubeSpeakName"]) setYoutubeSpeakName(map["App.youtubeSpeakName"] !== "false");
+      if (map["App.youtubeTargetOn"] !== undefined) setYoutubeTargetOn(map["App.youtubeTargetOn"] === "true");
+      { const n = parseInt(map["App.youtubeTargetHours"] ?? "", 10); if (!isNaN(n)) setYoutubeTargetHours(Math.max(1, Math.min(YOUTUBE_TARGET_HOURS_MAX, n))); }
+      { const n = parseInt(map["App.youtubeDailyQuota"] ?? "", 10); if (!isNaN(n)) setYoutubeDailyQuota(Math.max(1, Math.min(YOUTUBE_DAILY_QUOTA_MAX, n))); }
+      { const n = parseInt(map["App.youtubeWriteReserve"] ?? "", 10); if (!isNaN(n)) setYoutubeWriteReserve(Math.max(0, Math.min(YOUTUBE_WRITE_RESERVE_MAX, n))); }
       if (map["App.chatSendConfirm"] !== undefined) setChatSendConfirm(map["App.chatSendConfirm"] !== "false");
       if (map["App.tabSiteColors"]) setTabSiteColors(map["App.tabSiteColors"] !== "false");
+      if (map["App.tabWidthFixed"] !== undefined) setTabWidthFixed(map["App.tabWidthFixed"] !== "false");
+      { const n = parseInt(map["App.boardTabWidth"] ?? "", 10); if (!isNaN(n)) setBoardTabWidth(Math.max(TAB_WIDTH_MIN, Math.min(TAB_WIDTH_MAX, n))); }
+      { const n = parseInt(map["App.threadTabWidth"] ?? "", 10); if (!isNaN(n)) setThreadTabWidth(Math.max(TAB_WIDTH_MIN, Math.min(TAB_WIDTH_MAX, n))); }
       if (map["App.autoUpdateCheck"]) setAutoUpdateCheck(map["App.autoUpdateCheck"] !== "false");
       if (map["App.lastUpdateCheck"] !== undefined) setLastUpdateCheck(map["App.lastUpdateCheck"]);
       if (map["App.knownLatestVersion"] !== undefined) setKnownLatestVersion(map["App.knownLatestVersion"]);
@@ -7229,6 +7386,7 @@ export default function App() {
         heights.set(el, r.height);
         const delta = r.height - prev;
         if (Math.abs(delta) < 0.5) continue;
+        if (el.dataset.ogpState === "done" && r.height > 0) remember(cardHeightCacheRef.current, keyOf(el), r.height, 3000);
         if (delta > 0 && container.scrollTop + container.clientHeight >= container.scrollHeight - delta - 4) { stick = true; continue; }
         // 見ている位置 (画面の上端) より上から始まるカード (全体が隠れているもの・上端にまたがるもの)。
         // その下の、見えているレスが動かないように差を足し引きする
@@ -7252,6 +7410,7 @@ export default function App() {
           if (h > 0 && slot.isConnected) remember(cardHeightCacheRef.current, keyOf(slot), h, 3000);
         });
       } else {
+        slot.innerHTML = "";
         slot.dataset.ogpState = "empty";
       }
     };
@@ -7285,9 +7444,10 @@ export default function App() {
           watch(slot);
           return;
         }
-        // ③ 覚えている高さで枠を空ける
+        // ③ 覚えている高さで枠を空ける。リンクカードは本物と同じ形の仮のカードを出す (高さが同じなので表示されてもずれない)
         const h = cardHeightCacheRef.current.get(key);
         if (h) slot.style.minHeight = `${Math.round(h)}px`;
+        if (!slot.dataset.tweetId && !slot.firstChild) slot.innerHTML = OGP_SKELETON_HTML;
         io.observe(slot);
       });
     };
@@ -7389,6 +7549,8 @@ export default function App() {
         arrivalPausedRef.current = false;
         setArrivalPaused(false);
         advanceToNextArrivalRef.current();
+      } else if (action === "open-settings") {
+        openSubtitleFrameSettingsRef.current();
       }
     }).then((fn) => { if (disposed) fn(); else unlisten = fn; }).catch((e) => console.warn("subtitle-control listen failed", e));
     return () => { disposed = true; if (unlisten) unlisten(); };
@@ -7451,6 +7613,19 @@ export default function App() {
         setThreadTabs((prev) => (prev.some((t) => t.threadUrl === url && t.title !== name) ? prev.map((t) => (t.threadUrl === url ? { ...t, title: name } : t)) : prev));
       }
     }), "youtube-status listen failed");
+    keep(listen<Record<string, unknown>>("youtube-quota", (ev) => {
+      const q = parseYoutubeQuota(ev.payload);
+      if (!q) return;
+      setYoutubeQuota(q);
+      const ratio = q.limit > 0 ? q.used / q.limit : 0;
+      const level = ratio >= 0.95 ? 2 : ratio >= 0.8 ? 1 : 0;
+      const w = youtubeQuotaWarnRef.current;
+      if (w.day !== q.day) { w.day = q.day; w.level = 0; }
+      if (level > w.level) {
+        w.level = level;
+        setStatus(`YouTube: 今日の API の使用量が上限の ${level === 2 ? 95 : 80}% を超えました (${q.used.toLocaleString()} / ${q.limit.toLocaleString()})。上限が戻るまで${formatAboutDuration(q.untilResetSecs)}`);
+      }
+    }), "youtube-quota listen failed");
     return () => {
       disposed = true;
       for (const fn of unlistens) fn();
@@ -7488,6 +7663,69 @@ export default function App() {
     const videos = youtubeVideosKey ? youtubeVideosKey.split(",") : [];
     void invoke<string[]>("youtube_sync", { videos, method: youtubeEffectiveMethod, minInterval: youtubeApiInterval }).catch((e) => console.warn("youtube_sync failed", e));
   }, [youtubeVideosKey, youtubeEffectiveMethod, youtubeApiInterval, youtubeSyncVersion, appSettingsReady, youtubeMethods.length]);
+  // 何時間もたせるか・1日の上限を Rust へ (つなぎ直さない。受信中のタスクが次に呼ぶときから効く)
+  useEffect(() => {
+    if (!isTauriRuntime() || !appSettingsReady) return;
+    void invoke("youtube_quota_config", { targetHours: youtubeTargetOn ? youtubeTargetHours : 0, dailyLimit: youtubeDailyQuota, reserve: youtubeAuth.loggedIn ? youtubeWriteReserve * YOUTUBE_INSERT_COST : 0 })
+      .then(() => invoke<unknown>("youtube_quota_status", { minInterval: youtubeApiInterval }))
+      .then((v) => { const q = parseYoutubeQuota(v); if (q) setYoutubeQuota(q); })
+      .catch((e) => console.warn("youtube_quota_config failed", e));
+  }, [youtubeTargetOn, youtubeTargetHours, youtubeDailyQuota, youtubeApiInterval, youtubeAuth.loggedIn, youtubeWriteReserve, appSettingsReady]);
+  const setYoutubeQuotaUsed = () => {
+    const n = Number(youtubeQuotaUsedInput.trim().replace(/[,，\s]/g, ""));
+    if (!Number.isInteger(n) || n < 0 || n > YOUTUBE_DAILY_QUOTA_MAX) { setStatus("使用量は 0 以上の整数で入力してください"); return; }
+    void invoke("youtube_quota_set_used", { used: n }).then(() => setYoutubeQuotaUsedInput("")).catch((e) => console.warn("youtube_quota_set_used failed", e));
+  };
+  const restartYoutubeTarget = () => {
+    if (isTauriRuntime()) void invoke("youtube_quota_restart_target").catch((e) => console.warn("youtube_quota_restart_target failed", e));
+  };
+  // 1つの配信について、使えない理由のダイアログは1回だけ出す (受信できたら、また出せるようにする)
+  const youtubeUnusablePromptedRef = useRef<Set<string>>(new Set());
+  const YOUTUBE_UNUSABLE_RE = /ライブ配信ではありません|配信は終わっています|チャットがありません|チャットがオフ|動画が見つかりません|チャットが見つかりません/;
+  useEffect(() => {
+    for (const [video, st] of Object.entries(youtubeStatusMap)) {
+      if (st.state === "live") { youtubeUnusablePromptedRef.current.delete(video); continue; }
+      if (st.state !== "stopped" || !YOUTUBE_UNUSABLE_RE.test(st.message) || youtubeUnusablePromptedRef.current.has(video)) continue;
+      const url = youtubeTabUrl(video);
+      const tab = threadTabsRef.current.find((t) => t.threadUrl === url);
+      if (!tab) continue;
+      youtubeUnusablePromptedRef.current.add(video);
+      setAppConfirm({
+        title: "この YouTube のチャットは受信できません",
+        message: `${tab.title}\n\n理由: ${st.message}\n\nタブを閉じますか?`,
+        buttons: [
+          { label: "タブを閉じる", primary: true, onClick: () => { const idx = threadTabsRef.current.findIndex((t) => t.threadUrl === url); if (idx >= 0) closeTab(idx); } },
+          { label: "開いたままにする", onClick: () => {} },
+        ],
+      });
+      break;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [youtubeStatusMap]);
+  // 使用量の目安の小さな表示 (YouTube タブの上部・ビュワーの上の段)。押すと 設定 > YouTube > 使用量・間隔 を開く
+  const youtubeQuotaChip = () => {
+    if (youtubeEffectiveMethod !== "api" || !youtubeQuota) return null;
+    const q = youtubeQuota;
+    const ratio = q.limit > 0 ? q.used / q.limit : 0;
+    const pct = Math.min(100, Math.floor(ratio * 1000) / 10);
+    const warn = ratio >= 0.95 ? " danger" : ratio >= 0.8 || (q.targetHours > 0 && q.active > 0 && !q.reachable) ? " warn" : "";
+    const tip = [
+      `今日の YouTube API の使用量の目安: ${q.used.toLocaleString()} / ${q.limit.toLocaleString()} (${pct}%。LiveFake が呼んだ分)`,
+      q.active > 0 ? `${q.intervalSecs}秒ごとにコメントを読み込み中 (受信中の配信 ${q.active} つ)。このままなら残りは${formatAboutDuration(q.lastsSecs)}もちます` : "",
+      q.targetEnd ? `目標: ${new Date(q.targetEnd).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" })} まで${q.reachable ? "" : " (もたない見込み)"}` : "",
+      `上限が戻るまで${formatAboutDuration(q.untilResetSecs)}`,
+      "押すと 設定 > YouTube > 使用量・間隔 を開きます",
+    ].filter(Boolean).join("\n");
+    return (
+      <button
+        className={`youtube-quota-chip${warn}`}
+        title={tip}
+        onClick={(e) => { e.stopPropagation(); setSettingsOpen(true); switchSettingsCategory("youtube"); setSettingsSection("quota"); }}
+      >
+        <span className="yt-mark" aria-hidden="true">▶</span>YouTube API {q.used.toLocaleString()} / {q.limit.toLocaleString()} ({pct}%)
+      </button>
+    );
+  };
   const reconnectYoutube = (video: string) => {
     if (!isTauriRuntime()) return;
     void invoke("youtube_reconnect", { video }).then(() => setYoutubeSyncVersion((v) => v + 1)).catch((e) => console.warn("youtube_reconnect failed", e));
@@ -7590,6 +7828,7 @@ export default function App() {
       "App.viewerFontSize": String(viewerFontSize),
       "App.viewerFontBold": String(viewerFontBold),
       "App.viewerCards": String(viewerCards),
+      "App.viewerAllResponses": String(viewerAllResponses),
       "App.viewerThumbs": String(viewerThumbs),
       "App.viewerTwitchClickToLoad": String(viewerTwitchClickToLoad),
       ...Object.fromEntries(VIEWER_SHOW_LABELS.map(([k]) => [`App.viewerShow${k[0].toUpperCase()}${k.slice(1)}`, String(viewerShow[k])])),
@@ -7600,8 +7839,15 @@ export default function App() {
       "App.youtubeMethod": youtubeMethod,
       "App.youtubeApiInterval": String(youtubeApiInterval),
       "App.youtubeSpeakName": String(youtubeSpeakName),
+      "App.youtubeTargetOn": String(youtubeTargetOn),
+      "App.youtubeTargetHours": String(youtubeTargetHours),
+      "App.youtubeDailyQuota": String(youtubeDailyQuota),
+      "App.youtubeWriteReserve": String(youtubeWriteReserve),
       "App.chatSendConfirm": String(chatSendConfirm),
       "App.tabSiteColors": String(tabSiteColors),
+      "App.tabWidthFixed": String(tabWidthFixed),
+      "App.boardTabWidth": String(boardTabWidth),
+      "App.threadTabWidth": String(threadTabWidth),
       "App.autoUpdateCheck": String(autoUpdateCheck),
       "App.lastUpdateCheck": lastUpdateCheck,
       "App.knownLatestVersion": knownLatestVersion,
@@ -7642,7 +7888,7 @@ export default function App() {
   useEffect(() => {
     if (!isTauriRuntime() || !appSettingsLoadedRef.current || settingsOpenRef.current) return;
     void invoke("save_app_settings", { settings: buildAppSettingsMap() }).catch(() => {});
-  }, [responsesFontSize, responseGap, autoRefreshInterval, autoRefreshEnabled, autoScrollEnabled, smoothScroll, maxOpenTabs, logRetentionDays, tabSiteColors, autoUpdateCheck, lastUpdateCheck, knownLatestVersion, webviewCacheMb, overlayEnabled, overlayPort, latestPanelHeight, latestPanelOpen, viewerFontFamily, viewerFontSize, viewerFontBold, viewerShow, latestShow, viewerCards, viewerThumbs, viewerTwitchClickToLoad, twitchSpeakName, twitchBadgesEnabled, twitchEmoteSize, twitchGiantEmoteSize, twitchEmoteSpeak, twitchEmoteMax, subtitleEmoteSize, subtitleGiantEmoteSize, boardEmotesEnabled, twitchTeachEnabled, twitchTeachAnnounce, twitchMaxQueuedArrivals, twitchMaxTtsBacklog, youtubeMethod, youtubeApiInterval, youtubeSpeakName, chatSendConfirm, imageSaveFolder, bbsmenuUrl, shitarabaHost, jpnknHost,
+  }, [responsesFontSize, responseGap, autoRefreshInterval, autoRefreshEnabled, autoScrollEnabled, smoothScroll, maxOpenTabs, logRetentionDays, tabSiteColors, tabWidthFixed, boardTabWidth, threadTabWidth, autoUpdateCheck, lastUpdateCheck, knownLatestVersion, webviewCacheMb, overlayEnabled, overlayPort, latestPanelHeight, latestPanelOpen, viewerFontFamily, viewerFontSize, viewerFontBold, viewerShow, latestShow, viewerCards, viewerAllResponses, viewerThumbs, viewerTwitchClickToLoad, twitchSpeakName, twitchBadgesEnabled, twitchEmoteSize, twitchGiantEmoteSize, twitchEmoteSpeak, twitchEmoteMax, subtitleEmoteSize, subtitleGiantEmoteSize, boardEmotesEnabled, twitchTeachEnabled, twitchTeachAnnounce, twitchMaxQueuedArrivals, twitchMaxTtsBacklog, youtubeMethod, youtubeApiInterval, youtubeSpeakName, youtubeTargetOn, youtubeTargetHours, youtubeDailyQuota, youtubeWriteReserve, chatSendConfirm, imageSaveFolder, bbsmenuUrl, shitarabaHost, jpnknHost,
       mainAlwaysOnBottom, cssAllowExternalUrls, streamMaskEnabled, ngAboneSpeakEnabled,
       ttsMode, ttsEnabled, ttsMaxReadLength, ttsUrlOmitEnabled, ttsBoardMode, sapiVoiceIndex, sapiRate, sapiVolume,
       voicevoxEndpoint, voicevoxSpeakerId, voicevoxSpeedScale, voicevoxPitchScale, voicevoxIntonationScale, voicevoxVolumeScale,
@@ -7709,6 +7955,8 @@ export default function App() {
       subtitleBodyFontSize,
       subtitleMetaFontSize,
       subtitleOpacity,
+      subtitleTextShadow,
+      subtitleFrameMode,
       subtitleAlwaysOnTop,
   });
   useEffect(() => {
@@ -7716,7 +7964,7 @@ export default function App() {
     if (isTauriRuntime()) {
       void invoke("save_layout_prefs", { prefs: JSON.stringify(buildLayoutPrefsPayload()) }).catch(() => {});
     }
-  }, [boardPaneVisible, boardPanePx, threadPanePx, responseTopRatio, boardsFontSize, threadsFontSize, responsesFontSize, responsesHeaderFontSize, darkMode, fontFamily, fontBold, threadColWidths, showBoardButtons, keepSortOnRefresh, composeSubmitKey, imageSizeLimit, showImagePreview, hoverPreviewEnabled, ogpCardsEnabled, tweetCardsEnabled, arrivalCardsEnabled, subtitleCardsEnabled, arrivalTiming, subtitleTiming, subtitleSyncEnabled, mainHeaderVis, arrivalHeaderVis, subtitleHeaderVis, responseDividerAlways, settingsSearchHistory, selectedBoard, hoverPreviewDelay, thumbSize, restoreSession, autoRefreshInterval, autoScrollEnabled, newArrivalPaneOpen, newArrivalPaneHeight, newArrivalFontSize, resIdFontSize, resIdFontFamily, newArrivalIdFontSize, newArrivalIdFontFamily, subtitleIdFontSize, subtitleIdFontFamily, popupFontSize, popupMaxWidth, popupMaxHeight, composePanelPx, subtitleBodyFontSize, subtitleMetaFontSize, subtitleOpacity, subtitleAlwaysOnTop]);
+  }, [boardPaneVisible, boardPanePx, threadPanePx, responseTopRatio, boardsFontSize, threadsFontSize, responsesFontSize, responsesHeaderFontSize, darkMode, fontFamily, fontBold, threadColWidths, showBoardButtons, keepSortOnRefresh, composeSubmitKey, imageSizeLimit, showImagePreview, hoverPreviewEnabled, ogpCardsEnabled, tweetCardsEnabled, arrivalCardsEnabled, subtitleCardsEnabled, arrivalTiming, subtitleTiming, subtitleSyncEnabled, mainHeaderVis, arrivalHeaderVis, subtitleHeaderVis, responseDividerAlways, settingsSearchHistory, selectedBoard, hoverPreviewDelay, thumbSize, restoreSession, autoRefreshInterval, autoScrollEnabled, newArrivalPaneOpen, newArrivalPaneHeight, newArrivalFontSize, resIdFontSize, resIdFontFamily, newArrivalIdFontSize, newArrivalIdFontFamily, subtitleIdFontSize, subtitleIdFontFamily, popupFontSize, popupMaxWidth, popupMaxHeight, composePanelPx, subtitleBodyFontSize, subtitleMetaFontSize, subtitleOpacity, subtitleTextShadow, subtitleFrameMode, subtitleAlwaysOnTop]);
 
   // ===== 設定画面の保存 / 復元 / リセット / プリセット =====
   // 値の設定は変更した時点で画面に反映される (プレビュー) が、ファイルへの保存は「設定を保存」を押したときだけ行う。
@@ -7929,6 +8177,31 @@ export default function App() {
   useEffect(() => { if (isTauriRuntime() && subtitleVisibleRef.current) invoke("subtitle_font_size", { size: subtitleBodyFontSize }).catch((e) => console.warn("subtitle_font_size:", e)); }, [subtitleBodyFontSize]);
   useEffect(() => { if (isTauriRuntime() && subtitleVisibleRef.current) invoke("subtitle_meta_font_size", { size: subtitleMetaFontSize }).catch((e) => console.warn("subtitle_meta_font_size:", e)); }, [subtitleMetaFontSize]);
   useEffect(() => { if (isTauriRuntime() && subtitleVisibleRef.current) invoke("subtitle_opacity", { opacity: subtitleOpacity }).catch((e) => console.warn("subtitle_opacity:", e)); }, [subtitleOpacity]);
+  useEffect(() => { if (isTauriRuntime() && subtitleVisibleRef.current) invoke("subtitle_text_shadow", { enabled: subtitleTextShadow }).catch((e) => console.warn("subtitle_text_shadow:", e)); }, [subtitleTextShadow]);
+  useEffect(() => { if (isTauriRuntime() && subtitleVisibleRef.current) invoke("subtitle_frame", { mode: subtitleFrameMode }).catch((e) => console.warn("subtitle_frame:", e)); }, [subtitleFrameMode]);
+  const openSubtitleFrameSettingsRef = useRef<() => void>(() => {});
+  openSubtitleFrameSettingsRef.current = () => { setSettingsOpen(true); switchSettingsCategory("subtitle"); setSettingsSection("frame"); };
+  // 字幕ウィンドウの大きさ: 起動時に覚えている値を読み、手で変えたときは知らせを受けて合わせる
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void invoke<[number, number]>("subtitle_get_size").then((v) => { if (!disposed && Array.isArray(v)) setSubtitleWinSize({ width: Math.round(v[0]), height: Math.round(v[1]) }); }).catch((e) => console.warn("subtitle_get_size:", e));
+    void listen<{ width?: unknown; height?: unknown }>("subtitle-size", (ev) => {
+      const w = Number(ev.payload?.width), hgt = Number(ev.payload?.height);
+      if (Number.isFinite(w) && Number.isFinite(hgt)) setSubtitleWinSize({ width: Math.round(w), height: Math.round(hgt) });
+    }).then((u) => { if (disposed) u(); else unlisten = u; }).catch((e) => console.warn("subtitle-size listen failed", e));
+    return () => { disposed = true; unlisten?.(); };
+  }, []);
+  const applySubtitleSize = () => {
+    const w = Math.round(Number(subtitleSizeInput.width || subtitleWinSize.width));
+    const hgt = Math.round(Number(subtitleSizeInput.height || subtitleWinSize.height));
+    if (!Number.isFinite(w) || !Number.isFinite(hgt) || w < 120 || w > 10000 || hgt < 40 || hgt > 10000) { setSubtitleSizeMsg("幅は 120〜10000、高さは 40〜10000 の数で入れてください"); return; }
+    setSubtitleSizeMsg("");
+    void invoke("subtitle_set_size", { width: w, height: hgt })
+      .then(() => { setSubtitleWinSize({ width: w, height: hgt }); setSubtitleSizeInput({ width: "", height: "" }); })
+      .catch((e) => setSubtitleSizeMsg(String(e)));
+  };
   useEffect(() => { if (isTauriRuntime() && subtitleVisibleRef.current) invoke("subtitle_topmost", { enabled: subtitleAlwaysOnTop }).catch((e) => console.warn("subtitle_topmost:", e)); }, [subtitleAlwaysOnTop]);
   useEffect(() => { if (isTauriRuntime() && subtitleVisibleRef.current) invoke("subtitle_id_font_size", { size: subtitleIdFontSize }).catch((e) => console.warn("subtitle_id_font_size:", e)); }, [subtitleIdFontSize]);
   useEffect(() => { if (isTauriRuntime() && subtitleVisibleRef.current) invoke("subtitle_id_font_family", { family: subtitleIdFontFamily }).catch((e) => console.warn("subtitle_id_font_family:", e)); }, [subtitleIdFontFamily]);
@@ -8130,7 +8403,7 @@ export default function App() {
         <button onClick={() => setNgPanelOpen((v) => !v)}>NG</button>
         <span className="tool-sep" />
         {/* 掲示板の新着の読み上げ方 (どのタブでも切り替えられる。設定 > 読み上げ と同じもの) */}
-        <label className="tts-board-mode" title="掲示板の新着レスの読み上げ方 (設定 > 読み上げ と同じもの)。「レス番のみ」では、配信ホワイトリストの ID のレスは本文まで、それ以外は「レスN番さん」だけを読みます。Twitch・YouTube のチャットには関係しません">
+        <label className="tts-board-mode" title="掲示板の新着レスの読み上げ方 (設定 > 読み上げ と同じもの)。「レス番のみ」では、配信ホワイトリストの ID のレスは本文まで、それ以外は「レスN番さん」「したらばN番さん」「ジャパンくんN番さん」と番号だけを読みます。Twitch・YouTube のチャットには関係しません">
           読み上げ:
           <select value={ttsBoardMode} onChange={(e) => setTtsBoardMode(e.target.value === "whitelist" ? "whitelist" : "full")}>
             <option value="full">全文</option>
@@ -8154,6 +8427,8 @@ export default function App() {
                 if (isTauriRuntime()) invoke("subtitle_show").then(() => {
                   setTimeout(() => {
                     invoke("subtitle_opacity", { opacity: subtitleOpacity }).catch(() => {});
+                    invoke("subtitle_text_shadow", { enabled: subtitleTextShadow }).catch((e) => console.warn("subtitle_text_shadow:", e));
+                    invoke("subtitle_frame", { mode: subtitleFrameMode }).catch((e) => console.warn("subtitle_frame:", e));
                     invoke("subtitle_font_size", { size: subtitleBodyFontSize }).catch(() => {});
                     invoke("subtitle_meta_font_size", { size: subtitleMetaFontSize }).catch(() => {});
                     invoke("subtitle_topmost", { enabled: subtitleAlwaysOnTop }).catch(() => {});
@@ -8177,11 +8452,12 @@ export default function App() {
             setCurrentArrivalItem(null);
           }} title="新着レスの待ち行列と表示中のレスを消す"><X size={13} />クリア</button>
           <button
-            className={`arrival-pane-toggle${newArrivalPaneOpen && activePaneView !== "viewer" ? " active" : ""}`}
-            onClick={() => setNewArrivalPaneOpen((v) => !v)}
-            disabled={activePaneView === "viewer"}
-            title={activePaneView === "viewer" ? "ビュワーでは新着レスペインを出しません (下に最新レスの欄があります)" : newArrivalPaneOpen ? "新着レスペインを閉じる" : "新着レスペインを開く"}
-          >{newArrivalPaneOpen ? <ChevronDown size={13} /> : <ChevronUp size={13} />}新着レス</button>
+            className={`arrival-pane-toggle${(activePaneView === "viewer" ? latestPanelOpen : newArrivalPaneOpen) ? " active" : ""}`}
+            onClick={() => { if (activePaneView === "viewer") setLatestPanelOpen((v) => !v); else setNewArrivalPaneOpen((v) => !v); }}
+            title={activePaneView === "viewer"
+              ? (latestPanelOpen ? "スレの最新レスの欄を閉じる" : "スレの最新レスの欄を開く (ビュワーでは、新着レスペインの場所に出します)")
+              : (newArrivalPaneOpen ? "新着レスペインを閉じる" : "新着レスペインを開く")}
+          >{(activePaneView === "viewer" ? latestPanelOpen : newArrivalPaneOpen) ? <ChevronDown size={13} /> : <ChevronUp size={13} />}新着レス</button>
         </span>
       </div>
       {showBoardButtons && favorites.boards.length > 0 && (
@@ -8506,9 +8782,62 @@ export default function App() {
               <div className="splitter-h new-arrival-splitter" onMouseDown={beginNewArrivalResize} />
             </>
           )}
+          {/* ビュワーのときは、新着レスペインの場所に「スレの最新レス」の欄を出す (高さは別に覚える。新しい行は下に足す) */}
+          {latestPanelOpen && activePaneView === "viewer" && (
+            <>
+              <div className="viewer-latest viewer-latest-top" style={{
+                height: latestPanelHeight,
+                '--fs-delta': `${responsesFontSize - 12}px`,
+                ...(viewerFontSize > 0 ? { '--viewer-latest-fs': `${Math.max(8, viewerFontSize - 1)}px` } : {}),
+                ...(viewerFontBold ? { '--viewer-weight': "bold" } : {}),
+                ...(viewerFontFamily ? { '--viewer-font': `"${viewerFontFamily.replace(/["\\;{}<>]/g, "")}", "Emoji", sans-serif` } : {}),
+              } as React.CSSProperties}>
+              <div className="viewer-latest-head">
+                <span>スレの最新レス</span>
+                <span className="viewer-latest-hint">開いているスレの新着のうち、ホワイトリストに無い ID のもの (OBS には出ません)</span>
+                <span className="viewer-grow" />
+                <button onClick={() => setLatestItems([])}>クリア</button>
+              </div>
+              <div className="viewer-latest-list" ref={latestListRef}>
+                {viewerAllResponses && threadTabs.some((t) => t.viewerOn !== false && !isChatUrl(t.threadUrl)) && <div className="viewer-latest-note">選んだスレのレスはビュワーに流しています</div>}
+                {latestItems.length === 0 ? (
+                  <div className="viewer-empty">まだありません</div>
+                ) : latestItems.map((it) => (
+                  <div
+                    key={it.seq}
+                    className={`viewer-latest-item src-${it.source}`}
+                    onClick={() => {
+                      const idx = threadTabs.findIndex((t) => t.threadUrl === it.threadUrl);
+                      if (idx >= 0) { onTabClick(idx); setSelectedResponse(it.no); }
+                    }}
+                    title={it.text}
+                  >
+                    {viewerShow.site && <span className="viewer-site">{it.site}</span>}
+                    {latestShow.board && it.board && <span className="viewer-board">{it.board}</span>}
+                    {latestShow.title && it.title && <span className="viewer-latest-title" title={it.title}>{it.title}</span>}
+                    {latestShow.no && <span className="viewer-no">{it.no}</span>}
+                    {latestShow.text ? <span className="viewer-latest-text">{it.text}</span> : <span className="viewer-grow" />}
+                    {latestShow.time && <span className="viewer-time">{it.time.replace(/^\S+\s+/, "")}</span>}
+                    {latestShow.id && it.uid && <span className="viewer-uid">ID:{it.uid}</span>}
+                    {latestShow.count && it.idCount > 0 && <span className={`viewer-id-count${idCountClass(it.idCount)}`}>({it.idSeq}/{it.idCount})</span>}
+                    {it.uid && !broadcastWhitelist[it.uid] && (
+                      <button
+                        className="viewer-latest-wl"
+                        onClick={(e) => { e.stopPropagation(); addToWhitelist([it.uid]); }}
+                        title="この ID を配信ホワイトリストに入れる"
+                      >WLに入れる</button>
+                    )}
+                  </div>
+                ))}
+              </div>
+              </div>
+              <div className="splitter-h new-arrival-splitter" onMouseDown={beginLatestResize} title="ドラッグで高さを変えます" />
+            </>
+          )}
         <div
           ref={responseLayoutRef}
-          className={`right-pane${tabSiteColors ? " tab-site-colors" : ""}`}
+          className={`right-pane${tabSiteColors ? " tab-site-colors" : ""}${tabWidthFixed ? " tab-width-fixed" : ""}`}
+          style={tabWidthFixed ? ({ "--board-tab-w": `${boardTabWidth}px`, "--thread-tab-w": `${threadTabWidth}px` } as React.CSSProperties) : undefined}
         >
         {/* Board tab bar (upper) */}
         <div className="board-tab-bar-wrap">
@@ -8590,7 +8919,7 @@ export default function App() {
                   document.addEventListener("mousemove", onMove);
                   document.addEventListener("mouseup", onUp);
                 }}
-                title={tab.boardUrl}
+                title={`${tab.title}\n${tab.boardUrl}`}
               >
                 <span className="board-tab-title">{tab.title}</span>
                 <button
@@ -8625,6 +8954,7 @@ export default function App() {
             {threadTabs.map((tab, i) => (
               <div
                 key={tab.threadUrl}
+                title={tab.title}
                 className={`thread-tab tab ${siteClassOf(tab.threadUrl)} ${i === activeTabIndex ? "active" : ""} ${tabDragIndex !== null && tabDragIndex !== i ? "drag-target" : ""}`}
                 onClick={() => { if (tabDragSuppressClickRef.current) return; onTabClick(i); }}
                 onDoubleClick={() => { void fetchResponsesFromCurrent(tab.threadUrl, { keepSelection: true }); }}
@@ -8717,16 +9047,17 @@ export default function App() {
                 {VIEWER_SITE_LABEL[src]}
               </label>
             ))}
-            <span className="viewer-grow" />
-            <label className="viewer-toggle" title="ビュワーの下に、ホワイトリストに無い ID の新着レスを表示する (OBS には出ません)">
-              <input type="checkbox" checked={latestPanelOpen} onChange={(e) => setLatestPanelOpen(e.target.checked)} />
-              最新レス欄
+            <label className={`viewer-chip viewer-all-toggle${viewerAllResponses ? " on" : ""}`} title={`オン: 設定 > 接続 で「ビュワー」にチェックを入れたスレ (またはタブの右クリック →「ビュワーに流す」) のレスを、ホワイトリストに関係なく流します。オフ: 配信ホワイトリストの ID のレスだけを流します (チャットはいつも全部)。OBS 表示には、オンでもチャットとホワイトリストの ID のレスだけを送ります。選んだスレのレスは「スレの最新レス」の欄に追加しません。\n選んでいるスレ: ${threadTabs.filter((t) => t.viewerOn !== false && !isChatUrl(t.threadUrl)).length} 件`}>
+              <input type="checkbox" checked={viewerAllResponses} onChange={(e) => setViewerAllResponses(e.target.checked)} />
+              選んだスレを流す
             </label>
+            <span className="viewer-grow" />
             <label className="viewer-toggle" title="新しいものが届いたら一番下へ移動する">
               <input type="checkbox" checked={viewerAutoScroll} onChange={(e) => setViewerAutoScroll(e.target.checked)} />
               自動スクロール
             </label>
             <button onClick={() => setViewerItems([])} title="ビュワーの表示を消します">クリア</button>
+            {threadTabs.some((t) => isYoutubeUrl(t.threadUrl)) && youtubeQuotaChip()}
           </div>
           <div className="viewer-list" ref={viewerListRef}>
             {viewerItems.filter((it) => viewerFilter[it.source]).length === 0 ? (
@@ -8782,48 +9113,6 @@ export default function App() {
               </div>
             ))}
           </div>
-          {latestPanelOpen && (
-            <div className="viewer-latest" style={{ height: latestPanelHeight }}>
-              <div className="viewer-latest-resize" onMouseDown={beginLatestResize} title="ドラッグで高さを変えます" />
-              <div className="viewer-latest-head">
-                <span>スレの最新レス</span>
-                <span className="viewer-latest-hint">開いているスレの新着のうち、ホワイトリストに無い ID のもの (OBS には出ません)</span>
-                <span className="viewer-grow" />
-                <button onClick={() => setLatestItems([])}>クリア</button>
-              </div>
-              <div className="viewer-latest-list" ref={latestListRef}>
-                {latestItems.length === 0 ? (
-                  <div className="viewer-empty">まだありません</div>
-                ) : latestItems.map((it) => (
-                  <div
-                    key={it.seq}
-                    className={`viewer-latest-item src-${it.source}`}
-                    onClick={() => {
-                      const idx = threadTabs.findIndex((t) => t.threadUrl === it.threadUrl);
-                      if (idx >= 0) { onTabClick(idx); setSelectedResponse(it.no); }
-                    }}
-                    title={it.text}
-                  >
-                    {viewerShow.site && <span className="viewer-site">{it.site}</span>}
-                    {latestShow.board && it.board && <span className="viewer-board">{it.board}</span>}
-                    {latestShow.title && it.title && <span className="viewer-latest-title" title={it.title}>{it.title}</span>}
-                    {latestShow.no && <span className="viewer-no">{it.no}</span>}
-                    {latestShow.text ? <span className="viewer-latest-text">{it.text}</span> : <span className="viewer-grow" />}
-                    {latestShow.time && <span className="viewer-time">{it.time.replace(/^\S+\s+/, "")}</span>}
-                    {latestShow.id && it.uid && <span className="viewer-uid">ID:{it.uid}</span>}
-                    {latestShow.count && it.idCount > 0 && <span className={`viewer-id-count${idCountClass(it.idCount)}`}>({it.idSeq}/{it.idCount})</span>}
-                    {it.uid && !broadcastWhitelist[it.uid] && (
-                      <button
-                        className="viewer-latest-wl"
-                        onClick={(e) => { e.stopPropagation(); addToWhitelist([it.uid]); }}
-                        title="この ID を配信ホワイトリストに入れる"
-                      >WLに入れる</button>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
         </section>
         ) : activePaneView === "threads" ? (
         <section id="boardPane" className="pane threads" onMouseDown={() => setFocusedPane("threads")} style={{ '--fs-delta': `${threadsFontSize - 12}px` } as React.CSSProperties}>
@@ -9090,6 +9379,7 @@ export default function App() {
                 {" "}[{fetchedResponses.length}]
               </span>
               <span className="thread-title-fetch-time">{lastFetchTime ?? ""}</span>
+              {isYoutubeUrl(threadTabs[activeTabIndex].threadUrl) && youtubeQuotaChip()}
               <span className="thread-title-actions">
                 <div className="title-split-wrap" onClick={(e) => e.stopPropagation()}>
                   <button className="title-action-btn title-split-main" onClick={fetchNewResponses} title="新着取得">
@@ -9146,6 +9436,8 @@ export default function App() {
                       if (isTauriRuntime()) invoke("subtitle_show").then(() => {
                         setTimeout(() => {
                           invoke("subtitle_opacity", { opacity: subtitleOpacity }).catch(() => {});
+                          invoke("subtitle_text_shadow", { enabled: subtitleTextShadow }).catch((e) => console.warn("subtitle_text_shadow:", e));
+                          invoke("subtitle_frame", { mode: subtitleFrameMode }).catch((e) => console.warn("subtitle_frame:", e));
                           invoke("subtitle_font_size", { size: subtitleBodyFontSize }).catch(() => {});
                           invoke("subtitle_meta_font_size", { size: subtitleMetaFontSize }).catch(() => {});
                           invoke("subtitle_topmost", { enabled: subtitleAlwaysOnTop }).catch(() => {});
@@ -9182,6 +9474,19 @@ export default function App() {
               </span>
             </div>
           )}
+          {(() => {
+            const yt = activeTabIndex >= 0 && activeTabIndex < threadTabs.length ? youtubeVideoFromUrl(threadTabs[activeTabIndex].threadUrl) : null;
+            const st = yt ? youtubeStatusMap[yt] : undefined;
+            if (!yt || !st || (st.state !== "stopped" && st.state !== "ended" && st.state !== "retrying")) return null;
+            const label = st.state === "ended" ? "配信が終わりました" : st.state === "retrying" ? "つなぎ直しています" : "受信していません";
+            return (
+              <div className={`yt-status-banner yt-status-${st.state}`} role="status">
+                <span><b>{label}</b>{st.message ? `: ${st.message}` : ""}</span>
+                {st.state !== "retrying" && <button onClick={() => reconnectYoutube(yt)}>つなぎ直す</button>}
+                {st.state !== "retrying" && <button onClick={() => closeTab(activeTabIndex)}>タブを閉じる</button>}
+              </div>
+            );
+          })()}
           {responseSearchMode && (
             <div className="response-search-bar">
               <span className="search-mode-label">{responseSearchMode === "extract" ? "レス抽出:" : "スレ内検索:"}</span>
@@ -9508,32 +9813,37 @@ export default function App() {
                 <span className="compose-chat-target" title={chatTarget.url}>
                   送信先: <b>{chatTargetLabel(chatTarget)}</b>
                   {chatTarget.platform === "twitch" && twitchAuth.loggedIn && <span className="compose-chat-login">（ログイン: {twitchAuth.login}）</span>}
+                  {chatTarget.platform === "youtube" && youtubeAuth.loggedIn && <span className="compose-chat-login">（ログイン: {youtubeAuth.channelTitle}）</span>}
                 </span>
               );
-              const canWrite = chatTarget.platform === "twitch" && twitchAuth.loggedIn && !!twitchAuth.canChat;
+              const canWrite = chatTarget.platform === "twitch" ? twitchAuth.loggedIn && !!twitchAuth.canChat : youtubeAuth.loggedIn;
+              const max = chatMaxChars(chatTarget);
               return canWrite ? (
                 <div className="compose-row compose-chat-row">
                   {targetEl}
                   <span className="compose-meta-inline">
-                    <span className={Array.from(composeBody.trim()).length > CHAT_MAX_CHARS_TWITCH ? "compose-chat-over" : ""}>{Array.from(composeBody.trim()).length}/{CHAT_MAX_CHARS_TWITCH}文字</span>
+                    <span className={Array.from(composeBody.trim()).length > max ? "compose-chat-over" : ""}>{Array.from(composeBody.trim()).length}/{max}文字</span>
                   </span>
                   <span className="compose-chat-spacer" />
                   <span className="compose-chat-actions">
                     <button
                       ref={chatStampBtnRef}
                       className={`compose-chat-stamp-btn${chatPicker ? " active" : ""}`}
-                      onClick={() => { setChatPicker((v) => !v); setChatPickerTab("all"); }}
-                      title="スタンプ・絵文字の一覧を開く"
+                      onClick={() => { setChatPicker((v) => !v); setChatPickerTab(chatTarget.platform === "twitch" ? "all" : "emoji"); }}
+                      title={chatTarget.platform === "twitch" ? "スタンプ・絵文字の一覧を開く" : "絵文字の一覧を開く"}
                       aria-expanded={chatPicker}
-                    ><Smile size={15} aria-hidden="true" />スタンプ</button>
+                    ><Smile size={15} aria-hidden="true" />{chatTarget.platform === "twitch" ? "スタンプ" : "絵文字"}</button>
                     <button className="postform-write compose-chat-send" onClick={sendChatFromCompose} disabled={composeSubmitting} title={`${chatTargetLabel(chatTarget)} に送信 (Ctrl+Enter)`}>{composeSubmitting ? "送信中..." : `${chatTargetLabel(chatTarget)} に送信 (Ctrl+Enter)`}</button>
                   </span>
                 </div>
               ) : <div className="compose-row compose-chat-row">{targetEl}</div>;
             })()}
-            {chatTarget.platform === "youtube" ? (
-              <div className="compose-chat-note">YouTube への書き込みは準備中です。</div>
-            ) : !twitchAuth.loggedIn || !twitchAuth.canChat ? (
+            {chatTarget.platform === "youtube" && !youtubeAuth.loggedIn ? (
+              <div className="compose-chat-note">
+                YouTube に書き込むには、Google アカウントでログインしてください (自分で作った OAuth クライアントが要ります)。
+                <button onClick={() => { setSettingsOpen(true); switchSettingsCategory("youtube"); setSettingsSection("write"); }}>設定 &gt; YouTube &gt; 書き込み を開く</button>
+              </div>
+            ) : chatTarget.platform === "twitch" && (!twitchAuth.loggedIn || !twitchAuth.canChat) ? (
               <div className="compose-chat-note">
                 {twitchAuth.loggedIn ? "書き込むには、Twitch にログインし直してください (書き込みの許可を追加しました)。" : "Twitch に書き込むには、Twitch にログインしてください。"}
                 <button onClick={() => { setSettingsOpen(true); switchSettingsCategory("twitch"); setSettingsSection("login"); }}>設定 &gt; Twitch &gt; ログイン を開く</button>
@@ -9552,7 +9862,9 @@ export default function App() {
                   value={composeBody}
                   onChange={(e) => { setComposeBody(e.target.value); chatCompleteRef.current = null; }}
                   onKeyDown={onComposeBodyKeyDown}
-                  placeholder={`${chatTargetLabel(chatTarget)} へのメッセージ (Ctrl+Enter で送信・Enter では送りません・Tab でスタンプ名と @名前 を補完)`}
+                  placeholder={chatTarget.platform === "twitch"
+                    ? `${chatTargetLabel(chatTarget)} へのメッセージ (Ctrl+Enter で送信・Enter では送りません・Tab でスタンプ名と @名前 を補完)`
+                    : `${chatTargetLabel(chatTarget)} へのメッセージ (${CHAT_MAX_CHARS_YOUTUBE} 文字まで。Ctrl+Enter で送信・Enter では送りません・Tab で @名前 を補完。1回の送信で API を ${YOUTUBE_INSERT_COST} 使います)`}
                   autoFocus
                   style={{ fontSize: `${composeFontSize}px` }}
                 />
@@ -9562,6 +9874,9 @@ export default function App() {
                 })()}
                 {chatPicker && chatPickerPos && (() => {
                   const q = chatPickerQuery.trim().toLowerCase();
+                  // YouTube には自分のスタンプの一覧が無いので、絵文字だけにする
+                  const isTwitch = chatTarget.platform === "twitch";
+                  const pickerChannel = chatTarget.platform === "twitch" ? chatTarget.channel : "";
                   const match = (e: UserEmote) => !q || e.name.toLowerCase().includes(q);
                   const byName = new Map(userEmotes.list.map((e) => [e.name, e]));
                   type Group = { key: string; label: string; emotes?: UserEmote[]; emoji?: { label: string; list: string[] }[] };
@@ -9573,23 +9888,24 @@ export default function App() {
                     if (!owners.has(k)) owners.set(k, []);
                     owners.get(k)!.push(e);
                   }
-                  const isHere = (k: string) => ((owners.get(k)?.[0]?.ownerLogin ?? k.toLowerCase()) === chatTarget.channel ? 0 : 1);
+                  const isHere = (k: string) => ((owners.get(k)?.[0]?.ownerLogin ?? k.toLowerCase()) === pickerChannel ? 0 : 1);
                   const ownerKeys = [...owners.keys()].filter((k) => k).sort((x, y) => isHere(x) - isHere(y) || x.localeCompare(y));
                   const channelGroups: Group[] = ownerKeys.map((k) => ({ key: `o:${k}`, label: k, emotes: owners.get(k)! }));
                   const globalGroup: Group[] = owners.get("")?.length ? [{ key: "global", label: "グローバル・その他", emotes: owners.get("")! }] : [];
                   const recent = recentChatEmotes.map((n) => byName.get(n)).filter((e): e is UserEmote => !!e && match(e));
                   const groups: Group[] =
-                    chatPickerTab === "recent" ? (recent.length ? [{ key: "recent", label: "最近使ったもの", emotes: recent }] : [])
+                    !isTwitch ? [{ key: "emoji", label: "絵文字", emoji: CHAT_EMOJI_GROUPS }]
+                    : chatPickerTab === "recent" ? (recent.length ? [{ key: "recent", label: "最近使ったもの", emotes: recent }] : [])
                     : chatPickerTab === "channel" ? channelGroups.filter((g) => isHere(g.label) === 0)
                     : chatPickerTab === "global" ? globalGroup
                     : chatPickerTab === "emoji" ? [{ key: "emoji", label: "絵文字", emoji: CHAT_EMOJI_GROUPS }]
                     : [...channelGroups, ...globalGroup];
                   const emptyText = chatPickerTab === "recent" ? "まだ使ったスタンプはありません"
-                    : chatPickerTab === "channel" ? `#${chatTarget.channel} のスタンプで使えるものはありません`
+                    : chatPickerTab === "channel" ? `#${pickerChannel} のスタンプで使えるものはありません`
                     : q ? "見つかりません" : "";
-                  const TABS: { id: ChatPickerTab; label: string; icon: React.ReactNode }[] = [
+                  const TABS: { id: ChatPickerTab; label: string; icon: React.ReactNode }[] = !isTwitch ? [{ id: "emoji", label: "絵文字", icon: <Smile size={16} /> }] : [
                     { id: "recent", label: "最近使ったもの", icon: <Star size={16} /> },
-                    { id: "channel", label: `このチャンネル (#${chatTarget.channel})`, icon: <Tv size={16} /> },
+                    { id: "channel", label: `このチャンネル (#${pickerChannel})`, icon: <Tv size={16} /> },
                     { id: "all", label: "すべて", icon: <LayoutGrid size={16} /> },
                     { id: "global", label: "グローバル", icon: <Globe size={16} /> },
                     { id: "emoji", label: "絵文字", icon: <Smile size={16} /> },
@@ -9603,8 +9919,8 @@ export default function App() {
                       aria-label="スタンプ・絵文字"
                     >
                       <div className="chat-picker-scroll" ref={chatPickerScrollRef}>
-                        {userEmotes.error && chatPickerTab !== "emoji" && <div className="compose-chat-note">{userEmotes.error}</div>}
-                        {!userEmotes.error && userEmotes.at === 0 && chatPickerTab !== "emoji" && <div className="compose-chat-note">スタンプの一覧を読み込んでいます…</div>}
+                        {isTwitch && userEmotes.error && chatPickerTab !== "emoji" && <div className="compose-chat-note">{userEmotes.error}</div>}
+                        {isTwitch && !userEmotes.error && userEmotes.at === 0 && chatPickerTab !== "emoji" && <div className="compose-chat-note">スタンプの一覧を読み込んでいます…</div>}
                         {groups.length === 0 && emptyText && userEmotes.at > 0 && <div className="compose-chat-note">{emptyText}</div>}
                         {groups.map((g) => (
                           <div key={g.key} className="chat-picker-group">
@@ -10150,6 +10466,11 @@ export default function App() {
           {threadTabs[tabMenu.tabIndex] && (
             <button onClick={() => { toggleTabTts(threadTabs[tabMenu.tabIndex].threadUrl); setTabMenu(null); }}>
               {threadTabs[tabMenu.tabIndex].ttsOff ? "このタブの読み上げをオンにする" : "このタブの読み上げをオフにする"}
+            </button>
+          )}
+          {threadTabs[tabMenu.tabIndex] && !isChatUrl(threadTabs[tabMenu.tabIndex].threadUrl) && (
+            <button onClick={() => { toggleTabViewer(threadTabs[tabMenu.tabIndex].threadUrl); setTabMenu(null); }} title="ビュワーの「選んだスレを流す」の対象にする・やめる">
+              {threadTabs[tabMenu.tabIndex].viewerOn !== false ? "ビュワーに流さない" : "ビュワーに流す"}
             </button>
           )}
           <button onClick={() => { closeTab(tabMenu.tabIndex); setTabMenu(null); }}>タブを閉じる</button>
@@ -10730,6 +11051,19 @@ export default function App() {
                   <input type="checkbox" checked={showBoardButtons} onChange={(e) => setShowBoardButtons(e.target.checked)} />
                   <span>板ボタンバー</span>
                 </label>
+                <label className="settings-row" title="板タブ (ビュワー・板未選択を含む)・スレタブを、それぞれ決まった幅にそろえます。長い名前は「…」で切り、マウスを乗せると全体を出します">
+                  <input type="checkbox" checked={tabWidthFixed} onChange={(e) => setTabWidthFixed(e.target.checked)} />
+                  <span>タブの幅をそろえる</span>
+                </label>
+                {tabWidthFixed && (
+                  <div className="settings-row tab-width-inputs">
+                    <span>板タブ</span>
+                    <input type="number" min={TAB_WIDTH_MIN} max={TAB_WIDTH_MAX} step={10} value={boardTabWidth} onChange={(e) => { const n = Math.round(Number(e.target.value)); if (n >= TAB_WIDTH_MIN && n <= TAB_WIDTH_MAX) setBoardTabWidth(n); }} className="lf-w70" />
+                    <span>px ・スレタブ</span>
+                    <input type="number" min={TAB_WIDTH_MIN} max={TAB_WIDTH_MAX} step={10} value={threadTabWidth} onChange={(e) => { const n = Math.round(Number(e.target.value)); if (n >= TAB_WIDTH_MIN && n <= TAB_WIDTH_MAX) setThreadTabWidth(n); }} className="lf-w70" />
+                    <span>px ({TAB_WIDTH_MIN}〜{TAB_WIDTH_MAX}。既定 {TAB_WIDTH_BOARD_DEFAULT} / {TAB_WIDTH_THREAD_DEFAULT})</span>
+                  </div>
+                )}
                 <label className="settings-row" title="板タブ・スレタブの左端に、サイトごとの色の線を付けます (5ch=橙 / したらば=緑 / JPNKN=青 / Twitch=紫)">
                   <input type="checkbox" checked={tabSiteColors} onChange={(e) => setTabSiteColors(e.target.checked)} />
                   <span>タブの左端にサイトごとの色の線を付ける</span>
@@ -11124,6 +11458,10 @@ export default function App() {
                   }} className="lf-w120" />
                   <span>{subtitleOpacity.toFixed(2)}</span>
                 </div>
+                <label className="settings-row" title="字幕の文字に黒い影を付けます。明るい背景に重ねても読みやすくなります">
+                  <input type="checkbox" checked={subtitleTextShadow} onChange={(e) => setSubtitleTextShadow(e.target.checked)} />
+                  <span>文字の影 (ドロップシャドウ) を付ける</span>
+                </label>
                 <div className="settings-row">
                   <span>常に最前面</span>
                   <input type="checkbox" checked={subtitleAlwaysOnTop} onChange={(e) => {
@@ -11186,6 +11524,40 @@ export default function App() {
                 </div>
               </fieldset>
               </section>
+              <section className="settings-section" data-section="frame">
+                {settingsSectionHeading("subtitle", "frame")}
+              <fieldset>
+                <legend>字幕の枠</legend>
+                {([
+                  ["normal", "通常", "Windows が付ける線と影があります。端をつかんで大きさを変えられます"],
+                  ["corners", "四隅だけ", "線と影を消し、四隅に印だけを出します。印をつかんで大きさを変えられます"],
+                  ["none", "枠なし", "文字とボタンだけを出します。大きさは下の数値か、字幕を右クリック →「枠・大きさの設定を開く」から変えます"],
+                ] as [SubtitleFrameMode, string, string][]).map(([id, label, hint]) => (
+                  <label key={id} className="settings-row" title={hint}>
+                    <input type="radio" name="subtitle-frame" checked={subtitleFrameMode === id} onChange={() => setSubtitleFrameMode(id)} />
+                    <span><b>{label}</b> <span className="settings-hint">({hint})</span></span>
+                  </label>
+                ))}
+                <p className="settings-hint">字幕の上で右クリックすると、この設定を開く・位置をリセットするメニューが出ます。</p>
+              </fieldset>
+              <fieldset>
+                <legend>大きさ・位置</legend>
+                <div className="settings-row">
+                  <span>幅</span>
+                  <input type="number" min={120} max={10000} step={10} value={subtitleSizeInput.width} placeholder={String(subtitleWinSize.width)} onChange={(e) => setSubtitleSizeInput((v) => ({ ...v, width: e.target.value }))} onKeyDown={(e) => { if (e.key === "Enter") applySubtitleSize(); }} className="lf-w70" />
+                  <span>× 高さ</span>
+                  <input type="number" min={40} max={10000} step={10} value={subtitleSizeInput.height} placeholder={String(subtitleWinSize.height)} onChange={(e) => setSubtitleSizeInput((v) => ({ ...v, height: e.target.value }))} onKeyDown={(e) => { if (e.key === "Enter") applySubtitleSize(); }} className="lf-w70" />
+                  <span>px</span>
+                  <button onClick={applySubtitleSize}>この大きさにする</button>
+                </div>
+                <p className="settings-hint">今の大きさ: {subtitleWinSize.width} × {subtitleWinSize.height} px (字幕を手で大きさ変更すると、ここも変わります)</p>
+                {subtitleSizeMsg && <p className="settings-hint overlay-layout-msg error">{subtitleSizeMsg}</p>}
+                <div className="settings-row">
+                  <span>位置</span>
+                  <button onClick={() => { if (isTauriRuntime()) invoke("subtitle_reset_position").catch((e) => console.warn("subtitle_reset_position:", e)); }}>画面の中央に戻す</button>
+                </div>
+              </fieldset>
+              </section>
               <section className="settings-section" data-section="cards">
                 {settingsSectionHeading("subtitle", "cards")}
               <fieldset>
@@ -11241,7 +11613,7 @@ export default function App() {
                   <input type="checkbox" checked={ttsUrlOmitEnabled} onChange={(e) => setTtsUrlOmitEnabled(e.target.checked)} />
                   <span>読まないURLを「URL省略」と読む</span>
                 </label>
-                <div className="settings-row" title="掲示板の新着レスの読み上げ方です (Twitch のチャットには関係しません)。「ホワイトリスト以外はレス番のみ」では、配信ホワイトリストに入れた ID のレスは本文まで読み、それ以外のレスは「レスN番さん」のように番号だけを読みます">
+                <div className="settings-row" title="掲示板の新着レスの読み上げ方です (Twitch のチャットには関係しません)。「ホワイトリスト以外はレス番のみ」では、配信ホワイトリストに入れた ID のレスは本文まで読み、それ以外のレスは「レスN番さん」(したらばは「したらばN番さん」、JPNKN は「ジャパンくんN番さん」) のように番号だけを読みます">
                   <span>掲示板の新着の読み上げ方</span>
                   <select value={ttsBoardMode} onChange={(e) => setTtsBoardMode(e.target.value === "whitelist" ? "whitelist" : "full")}>
                     <option value="full">全文を読む (従来)</option>
@@ -11991,6 +12363,11 @@ export default function App() {
                           <label title="このタブの新着を読み上げる">
                             <input type="checkbox" checked={!t.ttsOff} onChange={() => toggleTabTts(t.threadUrl)} />読み上げ
                           </label>
+                          {!ch && !yt && (
+                            <label title="ビュワーの「選んだスレを流す」がオンのとき、このスレのレスをビュワーに流す">
+                              <input type="checkbox" checked={t.viewerOn !== false} onChange={() => toggleTabViewer(t.threadUrl)} />ビュワー
+                            </label>
+                          )}
                           <button onClick={() => { setSettingsOpen(false); onTabClick(i); }}>開く</button>
                           <button className="ng-remove" onClick={() => closeTab(i)} title="タブを閉じる">×</button>
                         </li>
@@ -12499,27 +12876,8 @@ export default function App() {
                   <button disabled={!youtubeKeySet} onClick={clearYoutubeKey}>削除</button>
                 </div>
                 {youtubeKeyMsg && <p className={`settings-hint overlay-layout-msg${youtubeKeyMsg.error ? " error" : ""}`}>{youtubeKeyMsg.text}</p>}
-                <div className="settings-row">
-                  <span>取得の間隔</span>
-                  <input type="number" min={YOUTUBE_API_INTERVAL_MIN} max={YOUTUBE_API_INTERVAL_MAX} step={1} value={youtubeApiInterval} onChange={(e) => { const n = Math.round(Number(e.target.value)); if (n >= YOUTUBE_API_INTERVAL_MIN && n <= YOUTUBE_API_INTERVAL_MAX) setYoutubeApiInterval(n); }} className="lf-w70" />
-                  <span>秒 ({YOUTUBE_API_INTERVAL_MIN}〜{YOUTUBE_API_INTERVAL_MAX})</span>
-                </div>
-                <p className="settings-hint">
-                  1回の取得で 5 クォータ使います。1日の上限が既定の 10,000 クォータなら、この間隔で配信1つを約 {Math.floor((YOUTUBE_API_DAILY_QUOTA / 5) * youtubeApiInterval / 3600 * 10) / 10} 時間受信できます
-                  (配信を2つ開くと半分になります)。YouTube から指示された間隔のほうが長いときは、そちらに合わせます。上限は太平洋時間の0時 (日本時間の16〜17時) に戻ります。
-                </p>
               </fieldset>
               )}
-              <fieldset>
-                <legend>読み上げ</legend>
-                <label className="settings-row" title="オフにすると、名前を付けずに本文だけを読み上げます">
-                  <input type="checkbox" checked={youtubeSpeakName} onChange={(e) => setYoutubeSpeakName(e.target.checked)} />
-                  <span>名前を読み上げる (「名前さん」+本文)</span>
-                </label>
-                <p className="settings-hint">
-                  絵文字 (:_名前: の形) は読み上げません。読み上げが溜まっているときの上限と、新着レスペイン・字幕に溜めておく上限は 設定 &gt; Twitch と同じ値を使います。
-                </p>
-              </fieldset>
               <fieldset>
                 <legend>YouTube の規約</legend>
                 <p className="settings-hint">
@@ -12529,6 +12887,189 @@ export default function App() {
                   <button onClick={() => { if (isTauriRuntime()) void invoke("open_external_url", { url: "https://www.youtube.com/t/terms" }).catch((e) => console.warn("open_external_url failed", e)); }}>YouTube 利用規約</button>
                   <button onClick={() => { if (isTauriRuntime()) void invoke("open_external_url", { url: "https://policies.google.com/privacy" }).catch((e) => console.warn("open_external_url failed", e)); }}>Google プライバシー ポリシー</button>
                 </div>
+              </fieldset>
+              </section>
+              <section className="settings-section" data-section="quota">
+                {settingsSectionHeading("youtube", "quota")}
+              {youtubeEffectiveMethod !== "api" ? (
+                <p className="settings-hint">この節の設定は、取得方法が「YouTube Data API (公式)」のときに使います。</p>
+              ) : (
+              <>
+              <fieldset>
+                <legend>今日の使用量 (クォータ)</legend>
+                <div className="settings-row youtube-quota-now">
+                  <span>
+                    使用量の目安: <b>{(youtubeQuota?.used ?? 0).toLocaleString()}</b> / {(youtubeQuota?.limit ?? youtubeDailyQuota).toLocaleString()}
+                    {youtubeQuota && youtubeQuota.limit > 0 ? ` (${Math.min(100, Math.floor((youtubeQuota.used / youtubeQuota.limit) * 1000) / 10)}%)` : ""}
+                    {youtubeQuota ? ` ・上限が戻るまで${formatAboutDuration(youtubeQuota.untilResetSecs)}` : ""}
+                  </span>
+                </div>
+                <p className="settings-hint">
+                  コメントを1回読み込むごとに 5 使います。LiveFake が呼んだ分だけを数えています (同じ API キーをほかのアプリで使った分は入りません。API キーを変えると 0 から数え直します)。
+                  Google Cloud のコンソールの「割り当てとシステムの上限」に出ている値に合わせることもできます。上限は太平洋時間の0時 (日本時間の16〜17時) に戻ります。
+                </p>
+                <div className="settings-row">
+                  <input type="text" inputMode="numeric" value={youtubeQuotaUsedInput} onChange={(e) => setYoutubeQuotaUsedInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") setYoutubeQuotaUsed(); }} placeholder="コンソールの値" className="lf-w120" />
+                  <button disabled={!youtubeQuotaUsedInput.trim()} onClick={setYoutubeQuotaUsed}>この値に合わせる</button>
+                </div>
+                <div className="settings-row">
+                  <span>1日の上限</span>
+                  <input type="number" min={1} max={YOUTUBE_DAILY_QUOTA_MAX} step={1} value={youtubeDailyQuota} onChange={(e) => { const n = Math.round(Number(e.target.value)); if (n >= 1 && n <= YOUTUBE_DAILY_QUOTA_MAX) setYoutubeDailyQuota(n); }} className="lf-w120" />
+                  <span>(既定 10,000。Google に上限を増やしてもらったときだけ変えてください)</span>
+                </div>
+              </fieldset>
+              <fieldset>
+                <legend>コメントを読み込む間隔</legend>
+                <p className="settings-hint">YouTube に新しいコメントを問い合わせる間隔です。短いほど早く表示されますが、使用量が増えます。</p>
+                <label className="settings-row">
+                  <input type="radio" name="youtube-quota-mode" checked={!youtubeTargetOn} onChange={() => setYoutubeTargetOn(false)} />
+                  <span>決まった間隔で読み込む</span>
+                </label>
+                <label className="settings-row">
+                  <input type="radio" name="youtube-quota-mode" checked={youtubeTargetOn} onChange={() => setYoutubeTargetOn(true)} />
+                  <span>決めた時間もつように、間隔を自動で決める</span>
+                </label>
+                <div className="settings-row youtube-interval-input">
+                  <span>{youtubeTargetOn ? "最短の間隔" : "間隔"}</span>
+                  <input type="number" min={YOUTUBE_API_INTERVAL_MIN} max={YOUTUBE_API_INTERVAL_MAX} step={1} value={youtubeApiInterval} onChange={(e) => { const n = Math.round(Number(e.target.value)); if (n >= YOUTUBE_API_INTERVAL_MIN && n <= YOUTUBE_API_INTERVAL_MAX) setYoutubeApiInterval(n); }} className="lf-w70" />
+                  <span>秒 ({YOUTUBE_API_INTERVAL_MIN}〜{YOUTUBE_API_INTERVAL_MAX})</span>
+                </div>
+                {youtubeTargetOn && (
+                  <div className="settings-row youtube-interval-input">
+                    <span className="yt-linked-label">もたせる時間</span>
+                    <input type="number" min={1} max={YOUTUBE_TARGET_HOURS_MAX} step={1} value={youtubeTargetHours} onChange={(e) => { const n = Math.round(Number(e.target.value)); if (n >= 1 && n <= YOUTUBE_TARGET_HOURS_MAX) setYoutubeTargetHours(n); }} className="lf-w70 yt-linked-input" />
+                    <span>時間 (受信を始めた時刻から。<span className="yt-linked yt-linked-sample">色の付いた値</span>が、この値に合わせて変わります)</span>
+                  </div>
+                )}
+                {youtubeQuota && (() => {
+                  const q = youtubeQuota;
+                  const n = Math.max(1, q.active);
+                  const atMin = q.intervalSecs <= youtubeApiInterval;
+                  // 目標の時刻より先に上限が戻るとき: 戻るまでは今の残りで、戻った後は 1 日分 (残す量を除く) で決め直す
+                  const hhmm = (ms: number) => new Date(ms).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" });
+                  const endMs = q.targetEnd ?? Date.now() + youtubeTargetHours * 3600e3;
+                  const resetMs = Date.now() + q.untilResetSecs * 1000;
+                  const crossesReset = youtubeTargetOn && endMs > resetMs;
+                  const after = (() => {
+                    if (!crossesReset) return 0;
+                    const rounds = Math.floor(Math.max(0, q.limit - q.reserve) / (5 * n));
+                    return rounds > 0 ? Math.min(YOUTUBE_API_INTERVAL_MAX, Math.max(youtubeApiInterval, Math.ceil((endMs - resetMs) / 1000 / rounds))) : YOUTUBE_API_INTERVAL_MAX;
+                  })();
+                  return (
+                    <div className="youtube-interval-result">
+                      <div>→ 実際に読み込む間隔: <b className={youtubeTargetOn ? "yt-linked" : undefined} key={`iv${q.intervalSecs}`}>{q.intervalSecs} 秒ごと</b> (配信 {n} つ{q.active > 0 ? "を受信中" : "の場合"}){crossesReset ? ` ・上限が戻る ${hhmm(resetMs)} まで` : ""}</div>
+                      {crossesReset && <div>→ 上限が戻った後 ({hhmm(resetMs)}〜目標の <span className="yt-linked" key={`ed${hhmm(endMs)}`}>{hhmm(endMs)}</span>): <b className="yt-linked" key={`af${after}`}>約 {after} 秒ごと</b> (戻った後の 1 日分で決め直します)</div>}
+                      {youtubeTargetOn && (
+                        <div>
+                          {q.reachable
+                            ? atMin
+                              ? crossesReset
+                                ? `目標の時刻より先に上限が戻ります。戻るまでは今の残り (${(Math.max(0, q.limit - q.used - q.reserve)).toLocaleString()}) で足りるので、最短の間隔のままです。もたせる時間を変えると、上限が戻った後の間隔が変わります。`
+                                : `今の残り (${(Math.max(0, q.limit - q.used - q.reserve)).toLocaleString()}) なら最短の間隔でも目標までもつので、最短の間隔のままです。`
+                              : `目標までもつように、最短の間隔 (${youtubeApiInterval} 秒) より延ばしています。もたせる時間を短くすると間隔が縮み、長くすると延びます。`
+                            : `残りの量では目標までもちません (いちばん長い ${YOUTUBE_API_INTERVAL_MAX} 秒ごとにしても${formatAboutDuration(q.lastsSecs)})。開いている配信を減らすか、もたせる時間を短くしてください。`}
+                        </div>
+                      )}
+                      {q.reserve > 0 && <div>書き込み用に {Math.floor(q.reserve / YOUTUBE_INSERT_COST)} 回分 ({q.reserve.toLocaleString()}) を除いて計算しています (設定 &gt; YouTube &gt; 書き込み)。</div>}
+                      <div>このままなら、残りで<span className={youtubeTargetOn ? "yt-linked" : undefined} key={`ls${q.lastsSecs}`}>{formatAboutDuration(q.lastsSecs)}</span>受信できます{q.lastsSecs >= q.untilResetSecs ? " (その前に上限が戻ります)" : ""}。配信を2つ開くと間隔は倍になります。</div>
+                      {youtubeTargetOn && (
+                        <div className="settings-row">
+                          <span>{q.targetEnd ? <>目標: <span className="yt-linked" key={`te${q.targetEnd}`}>{new Date(q.targetEnd).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" })}</span> まで</> : "目標: 次に受信を始めた時刻から数えます"}</span>
+                          <button onClick={restartYoutubeTarget} title="もたせる時間を今から数え直します">今から数え直す</button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+                <p className="settings-hint">
+                  YouTube から指示された間隔のほうが長いときは、そちらに合わせます。
+                  {youtubeTargetOn && " もたせる時間は受信を始めた時刻から数えます (つなぎ直し・タブの開き直し・LiveFake の再起動では数え直しません。30分以上どの配信も受信しなかったときは、次に受信を始めた時刻から数え直します)。目標の時刻より先に上限が戻るときは、戻る時刻までもつように決めます。"}
+                </p>
+              </fieldset>
+              </>
+              )}
+              </section>
+              <section className="settings-section" data-section="write">
+                {settingsSectionHeading("youtube", "write")}
+              <fieldset>
+                <legend>準備: 自分の OAuth クライアント</legend>
+                <div className="settings-row">
+                  <span>状態: {youtubeAuth.clientSet ? "設定済み" : "未設定"}</span>
+                </div>
+                <div className="settings-row">
+                  <input type="text" value={youtubeClientIdInput} onChange={(e) => setYoutubeClientIdInput(e.target.value)} placeholder={youtubeAuth.clientSet ? "新しいクライアント ID で置き換える" : "クライアント ID (…apps.googleusercontent.com)"} autoComplete="off" spellCheck={false} className="lf-grow" />
+                </div>
+                <div className="settings-row">
+                  <input type="password" value={youtubeClientSecretInput} onChange={(e) => setYoutubeClientSecretInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") saveYoutubeClient(); }} placeholder="クライアント シークレット" autoComplete="off" spellCheck={false} className="lf-grow" />
+                  <button disabled={youtubeAuthBusy} onClick={saveYoutubeClient}>保存</button>
+                  <button disabled={youtubeAuthBusy || !youtubeAuth.clientSet} onClick={clearYoutubeClient}>削除</button>
+                </div>
+                {youtubeClientMsg && <p className={`settings-hint overlay-layout-msg${youtubeClientMsg.error ? " error" : ""}`}>{youtubeClientMsg.text}</p>}
+                <p className="settings-hint">
+                  <b>準備 (Google Cloud のコンソールで。画面の名前は変わることがあります)</b><br />
+                  1. API キーを作ったのと同じプロジェクトを開く (同じプロジェクトにすると、使用量の目安が合います)<br />
+                  2. 「OAuth 同意画面」(Google Auth Platform) を、ユーザーの種類「外部」で作る (アプリ名・メールは自分のもの)<br />
+                  3. 「対象」の「テストユーザー」に、書き込みに使う自分の Google アカウントを追加する<br />
+                  4. 「クライアント」→「クライアントを作成」で、種類を<b>「テレビと入力が限られたデバイス」</b>にして作る<br />
+                  5. 表示されたクライアント ID とクライアント シークレットを上に入れて「保存」し、下の「Google にログイン」を押す
+                </p>
+              </fieldset>
+              <fieldset>
+                <legend>Google アカウントでログイン (任意)</legend>
+                <p className="settings-hint">
+                  YouTube のチャットに書き込むには、Google アカウントでログインします。ログインには、上で設定した<b>自分の OAuth クライアント</b>が要ります。
+                  1回の書き込みで API を {YOUTUBE_INSERT_COST} 使います (コメントの読み込み 4 回分)。
+                </p>
+                <p className="settings-hint overlay-layout-msg error">
+                  求める許可 (YouTube アカウントの管理) は、チャットへの書き込みだけでなく、動画の削除などチャンネルの操作全体に及びます。
+                  LiveFake はチャンネル名の確認・チャットの ID の確認・チャットへの書き込みにしか使いません。ログイン情報は暗号化してこの PC に保存し、Google にだけ送ります。
+                  心配なときは、書き込み用のサブのチャンネル (ブランド アカウント) でログインしてください。
+                </p>
+                <div className="settings-row">
+                  <span>状態</span>
+                  <span>{youtubeAuth.loggedIn ? `ログイン中: ${youtubeAuth.channelTitle}`
+                    : youtubeAuth.state === "waiting" ? "許可を待っています"
+                    : !youtubeAuth.clientSet ? "OAuth クライアントが未設定です"
+                    : "ログインしていません"}</span>
+                </div>
+                {youtubeAuth.state === "waiting" && youtubeAuth.userCode && (
+                  <div className="twitch-login-code">
+                    <div className="settings-hint">ブラウザで開いた Google のページに次のコードを入力し、アカウントを選んで「許可」を押してください (「確認されていないアプリ」と出たら、自分で作ったものなので続行します)。</div>
+                    <div className="twitch-login-code-value">{youtubeAuth.userCode}</div>
+                    <button onClick={() => openGoogleDevicePage(youtubeAuth.verificationUri)}>ページをもう一度開く</button>
+                  </div>
+                )}
+                {youtubeAuth.message && <p className={`settings-hint${youtubeAuth.state === "error" ? " overlay-layout-msg error" : ""}`}>{youtubeAuth.message}</p>}
+                <div className="settings-row">
+                  <button disabled={youtubeAuthBusy || !youtubeAuth.clientSet || youtubeAuth.state === "waiting"} onClick={() => void startYoutubeLogin()}>{youtubeAuth.loggedIn ? "ログインし直す" : "Google にログイン"}</button>
+                  <button disabled={youtubeAuthBusy || (!youtubeAuth.loggedIn && youtubeAuth.state !== "waiting")} onClick={logoutYoutube}>ログアウト</button>
+                </div>
+                <p className="settings-hint">同意画面が「テスト」のままだと、7 日でログインが切れます (もう一度ログインすれば使えます)。</p>
+              </fieldset>
+              <fieldset>
+                <legend>書き込み用に残す量</legend>
+                <div className="settings-row">
+                  <span>書き込み</span>
+                  <input type="number" min={0} max={YOUTUBE_WRITE_RESERVE_MAX} step={1} value={youtubeWriteReserve} onChange={(e) => { const n = Math.round(Number(e.target.value)); if (n >= 0 && n <= YOUTUBE_WRITE_RESERVE_MAX) setYoutubeWriteReserve(n); }} className="lf-w70" />
+                  <span>回分 (= {(youtubeWriteReserve * YOUTUBE_INSERT_COST).toLocaleString()}) を、コメントの読み込みに使わずに残す</span>
+                </div>
+                <p className="settings-hint">
+                  ログインしているときだけ効きます。「使用量・間隔」で「決めた時間もつように」を選んでいると、この分を除いた残りで取得の間隔を決めます
+                  (残す量を増やすと、取得の間隔は延びます)。
+                </p>
+              </fieldset>
+              </section>
+              <section className="settings-section" data-section="tts">
+                {settingsSectionHeading("youtube", "tts")}
+              <fieldset>
+                <legend>読み上げ</legend>
+                <label className="settings-row" title="オフにすると、名前を付けずに本文だけを読み上げます">
+                  <input type="checkbox" checked={youtubeSpeakName} onChange={(e) => setYoutubeSpeakName(e.target.checked)} />
+                  <span>名前を読み上げる (「名前さん」+本文)</span>
+                </label>
+                <p className="settings-hint">
+                  絵文字 (:_名前: の形) は読み上げません。読み上げが溜まっているときの上限と、新着レスペイン・字幕に溜めておく上限は 設定 &gt; Twitch と同じ値を使います。
+                </p>
               </fieldset>
               </section>
               <section className="settings-section" data-section="events">
