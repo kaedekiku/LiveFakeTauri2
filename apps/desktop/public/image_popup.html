@@ -187,8 +187,7 @@
   async function saveSingleImage(sourceUrl) {
     try {
       // Check if default folder is set
-      const settings = await invoke("load_app_settings");
-      let folder = settings["App.imageSaveFolder"] || "";
+      let folder = (await invoke("image_save_folder")) || "";
       if (!folder) {
         folder = await invoke("open_folder_dialog");
         if (!folder) return;

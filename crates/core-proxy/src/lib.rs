@@ -30,7 +30,8 @@ impl ProxyType {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    /// 設定の文字列 (http / socks5 / socks4) から。知らないものは http
+    pub fn from_name(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "socks5" => Self::Socks5,
             "socks4" => Self::Socks4,

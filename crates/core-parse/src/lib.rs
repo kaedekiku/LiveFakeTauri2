@@ -328,12 +328,9 @@ pub fn parse_shitaraba_html_responses(body: &[u8]) -> (Vec<(u32, DatEntry)>, Opt
     let mut entries = Vec::new();
     let mut search_from = 0usize;
 
-    loop {
-        // Find next <dt (with or without attributes, e.g. <dt id="comment_1">)
-        let dt_start = match lower[search_from..].find("<dt") {
-            Some(p) => search_from + p,
-            None => break,
-        };
+    // Find next <dt (with or without attributes, e.g. <dt id="comment_1">)
+    while let Some(p) = lower[search_from..].find("<dt") {
+        let dt_start = search_from + p;
         // Verify the char after "<dt" is ">", space, or newline (not e.g. "<dtd>")
         let after_kw = dt_start + 3;
         match lower.as_bytes().get(after_kw) {

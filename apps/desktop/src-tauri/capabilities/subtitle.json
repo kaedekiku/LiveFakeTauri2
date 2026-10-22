@@ -1,0 +1,6 @@
+{
+  "identifier": "subtitle",
+  "description": "字幕ウィンドウ (移動と大きさの変更だけ)",
+  "windows": ["subtitle"],
+  "permissions": ["core:window:allow-start-dragging", "core:window:allow-start-resize-dragging"]
+}

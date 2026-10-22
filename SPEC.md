@@ -86,6 +86,8 @@ Tauri App (livefake)
 - コマンド名は snake_case、パラメータは camelCase (Tauri が自動変換)
 - 返却型は `#[serde(rename_all = "camelCase")]`
 - `invoke()` は必ず `isTauriRuntime()` チェックで囲む (ブラウザプレビュー対応)
+- ウィンドウごとに呼べる命令を分ける (7.6)。メイン (`main`) はすべて、字幕・画像・書き込み欄のウィンドウは
+  `lib.rs` の `SUB_WINDOW_COMMANDS` に書いた命令だけ。新しい命令は書き足さない限りメインだけが使える
 
 ---
 
@@ -155,7 +157,8 @@ Tauri App (livefake)
 - サイズ制限: HEAD リクエストの Content-Length で判定、超過は「クリックで表示」
 - 画像ポップアップ: Tauri 別ウィンドウ。画像は `fetch_image` で取得し data URL 化
 - ホバープレビュー: 遅延設定 (0〜2000ms) / Ctrl+ホバー即時 / Ctrl+ホイールズーム (10〜500%)
-- 保存: `save_image_to_folder` で設定フォルダへ
+- 保存: `save_image_to_folder` で、設定の「画像の保存先」か、この起動中にフォルダの選択 (`open_folder_dialog`) で選んだフォルダへだけ保存する。
+  画像ウィンドウは保存先を `image_save_folder` で受け取る (設定ファイル全体は渡さない)
 - ImageViewURLReplace: `data/ImageViewURLReplace.txt` (TSV: pattern⇥replacement[⇥referer])
 
 ### 4.8 新着レスペイン
@@ -230,7 +233,7 @@ Tauri App (livefake)
 `sapi_list_voices` `sapi_speak_text` `sapi_stop_speech` `bouyomi_speak_text` `voicevox_get_speakers` `voicevox_speak_text` `tts_stop`
 
 ### 画像
-`fetch_image` `open_image_popup` `get_image_popup_data` `remove_popup_image` `clear_popup_images` `save_image_to_folder`
+`fetch_image` `open_image_popup` `get_image_popup_data` `remove_popup_image` `clear_popup_images` `save_image_to_folder` `image_save_folder`
 
 ### 字幕
 `subtitle_show` `subtitle_hide` `subtitle_reset_position` `subtitle_update` `subtitle_opacity` `subtitle_topmost` `subtitle_font_size` `subtitle_meta_font_size` `subtitle_id_font_size` `subtitle_id_font_family`
@@ -314,12 +317,17 @@ dat 落ちスレの閲覧 (「dat落ちキャッシュ」機能) に利用。
 ### 7.2 CSP
 
 ```
-default-src 'self' 'unsafe-inline' 'unsafe-eval';
+default-src 'self';
 img-src 'self' https: http: data: blob:;
+media-src 'self' https://video.twimg.com;
 style-src 'self' 'unsafe-inline';
-script-src 'self' 'unsafe-inline' 'unsafe-eval';
+script-src 'self';
 connect-src 'self' https: http: ws: wss:
 ```
+
+- スクリプトは、アプリに入っているものだけが動く。字幕・画像・書き込み欄の HTML の中のスクリプトは、Tauri がビルドのときに印 (ハッシュ) を CSP に足すので動く。
+  あとから差し込まれた `<script>` や `onerror=` などは動かない (メイン・字幕で実際に止まることを確かめている)
+- `'unsafe-eval'` は使わない。Rust からの `eval` (字幕の更新など) は WebView2 の機能で行うので CSP の対象外
 
 ### 7.3 HTML サニタイズ
 
@@ -336,7 +344,24 @@ connect-src 'self' https: http: ws: wss:
 
 - 棒読みちゃん (RemoteTalk.exe): 引数のヌルバイト除去・2000文字制限によるコマンドインジェクション対策
 
-### 7.6 その他
+### 7.6 ウィンドウごとの権限
+
+- アプリの命令: `lib.rs` の `guard_window_commands` が、呼んだウィンドウの名前で許可を確かめる。
+  メイン (`main`) はすべて、ほかは `SUB_WINDOW_COMMANDS` の命令だけ。名前の知らないウィンドウはすべて断る
+
+  | ウィンドウ | 使える命令 |
+  |---|---|
+  | `subtitle` (字幕) | `subtitle_control` `subtitle_timing_report` `load_theme_css` |
+  | `image_popup` (画像) | `get_image_popup_data` `remove_popup_image` `clear_popup_images` `image_save_folder` `open_folder_dialog` `save_image_to_folder` `load_theme_css` |
+  | `compose_popup` (書き込み欄) | `compose_popup_submit` `compose_popup_save_size` `load_theme_css` |
+
+  書き込み欄の送信は、内容をメインへ渡すだけ (実際の書き込み・NG の確認はメインが行う)
+- Tauri の基本の権限 (`plugin:` の命令) は `src-tauri/capabilities/` でウィンドウごとに分ける。
+  `main.json` は `core:default` と移動・大きさの変更、`subtitle.json` は移動・大きさの変更だけ、`image-popup.json` はイベントの受け取りと閉じるだけ。
+  書き込み欄には何も与えない
+- 字幕・画像・書き込み欄のウィンドウに万一不正なスクリプトが入っても、書き込み・設定やログイン情報の読み書き・外部 URL を開くことはできない
+
+### 7.7 その他
 
 - 二重起動防止 (single instance)
 - メインウィンドウ破棄時に字幕・画像ポップアップウィンドウも閉じる

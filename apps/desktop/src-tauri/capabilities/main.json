@@ -1,0 +1,6 @@
+{
+  "identifier": "main",
+  "description": "メインウィンドウ (Tauri の基本の権限一式)",
+  "windows": ["main"],
+  "permissions": ["core:default", "core:window:allow-start-dragging", "core:window:allow-start-resize-dragging"]
+}

@@ -1065,12 +1065,13 @@ async fn check_for_updates(
 /// Open a native file-open dialog and return the selected path, or None if cancelled.
 /// `filter_name` e.g. "EXE files", `filter_ext` e.g. "*.exe"
 #[tauri::command]
+#[allow(clippy::needless_return)] // OS ごとの分岐で return をそろえている
 fn open_file_dialog(filter_name: String, filter_ext: String) -> Result<Option<String>, String> {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::ffi::OsStringExt;
         #[repr(C)]
-        #[allow(non_snake_case)]
+        #[allow(non_snake_case, clippy::upper_case_acronyms)]
         struct OPENFILENAMEW {
             lStructSize: u32,
             hwndOwner: usize,
@@ -1134,12 +1135,13 @@ fn open_file_dialog(filter_name: String, filter_ext: String) -> Result<Option<St
 
 /// Open a native folder-select dialog and return the selected path, or None if cancelled.
 #[tauri::command]
+#[allow(clippy::needless_return)] // OS ごとの分岐で return をそろえている
 fn open_folder_dialog() -> Result<Option<String>, String> {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::ffi::OsStringExt;
         #[repr(C)]
-        #[allow(non_snake_case)]
+        #[allow(non_snake_case, clippy::upper_case_acronyms)]
         struct BROWSEINFOW {
             hwndOwner: usize,
             pidlRoot: usize,
@@ -1176,10 +1178,34 @@ fn open_folder_dialog() -> Result<Option<String>, String> {
             .to_string_lossy()
             .to_string();
         if path.is_empty() { return Ok(None); }
+        remember_picked_folder(&path);
         return Ok(Some(path));
     }
     #[cfg(not(target_os = "windows"))]
     Ok(None)
+}
+
+/// この起動中にフォルダの選択で利用者が選んだフォルダ (画像の保存先として認める)
+static PICKED_FOLDERS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+fn remember_picked_folder(path: &str) {
+    if let Ok(mut list) = PICKED_FOLDERS.lock() {
+        if !list.iter().any(|f| same_folder(f, path)) {
+            list.push(path.to_string());
+        }
+    }
+}
+
+/// 同じフォルダか (Windows は大文字・小文字を区別しない。末尾の区切り文字・/ と \ の違いは無視)
+fn same_folder(a: &str, b: &str) -> bool {
+    let norm = |s: &str| s.trim().replace('/', "\\").trim_end_matches('\\').to_lowercase();
+    let (a, b) = (norm(a), norm(b));
+    !a.is_empty() && a == b
+}
+
+/// 画像を書いてよいフォルダか: 設定の「画像の保存先」か、この起動中にフォルダの選択で選んだフォルダだけ
+fn image_folder_allowed(folder: &str, configured: Option<&str>, picked: &[String]) -> bool {
+    configured.is_some_and(|c| same_folder(c, folder)) || picked.iter().any(|f| same_folder(f, folder))
 }
 
 /// Download an image from `url` and save it into `folder`.
@@ -1187,6 +1213,15 @@ fn open_folder_dialog() -> Result<Option<String>, String> {
 #[tauri::command]
 async fn save_image_to_folder(url: String, folder: String) -> Result<String, String> {
     validate_public_http_url(&url)?;
+    // 呼んだ側が指定したフォルダならどこにでも書ける、とはしない
+    {
+        let settings = core_store::load_settings_ini().unwrap_or_default();
+        let configured = settings.get("App.imageSaveFolder").map(String::as_str);
+        let picked = PICKED_FOLDERS.lock().map(|l| l.clone()).unwrap_or_default();
+        if !image_folder_allowed(&folder, configured, &picked) {
+            return Err("保存先は、設定の「画像の保存先」か、フォルダの選択で選んだフォルダだけです".to_string());
+        }
+    }
     let client = image_http_client(30)?;
     let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
     let (bytes, kind) = read_image_response(resp).await?;
@@ -1405,7 +1440,7 @@ async fn fetch_board_categories() -> Result<Vec<BoardCategory>, String> {
             let url = item
                 .get("url")
                 .and_then(|v| v.as_str())
-                .map(|u| normalize_5ch_url(u))
+                .map(normalize_5ch_url)
                 .unwrap_or_default();
             if !board_name.is_empty() && !url.is_empty() {
                 boards.push(BoardEntry { board_name, url });
@@ -2466,7 +2501,7 @@ impl ProxySettingsPayload {
         };
         ProxySettings {
             enabled: self.enabled,
-            proxy_type: ProxyType::from_str(&self.proxy_type),
+            proxy_type: ProxyType::from_name(&self.proxy_type),
             no_cache: self.no_cache,
             http_mode: self.http_mode,
             receive: ep(&self.receive),
@@ -2532,7 +2567,7 @@ fn load_proxy_settings() -> Result<ProxySettingsPayload, String> {
 fn save_proxy_settings(settings: ProxySettingsPayload) -> Result<(), String> {
     let mut updates = HashMap::new();
     updates.insert("Proxy.ProxyEnabled".to_string(), settings.enabled.to_string());
-    updates.insert("Proxy.ProxyType".to_string(), ProxyType::from_str(&settings.proxy_type).as_scheme().to_string());
+    updates.insert("Proxy.ProxyType".to_string(), ProxyType::from_name(&settings.proxy_type).as_scheme().to_string());
     updates.insert("Proxy.NoCache".to_string(), settings.no_cache.to_string());
     updates.insert("Proxy.HttpMode".to_string(), settings.http_mode.to_string());
     updates.insert("Proxy.ProxyHost".to_string(), settings.receive.host.trim().to_string());
@@ -2665,8 +2700,8 @@ async fn tts_stop() -> Result<(), String> {
 
 /// Reject non-http(s) URLs and URLs pointing at loopback / private / link-local
 /// hosts, to keep attacker-supplied image URLs from being used for SSRF against
-/// localhost or the LAN. Note: this checks the literal host only; a public
-/// hostname that resolves to a private IP is not caught here (DNS rebinding).
+/// localhost or the LAN. This checks the literal host; a public hostname that
+/// resolves to a private IP is stopped by `PublicOnlyResolver` when connecting.
 fn validate_public_http_url(raw: &str) -> Result<(), String> {
     let parsed = reqwest::Url::parse(raw).map_err(|e| format!("invalid url: {}", e))?;
     if !matches!(parsed.scheme(), "http" | "https") {
@@ -2711,6 +2746,7 @@ const IMAGE_MAX_BYTES: usize = 30 * 1024 * 1024;
 fn image_http_client(timeout_secs: u64) -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(timeout_secs))
+        .dns_resolver(std::sync::Arc::new(PublicOnlyResolver))
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
             if attempt.previous().len() >= 10 {
                 attempt.error("too many redirects")
@@ -2722,6 +2758,34 @@ fn image_http_client(timeout_secs: u64) -> Result<reqwest::Client, String> {
         }))
         .build()
         .map_err(|e| e.to_string())
+}
+
+/// 画像の取得の名前解決。引いたアドレスが1つでも家庭内・自分の PC のアドレスなら接続しない。
+/// 確かめたアドレスにそのままつなぐので、確かめたあとで名前の向き先を変えられても (DNS リバインディング) 家庭内へはつながらない。
+/// 転送先も接続のたびにここを通る (IP アドレスで直接書かれたものは validate_public_http_url と転送の確認で止める)
+struct PublicOnlyResolver;
+
+impl reqwest::dns::Resolve for PublicOnlyResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = name.as_str().to_string();
+        Box::pin(async move {
+            let addrs = public_addrs_of(&host).await?;
+            Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
+
+/// 名前を引いて、すべて公開のアドレスならその一覧を返す
+async fn public_addrs_of(host: &str) -> Result<Vec<std::net::SocketAddr>, Box<dyn std::error::Error + Send + Sync>> {
+    // ポートは reqwest が URL のものに置き換える
+    let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host, 0)).await?.collect();
+    if addrs.is_empty() {
+        return Err(format!("{host} のアドレスが見つかりません").into());
+    }
+    if addrs.iter().any(|a| !core_fetch::is_public_ip(a.ip())) {
+        return Err(format!("{host} は家庭内・自分の PC のアドレスを指しているため読み込みません").into());
+    }
+    Ok(addrs)
 }
 
 /// 中身の先頭から画像の種類を調べる (サーバーが「画像」と名乗らないこともあるので、名乗りより中身を見る)
@@ -2883,6 +2947,15 @@ fn clear_popup_images(app: AppHandle) -> Result<(), String> {
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
     guard.clear();
     Ok(())
+}
+
+/// 設定の「画像の保存先」(画像ウィンドウ用。設定ファイル全体は渡さない)。未設定なら空
+#[tauri::command]
+fn image_save_folder() -> String {
+    core_store::load_settings_ini()
+        .ok()
+        .and_then(|m| m.get("App.imageSaveFolder").cloned())
+        .unwrap_or_default()
 }
 
 // ===== Compose Popup Window Commands =====
@@ -3144,7 +3217,7 @@ fn subtitle_update(app: AppHandle, data: serde_json::Value) -> Result<(), String
 #[tauri::command]
 fn subtitle_opacity(app: AppHandle, opacity: f64) -> Result<(), String> {
     if let Some(win) = app.get_webview_window("subtitle") {
-        let _ = win.eval(&format!(
+        let _ = win.eval(format!(
             "if(window.__setOpacity)window.__setOpacity({})",
             opacity
         ));
@@ -3230,7 +3303,7 @@ fn subtitle_frame(app: AppHandle, mode: String) -> Result<(), String> {
     }
     if let Some(win) = app.get_webview_window("subtitle") {
         let _ = win.set_shadow(mode == "normal");
-        let _ = win.eval(&format!("if(window.__setFrameMode)window.__setFrameMode(\"{mode}\")"));
+        let _ = win.eval(format!("if(window.__setFrameMode)window.__setFrameMode(\"{mode}\")"));
     }
     Ok(())
 }
@@ -3407,7 +3480,7 @@ fn load_settings_backup(name: String) -> Result<String, String> {
 #[tauri::command]
 fn subtitle_status(app: AppHandle, paused: bool, remaining: u32) -> Result<(), String> {
     if let Some(win) = app.get_webview_window("subtitle") {
-        let _ = win.eval(&format!(
+        let _ = win.eval(format!(
             "if(window.__setStatus)window.__setStatus({})",
             serde_json::json!({ "paused": paused, "remaining": remaining })
         ));
@@ -3418,7 +3491,7 @@ fn subtitle_status(app: AppHandle, paused: bool, remaining: u32) -> Result<(), S
 #[tauri::command]
 fn subtitle_font_size(app: AppHandle, size: u32) -> Result<(), String> {
     if let Some(win) = app.get_webview_window("subtitle") {
-        let _ = win.eval(&format!(
+        let _ = win.eval(format!(
             "if(window.__setFontSize)window.__setFontSize({})",
             size
         ));
@@ -3430,7 +3503,7 @@ fn subtitle_font_size(app: AppHandle, size: u32) -> Result<(), String> {
 #[tauri::command]
 fn subtitle_text_shadow(app: AppHandle, enabled: bool) -> Result<(), String> {
     if let Some(win) = app.get_webview_window("subtitle") {
-        let _ = win.eval(&format!("if(window.__setTextShadow)window.__setTextShadow({enabled})"));
+        let _ = win.eval(format!("if(window.__setTextShadow)window.__setTextShadow({enabled})"));
     }
     Ok(())
 }
@@ -3438,7 +3511,7 @@ fn subtitle_text_shadow(app: AppHandle, enabled: bool) -> Result<(), String> {
 #[tauri::command]
 fn subtitle_meta_font_size(app: AppHandle, size: u32) -> Result<(), String> {
     if let Some(win) = app.get_webview_window("subtitle") {
-        let _ = win.eval(&format!(
+        let _ = win.eval(format!(
             "if(window.__setMetaFontSize)window.__setMetaFontSize({})",
             size
         ));
@@ -3449,7 +3522,7 @@ fn subtitle_meta_font_size(app: AppHandle, size: u32) -> Result<(), String> {
 #[tauri::command]
 fn subtitle_id_font_size(app: AppHandle, size: i32) -> Result<(), String> {
     if let Some(win) = app.get_webview_window("subtitle") {
-        let _ = win.eval(&format!(
+        let _ = win.eval(format!(
             "if(window.__setIdFontSize)window.__setIdFontSize({})",
             size
         ));
@@ -3461,7 +3534,7 @@ fn subtitle_id_font_size(app: AppHandle, size: i32) -> Result<(), String> {
 fn subtitle_id_font_family(app: AppHandle, family: String) -> Result<(), String> {
     if let Some(win) = app.get_webview_window("subtitle") {
         let escaped = serde_json::to_string(&family).unwrap_or_else(|_| "\"\"".to_string());
-        let _ = win.eval(&format!(
+        let _ = win.eval(format!(
             "if(window.__setIdFontFamily)window.__setIdFontFamily({})",
             escaped
         ));
@@ -3652,7 +3725,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler(guard_window_commands(tauri::generate_handler![
             fetch_bbsmenu_summary,
             fetch_board_categories,
             diagnostics_enabled,
@@ -3796,10 +3869,102 @@ pub fn run() {
             subtitle_get_size,
             subtitle_id_font_size,
             subtitle_id_font_family,
-            list_system_fonts
-        ])
+            list_system_fonts,
+            image_save_folder
+        ]))
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+/// メイン以外のウィンドウが使ってよい命令 (ウィンドウの名前ごと)。ここに無い命令はメインだけが使える。
+/// 字幕・画像・書き込み欄のウィンドウに万一不正なスクリプトが入っても、書き込み・設定やログイン情報の
+/// 読み書き・外部 URL を開くなどはできないようにする。ウィンドウ操作などの Tauri の基本の権限は capabilities/ で分けている
+const SUB_WINDOW_COMMANDS: &[(&str, &[&str])] = &[
+    ("subtitle", &["subtitle_control", "subtitle_timing_report", "load_theme_css"]),
+    (
+        "image_popup",
+        &[
+            "get_image_popup_data",
+            "remove_popup_image",
+            "clear_popup_images",
+            "image_save_folder",
+            "open_folder_dialog",
+            "save_image_to_folder",
+            "load_theme_css",
+        ],
+    ),
+    ("compose_popup", &["compose_popup_submit", "compose_popup_save_size", "load_theme_css"]),
+];
+
+/// そのウィンドウからその命令を呼んでよいか (メインはすべて可、知らないウィンドウはすべて不可)
+fn window_may_call(label: &str, command: &str) -> bool {
+    if label == "main" {
+        return true;
+    }
+    SUB_WINDOW_COMMANDS
+        .iter()
+        .find(|(l, _)| *l == label)
+        .is_some_and(|(_, cmds)| cmds.contains(&command))
+}
+
+/// アプリの命令の受け口の前に、ウィンドウごとの許可を確かめる (plugin: の命令はここを通らず capabilities で決まる)
+fn guard_window_commands<R: tauri::Runtime>(
+    handler: impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static,
+) -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static {
+    move |invoke| {
+        let label = invoke.message.webview_ref().label().to_string();
+        let command = invoke.message.command().to_string();
+        if !window_may_call(&label, &command) {
+            eprintln!("[livefake] ウィンドウ {label} からの命令 {command} を断りました");
+            invoke.resolver.reject(format!("このウィンドウからは使えない命令です: {command}"));
+            return true;
+        }
+        handler(invoke)
+    }
+}
+
+#[cfg(test)]
+mod image_dns_tests {
+    #[test]
+    fn hostname_pointing_to_this_pc_is_refused() {
+        // localhost は 127.0.0.1 / ::1 を指す (通信はしない。この PC の名前解決だけ)
+        let r = tauri::async_runtime::block_on(super::public_addrs_of("localhost"));
+        assert!(r.is_err());
+    }
+}
+
+#[cfg(test)]
+mod window_guard_tests {
+    use super::*;
+
+    #[test]
+    fn main_may_call_everything_and_sub_windows_only_their_list() {
+        assert!(window_may_call("main", "youtube_send_chat"));
+        assert!(window_may_call("main", "load_app_settings"));
+        assert!(window_may_call("subtitle", "subtitle_control"));
+        assert!(!window_may_call("subtitle", "load_app_settings"));
+        assert!(!window_may_call("subtitle", "post_reply"));
+        assert!(!window_may_call("subtitle", "open_external_url"));
+        assert!(window_may_call("image_popup", "save_image_to_folder"));
+        assert!(!window_may_call("image_popup", "load_app_settings"));
+        assert!(!window_may_call("image_popup", "save_generic_json"));
+        assert!(window_may_call("compose_popup", "compose_popup_submit"));
+        assert!(!window_may_call("compose_popup", "youtube_send_chat"));
+        assert!(!window_may_call("unknown", "load_theme_css"));
+        assert!(!window_may_call("", "load_theme_css"));
+    }
+
+    #[test]
+    fn image_folder_must_be_configured_or_picked() {
+        let picked = vec!["D:\\Pictures\\saved".to_string()];
+        assert!(image_folder_allowed("C:\\img", Some("C:\\img"), &[]));
+        assert!(image_folder_allowed("c:\\IMG\\", Some("C:\\img"), &[]));
+        assert!(image_folder_allowed("D:/Pictures/saved", None, &picked));
+        assert!(!image_folder_allowed("C:\\Users\\x\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup", Some("C:\\img"), &picked));
+        assert!(!image_folder_allowed("C:\\img\\sub", Some("C:\\img"), &picked));
+        assert!(!image_folder_allowed("", Some(""), &[]));
+        assert!(!image_folder_allowed("C:\\img", None, &[]));
+    }
 }
 
 #[cfg(test)]

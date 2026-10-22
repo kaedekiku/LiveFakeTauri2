@@ -1,6 +1,6 @@
 [package]
 name = "livefake"
-version = "0.0.122"
+version = "0.0.123"
 license = "MIT"
 description = "実況向け掲示板ブラウザ＋Twitchビュワー"
 homepage = ""
@@ -30,6 +30,6 @@ serde_json = { workspace = true }
 tauri = { version = "2", features = [] }
 tauri-plugin-single-instance = "2"
 winreg = "0.56.0"
-tokio = { version = "1", default-features = false, features = ["time"] }
+tokio = { version = "1", default-features = false, features = ["time", "net"] }
 tokio-tungstenite = { workspace = true }
 futures-util = { workspace = true }

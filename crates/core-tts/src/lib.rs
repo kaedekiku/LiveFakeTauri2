@@ -75,7 +75,7 @@ impl TtsQueue {
         self.is_speaking = true;
     }
 
-    pub fn next(&mut self) -> Option<TtsQueueItem> {
+    pub fn next_item(&mut self) -> Option<TtsQueueItem> {
         if self.current_index < self.items.len() {
             let item = self.items[self.current_index].clone();
             self.current_index += 1;
@@ -297,10 +297,11 @@ fn sapi_speak_interruptible(
             .map_err(|e| TtsError::Sapi(format!("SetVolume: {}", e)))?;
 
         let text_wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+        // SPF_IS_NOT_XML: 本文は掲示板・チャットの文なので、「<」で始まっても SAPI の指示 (音量・速さ・声・無音など) として読ませない
         voice
             .Speak(
                 PCWSTR(text_wide.as_ptr()),
-                (SPF_PURGEBEFORESPEAK.0 | SPF_ASYNC.0) as u32,
+                (SPF_PURGEBEFORESPEAK.0 | SPF_ASYNC.0 | SPF_IS_NOT_XML.0) as u32,
                 None,
             )
             .map_err(|e| TtsError::Sapi(format!("Speak: {}", e)))?;
@@ -608,11 +609,11 @@ mod tests {
             TtsQueueItem { response_no: 2, text: "b".to_string() },
         ]);
         assert!(q.is_speaking());
-        let item = q.next().unwrap();
+        let item = q.next_item().unwrap();
         assert_eq!(item.response_no, 1);
-        let item = q.next().unwrap();
+        let item = q.next_item().unwrap();
         assert_eq!(item.response_no, 2);
-        assert!(q.next().is_none());
+        assert!(q.next_item().is_none());
         assert!(!q.is_speaking());
     }
 

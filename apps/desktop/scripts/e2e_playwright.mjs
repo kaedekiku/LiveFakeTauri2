@@ -25,8 +25,14 @@ try {
 
   const contexts = browser.contexts();
   assert(contexts.length > 0, "no browser contexts found");
-  const page = contexts[0].pages()[0];
+  // メインのウィンドウ (字幕などの別ウィンドウではないもの) を選び、画面ができるまで待つ
+  let page = null;
+  for (let i = 0; i < 600 && !page; i++) {
+    page = contexts[0].pages().find((p) => !/subtitle|image_popup|compose_popup/.test(p.url())) ?? null;
+    if (!page) await new Promise((r) => setTimeout(r, 100));
+  }
   assert(page, "no page found");
+  await page.waitForSelector(".status-bar", { timeout: 120000 });
 
   // Capture console/errors
   page.on("pageerror", (err) => console.log(`e2e [pageerror]: ${err.message}`));
@@ -90,9 +96,11 @@ try {
   console.log(`e2e: [PASS] thread structure: "${firstThread.title.substring(0, 40)}" (${firstThread.responseCount} res)`);
 
   // --- 5. IPC: fetch_thread_responses_command ---
-  const responses = await page.evaluate(async (url) => {
+  // 戻り値は { responses: [...], title } (スレタイも一緒に返す)
+  const fetched = await page.evaluate(async (url) => {
     return window.__TAURI_INTERNALS__.invoke("fetch_thread_responses_command", { threadUrl: url, limit: 50 });
   }, firstThread.threadUrl);
+  const responses = fetched?.responses;
   assert(Array.isArray(responses) && responses.length > 0, `expected responses > 0, got ${responses?.length ?? 0}`);
   console.log(`e2e: [PASS] responses: ${responses.length} from thread "${firstThread.title.substring(0, 30)}"`);
 
@@ -218,6 +226,10 @@ try {
   console.log("e2e: [PASS] read status cleanup done");
 
   // --- 11. DOM: thread search filter ---
+  // 画面のスレ一覧に板を読み込んでおく (空のデータで起動したときは、まだ何も表示されていないため)
+  await page.fill(".address-input", testBoardUrl);
+  await page.press(".address-input", "Enter");
+  await page.waitForFunction(() => document.querySelectorAll(".threads tbody tr").length > 0, null, { timeout: 30000 });
   const threadSearchInput = await page.$(".thread-search");
   assert(threadSearchInput, "thread search input should exist");
   // Type a nonsense query to filter all threads out
@@ -249,12 +261,12 @@ try {
   console.log(`e2e: [PASS] thread search clear restores ${restoredRowCount} rows`);
 
   // --- 12. DOM: board pane tabs ---
-  const boardTabs = await page.$$(".board-tab");
+  const boardTabs = await page.$$(".board-tabs:not(.board-tab-bar) > .board-tab");
   assert(boardTabs.length === 2, `expected 2 board tabs, got ${boardTabs.length}`);
 
   // Click Fav tab
   await page.evaluate(() => {
-    const tabs = document.querySelectorAll(".board-tab");
+    const tabs = document.querySelectorAll(".board-tabs:not(.board-tab-bar) > .board-tab");
     if (tabs[1]) tabs[1].click();
   });
   await new Promise((r) => setTimeout(r, 200));
@@ -264,7 +276,7 @@ try {
 
   // Click Boards tab back
   await page.evaluate(() => {
-    const tabs = document.querySelectorAll(".board-tab");
+    const tabs = document.querySelectorAll(".board-tabs:not(.board-tab-bar) > .board-tab");
     if (tabs[0]) tabs[0].click();
   });
   await new Promise((r) => setTimeout(r, 200));
@@ -302,7 +314,8 @@ try {
   });
   await new Promise((r) => setTimeout(r, 200));
   const ngItems = await page.$$eval(".ng-list li", (els) => els.map((el) => el.textContent));
-  assert(ngItems.some((t) => t.includes("e2e-test-word")), `NG word should appear in list, got: ${JSON.stringify(ngItems)}`);
+  // 配信向けの伏せ字 (streamMask) がオンだとワードは •••• で表示されるので、件数でも確かめる
+  assert(ngItems.some((t) => t.includes("e2e-test-word")) || (ngItems.length === 1 && ngItems[0].includes("•")), `NG word should appear in list, got: ${JSON.stringify(ngItems)}`);
   console.log("e2e: [PASS] NG word added via panel");
 
   // Remove the NG word
@@ -340,11 +353,18 @@ try {
     });
   });
   await new Promise((r) => setTimeout(r, 300));
-  const composeWindow = await page.$(".compose-window");
+  // 今は下の書き込み欄の見出しを押して開く (閉じていれば開く)
+  await page.evaluate(() => {
+    const w = document.querySelector(".compose-window");
+    if (w && !w.classList.contains("compose-window--open")) document.querySelector(".compose-header")?.click();
+  });
+  await new Promise((r) => setTimeout(r, 300));
+  const composeWindow = await page.$(".compose-window.compose-window--open");
   assert(composeWindow, "compose window should be open");
 
   // Verify compose-meta shows chars/lines
-  const metaText = await page.$eval(".compose-meta", (el) => el.textContent || "");
+  // 掲示板の書き込み欄の文字数・行数 (チャットの書き込み欄にも .compose-meta-inline があるので、掲示板の行に絞る)
+  const metaText = await page.$eval(".compose-row.postform-foot .compose-meta-inline", (el) => el.textContent || "");
   assert(metaText.includes("文字") && metaText.includes("行"), `compose meta should show 文字/行, got: ${metaText}`);
   console.log("e2e: [PASS] compose window with meta info");
 
@@ -408,7 +428,9 @@ try {
   // --- 18. DOM: response ID cell with occurrence count ---
   const idCells = await page.$$eval(".response-id-cell", (els) => els.map((el) => el.textContent?.trim()).filter(Boolean));
   if (idCells.length > 0) {
-    const hasCount = idCells.some((t) => t.includes("("));
+    // 書き込み回数 (n/回数) は ID の隣の .response-id-count に出す
+    const countCells = await page.$$eval(".response-scroll .response-id-count", (els) => els.map((el) => el.textContent?.trim()).filter(Boolean));
+    const hasCount = idCells.some((t) => t.includes("(")) || countCells.some((t) => /\(\d+\/\d+\)/.test(t));
     assert(hasCount, `ID cells should show occurrence count, got: ${idCells.slice(0, 3)}`);
     console.log(`e2e: [PASS] ID cells with occurrence count (${idCells.length} cells)`);
   } else {
@@ -416,41 +438,48 @@ try {
   }
 
   // --- 19. DOM: speed bar visualization ---
+  // レスを表示しているあいだはスレ一覧が画面から外れるので、板をアドレスバーから開き直してスレ一覧に戻す
+  await page.fill(".address-input", testBoardUrl);
+  await page.press(".address-input", "Enter");
+  await page.waitForFunction(() => document.querySelectorAll(".threads tbody tr").length > 0, null, { timeout: 30000 });
   const speedBars = await page.$$(".speed-cell .speed-bar");
   assert(speedBars.length > 0, "speed bars should exist in thread list");
   const speedBarStyle = await speedBars[0].evaluate((el) => el.getAttribute("style"));
   assert(speedBarStyle?.includes("width") && speedBarStyle?.includes("background"), `speed bar should have width and background, got: ${speedBarStyle}`);
   console.log("e2e: [PASS] speed bar with gradient color");
 
-  // --- 20. DOM: bookmark button in nav bar ---
-  const bookmarkBtn = await page.$('.response-nav-bar button');
-  const navButtons = await page.$$eval(".response-nav-bar button", (els) => els.map((el) => el.textContent?.trim()));
-  assert(navButtons.includes("栞"), `nav bar should have 栞 button, got: ${navButtons}`);
-  console.log("e2e: [PASS] bookmark button in response nav");
+  // --- 20. DOM: アドレスバーの行の新着の操作 (読み上げ方・▶・字幕・クリア・新着レス) ---
+  // (栞はボタンではなく、読んだ位置を自動で保存する作りになった)
+  const ttsMode = await page.$(".tts-board-mode select");
+  assert(ttsMode, "TTS board mode selector should exist in the address bar row");
+  const arrivalButtons = await page.$$eval(".arrival-tools button", (els) => els.map((el) => el.textContent?.trim()));
+  assert(arrivalButtons.some((t) => t.includes("新着レス")) && arrivalButtons.some((t) => t.includes("クリア")), `arrival tools should have 新着レス / クリア, got: ${arrivalButtons}`);
+  console.log("e2e: [PASS] arrival tools in the address bar row");
 
   // --- 21. DOM: settings panel ---
+  // 設定 > 設定を開く
   await page.evaluate(() => {
-    const menuItem = [...document.querySelectorAll(".menu-item")].find((el) => el.textContent?.trim() === "ファイル");
+    const menuItem = [...document.querySelectorAll(".menu-item")].find((el) => el.textContent?.trim() === "設定");
     if (menuItem) menuItem.click();
   });
   await new Promise((r) => setTimeout(r, 150));
   await page.evaluate(() => {
-    const btn = [...document.querySelectorAll(".menu-dropdown button")].find((el) => el.textContent?.includes("設定"));
+    const btn = [...document.querySelectorAll(".menu-dropdown button")].find((el) => el.textContent?.trim() === "設定を開く");
     if (btn) btn.click();
   });
   await new Promise((r) => setTimeout(r, 500));
   const settingsPanel = await page.$(".settings-panel");
   assert(settingsPanel, "settings panel should be visible");
-  const legends = await page.$$eval(".settings-body legend", (els) => els.map((el) => el.textContent?.trim()));
-  assert(legends.includes("表示") && legends.includes("書き込み") && legends.some((l) => l.includes("Ronin")) && legends.includes("情報"),
-    `settings should have all sections, got: ${legends}`);
-  // Close settings
-  await page.evaluate(() => {
-    const btn = document.querySelector(".settings-header button");
-    if (btn) btn.click();
-  });
+  // 左の分類 (表示・書き込み・読み上げ・NG・Twitch・YouTube・ビュワー・プロキシ・情報 など)
+  const cats = await page.$$eval(".settings-nav-item", (els) => els.map((el) => el.getAttribute("data-cat")));
+  const need = ["display", "posting", "tts", "ng", "subtitle", "twitch", "youtube", "viewer", "proxy", "info"];
+  assert(need.every((c) => cats.includes(c)), `settings should have all categories, got: ${cats}`);
+  // 閉じる (変更していないので、そのまま閉じる)
+  await page.evaluate(() => [...document.querySelectorAll(".settings-header button")].find((x) => x.textContent === "閉じる")?.click());
   await new Promise((r) => setTimeout(r, 200));
-  console.log("e2e: [PASS] settings panel with all sections");
+  await page.evaluate(() => [...document.querySelectorAll("button")].find((x) => x.textContent?.startsWith("保存しないで閉じる"))?.click());
+  await new Promise((r) => setTimeout(r, 200));
+  console.log("e2e: [PASS] settings panel with all categories");
 
   // --- 22. DOM: post history panel ---
   await page.evaluate(() => {
@@ -480,13 +509,13 @@ try {
     for (const sheet of document.styleSheets) {
       try {
         for (const rule of sheet.cssRules) {
-          if (rule.cssText?.includes(".back-refs")) return true;
+          if (rule.cssText?.includes(".back-ref-trigger")) return true;
         }
       } catch { /* cross-origin */ }
     }
     return false;
   });
-  assert(hasBackRefsCss, "back-refs CSS should exist");
+  assert(hasBackRefsCss, "back-ref (▼N) CSS should exist");
   console.log("e2e: [PASS] back-refs CSS present");
 
   // --- 24. DOM: thread row striping ---

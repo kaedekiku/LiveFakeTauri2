@@ -22,6 +22,8 @@ globs: "**/*.rs"
 ### アーキテクチャ
 - 各crateは単一 `lib.rs` を維持 — 2000行超でない限り分割しない
 - 新規Tauriコマンドは `lib.rs` と `generate_handler![]` マクロの両方に追加
+- 新規コマンドは既定でメインウィンドウだけが呼べる。字幕・画像・書き込み欄のウィンドウから呼ぶときだけ `SUB_WINDOW_COMMANDS` に足す
+  (足し忘れると「このウィンドウからは使えない命令です」で断られる)。`plugin:` の権限は `src-tauri/capabilities/` のウィンドウごとのファイルで足す
 - ワークスペース依存はルート `Cargo.toml` の `[workspace.dependencies]` で宣言 — crate側は `workspace = true`
 - 全 `reqwest::Client::builder()` に `.timeout(Duration::from_secs(30))` を含めること
 

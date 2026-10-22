@@ -1,0 +1,6 @@
+{
+  "identifier": "image-popup",
+  "description": "画像ウィンドウ (画像の追加の知らせを受け取る・閉じるだけ)",
+  "windows": ["image_popup"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten", "core:window:allow-close"]
+}

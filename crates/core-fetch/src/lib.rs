@@ -1584,7 +1584,7 @@ pub async fn post_shitaraba_reply(
     let contains_error = resp_text.contains("ERROR") || resp_text.contains("エラー");
     let is_success = resp_text.contains("書き込みが完了しました")
         || resp_text.contains("write_done.cgi")
-        || (status >= 300 && status < 400); // redirect to write_done
+        || (300..400).contains(&status); // redirect to write_done
 
     Ok(PostSubmitResult {
         action_url: post_url.to_string(),
@@ -2355,7 +2355,7 @@ pub async fn create_shitaraba_thread(
     let contains_error = resp_text.contains("ERROR") || resp_text.contains("エラー");
     let is_success = resp_text.contains("書き込みが完了しました")
         || resp_text.contains("write_done.cgi")
-        || (status >= 300 && status < 400);
+        || (300..400).contains(&status);
 
     // Try to extract the new thread key from a redirect or response body
     // shitaraba response may contain a link like /bbs/read.cgi/{category}/{board_id}/{thread_key}/
@@ -2510,7 +2510,7 @@ pub async fn create_thread(
         body.find(&pattern).and_then(|idx| {
             let rest = &body[idx..];
             // find the end of the URL (quote, space, angle bracket, etc.)
-            let end = rest.find(|c: char| c == '"' || c == '\'' || c == '<' || c == ' ' || c == '\n')
+            let end = rest.find(['"', '\'', '<', ' ', '\n'])
                 .unwrap_or(rest.len());
             let path = &rest[..end];
             // Verify it looks like a valid thread path (has a numeric ID)
@@ -3311,8 +3311,7 @@ mod integration_tests {
                 println!("  body_preview={}", &resp_body.chars().take(500).collect::<String>());
 
                 // Step 3: Follow redirect if any
-                if (status == 301 || status == 302) && redir.is_some() {
-                    let raw_redir = redir.unwrap();
+                if let (301 | 302, Some(raw_redir)) = (status, redir) {
                     let next_url = normalize_5ch_url(&raw_redir);
                     println!("\n=== STEP 3: Follow redirect ===");
                     println!("  raw_redirect={}", raw_redir);
@@ -3380,8 +3379,8 @@ mod integration_tests {
                                         println!("  has_confirm_form={}", has_confirm2);
 
                                         // Follow redirect from retry
-                                        if (s5 == 301 || s5 == 302) && r5.is_some() {
-                                            let retry_redir = normalize_5ch_url(&r5.unwrap());
+                                        if let (301 | 302, Some(r5)) = (s5, r5) {
+                                            let retry_redir = normalize_5ch_url(&r5);
                                             println!("\n=== STEP 6: Follow retry redirect ===");
                                             println!("  url={}", retry_redir);
                                             match curl_exec("GET", &retry_redir, Some(post_url), None, &cookie_file, None) {
