@@ -158,10 +158,9 @@
   var idFontDelta = 0;
   var idFontFamilyVal = "";
 
+  // 属性 (alt="…" など) にも入れるので、" と ' も変換する
   function escapeHtml(s) {
-    var d = document.createElement("div");
-    d.textContent = String(s);
-    return d.innerHTML;
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   }
 
   function applyIdStyle() {

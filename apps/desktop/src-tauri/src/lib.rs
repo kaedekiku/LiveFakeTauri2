@@ -1187,45 +1187,117 @@ fn open_folder_dialog() -> Result<Option<String>, String> {
 #[tauri::command]
 async fn save_image_to_folder(url: String, folder: String) -> Result<String, String> {
     validate_public_http_url(&url)?;
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = image_http_client(30)?;
     let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
-    if !resp.status().is_success() {
-        return Err(format!("HTTP {}", resp.status()));
+    let (bytes, kind) = read_image_response(resp).await?;
+    // 拡張子は中身の種類から決める (URL の拡張子が jpg でも中身が png なら png)
+    let ext = match kind.as_str() {
+        "image/png" => "png",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        "image/bmp" => "bmp",
+        "image/avif" => "avif",
+        "image/x-icon" | "image/vnd.microsoft.icon" => "ico",
+        "image/svg+xml" => "svg",
+        "image/jpeg" | "image/jpg" | "image/pjpeg" => "jpg",
+        _ => "img",
+    };
+    let filename = format!("{}.{}", safe_image_file_stem(&url), ext);
+    let folder_path = std::path::PathBuf::from(&folder);
+    let dest = folder_path.join(&filename);
+    // 選んだフォルダの中に書くことを確かめる (ファイル名にドライブ名や区切り文字を混ぜて外へ書かせない)
+    if dest.parent() != Some(folder_path.as_path()) {
+        return Err("保存先のファイル名が正しくありません".to_string());
     }
-    // Determine extension from URL or Content-Type
-    let ext = {
-        let from_url = url.split('?').next().unwrap_or(&url)
-            .rsplit('.').next().unwrap_or("").to_lowercase();
-        if matches!(from_url.as_str(), "jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp") {
-            from_url
-        } else {
-            let ct = resp.headers()
-                .get(reqwest::header::CONTENT_TYPE)
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("");
-            if ct.contains("png") { "png".to_string() }
-            else if ct.contains("gif") { "gif".to_string() }
-            else if ct.contains("webp") { "webp".to_string() }
-            else { "jpg".to_string() }
-        }
-    };
-    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
-    // Derive filename from URL path, fallback to timestamp
-    let filename_base = url.split('?').next().unwrap_or(&url)
-        .rsplit('/').next().unwrap_or("")
-        .split('.').next().unwrap_or("");
-    let filename = if filename_base.is_empty() {
-        let ts = chrono::Local::now().format("image_%Y%m%d_%H%M%S").to_string();
-        format!("{}.{}", ts, ext)
-    } else {
-        format!("{}.{}", filename_base, ext)
-    };
-    let dest = std::path::PathBuf::from(&folder).join(&filename);
     std::fs::write(&dest, &bytes).map_err(|e| e.to_string())?;
     Ok(dest.to_string_lossy().into_owned())
+}
+
+/// 保存するファイル名 (拡張子を除く): URL の最後の部分から、ファイル名に使えない文字を除いて作る。無ければ日時
+fn safe_image_file_stem(url: &str) -> String {
+    let last = reqwest::Url::parse(url)
+        .ok()
+        .and_then(|u| u.path_segments().and_then(|mut s| s.next_back().map(str::to_string)))
+        .unwrap_or_default();
+    let decoded = percent_decode_lossy(&last);
+    let stem = decoded.split('.').next().unwrap_or("");
+    let cleaned: String = stem
+        .chars()
+        .map(|c| if c.is_control() || matches!(c, '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|') { '_' } else { c })
+        .take(100)
+        .collect();
+    let cleaned = cleaned.trim_matches(|c: char| c == ' ' || c == '.' || c == '_').to_string();
+    if cleaned.is_empty() {
+        chrono::Local::now().format("image_%Y%m%d_%H%M%S").to_string()
+    } else {
+        cleaned
+    }
+}
+
+/// %xx をはずす (UTF-8 として読めないものはそのまま)
+fn percent_decode_lossy(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            // 文字の途中で切らないよう、バイトのまま 16 進の2桁を読む
+            if let (Some(h), Some(l)) = ((bytes[i + 1] as char).to_digit(16), (bytes[i + 2] as char).to_digit(16)) {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| s.to_string())
+}
+
+#[cfg(test)]
+mod image_safety_tests {
+    use super::*;
+
+    #[test]
+    fn private_addresses_are_blocked() {
+        for u in ["http://127.0.0.1/a.png", "http://192.168.1.1/", "http://10.0.0.1/", "http://100.64.1.2/", "http://0.1.2.3/",
+                  "http://[::1]/", "http://[fd00::1]/", "http://[fe80::1]/", "http://[::ffff:192.168.0.1]/", "http://localhost/", "http://a.local/"] {
+            assert!(validate_public_http_url(u).is_err(), "{u}");
+        }
+        for u in ["https://i.imgur.com/a.png", "http://8.8.8.8/x.jpg", "https://[2001:4860::8888]/"] {
+            assert!(validate_public_http_url(u).is_ok(), "{u}");
+        }
+        assert!(validate_public_http_url("file:///C:/x.png").is_err());
+    }
+
+    #[test]
+    fn image_type_is_sniffed() {
+        assert_eq!(sniff_image_type(b"\x89PNG\r\n\x1a\n...."), Some("image/png"));
+        assert_eq!(sniff_image_type(&[0xFF, 0xD8, 0xFF, 0xE0]), Some("image/jpeg"));
+        assert_eq!(sniff_image_type(b"GIF89a...."), Some("image/gif"));
+        assert_eq!(sniff_image_type(b"RIFF\0\0\0\0WEBPVP8 "), Some("image/webp"));
+        assert_eq!(sniff_image_type(b"\0\0\0\x1cftypavif"), Some("image/avif"));
+        assert_eq!(sniff_image_type(b"<html><body>router</body></html>"), None);
+        assert_eq!(sniff_image_type(&[0, 0, 1, 0, 1, 0, 16, 16]), Some("image/x-icon"));
+        assert_eq!(sniff_image_type(b"<?xml version=\"1.0\"?><svg xmlns=\"x\"></svg>"), Some("image/svg+xml"));
+        assert_eq!(sniff_image_type(b"  <svg viewBox=\"0 0 1 1\"></svg>"), Some("image/svg+xml"));
+        assert_eq!(sniff_image_type(b"<?xml version=\"1.0\"?><rss></rss>"), None);
+        assert_eq!(declared_image_type(Some("image/heic; charset=x")), Some("image/heic".to_string()));
+        assert_eq!(declared_image_type(Some("text/html")), None);
+        assert_eq!(declared_image_type(Some("image/x\"onerror")), None);
+        assert_eq!(declared_image_type(None), None);
+    }
+
+    #[test]
+    fn saved_file_names_stay_in_folder() {
+        assert_eq!(safe_image_file_stem("https://example.com/img/photo.jpg?x=1"), "photo");
+        assert_eq!(safe_image_file_stem("https://example.com/%E7%94%BB%E5%83%8F.png"), "画像");
+        let s = safe_image_file_stem("https://example.com/C:%5CWindows%5Cevil.png");
+        assert!(!s.contains(':') && !s.contains('\\'), "{s}");
+        let s = safe_image_file_stem("https://example.com/..%2F..%2Fevil.png");
+        assert!(!s.contains('/') && !s.starts_with('.'), "{s}");
+        assert!(safe_image_file_stem("https://example.com/").starts_with("image_"));
+    }
 }
 
 #[tauri::command]
@@ -1264,6 +1336,9 @@ fn open_external_url(url: String) -> Result<(), String> {
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err(format!("blocked url scheme: {}", parsed.scheme()));
     }
+
+    // 確かめたあとの URL (正規化したもの) を渡す
+    let url = parsed.to_string();
 
     #[cfg(target_os = "windows")]
     {
@@ -2601,16 +2676,20 @@ fn validate_public_http_url(raw: &str) -> Result<(), String> {
     let host_l = host.to_ascii_lowercase();
     let host_trim = host_l.trim_start_matches('[').trim_end_matches(']');
     if let Ok(ip) = host_trim.parse::<std::net::IpAddr>() {
+        let v4_blocked = |v4: std::net::Ipv4Addr| {
+            let o = v4.octets();
+            v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified() || v4.is_broadcast()
+                || o[0] == 0 // 0.0.0.0/8
+                || (o[0] == 100 && (o[1] & 0xC0) == 64) // 100.64.0.0/10 (CGNAT・VPN)
+        };
         let blocked = match ip {
-            std::net::IpAddr::V4(v4) => {
-                v4.is_loopback() || v4.is_private() || v4.is_link_local()
-                    || v4.is_unspecified() || v4.is_broadcast()
-            }
+            std::net::IpAddr::V4(v4) => v4_blocked(v4),
             std::net::IpAddr::V6(v6) => {
+                let seg0 = v6.segments()[0];
                 v6.is_loopback() || v6.is_unspecified()
-                    || v6.to_ipv4_mapped().map(|m| {
-                        m.is_loopback() || m.is_private() || m.is_link_local()
-                    }).unwrap_or(false)
+                    || (seg0 & 0xFE00) == 0xFC00 // fc00::/7 (家庭内)
+                    || (seg0 & 0xFFC0) == 0xFE80 // fe80::/10 (リンクローカル)
+                    || v6.to_ipv4_mapped().map(v4_blocked).unwrap_or(false)
             }
         };
         if blocked {
@@ -2625,25 +2704,93 @@ fn validate_public_http_url(raw: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// 画像の取得の上限 (これより大きいものは読み込まない)
+const IMAGE_MAX_BYTES: usize = 30 * 1024 * 1024;
+
+/// 画像を取りに行く通信 (転送先も1回ずつ確かめる。家庭内・自分の PC のアドレスへの転送は止める)
+fn image_http_client(timeout_secs: u64) -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(timeout_secs))
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() >= 10 {
+                attempt.error("too many redirects")
+            } else if validate_public_http_url(attempt.url().as_str()).is_err() {
+                attempt.error("blocked redirect to a private/loopback address")
+            } else {
+                attempt.follow()
+            }
+        }))
+        .build()
+        .map_err(|e| e.to_string())
+}
+
+/// 中身の先頭から画像の種類を調べる (サーバーが「画像」と名乗らないこともあるので、名乗りより中身を見る)
+fn sniff_image_type(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
+        Some("image/png")
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("image/jpeg")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else if bytes.starts_with(b"BM") {
+        Some("image/bmp")
+    } else if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" && (&bytes[8..12] == b"avif" || &bytes[8..12] == b"avis") {
+        Some("image/avif")
+    } else if bytes.starts_with(&[0, 0, 1, 0]) || bytes.starts_with(&[0, 0, 2, 0]) {
+        Some("image/x-icon")
+    } else if is_svg(bytes) {
+        Some("image/svg+xml")
+    } else {
+        None
+    }
+}
+
+/// SVG か (先頭の空白・BOM・XML 宣言・コメントのあとに <svg があるか)。画像として表示するだけなので、中のスクリプトは動かない
+fn is_svg(bytes: &[u8]) -> bool {
+    let head = String::from_utf8_lossy(&bytes[..bytes.len().min(1024)]).to_ascii_lowercase();
+    let t = head.trim_start_matches('\u{feff}').trim_start();
+    (t.starts_with("<svg") || t.starts_with("<?xml") || t.starts_with("<!--") || t.starts_with("<!doctype svg")) && head.contains("<svg")
+}
+
+/// 中身で判断できないときの、サーバーの名乗り (Content-Type) が画像か。画像なら種類 (文字は英数字と + - . だけ)
+fn declared_image_type(content_type: Option<&str>) -> Option<String> {
+    let ct = content_type?.split(';').next()?.trim().to_ascii_lowercase();
+    let sub = ct.strip_prefix("image/")?;
+    (!sub.is_empty() && sub.len() <= 40 && sub.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.')))
+        .then(|| format!("image/{sub}"))
+}
+
+/// 画像を上限つきで読み込む: (中身, 種類)。画像でなければエラー
+async fn read_image_response(resp: reqwest::Response) -> Result<(Vec<u8>, String), String> {
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    let declared = declared_image_type(resp.headers().get(reqwest::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()));
+    if resp.content_length().is_some_and(|n| n as usize > IMAGE_MAX_BYTES) {
+        return Err("画像が大きすぎます (30MB まで)".to_string());
+    }
+    let mut resp = resp;
+    let mut out = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
+        if out.len() + chunk.len() > IMAGE_MAX_BYTES {
+            return Err("画像が大きすぎます (30MB まで)".to_string());
+        }
+        out.extend_from_slice(&chunk);
+    }
+    // 中身で判断し、判断できなければ名乗りで判断する (HTML などの画像でないものは止める)
+    let kind = sniff_image_type(&out).map(str::to_string).or(declared).ok_or_else(|| "画像ではありませんでした".to_string())?;
+    Ok((out, kind))
+}
+
 /// Fetch an image URL and return a base64 data URL.
 #[tauri::command]
 async fn fetch_image(url: String) -> Result<String, String> {
     validate_public_http_url(&url)?;
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = image_http_client(15)?;
     let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
-    let ct = resp
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("image/jpeg")
-        .split(';')
-        .next()
-        .unwrap_or("image/jpeg")
-        .to_string();
-    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+    let (bytes, ct) = read_image_response(resp).await?;
     let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
     Ok(format!("data:{};base64,{}", ct, b64))
 }
