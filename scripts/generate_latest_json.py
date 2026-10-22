@@ -46,6 +46,12 @@ def parse_args() -> argparse.Namespace:
         default="apps/landing/public/latest.json",
         help="Output latest.json path (default: apps/landing/public/latest.json)",
     )
+    # お知らせ (notice): 指定した版 (below) より古い版の人にだけ、アプリが文を出す。
+    # 指定しなければ、今の latest.json のお知らせを引き継ぐ。--clear-notice で消す
+    parser.add_argument("--notice-id", help="お知らせの id (英数字と . _ -。同じ id は1回だけダイアログに出る)")
+    parser.add_argument("--notice-below", help="この版より古い人にだけ出す (例: 0.0.122)")
+    parser.add_argument("--notice-text", help="お知らせの文 (300 文字まで)")
+    parser.add_argument("--clear-notice", action="store_true", help="お知らせを消す")
     return parser.parse_args()
 
 
@@ -66,6 +72,19 @@ def main() -> int:
             "windows-x64": build_platform_entry(windows_zip),
         },
     }
+
+    given = [args.notice_id, args.notice_below, args.notice_text]
+    if any(given) and not all(given):
+        raise SystemExit("--notice-id / --notice-below / --notice-text はそろえて指定してください")
+    if all(given):
+        payload["notice"] = {"id": args.notice_id, "below": args.notice_below, "text": args.notice_text}
+    elif not args.clear_notice and out_path.exists():
+        try:
+            old = json.loads(out_path.read_text(encoding="utf-8")).get("notice")
+        except Exception:
+            old = None
+        if old is not None:
+            payload["notice"] = old
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

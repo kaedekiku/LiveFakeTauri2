@@ -56,5 +56,8 @@ LiveFake の指定バージョンでリリース準備を行う。
      --download-page-url "https://github.com/kaedekiku/LiveFakeTauri2/releases/tag/v<バージョン>" \
      --windows-zip /tmp/lf_rel/livefake-win-x64.zip
    ```
+   お知らせ (notice) は、指定しなければ今の latest.json のものを引き継ぐ。セキュリティの修正などで古い版の人に更新を呼びかけるときは
+   `--notice-id <英数字の id> --notice-below <この版より古い人に出す> --notice-text "<300 文字まで>"` を足す (`--clear-notice` で消す)。
+   お知らせを出すのは v0.0.124 以降の版だけ (それより前の版は読み飛ばす)
 3. `apps/landing/public/latest.json` をコミットして main へ push
    (アプリは raw.githubusercontent.com の main ブランチを参照するため、push した時点で更新通知が有効になる)

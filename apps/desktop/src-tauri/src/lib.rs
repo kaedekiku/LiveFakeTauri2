@@ -350,6 +350,48 @@ struct LatestMetadata {
     released_at: Option<String>,
     download_page_url: Option<String>,
     platforms: Option<std::collections::HashMap<String, LatestPlatformAsset>>,
+    /// お知らせ (任意)。形が崩れていても更新の確認そのものは失敗させないよう、値のまま受けて update_notice_for で読む
+    #[serde(default)]
+    notice: Option<serde_json::Value>,
+}
+
+/// 画面に出すお知らせ (latest.json の notice のうち、この版に当てはまるもの)
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct UpdateNotice {
+    id: String,
+    text: String,
+}
+
+/// お知らせの文の長さの上限 (文字数)
+const UPDATE_NOTICE_MAX_CHARS: usize = 300;
+
+/// latest.json の notice `{ "id": "...", "below": "0.0.122", "text": "..." }` を読み、
+/// 今の版が below より古いときだけ返す。below が無い・形が違う・文が空のものは出さない。
+/// 文は画面で文字としてだけ出す (HTML にしない)。制御文字は除き、長さを切る
+fn update_notice_for(notice: Option<&serde_json::Value>, current_version: &str) -> Option<UpdateNotice> {
+    let n = notice?.as_object()?;
+    let id = n.get("id")?.as_str()?.trim();
+    if id.is_empty() || id.len() > 64 || !id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')) {
+        return None;
+    }
+    let below = n.get("below")?.as_str()?.trim();
+    if parse_version_numbers(below).is_empty() || !is_newer_version(below, current_version) {
+        return None;
+    }
+    let text: String = n
+        .get("text")?
+        .as_str()?
+        .chars()
+        .map(|c| if c == '\n' || c == '\t' { ' ' } else { c })
+        .filter(|c| !c.is_control())
+        .take(UPDATE_NOTICE_MAX_CHARS)
+        .collect();
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        return None;
+    }
+    Some(UpdateNotice { id: id.to_string(), text })
 }
 
 #[derive(Debug, Deserialize)]
@@ -379,6 +421,8 @@ struct UpdateCheckResult {
     download_page_url: Option<String>,
     current_platform_key: String,
     current_platform_asset: Option<UpdatePlatformAsset>,
+    /// この版に当てはまるお知らせ (無ければ null)
+    notice: Option<UpdateNotice>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1038,6 +1082,7 @@ async fn check_for_updates(
         .map_err(|e| e.to_string())?;
 
     let has_update = is_newer_version(&latest.version, &current_version);
+    let notice = update_notice_for(latest.notice.as_ref(), &current_version);
     let platform_key = current_platform_key().to_string();
     let current_platform_asset = latest
         .platforms
@@ -1059,6 +1104,7 @@ async fn check_for_updates(
         download_page_url: latest.download_page_url,
         current_platform_key: platform_key,
         current_platform_asset,
+        notice,
     })
 }
 
@@ -3920,6 +3966,44 @@ fn guard_window_commands<R: tauri::Runtime>(
             return true;
         }
         handler(invoke)
+    }
+}
+
+#[cfg(test)]
+mod update_notice_tests {
+    use super::update_notice_for;
+    use serde_json::json;
+
+    #[test]
+    fn notice_only_for_versions_below() {
+        let n = json!({ "id": "2026-10-security", "below": "0.0.122", "text": "セキュリティ対策のため、最新版への更新をおすすめします" });
+        assert_eq!(update_notice_for(Some(&n), "0.0.121").map(|x| x.id), Some("2026-10-security".to_string()));
+        assert!(update_notice_for(Some(&n), "0.0.122").is_none());
+        assert!(update_notice_for(Some(&n), "0.0.123").is_none());
+        assert!(update_notice_for(None, "0.0.121").is_none());
+    }
+
+    #[test]
+    fn malformed_notice_is_ignored() {
+        for n in [
+            json!("text"),
+            json!({ "id": "a", "text": "x" }),                       // below が無い
+            json!({ "id": "a", "below": "abc", "text": "x" }),        // 版の形でない
+            json!({ "id": "a b", "below": "1.0.0", "text": "x" }),    // id に空白
+            json!({ "id": "a", "below": "1.0.0", "text": "  " }),     // 文が空
+            json!({ "id": "a", "below": 5, "text": "x" }),
+        ] {
+            assert!(update_notice_for(Some(&n), "0.0.1").is_none(), "{n}");
+        }
+    }
+
+    #[test]
+    fn notice_text_is_cleaned_and_limited() {
+        let long = "あ".repeat(500);
+        let n = json!({ "id": "a", "below": "1.0.0", "text": format!("1行目\n2行目\u{0007}{long}") });
+        let t = update_notice_for(Some(&n), "0.0.1").map(|x| x.text).unwrap_or_default();
+        assert!(t.starts_with("1行目 2行目あ"));
+        assert_eq!(t.chars().count(), super::UPDATE_NOTICE_MAX_CHARS);
     }
 }
 

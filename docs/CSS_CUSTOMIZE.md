@@ -506,6 +506,7 @@ Twitch・YouTube のタブでは、同じ `.compose-window` がチャットの�
 | `.tab-site-colors` (`.right-pane` に付く) + `.site-5ch` / `.site-shitaraba` / `.site-jpnkn` / `.site-twitch` / `.site-youtube` | 板タブ・スレタブの左端のサイトの色の線（設定 > 表示 でオンのとき） |
 | `.tab-tts-off` | 読み上げをオフにしたタブの印 |
 | `.menu-badge` | 新しいバージョンがあるときのヘルプメニューの印 |
+| `.update-notice` | バージョン情報に出るお知らせ (セキュリティの修正などで、古い版の人にだけ出る) |
 | `.ogp-card-thumb-failed` | リンクカードの画像が読み込めなかったとき (既定では画像の枠ごと隠す) |
 | `.ogp-card.ogp-card-skeleton` / `.ogp-card-skel-img` | リンクカードを読み込んでいる間の仮のカード / その画像の枠 (本物のカードと同じ高さ) |
 | `.youtube-quota-chip` (`.warn` / `.danger`) / `.yt-mark` | YouTube の API の使用量 (YouTube タブのタイトルの帯・ビュワーの上の段。80% で `.warn`、95% で `.danger`) / その中の ▶ の印 |

@@ -88,6 +88,18 @@ def main() -> int:
         if any(ch not in "0123456789abcdef" for ch in sha256.lower()):
             return fail(f"sha256 has non-hex chars: {platform_key}")
 
+    notice = payload.get("notice")
+    if notice is not None:
+        if not isinstance(notice, dict):
+            return fail("notice must be object")
+        nid, below, text = notice.get("id"), notice.get("below"), notice.get("text")
+        if not isinstance(nid, str) or not nid or len(nid) > 64 or any(not (c.isascii() and (c.isalnum() or c in "._-")) for c in nid):
+            return fail("notice.id must be 1-64 chars of [A-Za-z0-9._-]")
+        if not isinstance(below, str) or not all(p.isdigit() for p in below.split(".")):
+            return fail("notice.below must be a version like 0.0.122")
+        if not isinstance(text, str) or not text.strip() or len(text) > 300:
+            return fail("notice.text must be a non-empty string up to 300 chars")
+
     print(f"OK: {path}")
     return 0
 

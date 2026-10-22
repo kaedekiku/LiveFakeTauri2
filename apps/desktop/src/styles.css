@@ -2012,7 +2012,7 @@ button.search-history-btn:hover {
 .ng-hint {
   margin: 0 0 6px;
   font-size: 11px;
-  color: #888888;
+  color: var(--text-secondary);
 }
 
 .ng-list {
@@ -2724,6 +2724,7 @@ button.search-history-btn:hover {
 .dark .menu-item:hover,
 .dark .menu-item-active {
   background: #3c3c3c;
+  color: var(--ink);
 }
 .dark .menu-dropdown {
   background: #2d2d30;
@@ -2868,7 +2869,8 @@ button.search-history-btn:hover {
   border-left: 4px solid #2090d0;
 }
 .dark .response-name {
-  color: #3a9a3a;
+  /* マウスを乗せて背景が明るくなっても 4.5:1 以上 (普段 6.0 / 乗せたとき 5.0) */
+  color: #4caf50;
 }
 .dark .response-date {
   color: var(--sub);
@@ -3090,6 +3092,11 @@ button.search-history-btn:hover {
 }
 .dark .compose-header button:hover {
   background: #4a4a4a;
+}
+.dark .compose-header .compose-mode-btn.active {
+  background: #0078d4;
+  color: #fff;
+  border-color: #0078d4;
 }
 .dark .boards-header {
   background: #2d2d30;
@@ -4307,3 +4314,7 @@ img.twitch-emote.youtube-emoji { height: var(--tw-emote, 28px); }
 
 /* ここまで。このファイル全体は app.css から CSS レイヤー lf-base として読み込まれる
    (利用者の CSS はレイヤーの外なので、指定の強さに関係なくこのファイルより優先される) */
+
+/* バージョン情報: latest.json のお知らせ (古い版の人にだけ出る) */
+.update-notice { font-size: 0.85em; font-weight: bold; color: #cc3300; line-height: 1.5; max-width: 320px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.dark .update-notice { color: #ff8a66; }

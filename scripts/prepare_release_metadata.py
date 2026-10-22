@@ -29,6 +29,11 @@ def parse_args() -> argparse.Namespace:
         default="apps/landing/public/latest.json",
         help="Output latest.json path (default: apps/landing/public/latest.json)",
     )
+    # お知らせ (notice) は generate_latest_json.py へそのまま渡す (指定しなければ今のものを引き継ぐ)
+    parser.add_argument("--notice-id")
+    parser.add_argument("--notice-below")
+    parser.add_argument("--notice-text")
+    parser.add_argument("--clear-notice", action="store_true")
     return parser.parse_args()
 
 
@@ -55,6 +60,10 @@ def main() -> int:
             "--out",
             args.out,
         ]
+        + (["--notice-id", args.notice_id] if args.notice_id else [])
+        + (["--notice-below", args.notice_below] if args.notice_below else [])
+        + (["--notice-text", args.notice_text] if args.notice_text else [])
+        + (["--clear-notice"] if args.clear_notice else [])
     )
 
     run([py, str(val_script), "--file", args.out, "--strict"])

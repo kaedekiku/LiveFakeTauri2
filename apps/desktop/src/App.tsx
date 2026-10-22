@@ -33,6 +33,8 @@ type UpdateCheckResult = {
   currentPlatformAsset:
     | { key: string; sha256: string; size: number; filename: string }
     | null;
+  // latest.json のお知らせのうち、この版に当てはまるもの (文は文字としてだけ出す)
+  notice?: { id: string; text: string } | null;
 };
 // "1.2.3" 形式のバージョンを比べる (a が新しければ正)
 const compareVersions = (a: string, b: string) => {
@@ -1230,6 +1232,8 @@ export default function App() {
   const [autoUpdateCheck, setAutoUpdateCheck] = useState(true);
   const [lastUpdateCheck, setLastUpdateCheck] = useState("");
   const [knownLatestVersion, setKnownLatestVersion] = useState("");
+  // ダイアログで知らせたお知らせの id (同じお知らせは1回だけダイアログを出す)
+  const [updateNoticeSeen, setUpdateNoticeSeen] = useState("");
   const [updateResult, setUpdateResult] = useState<UpdateCheckResult | null>(null);
   const [updateProbe, setUpdateProbe] = useState("not run");
   const [composeOpen, setComposeOpen] = useState(false);
@@ -5343,7 +5347,9 @@ export default function App() {
         `current=${r.currentVersion} latest=${r.latestVersion} hasUpdate=${r.hasUpdate} platform=${r.currentPlatformKey} asset=${r.currentPlatformAsset?.filename ?? "(none)"}`
       );
       setKnownLatestVersion(r.latestVersion);
-      if (r.hasUpdate) {
+      if (r.notice) {
+        setStatus(`${r.notice.text} (新しいバージョン: v${r.latestVersion})`);
+      } else if (r.hasUpdate) {
         setStatus(`新しいバージョンがあります: v${r.latestVersion}`);
       } else {
         setStatus(`最新版です (v${r.currentVersion})`);
@@ -5367,7 +5373,22 @@ export default function App() {
       .then((r) => {
         setUpdateResult(r);
         setKnownLatestVersion(r.latestVersion);
-        if (r.hasUpdate) setStatus(`新しいバージョンがあります: v${r.latestVersion} (ヘルプ > バージョン情報)`);
+        if (r.notice) {
+          setStatus(`${r.notice.text} (ヘルプ > バージョン情報)`);
+          // 同じお知らせは1回だけダイアログで知らせる
+          if (map["App.updateNoticeSeen"] !== r.notice.id) {
+            setUpdateNoticeSeen(r.notice.id);
+            const page = r.downloadPageUrl;
+            setAppConfirm({
+              title: "LiveFake からのお知らせ",
+              message: `${r.notice.text}\n\n新しいバージョン: v${r.latestVersion} (今のバージョン: v${r.currentVersion})`,
+              buttons: [
+                ...(page ? [{ label: "ダウンロードページを開く", primary: true, onClick: () => { void invoke("open_external_url", { url: page }).catch((e) => console.warn("open_external_url failed", e)); } }] : []),
+                { label: "閉じる", onClick: () => {} },
+              ],
+            });
+          }
+        } else if (r.hasUpdate) setStatus(`新しいバージョンがあります: v${r.latestVersion} (ヘルプ > バージョン情報)`);
       })
       .catch((e) => console.warn("startup update check failed", e));
   };
@@ -7125,6 +7146,7 @@ export default function App() {
       if (map["App.autoUpdateCheck"]) setAutoUpdateCheck(map["App.autoUpdateCheck"] !== "false");
       if (map["App.lastUpdateCheck"] !== undefined) setLastUpdateCheck(map["App.lastUpdateCheck"]);
       if (map["App.knownLatestVersion"] !== undefined) setKnownLatestVersion(map["App.knownLatestVersion"]);
+      if (map["App.updateNoticeSeen"] !== undefined) setUpdateNoticeSeen(map["App.updateNoticeSeen"]);
       if (map["App.logRetentionDays"]) { const n = parseInt(map["App.logRetentionDays"], 10); if (!isNaN(n) && n >= 0) setLogRetentionDays(n); }
       if (map["App.webviewCacheMb"]) { const n = parseInt(map["App.webviewCacheMb"], 10); if (!isNaN(n)) setWebviewCacheMb(Math.max(10, Math.min(1000, n))); }
       if (map["App.imageSaveFolder"] !== undefined) setImageSaveFolder(map["App.imageSaveFolder"]);
@@ -7851,6 +7873,7 @@ export default function App() {
       "App.autoUpdateCheck": String(autoUpdateCheck),
       "App.lastUpdateCheck": lastUpdateCheck,
       "App.knownLatestVersion": knownLatestVersion,
+      "App.updateNoticeSeen": updateNoticeSeen,
       "App.webviewCacheMb": String(webviewCacheMb),
       "App.imageSaveFolder": imageSaveFolder,
       "App.bbsmenuUrl": bbsmenuUrl,
@@ -7888,7 +7911,7 @@ export default function App() {
   useEffect(() => {
     if (!isTauriRuntime() || !appSettingsLoadedRef.current || settingsOpenRef.current) return;
     void invoke("save_app_settings", { settings: buildAppSettingsMap() }).catch(() => {});
-  }, [responsesFontSize, responseGap, autoRefreshInterval, autoRefreshEnabled, autoScrollEnabled, smoothScroll, maxOpenTabs, logRetentionDays, tabSiteColors, tabWidthFixed, boardTabWidth, threadTabWidth, autoUpdateCheck, lastUpdateCheck, knownLatestVersion, webviewCacheMb, overlayEnabled, overlayPort, latestPanelHeight, latestPanelOpen, viewerFontFamily, viewerFontSize, viewerFontBold, viewerShow, latestShow, viewerCards, viewerAllResponses, viewerThumbs, viewerTwitchClickToLoad, twitchSpeakName, twitchBadgesEnabled, twitchEmoteSize, twitchGiantEmoteSize, twitchEmoteSpeak, twitchEmoteMax, subtitleEmoteSize, subtitleGiantEmoteSize, boardEmotesEnabled, twitchTeachEnabled, twitchTeachAnnounce, twitchMaxQueuedArrivals, twitchMaxTtsBacklog, youtubeMethod, youtubeApiInterval, youtubeSpeakName, youtubeTargetOn, youtubeTargetHours, youtubeDailyQuota, youtubeWriteReserve, chatSendConfirm, imageSaveFolder, bbsmenuUrl, shitarabaHost, jpnknHost,
+  }, [responsesFontSize, responseGap, autoRefreshInterval, autoRefreshEnabled, autoScrollEnabled, smoothScroll, maxOpenTabs, logRetentionDays, tabSiteColors, tabWidthFixed, boardTabWidth, threadTabWidth, autoUpdateCheck, lastUpdateCheck, knownLatestVersion, updateNoticeSeen, webviewCacheMb, overlayEnabled, overlayPort, latestPanelHeight, latestPanelOpen, viewerFontFamily, viewerFontSize, viewerFontBold, viewerShow, latestShow, viewerCards, viewerAllResponses, viewerThumbs, viewerTwitchClickToLoad, twitchSpeakName, twitchBadgesEnabled, twitchEmoteSize, twitchGiantEmoteSize, twitchEmoteSpeak, twitchEmoteMax, subtitleEmoteSize, subtitleGiantEmoteSize, boardEmotesEnabled, twitchTeachEnabled, twitchTeachAnnounce, twitchMaxQueuedArrivals, twitchMaxTtsBacklog, youtubeMethod, youtubeApiInterval, youtubeSpeakName, youtubeTargetOn, youtubeTargetHours, youtubeDailyQuota, youtubeWriteReserve, chatSendConfirm, imageSaveFolder, bbsmenuUrl, shitarabaHost, jpnknHost,
       mainAlwaysOnBottom, cssAllowExternalUrls, streamMaskEnabled, ngAboneSpeakEnabled,
       ttsMode, ttsEnabled, ttsMaxReadLength, ttsUrlOmitEnabled, ttsBoardMode, sapiVoiceIndex, sapiRate, sapiVolume,
       voicevoxEndpoint, voicevoxSpeakerId, voicevoxSpeedScale, voicevoxPitchScale, voicevoxIntonationScale, voicevoxVolumeScale,
@@ -10829,6 +10852,7 @@ export default function App() {
               <div style={{ fontSize: "0.85em", color: updateResult?.hasUpdate ? "#cc3300" : "var(--sub)", marginTop: 4 }}>
                 {updateProbe === "running..." ? "更新確認中..." : updateResult ? (updateResult.hasUpdate ? `新しいバージョンがあります: v${updateResult.latestVersion}` : `最新版です (v${currentVersion})`) : ""}
               </div>
+              {updateResult?.notice && <div className="update-notice">{updateResult.notice.text}</div>}
               {updateResult?.hasUpdate && (
                 <button onClick={openDownloadPage} className="lf-mt4">
                   ダウンロードページを開く

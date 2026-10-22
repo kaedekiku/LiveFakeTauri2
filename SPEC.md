@@ -199,6 +199,11 @@ Tauri App (livefake)
 - `latest.json` (GitHub raw: `apps/landing/public/latest.json`) を取得し semver 比較
 - プラットフォームキー (windows-x64 等) 別のアセット情報 (filename / sha256 / size) に対応
 - バージョン情報ダイアログで自動チェック、更新があればダウンロードページを開くボタンを表示
+- 起動時に1日1回だけ確認する (設定 > 情報 でオフにできる)。新しい版があればステータスバーとヘルプメニューの印で知らせる
+- お知らせ (任意): `"notice": { "id": "2026-10-security", "below": "0.0.122", "text": "…" }`。今の版が `below` より古いときだけ、
+  ステータスバー・バージョン情報 (`.update-notice`) に文を出し、同じ `id` は1回だけダイアログで知らせる (見た id は settings.ini の `App.updateNoticeSeen`)。
+  文は文字としてだけ出す (HTML にしない。制御文字を除き 300 文字まで)。形が崩れたお知らせは無視し、更新の確認そのものは失敗させない。
+  v0.0.123 以前の版はこの欄を読み飛ばす (表示しない)
 
 ### 4.13 ユーザー CSS (SIKI互換)
 
