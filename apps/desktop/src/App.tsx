@@ -36,6 +36,11 @@ type UpdateCheckResult = {
   // latest.json のお知らせのうち、この版に当てはまるもの (文は文字としてだけ出す)
   notice?: { id: string; text: string } | null;
 };
+// コマンド (設定 > コマンド): 右クリックメニューの「コマンド ▶」に出す、利用者が登録したプログラム・URL。
+// 実行は Rust (user_commands.rs) が保存した登録から行う (プログラムの場所は画面から渡さない)
+type UserCommand = { id: string; name: string; kind: "program" | "url"; program: string; args: string; url: string; enabled: boolean; confirm: boolean };
+// その置き換え文字を使っているか ($TEXT は $TEXTU・$TEXTE と区別する)
+const commandUses = (c: UserCommand, name: string) => new RegExp(`\\$${name}(?![A-Z])`).test(c.kind === "program" ? c.args : c.url);
 // "1.2.3" 形式のバージョンを比べる (a が新しければ正)
 const compareVersions = (a: string, b: string) => {
   const pa = a.replace(/^v/i, "").split(".").map((x) => parseInt(x, 10) || 0);
@@ -148,11 +153,23 @@ type ResizeDragState =
   | { mode: "compose-resize"; startY: number; startHeight: number };
 
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
-const clampMenuPosition = (x: number, y: number, width: number, height: number) => {
-  const cx = clamp(x, MENU_EDGE_PADDING, Math.max(MENU_EDGE_PADDING, window.innerWidth - width - MENU_EDGE_PADDING));
-  const spaceBelow = window.innerHeight - y - MENU_EDGE_PADDING;
-  const cy = spaceBelow >= height ? y : Math.max(MENU_EDGE_PADDING, y - height);
-  return { x: cx, y: cy };
+// 右クリックメニューをカーソルの隣に置く。表示してから本当の大きさを測り、下に入ればカーソルの右下、
+// 入らなければカーソルの上 (メニューの下の端をカーソルに)、右に入らなければカーソルの左に置く。
+// どちらにも入らないほど大きいときだけ画面の中へ寄せる。メニューの ref から呼ぶ (x・y は右クリックした所)
+const placeMenuNearCursor = (el: HTMLElement | null, x: number, y: number) => {
+  if (!el) return;
+  // 画面の端の近くに置いたままだと、右の余白が足りずに幅が縮んだ大きさを測ってしまうので、左上に置いてから測る
+  el.style.left = "0px";
+  el.style.top = "0px";
+  const r = el.getBoundingClientRect();
+  const pad = MENU_EDGE_PADDING;
+  const fit = (pos: number, size: number, limit: number) => {
+    if (pos + size <= limit - pad) return pos;
+    if (pos - size >= pad) return pos - size;
+    return clamp(limit - size - pad, pad, Math.max(pad, limit - size - pad));
+  };
+  el.style.left = `${fit(x, r.width, window.innerWidth)}px`;
+  el.style.top = `${fit(y, r.height, window.innerHeight)}px`;
 };
 const isTauriRuntime = () =>
   typeof window !== "undefined" && Boolean((globalThis as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
@@ -1756,20 +1773,71 @@ export default function App() {
     selection?: string; resId?: string; resName?: string; isOnResNo?: boolean; imageUrl?: string; linkUrl?: string;
   } | null>(null);
   const responseMenuRef = useRef<HTMLDivElement | null>(null);
-  // レスの右クリックメニューは項目数がハイライト・配信ホワイトリストなどの状態で変わるため、
-  // 決め打ちの高さでは足りずウィンドウ下端からはみ出すことがある。実際に描画されたサイズで
-  // 測り直し、はみ出していれば位置を補正する
-  useLayoutEffect(() => {
-    if (!responseMenu || !responseMenuRef.current) return;
-    const el = responseMenuRef.current;
-    const rect = el.getBoundingClientRect();
-    const p = clampMenuPosition(responseMenu.x, responseMenu.y, rect.width, rect.height);
-    if (p.x !== responseMenu.x || p.y !== responseMenu.y) {
-      setResponseMenu({ ...responseMenu, x: p.x, y: p.y });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [responseMenu?.responseId, responseMenu?.selection, responseMenu?.resId, responseMenu?.resName, responseMenu?.isOnResNo, responseMenu?.imageUrl, responseMenu?.linkUrl]);
+  useEffect(() => { setRespSubMenu(null); }, [responseMenu?.responseId, responseMenu?.x, responseMenu?.y]);
   const [hlSubMenu, setHlSubMenu] = useState<{ type: "text" | "id" | "name"; value: string; nearRight?: boolean } | null>(null);
+  // レス表示欄の外 (ビュワー・最新レス欄・新着レスペイン・ポップアップなど) のリンクの右クリックメニュー: URLをコピー・コマンド ▶
+  const [linkMenu, setLinkMenu] = useState<{ x: number; y: number; url: string; selection?: string } | null>(null);
+  useEffect(() => {
+    const onCtx = (e: MouseEvent) => {
+      // レス表示欄など、自分の右クリックメニューを出したところは何もしない
+      if (e.defaultPrevented) { setLinkMenu(null); return; }
+      const t = e.target as HTMLElement | null;
+      const thumb = t?.closest?.<HTMLElement>("[data-lightbox-src]");
+      const a = t?.closest?.<HTMLAnchorElement>("a.body-link");
+      const url = thumb?.dataset.lightboxSrc ?? a?.getAttribute("href") ?? "";
+      if (!/^https?:\/\//i.test(url)) { setLinkMenu(null); return; }
+      e.preventDefault();
+      setLinkMenu({ x: e.clientX, y: e.clientY, url, selection: window.getSelection()?.toString().trim() || undefined });
+    };
+    document.addEventListener("contextmenu", onCtx);
+    return () => document.removeEventListener("contextmenu", onCtx);
+  }, []);
+  // コマンド (設定 > コマンド)。一覧への登録・削除・並べ替えはその場で保存する
+  const [userCommands, setUserCommands] = useState<UserCommand[]>([]);
+  const [commandMsg, setCommandMsg] = useState("");
+  const emptyCommandDraft = { kind: "program" as UserCommand["kind"], name: "", program: "", args: "\"$LINK\"", url: "", confirm: true };
+  const [commandDraft, setCommandDraft] = useState(emptyCommandDraft);
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    invoke<UserCommand[]>("load_commands").then((list) => setUserCommands(Array.isArray(list) ? list : [])).catch((e) => console.warn("load_commands failed", e));
+  }, []);
+  const saveUserCommands = (next: UserCommand[]) =>
+    invoke("save_commands", { commands: next })
+      .then(() => { setUserCommands(next); setCommandMsg(""); return true; })
+      .catch((e) => { setCommandMsg(String(e)); return false; });
+  const runUserCommand = (c: UserCommand, values: { link?: string; text?: string; url?: string; title?: string; boardName?: string; number?: string }) => {
+    const exec = () => {
+      invoke("run_command", { id: c.id, values })
+        .then(() => setStatus(`コマンド「${c.name}」を実行しました`))
+        .catch((e) => setStatus(`コマンド「${c.name}」: ${String(e)}`));
+    };
+    if (!c.confirm) { exec(); return; }
+    // 実行する前に、何をどれで開くかを見せる (見た目の似た別のドメインなどに気づけるように)
+    const used: string[] = [];
+    if (commandUses(c, "LINK")) used.push(`リンク: ${values.link ?? "(なし)"}`);
+    if (commandUses(c, "TEXT") || commandUses(c, "TEXTU") || commandUses(c, "TEXTE")) used.push(`選んだ文字: ${values.text ?? "(なし)"}`);
+    if (commandUses(c, "URL")) used.push(`スレの URL: ${values.url ?? "(なし)"}`);
+    if (commandUses(c, "TITLE")) used.push(`スレのタイトル: ${values.title ?? "(なし)"}`);
+    if (commandUses(c, "BOARDNAME")) used.push(`板の名前: ${values.boardName ?? "(なし)"}`);
+    if (commandUses(c, "NUMBER")) used.push(`レス番号: ${values.number ?? "(なし)"}`);
+    setAppConfirm({
+      title: `コマンド「${c.name}」`,
+      message: [c.kind === "program" ? `プログラム: ${c.program}` : `開く URL: ${c.url}`, ...used].join("\n")
+        + "\n\n実行しますか? (確認は 設定 > コマンド でコマンドごとにオフにできます)",
+      buttons: [
+        { label: "実行", primary: true, onClick: exec },
+        { label: "キャンセル", onClick: () => {} },
+      ],
+    });
+  };
+  // レスの右クリックメニューで開いている「▶」のまとめ (コピー・ハイライト・NG・切り替え・コマンド)
+  const [respSubMenu, setRespSubMenu] = useState<string | null>(null);
+  // 開いたまとめが画面の下にはみ出すときは上へずらす
+  const fitSubMenu = (el: HTMLDivElement | null) => {
+    if (!el) return;
+    const over = el.getBoundingClientRect().bottom - (window.innerHeight - 4);
+    if (over > 0) el.style.top = `${-over}px`;
+  };
   const [boardContextMenu, setBoardContextMenu] = useState<{ x: number; y: number; board: BoardEntry } | null>(null);
   // URL バーの右クリックメニュー (貼り付けて移動 / 貼り付け / コピー / すべて選択)
   const [addressMenu, setAddressMenu] = useState<{ x: number; y: number } | null>(null);
@@ -1897,9 +1965,9 @@ export default function App() {
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  type SettingsCategory = "display" | "posting" | "tts" | "tts-dict" | "proxy" | "ng" | "subtitle" | "highlights" | "presets" | "reset" | "info" | "twitch" | "youtube" | "viewer" | "connect";
-  const SETTINGS_CATEGORIES: SettingsCategory[] = ["display", "posting", "tts", "tts-dict", "ng", "highlights", "subtitle", "connect", "twitch", "youtube", "viewer", "proxy", "presets", "reset", "info"];
-  const SETTINGS_CATEGORY_LABELS: Record<SettingsCategory, string> = { display: "表示", posting: "書き込み", tts: "読み上げ", "tts-dict": "読み上げ辞書", subtitle: "字幕", proxy: "プロキシ", ng: "NG", highlights: "ハイライト", presets: "プリセット", reset: "リセット", info: "情報", twitch: "Twitch", youtube: "YouTube", viewer: "ビュワー", connect: "接続" };
+  type SettingsCategory = "display" | "posting" | "tts" | "tts-dict" | "proxy" | "ng" | "subtitle" | "highlights" | "presets" | "reset" | "info" | "twitch" | "youtube" | "viewer" | "connect" | "commands";
+  const SETTINGS_CATEGORIES: SettingsCategory[] = ["display", "posting", "tts", "tts-dict", "ng", "highlights", "subtitle", "connect", "twitch", "youtube", "viewer", "commands", "proxy", "presets", "reset", "info"];
+  const SETTINGS_CATEGORY_LABELS: Record<SettingsCategory, string> = { display: "表示", posting: "書き込み", tts: "読み上げ", "tts-dict": "読み上げ辞書", subtitle: "字幕", proxy: "プロキシ", ng: "NG", highlights: "ハイライト", presets: "プリセット", reset: "リセット", info: "情報", twitch: "Twitch", youtube: "YouTube", viewer: "ビュワー", connect: "接続", commands: "コマンド" };
   // 設定画面の保存まわりの状態 (詳細は「設定画面の保存 / 復元 / リセット / プリセット」の節)
   const settingsOpenRef = useRef(false);
   settingsOpenRef.current = settingsOpen;
@@ -1961,6 +2029,7 @@ export default function App() {
     twitch: [{ id: "main", label: "受信・読み上げ" }, { id: "emotes", label: "スタンプ・バッジ" }, { id: "events", label: "イベント" }, { id: "teach", label: "教育・忘却" }, { id: "login", label: "ログイン" }],
     youtube: [{ id: "main", label: "受信" }, { id: "quota", label: "使用量・間隔" }, { id: "write", label: "書き込み" }, { id: "tts", label: "読み上げ" }, { id: "events", label: "イベント" }],
     connect: [],
+    commands: [],
     viewer: [{ id: "display", label: "表示" }, { id: "whitelist", label: "ホワイトリスト" }, { id: "obs", label: "OBS 表示" }],
   };
   const [settingsCategory, setSettingsCategory] = useState<SettingsCategory>("display");
@@ -5975,7 +6044,7 @@ export default function App() {
 
   const onThreadContextMenu = (e: ReactMouseEvent, threadId: number) => {
     e.preventDefault();
-    const p = clampMenuPosition(e.clientX, e.clientY, 180, 176);
+    const p = { x: e.clientX, y: e.clientY };
     setThreadMenu({ x: p.x, y: p.y, threadId });
     setResponseMenu(null);
   };
@@ -5983,7 +6052,7 @@ export default function App() {
   const onResponseNoClick = (e: ReactMouseEvent, responseId: number) => {
     e.stopPropagation();
     setSelectedResponse(responseId);
-    const p = clampMenuPosition(e.clientX, e.clientY, 260, 360);
+    const p = { x: e.clientX, y: e.clientY };
     setResponseMenu({ x: p.x, y: p.y, responseId, isOnResNo: true });
     setHlSubMenu(null);
     setThreadMenu(null);
@@ -6023,7 +6092,7 @@ export default function App() {
     // Close existing menu
     setThreadMenu(null);
     setHlSubMenu(null);
-    const p = clampMenuPosition(e.clientX, e.clientY, 260, 400);
+    const p = { x: e.clientX, y: e.clientY };
     setResponseMenu({
       x: p.x, y: p.y,
       responseId: responseNo,
@@ -8312,6 +8381,7 @@ export default function App() {
       onClick={() => {
         setThreadMenu(null);
         setResponseMenu(null);
+        setLinkMenu(null);
         setHlSubMenu(null);
         setTabMenu(null);
         setOpenMenu(null);
@@ -8427,7 +8497,7 @@ export default function App() {
           onChange={(e) => setLocationInput(e.target.value)}
           onKeyDown={onLocationInputKeyDown}
           onFocus={(e) => e.target.select()}
-          onContextMenu={(e) => { e.preventDefault(); const p = clampMenuPosition(e.clientX, e.clientY, 170, 110); setAddressMenu({ x: p.x, y: p.y }); }}
+          onContextMenu={(e) => { e.preventDefault(); const p = { x: e.clientX, y: e.clientY }; setAddressMenu({ x: p.x, y: p.y }); }}
         />
         <button onClick={goFromLocationInput}>移動</button>
         <span className="tool-sep" />
@@ -8616,7 +8686,7 @@ export default function App() {
                               onClick={() => selectBoard(b)}
                               onContextMenu={(e) => {
                                 e.preventDefault();
-                                const p = clampMenuPosition(e.clientX, e.clientY, 180, 80);
+                                const p = { x: e.clientX, y: e.clientY };
                                 setBoardContextMenu({ x: p.x, y: p.y, board: b });
                               }}
                               title={b.url}
@@ -8653,7 +8723,7 @@ export default function App() {
                               className={`board-item ${selectedBoard === b.boardName ? "selected" : ""}`}
                               onClick={() => { if (favDragRef.current) return; selectBoard(b); }}
                               onMouseDown={(e) => onFavItemMouseDown(e, "board", i, ".fav-board-list")}
-                              onContextMenu={(e) => { e.preventDefault(); const p = clampMenuPosition(e.clientX, e.clientY, 180, 60); setBoardContextMenu({ x: p.x, y: p.y, board: b }); }}
+                              onContextMenu={(e) => { e.preventDefault(); const p = { x: e.clientX, y: e.clientY }; setBoardContextMenu({ x: p.x, y: p.y, board: b }); }}
                               title={b.url}
                             >
                               <span className="fav-star active" onClick={(e) => { e.stopPropagation(); toggleFavoriteBoard(b); }}><Star size={12} /></span>
@@ -8687,7 +8757,7 @@ export default function App() {
                                 <button
                                   className={`board-item ${selectedBoard === b.boardName ? "selected" : ""}`}
                                   onClick={() => selectBoard(b)}
-                                  onContextMenu={(e) => { e.preventDefault(); const p = clampMenuPosition(e.clientX, e.clientY, 180, 60); setBoardContextMenu({ x: p.x, y: p.y, board: b }); }}
+                                  onContextMenu={(e) => { e.preventDefault(); const p = { x: e.clientX, y: e.clientY }; setBoardContextMenu({ x: p.x, y: p.y, board: b }); }}
                                   title={b.url}
                                 >
                                   <span
@@ -8907,7 +8977,7 @@ export default function App() {
                   setLocationInput(tab.boardUrl);
                   void fetchThreadListFromCurrent(tab.boardUrl);
                 }}
-                onContextMenu={(e) => { e.preventDefault(); const p = clampMenuPosition(e.clientX, e.clientY, 180, 60); setBoardContextMenu({ x: p.x, y: p.y, board: { boardName: tab.title, url: tab.boardUrl } }); }}
+                onContextMenu={(e) => { e.preventDefault(); const p = { x: e.clientX, y: e.clientY }; setBoardContextMenu({ x: p.x, y: p.y, board: { boardName: tab.title, url: tab.boardUrl } }); }}
                 onMouseDown={(e) => {
                   if (e.button !== 0) return;
                   e.preventDefault();
@@ -9002,7 +9072,7 @@ export default function App() {
                 onContextMenu={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
-                  const p = clampMenuPosition(e.clientX, e.clientY, 160, 120);
+                  const p = { x: e.clientX, y: e.clientY };
                   setTabMenu({ x: p.x, y: p.y, tabIndex: i });
                 }}
                 onMouseDown={(e) => {
@@ -9187,7 +9257,7 @@ export default function App() {
                         onContextMenu={(e) => {
                           e.preventDefault();
                           e.stopPropagation();
-                          const p = clampMenuPosition(e.clientX, e.clientY, 120, 30);
+                          const p = { x: e.clientX, y: e.clientY };
                           setSearchHistoryMenu({ x: p.x, y: p.y, type: "thread", word: w });
                         }}
                       >{w}</div>
@@ -9566,7 +9636,7 @@ export default function App() {
                           onContextMenu={(e) => {
                             e.preventDefault();
                             e.stopPropagation();
-                            const p = clampMenuPosition(e.clientX, e.clientY, 120, 30);
+                            const p = { x: e.clientX, y: e.clientY };
                             setSearchHistoryMenu({ x: p.x, y: p.y, type: "response", word: w });
                           }}
                         >{w}</div>
@@ -9714,7 +9784,7 @@ export default function App() {
                           className="response-watchoi"
                           onClick={(e) => {
                             e.stopPropagation();
-                            const p = clampMenuPosition(e.clientX, e.clientY, 180, 80);
+                            const p = { x: e.clientX, y: e.clientY };
                             setWatchoiMenu({ x: p.x, y: p.y, watchoi: r.watchoi! });
                           }}
                         >
@@ -9756,7 +9826,7 @@ export default function App() {
                               onClick={(e) => {
                                 e.stopPropagation();
                                 if (idPopupCloseTimer.current) { clearTimeout(idPopupCloseTimer.current); idPopupCloseTimer.current = null; }
-                                const p = clampMenuPosition(e.clientX, e.clientY, 160, 56);
+                                const p = { x: e.clientX, y: e.clientY };
                                 setIdMenu({ x: p.x, y: p.y, id });
                               }}
                               onMouseEnter={(e) => {
@@ -9786,7 +9856,7 @@ export default function App() {
                             className="response-be-link"
                             onClick={(e) => {
                               e.stopPropagation();
-                              const p = clampMenuPosition(e.clientX, e.clientY, 220, 112);
+                              const p = { x: e.clientX, y: e.clientY };
                               setBeMenu({ x: p.x, y: p.y, beNumber: r.beNumber! });
                             }}
                           >
@@ -10201,7 +10271,7 @@ export default function App() {
         </section>
       )}
       {threadMenu && (
-        <div className="thread-menu" style={{ left: threadMenu.x, top: threadMenu.y }} onClick={(e) => e.stopPropagation()}>
+        <div className="thread-menu" ref={(el) => placeMenuNearCursor(el, threadMenu.x, threadMenu.y)} style={{ left: threadMenu.x, top: threadMenu.y }} onClick={(e) => e.stopPropagation()}>
           <button onClick={() => markThreadRead(threadMenu.threadId, true)}>既読にする</button>
           <button onClick={() => markThreadRead(threadMenu.threadId, false)}>未読にする</button>
           <button onClick={() => void copyThreadUrl(threadMenu.threadId)}>スレURLをコピー</button>
@@ -10276,155 +10346,144 @@ export default function App() {
           }}>キャッシュから削除</button>
         </div>
       )}
-      {responseMenu && (
-        <div ref={responseMenuRef} className="thread-menu response-menu" style={{ left: responseMenu.x, top: responseMenu.y }}
+      {responseMenu && (() => {
+        // レスの右クリックメニュー: 右クリックした物 (リンク・画像・選んだ文字) の項目を一番上に、
+        // 残りは種類ごとに「▶」の下へまとめる (マウスを乗せるかクリックで横に開く)
+        const nearRight = responseMenu.x > window.innerWidth / 2;
+        const subStyle = nearRight ? { left: "auto", right: "100%" } : undefined;
+        const subMenu = (key: string, label: React.ReactNode, children: React.ReactNode) => (
+          <div className="menu-item-with-sub" data-sub={key}
+            onMouseEnter={() => { if (respSubMenu !== key) { setRespSubMenu(key); setHlSubMenu(null); } }}
+            onClick={() => setRespSubMenu(key)}
+          >
+            <span>{label}</span>
+            <span className="menu-arrow">{"▶︎"}</span>
+            {respSubMenu === key && (
+              <div className="thread-menu menu-sub" style={subStyle} ref={fitSubMenu} onClick={(e) => e.stopPropagation()}>
+                {children}
+              </div>
+            )}
+          </div>
+        );
+        const hlTarget = (type: "text" | "id" | "name", value: string, label: React.ReactNode, apply: (color: string) => void) => (
+          <div className="menu-item-with-sub"
+            onMouseEnter={() => setHlSubMenu({ type, value, nearRight })}
+          >
+            <span>{label}</span>
+            <span className="menu-arrow">{"▶︎"}</span>
+            {hlSubMenu?.type === type && hlSubMenu.value === value && (
+              <div className="hl-color-grid" style={hlSubMenu.nearRight ? { left: "auto", right: "100%" } : undefined} onClick={(e) => e.stopPropagation()}>
+                {HIGHLIGHT_COLORS.map((c) => (
+                  <div key={c.color} className="hl-color-cell" style={{ background: c.color }} title={c.name}
+                    onClick={() => { apply(c.color); setResponseMenu(null); setHlSubMenu(null); }} />
+                ))}
+              </div>
+            )}
+          </div>
+        );
+        const curUrl = threadTabs[activeTabIndex]?.threadUrl ?? threadUrl;
+        // ID 欄を右クリックしたときはその ID、本文などを右クリックしたときはそのレスの ID
+        // (レス表示欄で ID を非表示にしていても配信ホワイトリストに登録できるようにするため)
+        const wlId = responseMenu.resId ?? extractId(responseItems.find((r) => r.id === responseMenu.responseId)?.time ?? "");
+        const twitchMsgId = isTwitchUrl(curUrl) ? twitchMsgIdRef.current.get(curUrl)?.get(responseMenu.responseId) : undefined;
+        const canClearId = !!(responseMenu.resId && idHighlights[responseMenu.resId]);
+        const canClearText = !!(responseMenu.selection && textHighlights.some((h) => h.pattern === responseMenu.selection && h.type === "word"));
+        const canClearName = !!(responseMenu.resName && textHighlights.some((h) => h.pattern === responseMenu.resName && h.type === "name"));
+        // コマンド: 使う置き換え文字の値がそろうものだけ出す ($LINK はリンク・画像の上、$TEXT 系は文字を選んでいるとき)
+        const cmdLink = responseMenu.linkUrl ?? responseMenu.imageUrl;
+        const cmdItems = userCommands.filter((c) => c.enabled
+          && (!commandUses(c, "LINK") || !!cmdLink)
+          && (!(commandUses(c, "TEXT") || commandUses(c, "TEXTU") || commandUses(c, "TEXTE")) || !!responseMenu.selection));
+        const cmdValues = {
+          link: cmdLink,
+          text: responseMenu.selection,
+          url: curUrl || undefined,
+          title: threadTabs[activeTabIndex]?.title,
+          boardName: boardNameOfUrl(curUrl) || undefined,
+          number: responseMenu.responseId > 0 ? String(responseMenu.responseId) : undefined,
+        };
+        const hasContext = (!!responseMenu.imageUrl && isTauriRuntime()) || !!responseMenu.linkUrl || !!responseMenu.selection || cmdItems.length > 0;
+        const hasHighlight = !!(responseMenu.selection || responseMenu.resId || responseMenu.resName);
+        const onResNo = !!responseMenu.isOnResNo && responseMenu.responseId > 0;
+        return (
+        <div ref={(el) => { responseMenuRef.current = el; placeMenuNearCursor(el, responseMenu.x, responseMenu.y); }} className="thread-menu response-menu" style={{ left: responseMenu.x, top: responseMenu.y }}
           onClick={(e) => e.stopPropagation()}
-          onMouseLeave={() => setHlSubMenu(null)}
+          onMouseLeave={() => { setHlSubMenu(null); setRespSubMenu(null); }}
+          onMouseOver={(e) => { if (!(e.target as HTMLElement).closest("[data-sub]")) { if (respSubMenu) setRespSubMenu(null); if (hlSubMenu) setHlSubMenu(null); } }}
         >
-          {/* ----- ハイライト項目 ----- */}
-          {responseMenu.selection && (
-            <div className="menu-item-with-sub"
-              onMouseEnter={() => setHlSubMenu({ type: "text", value: responseMenu.selection!, nearRight: responseMenu.x > window.innerWidth / 2 })}
-            >
-              <span>「{responseMenu.selection.slice(0, 15)}」をハイライト</span>
-              <span className="menu-arrow">▶</span>
-              {hlSubMenu?.type === "text" && hlSubMenu.value === responseMenu.selection && (
-                <div className="hl-color-grid" style={hlSubMenu.nearRight ? { left: "auto", right: "100%" } : undefined} onClick={(e) => e.stopPropagation()}>
-                  {HIGHLIGHT_COLORS.map((c) => (
-                    <div key={c.color} className="hl-color-cell" style={{ background: c.color }} title={c.name}
-                      onClick={() => {
-                        const next = [...textHighlights.filter((h) => h.pattern !== responseMenu.selection || h.type !== "word"),
-                          { pattern: responseMenu.selection!, color: c.color, type: "word" as const }];
-                        persistTextHighlights(next);
-                        setResponseMenu(null); setHlSubMenu(null);
-                      }} />
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-          {responseMenu.resId && (
-            <div className="menu-item-with-sub"
-              onMouseEnter={() => setHlSubMenu({ type: "id", value: responseMenu.resId!, nearRight: responseMenu.x > window.innerWidth / 2 })}
-            >
-              <span>ID:{responseMenu.resId} をハイライト</span>
-              <span className="menu-arrow">▶</span>
-              {hlSubMenu?.type === "id" && hlSubMenu.value === responseMenu.resId && (
-                <div className="hl-color-grid" style={hlSubMenu.nearRight ? { left: "auto", right: "100%" } : undefined} onClick={(e) => e.stopPropagation()}>
-                  {HIGHLIGHT_COLORS.map((c) => (
-                    <div key={c.color} className="hl-color-cell" style={{ background: c.color }} title={c.name}
-                      onClick={() => {
-                        const next = { ...idHighlights, [responseMenu.resId!]: c.color };
-                        persistIdHighlights(next);
-                        setResponseMenu(null); setHlSubMenu(null);
-                      }} />
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-          {responseMenu.resName && (
-            <div className="menu-item-with-sub"
-              onMouseEnter={() => setHlSubMenu({ type: "name", value: responseMenu.resName!, nearRight: responseMenu.x > window.innerWidth / 2 })}
-            >
-              <span>名前「{responseMenu.resName.slice(0, 12)}」をハイライト</span>
-              <span className="menu-arrow">▶</span>
-              {hlSubMenu?.type === "name" && hlSubMenu.value === responseMenu.resName && (
-                <div className="hl-color-grid" style={hlSubMenu.nearRight ? { left: "auto", right: "100%" } : undefined} onClick={(e) => e.stopPropagation()}>
-                  {HIGHLIGHT_COLORS.map((c) => (
-                    <div key={c.color} className="hl-color-cell" style={{ background: c.color }} title={c.name}
-                      onClick={() => {
-                        const next = [...textHighlights.filter((h) => h.pattern !== responseMenu.resName || h.type !== "name"),
-                          { pattern: responseMenu.resName!, color: c.color, type: "name" as const }];
-                        persistTextHighlights(next);
-                        setResponseMenu(null); setHlSubMenu(null);
-                      }} />
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-          {/* ハイライト解除 */}
-          {(() => {
-            const canClearId = responseMenu.resId && idHighlights[responseMenu.resId];
-            const canClearText = responseMenu.selection && textHighlights.some((h) => h.pattern === responseMenu.selection && h.type === "word");
-            const canClearName = responseMenu.resName && textHighlights.some((h) => h.pattern === responseMenu.resName && h.type === "name");
-            if (!canClearId && !canClearText && !canClearName) return null;
-            return (
-              <button onClick={() => {
-                if (canClearId) persistIdHighlights(Object.fromEntries(Object.entries(idHighlights).filter(([k]) => k !== responseMenu.resId)));
-                if (canClearText) persistTextHighlights(textHighlights.filter((h) => !(h.pattern === responseMenu.selection && h.type === "word")));
-                if (canClearName) persistTextHighlights(textHighlights.filter((h) => !(h.pattern === responseMenu.resName && h.type === "name")));
-                setResponseMenu(null); setHlSubMenu(null);
-              }}>ハイライト解除</button>
-            );
-          })()}
-          {/* ----- 配信ホワイトリスト (OBS連携が有効なときだけ表示) ----- */}
-          {(() => {
-            // ID欄を右クリックしたときはそのID、本文などを右クリックしたときはそのレスのID
-            // (レス表示欄でIDを非表示にしていても登録できるようにするため)
-            const wlId = responseMenu.resId
-              ?? extractId(responseItems.find((r) => r.id === responseMenu.responseId)?.time ?? "");
-            if (!wlId) return null;
-            return (
-              <button onClick={() => {
-                if (broadcastWhitelist[wlId]) removeFromWhitelist(wlId); else addToWhitelist([wlId]);
-                setResponseMenu(null);
-              }}>{broadcastWhitelist[wlId] ? `ID:${wlId} を配信ホワイトリストから解除` : `ID:${wlId} を配信ホワイトリストに追加`}</button>
-            );
-          })()}
-          {/* ----- 画像保存 / URLコピー ----- */}
+          {/* ----- 右クリックした物の項目 ----- */}
           {responseMenu.imageUrl && isTauriRuntime() && (
             <button onClick={() => { void saveImage(responseMenu.imageUrl!); setResponseMenu(null); }}>画像を保存</button>
           )}
           {responseMenu.linkUrl && (
             <button onClick={() => { void navigator.clipboard.writeText(responseMenu.linkUrl!); setStatus("URLをコピーしました"); setResponseMenu(null); }}>URLをコピー</button>
           )}
-          {/* ----- セパレーター ----- */}
-          <hr className="menu-sep" />
-          {/* ----- 既存項目 ----- */}
           {responseMenu.selection && (
             <button onClick={() => { void navigator.clipboard.writeText(responseMenu.selection!); setResponseMenu(null); setStatus("コピーしました"); }}>選択テキストをコピー</button>
           )}
-          {!isChatUrl(threadTabs[activeTabIndex]?.threadUrl ?? threadUrl) && <button onClick={() => void runResponseAction("quote")}>ここにレス</button>}
-          {(() => {
-            const url = threadTabs[activeTabIndex]?.threadUrl ?? "";
-            const msgId = isTwitchUrl(url) ? twitchMsgIdRef.current.get(url)?.get(responseMenu.responseId) : undefined;
-            if (!msgId) return null;
-            return (
-              <button onClick={() => {
-                const r = fetchedResponses.find((x) => x.responseNo === responseMenu.responseId);
-                setComposeReply({ url, id: msgId, name: r ? decodeHtmlEntities(r.name.replace(/<[^>]*>/g, "")) : "", text: r ? decodeHtmlEntities(r.body.replace(/<[^>]*>/g, " ")) : "" });
-                setComposeOpen(true);
-                setResponseMenu(null);
-                window.setTimeout(() => composeTextareaRef.current?.focus(), 0);
-              }}>このコメントに返信</button>
-            );
-          })()}
-          <button onClick={() => void runResponseAction("quote-with-name")}>名前付き引用</button>
-          <button onClick={() => void runResponseAction("copy-body")}>本文をコピー</button>
-          <button onClick={() => void runResponseAction("copy-url")}>レスURLをコピー</button>
-          <button onClick={() => void runResponseAction("copy-id")}>IDをコピー</button>
-          <button onClick={() => void copyWholeThread()}>スレ全体をコピー</button>
           {responseMenu.selection && (
             <button onClick={() => { addNgEntry("words", responseMenu.selection!); setResponseMenu(null); }}>「{responseMenu.selection.slice(0, 15)}」をNGワードに追加</button>
           )}
-          <button onClick={() => void runResponseAction("add-ng-id")}>NGIDに追加</button>
-          <button onClick={() => void runResponseAction("add-ng-name")}>NG名前に追加</button>
-          <button onClick={() => void runResponseAction("toggle-aa")}>
-            {(() => {
-              const rid = responseMenu.responseId;
-              const override = aaOverrides.get(rid);
-              const resp = responseItems.find((r) => r.id === rid);
-              const auto = resp ? isAsciiArt(resp.text) : false;
-              const active = override !== undefined ? override : auto;
-              return active ? "AA表示: ON → OFF" : "AA表示: OFF → ON";
-            })()}
-          </button>
-          {/* ----- セパレーター ----- */}
+          {cmdItems.length > 0 && subMenu("commands", "コマンド", <>
+            {cmdItems.map((c) => (
+              <button key={c.id} onClick={() => { runUserCommand(c, cmdValues); setResponseMenu(null); }}>{c.name}</button>
+            ))}
+          </>)}
+          {hasContext && <hr className="menu-sep" />}
+          {/* ----- 返信・配信ホワイトリスト ----- */}
+          {!isChatUrl(curUrl) && <button onClick={() => void runResponseAction("quote")}>ここにレス</button>}
+          {twitchMsgId && (
+            <button onClick={() => {
+              const r = fetchedResponses.find((x) => x.responseNo === responseMenu.responseId);
+              setComposeReply({ url: curUrl, id: twitchMsgId, name: r ? decodeHtmlEntities(r.name.replace(/<[^>]*>/g, "")) : "", text: r ? decodeHtmlEntities(r.body.replace(/<[^>]*>/g, " ")) : "" });
+              setComposeOpen(true);
+              setResponseMenu(null);
+              window.setTimeout(() => composeTextareaRef.current?.focus(), 0);
+            }}>このコメントに返信</button>
+          )}
+          <button onClick={() => void runResponseAction("quote-with-name")}>名前付き引用</button>
+          {wlId && (
+            <button onClick={() => {
+              if (broadcastWhitelist[wlId]) removeFromWhitelist(wlId); else addToWhitelist([wlId]);
+              setResponseMenu(null);
+            }}>{broadcastWhitelist[wlId] ? `ID:${wlId} を配信ホワイトリストから解除` : `ID:${wlId} を配信ホワイトリストに追加`}</button>
+          )}
           <hr className="menu-sep" />
-          {/* このレスから読み上げ（レス番号上のみ） */}
-          {responseMenu.isOnResNo && responseMenu.responseId > 0 && ttsMode !== "off" && (
+          {/* ----- 種類ごとのまとめ ----- */}
+          {subMenu("copy", "コピー", <>
+            <button onClick={() => void runResponseAction("copy-body")}>本文をコピー</button>
+            <button onClick={() => void runResponseAction("copy-url")}>レスURLをコピー</button>
+            <button onClick={() => void runResponseAction("copy-id")}>IDをコピー</button>
+            <button onClick={() => void copyWholeThread()}>スレ全体をコピー</button>
+          </>)}
+          {hasHighlight && subMenu("highlight", "ハイライト", <>
+            {responseMenu.selection && hlTarget("text", responseMenu.selection, <>「{responseMenu.selection.slice(0, 15)}」</>, (color) => {
+              persistTextHighlights([...textHighlights.filter((h) => h.pattern !== responseMenu.selection || h.type !== "word"),
+                { pattern: responseMenu.selection!, color, type: "word" as const }]);
+            })}
+            {responseMenu.resId && hlTarget("id", responseMenu.resId, <>ID:{responseMenu.resId}</>, (color) => {
+              persistIdHighlights({ ...idHighlights, [responseMenu.resId!]: color });
+            })}
+            {responseMenu.resName && hlTarget("name", responseMenu.resName, <>名前「{responseMenu.resName.slice(0, 12)}」</>, (color) => {
+              persistTextHighlights([...textHighlights.filter((h) => h.pattern !== responseMenu.resName || h.type !== "name"),
+                { pattern: responseMenu.resName!, color, type: "name" as const }]);
+            })}
+            {(canClearId || canClearText || canClearName) && (
+              <button onMouseEnter={() => setHlSubMenu(null)} onClick={() => {
+                if (canClearId) persistIdHighlights(Object.fromEntries(Object.entries(idHighlights).filter(([k]) => k !== responseMenu.resId)));
+                if (canClearText) persistTextHighlights(textHighlights.filter((h) => !(h.pattern === responseMenu.selection && h.type === "word")));
+                if (canClearName) persistTextHighlights(textHighlights.filter((h) => !(h.pattern === responseMenu.resName && h.type === "name")));
+                setResponseMenu(null); setHlSubMenu(null);
+              }}>ハイライト解除</button>
+            )}
+          </>)}
+          {subMenu("ng", "NG", <>
+            <button onClick={() => void runResponseAction("add-ng-id")}>NGIDに追加</button>
+            <button onClick={() => void runResponseAction("add-ng-name")}>NG名前に追加</button>
+          </>)}
+          <hr className="menu-sep" />
+          {/* ----- このレスから (レス番号上のみ)・AA ----- */}
+          {onResNo && ttsMode !== "off" && (
             <button onClick={() => {
               const startNo = responseMenu.responseId;
               const items = visibleResponseItems.filter((r) => r.id >= startNo);
@@ -10449,7 +10508,7 @@ export default function App() {
           )}
           {/* このレスから新着として流す（レス番号上のみ）: 自動更新で届いた新着と同じ経路で、新着レスペイン・字幕へ流す。
               配信ホワイトリストの ID のレスはビュワー・OBS 表示にも流れる (本物の新着と同じ扱い)。読み上げはしない */}
-          {responseMenu.isOnResNo && responseMenu.responseId > 0 && (
+          {onResNo && (
             <button onClick={() => {
               const startNo = responseMenu.responseId;
               const items = visibleResponseItems.filter((r) => r.id >= startNo);
@@ -10470,23 +10529,64 @@ export default function App() {
               }
             }} title="このレスから後を、新着レスとして新着レスペイン・字幕に流します (配信ホワイトリストの ID のレスはビュワー・OBS 表示にも流れます)">このレスから新着として流す</button>
           )}
-          {/* ----- セパレーター ----- */}
+          <button onClick={() => void runResponseAction("toggle-aa")}>
+            {(() => {
+              const rid = responseMenu.responseId;
+              const override = aaOverrides.get(rid);
+              const resp = responseItems.find((r) => r.id === rid);
+              const auto = resp ? isAsciiArt(resp.text) : false;
+              const active = override !== undefined ? override : auto;
+              return active ? "AA表示: ON → OFF" : "AA表示: OFF → ON";
+            })()}
+          </button>
           <hr className="menu-sep" />
-          {/* トグル3種 */}
-          <button onClick={() => { setAutoRefreshEnabled(!autoRefreshEnabled); setResponseMenu(null); }}>
-            {autoRefreshEnabled ? "✓" : "　"} オートリロード
-          </button>
-          <button onClick={() => { setAutoScrollEnabled(!autoScrollEnabled); setResponseMenu(null); }}>
-            {autoScrollEnabled ? "✓" : "　"} オートスクロール
-          </button>
-          <button onClick={() => { setTtsEnabled(!ttsEnabled); setResponseMenu(null); }}>
-            {ttsEnabled ? "✓" : "　"} 読み上げ
-          </button>
+          {/* ----- 読み上げの停止 (急ぐときのため上の段)・切り替え ----- */}
           <button onClick={() => { void ttsStop(); setResponseMenu(null); }}>読み上げを今すぐ停止</button>
+          {subMenu("toggle", "切り替え", <>
+            <button onClick={() => { setAutoRefreshEnabled(!autoRefreshEnabled); setResponseMenu(null); }}>
+              {autoRefreshEnabled ? "✓" : "　"} オートリロード
+            </button>
+            <button onClick={() => { setAutoScrollEnabled(!autoScrollEnabled); setResponseMenu(null); }}>
+              {autoScrollEnabled ? "✓" : "　"} オートスクロール
+            </button>
+            <button onClick={() => { setTtsEnabled(!ttsEnabled); setResponseMenu(null); }}>
+              {ttsEnabled ? "✓" : "　"} 読み上げ
+            </button>
+          </>)}
         </div>
-      )}
+        );
+      })()}
+      {linkMenu && (() => {
+        // リンクの値だけで使えるコマンド ($LINK と、文字を選んでいれば $TEXT 系。スレの情報を使うものはここでは出さない)
+        const items = userCommands.filter((c) => c.enabled
+          && !["URL", "TITLE", "BOARDNAME", "NUMBER"].some((n) => commandUses(c, n))
+          && (!(commandUses(c, "TEXT") || commandUses(c, "TEXTU") || commandUses(c, "TEXTE")) || !!linkMenu.selection));
+        const nearRight = linkMenu.x > window.innerWidth / 2;
+        return (
+        <div className="thread-menu link-menu" ref={(el) => placeMenuNearCursor(el, linkMenu.x, linkMenu.y)} style={{ left: linkMenu.x, top: linkMenu.y }}
+          onClick={(e) => e.stopPropagation()}
+          onMouseLeave={() => setRespSubMenu(null)}
+          onMouseOver={(e) => { if (!(e.target as HTMLElement).closest("[data-sub]") && respSubMenu) setRespSubMenu(null); }}
+        >
+          <button onClick={() => { void navigator.clipboard.writeText(linkMenu.url); setStatus("URLをコピーしました"); setLinkMenu(null); }}>URLをコピー</button>
+          {items.length > 0 && (
+            <div className="menu-item-with-sub" data-sub="linkcmd" onMouseEnter={() => setRespSubMenu("linkcmd")} onClick={() => setRespSubMenu("linkcmd")}>
+              <span>コマンド</span>
+              <span className="menu-arrow">{"\u25B6\uFE0E"}</span>
+              {respSubMenu === "linkcmd" && (
+                <div className="thread-menu menu-sub" style={nearRight ? { left: "auto", right: "100%" } : undefined} ref={fitSubMenu} onClick={(e) => e.stopPropagation()}>
+                  {items.map((c) => (
+                    <button key={c.id} onClick={() => { runUserCommand(c, { link: linkMenu.url, text: linkMenu.selection }); setLinkMenu(null); }}>{c.name}</button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+        );
+      })()}
       {addressMenu && (
-        <div className="thread-menu" style={{ left: addressMenu.x, top: addressMenu.y }} onClick={(e) => e.stopPropagation()}>
+        <div className="thread-menu" ref={(el) => placeMenuNearCursor(el, addressMenu.x, addressMenu.y)} style={{ left: addressMenu.x, top: addressMenu.y }} onClick={(e) => e.stopPropagation()}>
           <button onClick={() => { setAddressMenu(null); void pasteAndGo(); }}>貼り付けて移動</button>
           <button onClick={() => { setAddressMenu(null); void pasteToAddress(); }}>貼り付け</button>
           <button onClick={() => { setAddressMenu(null); if (locationInput) { void navigator.clipboard.writeText(locationInput); setStatus("URL をコピーしました"); } }} disabled={!locationInput}>コピー</button>
@@ -10494,7 +10594,7 @@ export default function App() {
         </div>
       )}
       {boardContextMenu && (
-        <div className="thread-menu" style={{ left: boardContextMenu.x, top: boardContextMenu.y }} onClick={(e) => e.stopPropagation()}>
+        <div className="thread-menu" ref={(el) => placeMenuNearCursor(el, boardContextMenu.x, boardContextMenu.y)} style={{ left: boardContextMenu.x, top: boardContextMenu.y }} onClick={(e) => e.stopPropagation()}>
           <button onClick={() => { toggleFavoriteBoard(boardContextMenu.board); setBoardContextMenu(null); }}>
             {isFavoriteBoard(boardContextMenu.board.url) ? "お気に入りから削除" : "お気に入りに追加"}
           </button>
@@ -10502,7 +10602,7 @@ export default function App() {
         </div>
       )}
       {tabMenu && (
-        <div className="thread-menu tab-menu" style={{ left: tabMenu.x, top: tabMenu.y }} onClick={(e) => e.stopPropagation()}>
+        <div className="thread-menu tab-menu" ref={(el) => placeMenuNearCursor(el, tabMenu.x, tabMenu.y)} style={{ left: tabMenu.x, top: tabMenu.y }} onClick={(e) => e.stopPropagation()}>
           {threadTabs[tabMenu.tabIndex] && (
             <button onClick={() => { toggleTabTts(threadTabs[tabMenu.tabIndex].threadUrl); setTabMenu(null); }}>
               {threadTabs[tabMenu.tabIndex].ttsOff ? "このタブの読み上げをオンにする" : "このタブの読み上げをオフにする"}
@@ -10546,19 +10646,19 @@ export default function App() {
         </div>
       )}
       {watchoiMenu && (
-        <div className="thread-menu" style={{ left: watchoiMenu.x, top: watchoiMenu.y }} onClick={(e) => e.stopPropagation()}>
+        <div className="thread-menu" ref={(el) => placeMenuNearCursor(el, watchoiMenu.x, watchoiMenu.y)} style={{ left: watchoiMenu.x, top: watchoiMenu.y }} onClick={(e) => e.stopPropagation()}>
           <button onClick={() => { addNgEntry("names", watchoiMenu.watchoi); setWatchoiMenu(null); }}>ワッチョイをNG</button>
           <button onClick={() => { void navigator.clipboard.writeText(watchoiMenu.watchoi); setStatus("ワッチョイをコピーしました"); setWatchoiMenu(null); }}>ワッチョイをコピー</button>
           <button onClick={() => { setResponseSearchQuery(watchoiMenu.watchoi); addSearchHistory("response", watchoiMenu.watchoi); setStatus(`ワッチョイでレス抽出: ${watchoiMenu.watchoi}`); setWatchoiMenu(null); }}>このワッチョイでレス抽出</button>
         </div>
       )}
       {idMenu && (
-        <div className="thread-menu" style={{ left: idMenu.x, top: idMenu.y }} onClick={(e) => e.stopPropagation()}>
+        <div className="thread-menu" ref={(el) => placeMenuNearCursor(el, idMenu.x, idMenu.y)} style={{ left: idMenu.x, top: idMenu.y }} onClick={(e) => e.stopPropagation()}>
           <button onClick={() => { addNgEntry("ids", idMenu.id); setIdMenu(null); }}>NGIDに追加</button>
         </div>
       )}
       {beMenu && (
-        <div className="thread-menu" style={{ left: beMenu.x, top: beMenu.y }} onClick={(e) => e.stopPropagation()}>
+        <div className="thread-menu" ref={(el) => placeMenuNearCursor(el, beMenu.x, beMenu.y)} style={{ left: beMenu.x, top: beMenu.y }} onClick={(e) => e.stopPropagation()}>
           <button onClick={() => {
             const url = `https://be.5ch.io/user/${beMenu.beNumber}`;
             if (isTauriRuntime()) {
@@ -10591,7 +10691,7 @@ export default function App() {
         </div>
       )}
       {searchHistoryMenu && (
-        <div className="thread-menu" style={{ left: searchHistoryMenu.x, top: searchHistoryMenu.y }} onClick={(e) => e.stopPropagation()}>
+        <div className="thread-menu" ref={(el) => placeMenuNearCursor(el, searchHistoryMenu.x, searchHistoryMenu.y)} style={{ left: searchHistoryMenu.x, top: searchHistoryMenu.y }} onClick={(e) => e.stopPropagation()}>
           <button onClick={() => { removeSearchHistory(searchHistoryMenu.type, searchHistoryMenu.word); setSearchHistoryMenu(null); }}>削除</button>
         </div>
       )}
@@ -11909,6 +12009,118 @@ export default function App() {
               </section>
               </div>
               )}
+              {(settingsSearching || settingsCategory === "commands") && (
+              <div className="settings-cat" data-cat="commands">
+              <section className="settings-section" data-section="main">
+                {settingsSectionHeading("commands", "main")}
+              <fieldset>
+                <legend>コマンド</legend>
+                <p className="settings-hint">
+                  右クリックメニューの「コマンド ▶︎」から、登録したプログラムや URL でリンク・選んだ文字などを開きます (Jane Style のコマンドと同じ置き換え文字が使えます)。
+                  $LINK を使うものはリンク・画像の上で、$TEXT・$TEXTU・$TEXTE を使うものは文字を選んでいるときに出ます。
+                </p>
+                <p className="settings-hint">
+                  置き換え文字: $LINK (リンク) / $TEXT (選んだ文字) / $TEXTU・$TEXTE (選んだ文字を URL 用に変換) / $URL (スレの URL) / $TITLE (スレのタイトル) / $BOARDNAME (板の名前) / $NUMBER (レス番号)。
+                  プログラムは「参照」で選んだ .exe だけ登録できます。信頼できるプログラムだけを登録してください。
+                </p>
+                {userCommands.length > 0 && (
+                  <table data-search-exclude="1" className="settings-table command-table">
+                    <thead>
+                      <tr className="settings-table-head">
+                        <th className="lf-p2-6-ta-center">有効</th>
+                        <th className="lf-p2-6-ta-center" title="実行する前に確認する">確認</th>
+                        <th className="lf-p2-6">名前</th>
+                        <th className="lf-p2-6">内容</th>
+                        <th className="lf-p2-6"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {userCommands.map((c, i) => (
+                        <tr key={c.id} className="settings-table-row">
+                          <td className="lf-p3-6-ta-center">
+                            <input type="checkbox" checked={c.enabled} onChange={(e) => void saveUserCommands(userCommands.map((x, j) => j === i ? { ...x, enabled: e.target.checked } : x))} />
+                          </td>
+                          <td className="lf-p3-6-ta-center">
+                            <input type="checkbox" checked={c.confirm} title="実行する前に確認する" onChange={(e) => void saveUserCommands(userCommands.map((x, j) => j === i ? { ...x, confirm: e.target.checked } : x))} />
+                          </td>
+                          <td className="lf-p3-6">{c.name}</td>
+                          <td className="lf-p3-6 command-detail">{c.kind === "program" ? `${c.program} ${c.args}` : c.url}</td>
+                          <td className="lf-p3-6 command-ops">
+                            <button disabled={i === 0} title="上へ" onClick={() => { const next = [...userCommands]; [next[i - 1], next[i]] = [next[i], next[i - 1]]; void saveUserCommands(next); }}>↑</button>
+                            <button disabled={i === userCommands.length - 1} title="下へ" onClick={() => { const next = [...userCommands]; [next[i + 1], next[i]] = [next[i], next[i + 1]]; void saveUserCommands(next); }}>↓</button>
+                            <button onClick={() => void saveUserCommands(userCommands.filter((_, j) => j !== i))}>削除</button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+                <div className="settings-row">
+                  <span>種類</span>
+                  <select value={commandDraft.kind} onChange={(e) => setCommandDraft((d) => ({ ...d, kind: e.target.value === "url" ? "url" : "program" }))}>
+                    <option value="program">プログラムで開く</option>
+                    <option value="url">URL を開く</option>
+                  </select>
+                  <span>名前</span>
+                  <input type="text" value={commandDraft.name} maxLength={60} placeholder="メニューに出る名前" onChange={(e) => setCommandDraft((d) => ({ ...d, name: e.target.value }))} className="lf-w160" />
+                </div>
+                {commandDraft.kind === "program" ? (
+                  <>
+                    <div className="settings-row">
+                      <button onClick={() => {
+                        invoke<string | null>("pick_command_program")
+                          .then((path) => { if (path) setCommandDraft((d) => ({ ...d, program: path })); })
+                          .catch((e) => setCommandMsg(String(e)));
+                      }}>参照…</button>
+                      <span className="command-program">{commandDraft.program || "(プログラムを選んでください)"}</span>
+                    </div>
+                    <div className="settings-row">
+                      <span>引数</span>
+                      <input type="text" value={commandDraft.args} placeholder={'"$LINK"'} onChange={(e) => setCommandDraft((d) => ({ ...d, args: e.target.value }))} className="command-input" />
+                    </div>
+                  </>
+                ) : (
+                  <div className="settings-row">
+                    <span>URL</span>
+                    <input type="text" value={commandDraft.url} placeholder="https://www.google.com/search?q=$TEXTU" onChange={(e) => setCommandDraft((d) => ({ ...d, url: e.target.value }))} className="command-input" />
+                  </div>
+                )}
+                <label className="settings-row">
+                  <input type="checkbox" checked={commandDraft.confirm} onChange={(e) => setCommandDraft((d) => ({ ...d, confirm: e.target.checked }))} />
+                  <span>実行する前に確認する (開くプログラム・URL と渡す値を見せてから実行)</span>
+                </label>
+                <div className="settings-row">
+                  <button
+                    disabled={!commandDraft.name.trim() || (commandDraft.kind === "program" ? !commandDraft.program : !commandDraft.url.trim())}
+                    onClick={() => {
+                      const c: UserCommand = {
+                        id: `c${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+                        name: commandDraft.name.trim(),
+                        kind: commandDraft.kind,
+                        program: commandDraft.kind === "program" ? commandDraft.program : "",
+                        args: commandDraft.kind === "program" ? commandDraft.args : "",
+                        url: commandDraft.kind === "url" ? commandDraft.url.trim() : "",
+                        enabled: true,
+                        confirm: commandDraft.confirm,
+                      };
+                      void saveUserCommands([...userCommands, c]).then((ok) => { if (ok) setCommandDraft(emptyCommandDraft); });
+                    }}
+                  >追加</button>
+                  <span>ひな形:</span>
+                  <button onClick={() => {
+                    setCommandDraft({ kind: "program", name: "VLC で開く", program: "", args: "\"$LINK\"", url: "", confirm: true });
+                    setCommandMsg("「参照…」で vlc.exe を選んでから「追加」を押してください (通常は C:\\Program Files\\VideoLAN\\VLC\\vlc.exe)");
+                  }}>VLC で開く</button>
+                  <button onClick={() => {
+                    setCommandDraft({ kind: "url", name: "Google で検索", program: "", args: "", url: "https://www.google.com/search?q=$TEXTU", confirm: true });
+                    setCommandMsg("「追加」を押すと登録されます。文字を選んで右クリックすると「コマンド ▶」に出ます");
+                  }}>Google で検索</button>
+                </div>
+                {commandMsg && <p className="settings-hint command-msg">{commandMsg}</p>}
+              </fieldset>
+              </section>
+              </div>
+              )}
               {(settingsSearching || settingsCategory === "proxy") && (
               <div className="settings-cat" data-cat="proxy">
               <section className="settings-section" data-section="main">
@@ -13148,8 +13360,8 @@ export default function App() {
               )}
               </div>
             </div>
-            <div className="settings-footer-note" title="NG・辞書・ハイライト・ホワイトリスト・教育辞書・OBS のレイアウトなどの一覧への登録・削除はその場で保存されます。それ以外の設定は「設定を保存」を押すと保存されます。">
-              ※ NG・辞書・ハイライト・ホワイトリスト・教育辞書・OBS のレイアウトの登録はその場で保存。ほかは「設定を保存」で保存
+            <div className="settings-footer-note" title="NG・辞書・ハイライト・ホワイトリスト・教育辞書・OBS のレイアウト・コマンドなどの一覧への登録・削除はその場で保存されます。それ以外の設定は「設定を保存」を押すと保存されます。">
+              ※ NG・辞書・ハイライト・ホワイトリスト・教育辞書・OBS のレイアウト・コマンドの登録はその場で保存。ほかは「設定を保存」で保存
             </div>
           </div>
         </div>

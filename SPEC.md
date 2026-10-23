@@ -257,6 +257,12 @@ OBS 表示から削除された発言を消す `overlay_retract`
 ### ウィンドウ・アプリ
 `set_window_theme` `save/load_window_size` `quit_app` `open_external_url` `open_file_dialog` `open_folder_dialog` `get_data_dir` `list_system_fonts` `check_for_updates`
 
+### コマンド
+`load_commands` `save_commands` (プログラムは登録済みか、この起動中に `pick_command_program` で選んだ .exe だけ) `pick_command_program` `run_command` (id と置き換える値だけを受け取り、
+プログラムの場所は `data/commands.json` から読む)。処理は `src-tauri/src/user_commands.rs`。シェルを通さずに起動し、引数は登録した時点の区切りのまま置き換える。
+`$LINK` が家庭内・自分の PC のアドレスを指すときは実行しない。実行したもの・断ったものは日別ログ (`eventlog`) に残す。
+登録の `confirm` (既定 true) が true なら、画面が実行の前に確認ダイアログを出す
+
 ---
 
 ## 6. データ永続化仕様
@@ -283,7 +289,7 @@ layout_prefs.json / session_tabs.json / session_board_tabs.json / window_size.js
 id-highlights.json / text-highlights.json /
 bookmarks.json (栞) / scroll-positions.json / name-history.json / my-posts.json /
 search-history.json / thread-fetch-times.json / expanded-categories.json / board-tree-scroll.json /
-new-thread-dialog-size.json
+new-thread-dialog-size.json / commands.json (コマンド)
 
 汎用 JSON (`save/load_generic_json`) はファイル名ホワイトリストで制限。
 

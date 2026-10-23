@@ -25,6 +25,7 @@ mod twitch_auth;
 mod twitch_badges;
 mod youtube;
 mod youtube_auth;
+mod user_commands;
 use tauri::webview::WebviewWindowBuilder;
 use tauri::window::Color;
 use std::sync::Mutex;
@@ -2995,6 +2996,19 @@ fn clear_popup_images(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// コマンドに登録するプログラムを選ぶ (.exe だけ)。選んだものは、この起動中は登録してよいものとして覚える
+#[tauri::command]
+fn pick_command_program() -> Result<Option<String>, String> {
+    let picked = open_file_dialog("プログラム (*.exe)".to_string(), "*.exe".to_string())?;
+    if let Some(path) = &picked {
+        if !std::path::Path::new(path).extension().is_some_and(|e| e.eq_ignore_ascii_case("exe")) {
+            return Err("選べるのは .exe だけです".to_string());
+        }
+        user_commands::remember_picked_program(path);
+    }
+    Ok(picked)
+}
+
 /// 設定の「画像の保存先」(画像ウィンドウ用。設定ファイル全体は渡さない)。未設定なら空
 #[tauri::command]
 fn image_save_folder() -> String {
@@ -3916,7 +3930,11 @@ pub fn run() {
             subtitle_id_font_size,
             subtitle_id_font_family,
             list_system_fonts,
-            image_save_folder
+            image_save_folder,
+            pick_command_program,
+            user_commands::load_commands,
+            user_commands::save_commands,
+            user_commands::run_command
         ]))
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

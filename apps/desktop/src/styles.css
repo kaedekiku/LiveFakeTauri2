@@ -1905,6 +1905,15 @@ button.search-history-btn:hover {
   border-color: #555;
   box-shadow: 2px 2px 6px rgba(0,0,0,0.5);
 }
+/* レスの右クリックメニューの「▶」で横に開くまとめ (コピー・ハイライト・NG・切り替え)。見た目は .thread-menu と同じ */
+.thread-menu.menu-sub {
+  position: absolute;
+  left: 100%;
+  top: -5px;
+  z-index: 100;
+  min-width: 180px;
+  box-shadow: 2px 2px 6px rgba(0, 0, 0, 0.2);
+}
 
 .fav-star {
   display: inline-flex;
@@ -4314,6 +4323,16 @@ img.twitch-emote.youtube-emoji { height: var(--tw-emote, 28px); }
 
 /* ここまで。このファイル全体は app.css から CSS レイヤー lf-base として読み込まれる
    (利用者の CSS はレイヤーの外なので、指定の強さに関係なくこのファイルより優先される) */
+
+/* 設定 > コマンド: 登録した一覧 (内容は長いので折り返す)・入力欄・選んだプログラム・メッセージ */
+.command-table { width: 100%; }
+.command-detail { font-size: 11px; color: var(--text-secondary); overflow-wrap: anywhere; }
+.command-ops { white-space: nowrap; }
+.command-ops button { margin-left: 2px; }
+.command-program { font-size: 11px; color: var(--text-secondary); overflow-wrap: anywhere; }
+.command-input { flex: 1 1 auto; min-width: 240px; }
+.command-msg { color: #cc3300; }
+.dark .command-msg { color: #ff8a66; }
 
 /* バージョン情報: latest.json のお知らせ (古い版の人にだけ出る) */
 .update-notice { font-size: 0.85em; font-weight: bold; color: #cc3300; line-height: 1.5; max-width: 320px; white-space: pre-wrap; overflow-wrap: anywhere; }

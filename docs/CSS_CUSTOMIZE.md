@@ -295,7 +295,11 @@ LiveFake の配色は以下の CSS 変数で構成されており、これを上
 | `.nested-popup` | アンカーポップアップから入れ子で開いたポップアップ |
 | `.id-popup` / `.id-popup-header` / `.id-popup-list` / `.id-popup-item` / `.id-popup-text` | ID ポップアップ（同一 ID レス一覧）全体 / ヘッダ / 一覧 / 1 件 / 本文 |
 | `.back-ref-popup` / `.back-ref-popup-item` | 被参照ポップアップ / その 1 件 |
-| `.thread-menu` | 右クリックメニュー全般共通クラス（`.response-menu` `.tab-menu` は用途別の追加クラス） |
+| `.thread-menu` | 右クリックメニュー全般共通クラス（`.response-menu` `.tab-menu` `.link-menu` は用途別の追加クラス。`.link-menu` はビュワー・新着レスペイン・ポップアップのリンクの右クリック） |
+| `.menu-item-with-sub` / `.menu-arrow` / `.thread-menu.menu-sub` | 右クリックメニューの「▶」で横に開く項目 / その矢印 / 開いたまとめ (コピー・ハイライト・NG・切り替え) |
+| `.hl-color-grid` / `.hl-color-cell` | ハイライトの色選び (15 色) / その 1 色 |
+| `.command-table` / `.command-detail` / `.command-ops` | 設定 > コマンド の一覧 / 内容 (プログラムと引数・URL) / 上へ・下へ・削除 |
+| `.command-program` / `.command-input` / `.command-msg` | 設定 > コマンド で選んだプログラム / 引数・URL の入力欄 / 知らせ (エラーなど) |
 | `.hover-preview` | 画像ホバープレビュー |
 | `.lightbox-overlay` | 画像ライトボックス / 設定パネルの背景オーバーレイ |
 | `.app-confirm-overlay` / `.app-confirm` / `.app-confirm-title` / `.app-confirm-message` / `.app-confirm-buttons` | 確認ダイアログ（設定の保存確認・リセット・プリセット読み込みなど）全体 / 本体 / タイトル / メッセージ / ボタン列 |
