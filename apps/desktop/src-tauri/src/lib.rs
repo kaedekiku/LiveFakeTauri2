@@ -2961,7 +2961,7 @@ async fn open_image_popup(
         "image_popup",
         tauri::WebviewUrl::App("image_popup.html".into()),
     ))
-    .title("LiveFake - 画像")
+    .title(window_title(&app, "LiveFake - 画像"))
     .inner_size(900.0, 700.0)
     .resizable(true)
     .build()
@@ -2994,6 +2994,12 @@ fn clear_popup_images(app: AppHandle) -> Result<(), String> {
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
     guard.clear();
     Ok(())
+}
+
+/// ウィンドウの題名。開発の確認用のビルド (識別子が .test で終わる。tauri.test.conf.json) では「(テスト用)」を付け、
+/// ふだん使っている LiveFake と見分けられるようにする
+fn window_title(app: &AppHandle, base: &str) -> String {
+    if app.config().identifier.ends_with(".test") { format!("{base} (テスト用)") } else { base.to_string() }
 }
 
 /// コマンドに登録するプログラムを選ぶ (.exe だけ)。選んだものは、この起動中は登録してよいものとして覚える
@@ -3074,7 +3080,7 @@ async fn compose_popup_show(app: AppHandle) -> Result<(), String> {
         "compose_popup",
         tauri::WebviewUrl::App("compose_popup.html".into()),
     ))
-    .title("LiveFake - 書き込み")
+    .title(window_title(&app, "LiveFake - 書き込み"))
     .inner_size(init_w, init_h)
     .min_inner_size(320.0, 320.0)
     .resizable(true)
@@ -3183,7 +3189,7 @@ async fn subtitle_show(app: AppHandle) -> Result<(), String> {
     let (sw, sh) = SUBTITLE_SAVED_SIZE.lock().unwrap_or_else(|e| e.into_inner()).unwrap_or((800.0, 200.0));
     let _ = core_store::append_log("subtitle_show: before build");
     let win = portable_webview(WebviewWindowBuilder::new(&app, "subtitle", tauri::WebviewUrl::App("subtitle.html".into())))
-        .title("LiveFake - 字幕")
+        .title(window_title(&app, "LiveFake - 字幕"))
         .inner_size(sw, sh)
         .decorations(false)
         .transparent(true)

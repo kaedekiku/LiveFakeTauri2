@@ -8,10 +8,11 @@ $ErrorActionPreference = "Stop"
 # WebView2 remote debugging via CDP
 $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=$DebugPort"
 
-Write-Host "e2e: starting cargo tauri dev (CDP port=$DebugPort)..."
+# Use the test identifier (tauri.test.conf.json) so this can run while the everyday LiveFake is open
+Write-Host "e2e: starting cargo tauri dev (test identifier, CDP port=$DebugPort)..."
 
 $tauriProc = Start-Process -FilePath "cmd.exe" `
-  -ArgumentList "/c cd /d `"$PSScriptRoot\..`" && npx tauri dev 2>&1" `
+  -ArgumentList "/c cd /d `"$PSScriptRoot\..`" && npx tauri dev --config src-tauri/tauri.test.conf.json 2>&1" `
   -WorkingDirectory "$PSScriptRoot\.." `
   -WindowStyle Hidden `
   -PassThru

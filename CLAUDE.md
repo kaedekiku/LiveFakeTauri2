@@ -43,10 +43,15 @@ cd apps/desktop && npx tauri build            # 本番ビルド (Tauri)
 cd apps/desktop && npx tsc && npx vite build  # フロントエンドのみ
 cargo check --workspace                       # Rust型チェック
 
+# --- 開発の確認用のビルド (ふだん使っている LiveFake を閉じずに、横で起動できる) ---
+cd apps/desktop && npx tauri build --no-bundle --config src-tauri/tauri.test.conf.json
+# 識別子が io.livefake.browser.test になり (二重起動の防止が別扱い)、ウィンドウの題名に「(テスト用)」が付く。
+# この exe は配布物やふだん使う LiveFake に入れないこと
+
 # --- テスト ---
 cargo test --workspace                    # Rustユニットテスト
 cargo test --workspace -- --ignored       # ネットワーク接続テスト含む
-cd apps/desktop && npm run test:e2e       # E2E (Tauriアプリを起動し実際の5chサーバーと通信)
+cd apps/desktop && npm run test:e2e       # E2E (確認用の識別子で Tauri を起動し実際の5chサーバーと通信。ふだんの LiveFake と並べて動く)
 
 # --- Lint ---
 cargo clippy --workspace -- -D warnings  # Rust lint

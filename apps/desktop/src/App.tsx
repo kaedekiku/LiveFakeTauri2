@@ -4613,7 +4613,29 @@ export default function App() {
   const composeTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const [chatSendConfirm, setChatSendConfirm] = useState(true);
   const [composeReply, setComposeReply] = useState<{ url: string; id: string; name: string; text: string } | null>(null);
-  const activeComposeUrl = threadTabs[activeTabIndex]?.threadUrl ?? "";
+  // 書き込み欄の送信先: スレの表示では表示しているタブ。ビュワーでは、書き込み欄の「送信先」で選んだタブ
+  // (スレのタブの列で選んでいるタブとは関係ない)。選んだタブが閉じられていたら送信先なし (送れない)
+  const [viewerComposeTarget, setViewerComposeTarget] = useState("");
+  const viewerTargetOpen = !!viewerComposeTarget && threadTabs.some((t) => t.threadUrl === viewerComposeTarget);
+  const activeComposeUrl = activePaneView === "viewer"
+    ? (viewerTargetOpen ? viewerComposeTarget : "")
+    : (threadTabs[activeTabIndex]?.threadUrl ?? "");
+  const activeComposeTitle = threadTabs.find((t) => t.threadUrl === activeComposeUrl)?.title ?? "";
+  const composeTargetUrlRef = useRef("");
+  composeTargetUrlRef.current = activeComposeUrl;
+  // 選んでいた送信先のタブが閉じられたら「未選択」に戻す (タブが 0 個の起動直後は、復元を待つので触らない)
+  useEffect(() => {
+    if (viewerComposeTarget && threadTabs.length > 0 && !threadTabs.some((t) => t.threadUrl === viewerComposeTarget)) setViewerComposeTarget("");
+  }, [threadTabs, viewerComposeTarget]);
+  // 送信先の選択欄に出す名前
+  const composeTargetLabelOf = (url: string, title: string) => {
+    const ch = twitchChannelFromUrl(url);
+    if (ch) return `Twitch #${ch}`;
+    if (youtubeVideoFromUrl(url)) return `YouTube ${title.replace(/^YouTube\s*/, "")}`;
+    const site = detectSiteType(url);
+    const siteName = site === "shitaraba" ? "したらば" : site === "jpnkn" ? "JPNKN" : "5ch";
+    return `[${siteName}] ${title || url}`;
+  };
   useEffect(() => {
     // タブが変わったら、いまの中身を前のタブの下書きにしまい、新しいタブの下書きを出す
     const prevUrl = composeDraftUrlRef.current;
@@ -4633,7 +4655,7 @@ export default function App() {
     const ch = twitchChannelFromUrl(activeComposeUrl);
     if (ch) return { platform: "twitch", channel: ch, url: activeComposeUrl };
     const v = youtubeVideoFromUrl(activeComposeUrl);
-    if (v) return { platform: "youtube", video: v, url: activeComposeUrl, title: threadTabs[activeTabIndex]?.title ?? "" };
+    if (v) return { platform: "youtube", video: v, url: activeComposeUrl, title: activeComposeTitle };
     return null;
   })();
   const chatTargetLabel = (t: ChatTarget) => (t.platform === "twitch" ? `Twitch #${t.channel}` : `YouTube ${t.title.replace(/^YouTube\s*/, "") || t.video}`);
@@ -4798,9 +4820,9 @@ export default function App() {
     const reply = target.platform === "twitch" && composeReply && composeReply.url === target.url ? composeReply : null;
     const loginName = target.platform === "twitch" ? twitchAuth.login : youtubeAuth.channelTitle;
     const doSend = async () => {
-      // 確認の間にタブが変わっていないか、もう一度確かめる
-      if ((threadTabsRef.current[activeTabIndexRef.current]?.threadUrl ?? "") !== target.url || composeDraftUrlRef.current !== target.url) {
-        setComposeResult({ ok: false, message: "送り先のタブが変わったため、送りませんでした" });
+      // 確認の間に送信先が変わっていないか、もう一度確かめる
+      if (composeTargetUrlRef.current !== target.url || composeDraftUrlRef.current !== target.url) {
+        setComposeResult({ ok: false, message: "送信先が変わったため、送りませんでした" });
         return;
       }
       setComposeSubmitting(true);
@@ -4834,8 +4856,12 @@ export default function App() {
 
   const probePostFlowTraceFromCompose = async () => {
     if (composeSubmitting) return;
-    if (isChatUrl(threadTabs[activeTabIndex]?.threadUrl ?? threadUrl)) {
-      const where = isTwitchUrl(threadTabs[activeTabIndex]?.threadUrl ?? threadUrl) ? "Twitch" : "YouTube";
+    if (!activeComposeUrl) {
+      setComposeResult({ ok: false, message: activePaneView === "viewer" && threadTabs.length > 0 ? "書き込み欄の「送信先」を選んでください" : "スレのタブを開くと書き込めます" });
+      return;
+    }
+    if (isChatUrl(activeComposeUrl)) {
+      const where = isTwitchUrl(activeComposeUrl) ? "Twitch" : "YouTube";
       setAppConfirm({
         title: `${where} には書き込めません`,
         message: `このブラウザからは ${where} のチャットに書き込めません (受信のみ)。`,
@@ -4845,8 +4871,8 @@ export default function App() {
     }
     setComposeSubmitting(true);
     setComposeResult(null);
-    // Always post to the currently active tab, not the URL bar state
-    const postTargetUrl = threadTabs[activeTabIndex]?.threadUrl ?? threadUrl;
+    // 書き込み欄の送信先 (スレの表示では表示しているタブ、ビュワーでは選んだタブ)。アドレス欄の URL には送らない
+    const postTargetUrl = activeComposeUrl;
     try {
       const result = await invoke<string>("post_reply_multisite", {
         threadUrl: postTargetUrl,
@@ -7232,6 +7258,7 @@ export default function App() {
       if (map["App.lastUpdateCheck"] !== undefined) setLastUpdateCheck(map["App.lastUpdateCheck"]);
       if (map["App.knownLatestVersion"] !== undefined) setKnownLatestVersion(map["App.knownLatestVersion"]);
       if (map["App.updateNoticeSeen"] !== undefined) setUpdateNoticeSeen(map["App.updateNoticeSeen"]);
+      if (map["App.viewerComposeTarget"] !== undefined) setViewerComposeTarget(map["App.viewerComposeTarget"]);
       if (map["App.logRetentionDays"]) { const n = parseInt(map["App.logRetentionDays"], 10); if (!isNaN(n) && n >= 0) setLogRetentionDays(n); }
       if (map["App.webviewCacheMb"]) { const n = parseInt(map["App.webviewCacheMb"], 10); if (!isNaN(n)) setWebviewCacheMb(Math.max(10, Math.min(1000, n))); }
       if (map["App.imageSaveFolder"] !== undefined) setImageSaveFolder(map["App.imageSaveFolder"]);
@@ -7959,6 +7986,7 @@ export default function App() {
       "App.lastUpdateCheck": lastUpdateCheck,
       "App.knownLatestVersion": knownLatestVersion,
       "App.updateNoticeSeen": updateNoticeSeen,
+      "App.viewerComposeTarget": viewerComposeTarget,
       "App.webviewCacheMb": String(webviewCacheMb),
       "App.imageSaveFolder": imageSaveFolder,
       "App.bbsmenuUrl": bbsmenuUrl,
@@ -7996,7 +8024,7 @@ export default function App() {
   useEffect(() => {
     if (!isTauriRuntime() || !appSettingsLoadedRef.current || settingsOpenRef.current) return;
     void invoke("save_app_settings", { settings: buildAppSettingsMap() }).catch(() => {});
-  }, [responsesFontSize, responseGap, autoRefreshInterval, autoRefreshEnabled, autoScrollEnabled, smoothScroll, maxOpenTabs, logRetentionDays, tabSiteColors, tabWidthFixed, boardTabWidth, threadTabWidth, autoUpdateCheck, lastUpdateCheck, knownLatestVersion, updateNoticeSeen, webviewCacheMb, overlayEnabled, overlayPort, latestPanelHeight, latestPanelOpen, viewerFontFamily, viewerFontSize, viewerFontBold, viewerShow, latestShow, viewerCards, viewerAllResponses, viewerThumbs, viewerTwitchClickToLoad, twitchSpeakName, twitchBadgesEnabled, twitchEmoteSize, twitchGiantEmoteSize, twitchEmoteSpeak, twitchEmoteMax, subtitleEmoteSize, subtitleGiantEmoteSize, boardEmotesEnabled, twitchTeachEnabled, twitchTeachAnnounce, twitchMaxQueuedArrivals, twitchMaxTtsBacklog, youtubeMethod, youtubeApiInterval, youtubeSpeakName, youtubeTargetOn, youtubeTargetHours, youtubeDailyQuota, youtubeWriteReserve, chatSendConfirm, imageSaveFolder, bbsmenuUrl, shitarabaHost, jpnknHost,
+  }, [responsesFontSize, responseGap, autoRefreshInterval, autoRefreshEnabled, autoScrollEnabled, smoothScroll, maxOpenTabs, logRetentionDays, tabSiteColors, tabWidthFixed, boardTabWidth, threadTabWidth, autoUpdateCheck, lastUpdateCheck, knownLatestVersion, updateNoticeSeen, viewerComposeTarget, webviewCacheMb, overlayEnabled, overlayPort, latestPanelHeight, latestPanelOpen, viewerFontFamily, viewerFontSize, viewerFontBold, viewerShow, latestShow, viewerCards, viewerAllResponses, viewerThumbs, viewerTwitchClickToLoad, twitchSpeakName, twitchBadgesEnabled, twitchEmoteSize, twitchGiantEmoteSize, twitchEmoteSpeak, twitchEmoteMax, subtitleEmoteSize, subtitleGiantEmoteSize, boardEmotesEnabled, twitchTeachEnabled, twitchTeachAnnounce, twitchMaxQueuedArrivals, twitchMaxTtsBacklog, youtubeMethod, youtubeApiInterval, youtubeSpeakName, youtubeTargetOn, youtubeTargetHours, youtubeDailyQuota, youtubeWriteReserve, chatSendConfirm, imageSaveFolder, bbsmenuUrl, shitarabaHost, jpnknHost,
       mainAlwaysOnBottom, cssAllowExternalUrls, streamMaskEnabled, ngAboneSpeakEnabled,
       ttsMode, ttsEnabled, ttsMaxReadLength, ttsUrlOmitEnabled, ttsBoardMode, sapiVoiceIndex, sapiRate, sapiVolume,
       voicevoxEndpoint, voicevoxSpeakerId, voicevoxSpeedScale, voicevoxPitchScale, voicevoxIntonationScale, voicevoxVolumeScale,
@@ -9915,7 +9943,18 @@ export default function App() {
             </>
           )}
           {chatTarget && !composeOpen && <span className="compose-chat-target compose-chat-target-closed">送信先: <b>{chatTargetLabel(chatTarget)}</b></span>}
+          {!chatTarget && !composeOpen && <span className="compose-chat-target compose-chat-target-closed">送信先: <b>{activeComposeUrl ? composeTargetLabelOf(activeComposeUrl, activeComposeTitle) : "なし"}</b></span>}
         </header>
+        {composeOpen && activePaneView === "viewer" && (
+          <div className="compose-row compose-target-select">
+            <span className="compose-label">送信先</span>
+            <select value={viewerTargetOpen ? viewerComposeTarget : ""} onChange={(e) => setViewerComposeTarget(e.target.value)} aria-label="書き込みの送信先">
+              <option value="">(選んでください)</option>
+              {threadTabs.map((t) => <option key={t.threadUrl} value={t.threadUrl}>{composeTargetLabelOf(t.threadUrl, t.title)}</option>)}
+            </select>
+            <span className="compose-target-hint">ビュワーでは、ここで選んだ所に書き込みます (スレのタブの選択とは別)</span>
+          </div>
+        )}
         {composeOpen && chatTarget && (
           <div className="compose-chat-body">
             {(() => {
@@ -10080,6 +10119,11 @@ export default function App() {
         )}
         {composeOpen && !chatTarget && (
           <>
+            <div className="compose-row compose-board-target">
+              {activeComposeUrl
+                ? <span className="compose-chat-target" title={activeComposeUrl}>送信先: <b>{composeTargetLabelOf(activeComposeUrl, activeComposeTitle)}</b></span>
+                : <span className="compose-no-target">{activePaneView === "viewer" && threadTabs.length > 0 ? "上の「送信先」を選ぶと書き込めます" : "スレのタブを開くと書き込めます"}</span>}
+            </div>
             <div className="compose-row postform-foot">
               <span className="compose-label">名前</span>
               <input className="compose-input compose-input-name" value={composeName} onChange={(e) => setComposeName(e.target.value)} list="name-history-list" />
@@ -10096,7 +10140,7 @@ export default function App() {
                 <span>{composeBody.length}文字</span>
                 <span>{composeBody.split("\n").length}行</span>
               </span>
-              <button className="postform-write" onClick={probePostFlowTraceFromCompose} disabled={composeSubmitting}>{composeSubmitting ? "送信中..." : `送信 (${composeSubmitKey === "shift" ? "Shift" : "Ctrl"}+Enter)`}</button>
+              <button className="postform-write" onClick={probePostFlowTraceFromCompose} disabled={composeSubmitting || !activeComposeUrl}>{composeSubmitting ? "送信中..." : `送信 (${composeSubmitKey === "shift" ? "Shift" : "Ctrl"}+Enter)`}</button>
               {diagnosticsEnabled && (
                 <button onClick={async () => {
                   setComposeResult({ ok: false, message: "診断中..." });

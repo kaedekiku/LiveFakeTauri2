@@ -338,6 +338,8 @@ LiveFake の配色は以下の CSS 変数で構成されており、これを上
 ├─ .compose-resize-handle                     高さ調整のリサイザー（展開時のみ）
 ├─ .compose-header                            ヘッダー行（クリックで展開・格納）
 │   └─ .compose-mode-btn                          「本文」「プレビュー」の切替タブ（展開時のみ）
+├─ .compose-row.compose-target-select         ビュワーのときだけ出る「送信先」の選択欄 (> select) / .compose-target-hint 説明
+├─ .compose-row.compose-board-target          掲示板の送信先の行 (.compose-chat-target「送信先: …」/ 送信先が無いときは .compose-no-target の案内)
 ├─ .compose-row.postform-foot                 名前・メール・sage・文字数/行数・送信ボタンの行
 │   ├─ .compose-label / .compose-input            ラベル / 名前・メール入力欄
 │   │   └─ .compose-input-name / .compose-input-mail  名前欄 / メール欄（幅の比率違いを付与）

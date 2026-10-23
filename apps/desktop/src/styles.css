@@ -4334,6 +4334,13 @@ img.twitch-emote.youtube-emoji { height: var(--tw-emote, 28px); }
 .command-msg { color: #cc3300; }
 .dark .command-msg { color: #ff8a66; }
 
+/* 書き込み欄の送信先: ビュワーで選ぶ欄・掲示板のときの送信先・送信先が無いときの案内 */
+.compose-target-select select { max-width: 360px; }
+.compose-target-hint { font-size: 11px; color: var(--text-secondary); }
+.compose-board-target { padding-top: 2px; padding-bottom: 0; }
+.compose-no-target { font-size: 12px; font-weight: bold; color: #cc3300; }
+.dark .compose-no-target { color: #ff8a66; }
+
 /* バージョン情報: latest.json のお知らせ (古い版の人にだけ出る) */
 .update-notice { font-size: 0.85em; font-weight: bold; color: #cc3300; line-height: 1.5; max-width: 320px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .dark .update-notice { color: #ff8a66; }
