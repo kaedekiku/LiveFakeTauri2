@@ -3348,6 +3348,11 @@ export default function App() {
       saveScrollPos(curUrl);
     }
   };
+  // スレの表示欄から離れる (ビュワー・スレ一覧へ切り替える) 直前に、今の位置を覚えておく。
+  // 表示欄は離れると DOM から外れ、戻ったときは作り直される (覚えていないと古い位置か一番上に戻ってしまう)
+  const rememberBeforeLeavingResponses = () => {
+    if (activePaneView === "responses") saveActiveTabScrollState();
+  };
 
   // タブ切替直後のちらつき対策: レス表示欄を visibility: hidden にしておき、scrollHeight が 2 フレーム続けて同じに
   // なったら (最長 0.4 秒) 表示する。隠している間も scrollToBottom / scrollToResponseNo は動くので、
@@ -3647,7 +3652,7 @@ export default function App() {
       setSelectedResponse(cached.selectedResponse);
       settleResponsePane();
       if (cached.scrollAtBottom) scrollToBottom();
-      else scrollToResponseNo(cached.scrollResponseNo ?? 0);
+      else scrollToResponseNo(cached.scrollResponseNo ?? loadScrollPos(tab.threadUrl));
     }
     setThreadUrl(tab.threadUrl);
     setLocationInput(tab.threadUrl);
@@ -3684,7 +3689,7 @@ export default function App() {
       setSelectedResponse(cached.selectedResponse);
       settleResponsePane();
       if (cached.scrollAtBottom) scrollToBottom();
-      else scrollToResponseNo(cached.scrollResponseNo ?? 0);
+      else scrollToResponseNo(cached.scrollResponseNo ?? loadScrollPos(tab.threadUrl));
     } else {
       setFetchedResponses([]);
       setSelectedResponse(1);
@@ -3743,6 +3748,7 @@ export default function App() {
       setActiveBoardTabIndex(prev.length);
       return [...prev, { boardUrl: board.url, title: board.boardName }];
     });
+    rememberBeforeLeavingResponses();
     setActivePaneView("threads");
     void fetchThreadListFromCurrent(board.url);
   };
@@ -3777,6 +3783,7 @@ export default function App() {
     }
     activeBoardUrlRef.current = url;
     // Switch to thread list view whenever a board is being fetched
+    rememberBeforeLeavingResponses();
     setActivePaneView("threads");
     if (!isTauriRuntime()) {
       setThreadListProbe("web preview mode: thread fetch requires tauri runtime");
@@ -4024,7 +4031,16 @@ export default function App() {
           scrollToResponseNo(savedNo);
         }
       }
-      tabCacheRef.current.set(url, { responses: rows, selectedResponse: rows.length > 0 ? rows[0].responseNo : 1 });
+      // 覚えていた位置は残す (ビュワーなどにいる間の自動更新で消えると、戻ったときに一番上や古い位置になってしまう)。
+      // 位置を戻さない読み込み (resetScroll) のときだけ捨てる
+      const keep = opts?.resetScroll ? undefined : cachedEntry;
+      tabCacheRef.current.set(url, {
+        responses: rows,
+        selectedResponse: opts?.keepSelection && cachedEntry ? cachedEntry.selectedResponse : (rows.length > 0 ? rows[0].responseNo : 1),
+        scrollResponseNo: keep?.scrollResponseNo,
+        scrollAtBottom: keep?.scrollAtBottom,
+        newResponseStart: opts?.keepSelection ? cachedEntry?.newResponseStart : undefined,
+      });
       // persist to SQLite
       const tabTitle = fetchedTitle
         ?? threadTabs.find((t) => t.threadUrl === url)?.title
@@ -8867,7 +8883,7 @@ export default function App() {
           <div className="board-tab-bar board-tabs" ref={boardTabBarRef}>
             <div
               className={`board-tab tab viewer-tab ${activePaneView === "viewer" ? "active" : ""}`}
-              onClick={() => setActivePaneView("viewer")}
+              onClick={() => { rememberBeforeLeavingResponses(); setActivePaneView("viewer"); }}
               title="Twitch・YouTube のチャットと、配信ホワイトリストに入れた ID のレスをまとめて表示します"
             >
               <span className="board-tab-title">ビュワー</span>
@@ -8884,6 +8900,7 @@ export default function App() {
                 onClick={() => {
                   if (boardTabDragSuppressClickRef.current) return;
                   setActiveBoardTabIndex(i);
+                  rememberBeforeLeavingResponses();
                   setActivePaneView("threads");
                   setSelectedBoard(tab.title);
                   setThreadUrl(tab.boardUrl);
