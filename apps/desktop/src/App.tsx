@@ -1213,6 +1213,9 @@ const extractWatchoi = (name: string): string | null => {
   return null;
 };
 
+// 名前ハイライトで比べる名前 (末尾のワッチョイを除く。レス表示欄の nameWithoutWatchoi と同じ)
+const nameForHighlight = (name: string): string => (extractWatchoi(name) ? name.replace(/\s*[(（][^)）]+[)）]\s*$/, "") : name);
+
 const extractBeNumber = (...sources: string[]): string | null => {
   const patterns = [
     /BE[:：]\s*(\d+)/i,
@@ -1777,11 +1780,33 @@ export default function App() {
   const [hlSubMenu, setHlSubMenu] = useState<{ type: "text" | "id" | "name"; value: string; nearRight?: boolean } | null>(null);
   // レス表示欄の外 (ビュワー・最新レス欄・新着レスペイン・ポップアップなど) のリンクの右クリックメニュー: URLをコピー・コマンド ▶
   const [linkMenu, setLinkMenu] = useState<{ x: number; y: number; url: string; selection?: string } | null>(null);
+  // ビュワーの発言・最新レス欄の右クリックメニュー。文字を選べるように、クリックではタブへ移動せず、移動はこのメニューから行う
+  const [viewerMenu, setViewerMenu] = useState<{
+    x: number; y: number; threadUrl: string; no: number; chat: boolean; title: string; text: string;
+    uid?: string; name?: string; selection?: string; linkUrl?: string;
+  } | null>(null);
+  useEffect(() => { setRespSubMenu(null); setHlSubMenu(null); }, [viewerMenu?.x, viewerMenu?.y]);
+  const openViewerMenu = (e: React.MouseEvent<HTMLElement>, it: { source: ViewerSource; threadUrl: string; no: number; title: string; text: string; uid: string; name?: string }) => {
+    e.preventDefault();
+    const t = e.target as HTMLElement;
+    const thumb = t.closest<HTMLElement>("[data-lightbox-src]");
+    const a = t.closest<HTMLAnchorElement>("a.body-link");
+    const link = thumb?.dataset.lightboxSrc ?? a?.getAttribute("href") ?? "";
+    const chat = isChatSource(it.source);
+    setViewerMenu({
+      x: e.clientX, y: e.clientY, threadUrl: it.threadUrl, no: it.no, chat, title: it.title, text: it.text,
+      uid: it.uid || undefined,
+      name: it.name ? nameForHighlight(it.name) : undefined,
+      selection: window.getSelection()?.toString().trim() || undefined,
+      linkUrl: /^https?:\/\//i.test(link) ? link : undefined,
+    });
+  };
   useEffect(() => {
     const onCtx = (e: MouseEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (!t?.closest?.(".viewer-item, .viewer-latest-item")) setViewerMenu(null);
       // レス表示欄など、自分の右クリックメニューを出したところは何もしない
       if (e.defaultPrevented) { setLinkMenu(null); return; }
-      const t = e.target as HTMLElement | null;
       const thumb = t?.closest?.<HTMLElement>("[data-lightbox-src]");
       const a = t?.closest?.<HTMLAnchorElement>("a.body-link");
       const url = thumb?.dataset.lightboxSrc ?? a?.getAttribute("href") ?? "";
@@ -2256,7 +2281,9 @@ export default function App() {
   // 書き込み回数の色 (スレのタブと同じ: 2回以上で青系・5回以上で赤系)
   const idCountClass = (n: number) => (n >= 5 ? " id-count-many" : n >= 2 ? " id-count-some" : "");
   // ビュワーの下の「スレの最新レス」欄: 開いているスレの新着のうち、配信ホワイトリストに無い ID のもの (OBS には出さない)
-  type LatestItem = { seq: number; source: ViewerSource; site: string; board: string; title: string; threadUrl: string; no: number; uid: string; time: string; text: string; idSeq: number; idCount: number };
+  type LatestItem = { seq: number; source: ViewerSource; site: string; board: string; title: string; threadUrl: string; no: number; uid: string; time: string; text: string; idSeq: number; idCount: number;
+    // 本文の全文 (text は1行に縮めた表示用。右クリックの「本文をコピー」で使う)
+    body: string };
   const LATEST_MAX_ITEMS = 300;
   const [latestItems, setLatestItems] = useState<LatestItem[]>([]);
   const [latestPanelOpen, setLatestPanelOpen] = useState(true);
@@ -2406,9 +2433,16 @@ export default function App() {
   // OBS 表示へは別に文字だけを送るので、ここで作る画像・カードは OBS には出ない
   // 一度作った HTML は、表示設定が変わるまで使い回す (新しい発言が届くたびに全件を作り直さない)
   const viewerBodyCacheRef = useRef<Map<number, { sig: string; html: string }>>(new Map());
+  const viewerWordHighlightSig = textHighlights.filter((h) => h.type === "word").map((h) => `${h.pattern}:${h.color}`).join("|");
+  // 名前ハイライト (レス表示欄と同じく、名前が一致したら背景に色)
+  const viewerNameHighlight = (name: string): React.CSSProperties | undefined => {
+    const key = nameForHighlight(name);
+    const hl = textHighlights.find((h) => h.type === "name" && h.pattern === key);
+    return hl ? { background: hl.color } : undefined;
+  };
   const viewerBodyHtml = (it: ViewerItem): string => {
     const deferred = isChatSource(it.source) && viewerTwitchClickToLoad && !viewerRevealed.has(it.seq);
-    const sig = [deferred, viewerCards, viewerThumbs, imageSizeLimit, darkMode, imageUrlRules.length, ogpDomainFilters.allow.join(","), ogpDomainFilters.block.join(","), it.text].join("\u0001");
+    const sig = [deferred, viewerCards, viewerThumbs, imageSizeLimit, darkMode, imageUrlRules.length, ogpDomainFilters.allow.join(","), ogpDomainFilters.block.join(","), viewerWordHighlightSig, it.text].join("\u0001");
     const cached = viewerBodyCacheRef.current.get(it.seq);
     if (cached && cached.sig === sig) return cached.html;
     const html = makeViewerBodyHtml(it, deferred);
@@ -2433,6 +2467,8 @@ export default function App() {
       ogpBlock: ogpDomainFilters.block,
     }).__html;
     if (!viewerThumbs || deferred) html = html.replace(/<div class="response-thumbs-row">[\s\S]*?<\/div>/g, "");
+    // ワードハイライト (レス表示欄と同じ処理。ビュワーの表示だけで、OBS 表示には付けない)
+    for (const h of textHighlights) if (h.type === "word") html = applyWordHighlight(html, h.pattern, h.color);
     if (it.emotes && it.emotes.length > 0) {
       const cps = Array.from(it.text);
       html = injectTwitchEmotes(html, it.emotes.map((e) => ({ id: e.id, name: cps.slice(e.start, e.end + 1).join(""), giant: e.giant === true, url: e.url })), !!it.giant, darkMode);
@@ -2447,7 +2483,7 @@ export default function App() {
       if (isChatSource(source) || broadcastWhitelistRef.current[a.id]) continue;
       // 「選んだスレを流す」でビュワーに流したスレのレスは、同じものになるので追加しない
       if (viewerAllResponsesRef.current && isTabViewerOn(a.threadUrl)) continue;
-      add.push({ seq: ++viewerSeqRef.current, source, site: VIEWER_SITE_LABEL[source], board: boardNameOfUrl(a.threadUrl), title: decodeHtmlEntities(a.threadTitle), idSeq: a.idSeq, idCount: a.idCount, threadUrl: a.threadUrl, no: a.responseNo, uid: a.id, time: a.time, text: a.plain.replace(/\s+/g, " ").slice(0, 300) });
+      add.push({ seq: ++viewerSeqRef.current, source, site: VIEWER_SITE_LABEL[source], board: boardNameOfUrl(a.threadUrl), title: decodeHtmlEntities(a.threadTitle), idSeq: a.idSeq, idCount: a.idCount, threadUrl: a.threadUrl, no: a.responseNo, uid: a.id, time: a.time, text: a.plain.replace(/\s+/g, " ").slice(0, 300), body: a.plain });
     }
     if (add.length === 0) return;
     setLatestItems((prev) => {
@@ -8410,6 +8446,7 @@ export default function App() {
         setThreadMenu(null);
         setResponseMenu(null);
         setLinkMenu(null);
+        setViewerMenu(null);
         setHlSubMenu(null);
         setTabMenu(null);
         setOpenMenu(null);
@@ -8943,10 +8980,7 @@ export default function App() {
                   <div
                     key={it.seq}
                     className={`viewer-latest-item src-${it.source}`}
-                    onClick={() => {
-                      const idx = threadTabs.findIndex((t) => t.threadUrl === it.threadUrl);
-                      if (idx >= 0) { onTabClick(idx); setSelectedResponse(it.no); }
-                    }}
+                    onContextMenu={(e) => openViewerMenu(e, { source: it.source, threadUrl: it.threadUrl, no: it.no, title: it.title, text: it.body, uid: it.uid })}
                     title={it.text}
                   >
                     {viewerShow.site && <span className="viewer-site">{it.site}</span>}
@@ -8955,7 +8989,7 @@ export default function App() {
                     {latestShow.no && <span className="viewer-no">{it.no}</span>}
                     {latestShow.text ? <span className="viewer-latest-text">{it.text}</span> : <span className="viewer-grow" />}
                     {latestShow.time && <span className="viewer-time">{it.time.replace(/^\S+\s+/, "")}</span>}
-                    {latestShow.id && it.uid && <span className="viewer-uid">ID:{it.uid}</span>}
+                    {latestShow.id && it.uid && <span className="viewer-uid" style={{ color: idHighlights[it.uid] ?? undefined }}>ID:{it.uid}</span>}
                     {latestShow.count && it.idCount > 0 && <span className={`viewer-id-count${idCountClass(it.idCount)}`}>({it.idSeq}/{it.idCount})</span>}
                     {it.uid && !broadcastWhitelist[it.uid] && (
                       <button
@@ -9208,12 +9242,9 @@ export default function App() {
               <div
                 key={it.seq}
                 className={`viewer-item src-${it.source}${it.event ? ` viewer-event ev-${it.event.kind}` : ""}`}
-                onClick={(e) => {
-                  if (handleBodyContentClick(e)) return;
-                  const idx = threadTabs.findIndex((t) => t.threadUrl === it.threadUrl);
-                  if (idx >= 0) { onTabClick(idx); setSelectedResponse(it.no); }
-                }}
-                title="クリックでそのタブへ移動"
+                onClick={(e) => { handleBodyContentClick(e); }}
+                onContextMenu={(e) => openViewerMenu(e, { source: it.source, threadUrl: it.threadUrl, no: it.no, title: it.where, text: it.text || it.event?.summary || "", uid: it.uid, name: it.event ? undefined : it.name })}
+                title="右クリック: そのタブへ移動・コピー・コマンド"
               >
                 <div className="viewer-meta">
                   {it.event ? <span className="viewer-site">{it.event.label}</span> : viewerShow.site && <span className="viewer-site">{it.site}</span>}
@@ -9223,7 +9254,7 @@ export default function App() {
                       {viewerShow.board && it.board && <span className="viewer-board">{it.board}</span>}
                       {viewerShow.where && <span className="viewer-where">{it.where}</span>}
                       {viewerShow.no && <span className="viewer-no">{it.no}</span>}
-                      {viewerShow.name && <span className="viewer-name">{it.name}</span>}
+                      {viewerShow.name && <span className="viewer-name" style={viewerNameHighlight(it.name)}>{it.name}</span>}
                       {viewerShow.mail && it.mail && <span className="viewer-mail">[{it.mail}]</span>}
                       {viewerShow.time && <span className="viewer-time">{it.time}</span>}
                       {viewerShow.id && it.uid && <span className="viewer-uid" style={{ color: idHighlights[it.uid] ?? undefined }}>ID:{it.uid}</span>}
@@ -9237,7 +9268,7 @@ export default function App() {
                       {it.badges.map((b, i) => <img key={i} src={`${b.url}/1`} srcSet={`${b.url}/1 1x, ${b.url}/2 2x`} alt={b.title} title={b.title} referrerPolicy="no-referrer" />)}
                     </span>
                   )}
-                  <span className="viewer-name" style={it.color ? { color: it.color } : undefined}>{it.name}</span>
+                  <span className="viewer-name" style={{ ...(it.color ? { color: it.color } : {}), ...viewerNameHighlight(it.name) }}>{it.name}</span>
                   {viewerShow.id && it.uid && <span className="viewer-uid" style={{ color: idHighlights[it.uid] ?? undefined }}>ID:{it.uid}</span>}
                   {viewerShow.time && <span className="viewer-time">{it.time}</span>}
                   </>
@@ -10625,6 +10656,113 @@ export default function App() {
                 </div>
               )}
             </div>
+          )}
+        </div>
+        );
+      })()}
+      {viewerMenu && (() => {
+        const m = viewerMenu;
+        const tabIdx = threadTabs.findIndex((t) => t.threadUrl === m.threadUrl);
+        // コマンド: レス表示欄と同じく、使う置き換え文字の値がそろうものだけ出す
+        const items = userCommands.filter((c) => c.enabled
+          && (!commandUses(c, "LINK") || !!m.linkUrl)
+          && (!(commandUses(c, "TEXT") || commandUses(c, "TEXTU") || commandUses(c, "TEXTE")) || !!m.selection));
+        const values = {
+          link: m.linkUrl,
+          text: m.selection,
+          url: m.threadUrl || undefined,
+          title: m.title || undefined,
+          boardName: boardNameOfUrl(m.threadUrl) || undefined,
+          number: m.no > 0 ? String(m.no) : undefined,
+        };
+        const nearRight = m.x > window.innerWidth / 2;
+        const copy = (text: string, msg: string) => { void navigator.clipboard.writeText(text); setStatus(msg); setViewerMenu(null); };
+        // ハイライト: レス表示欄の「ハイライト ▶」と同じ (色は決まった15色から)
+        const hlTarget = (type: "text" | "id" | "name", value: string, label: React.ReactNode, apply: (color: string) => void) => (
+          <div className="menu-item-with-sub" onMouseEnter={() => setHlSubMenu({ type, value, nearRight })}>
+            <span>{label}</span>
+            <span className="menu-arrow">{"\u25B6\uFE0E"}</span>
+            {hlSubMenu?.type === type && hlSubMenu.value === value && (
+              <div className="hl-color-grid" style={hlSubMenu.nearRight ? { left: "auto", right: "100%" } : undefined} onClick={(e) => e.stopPropagation()}>
+                {HIGHLIGHT_COLORS.map((c) => (
+                  <div key={c.color} className="hl-color-cell" style={{ background: c.color }} title={c.name}
+                    onClick={() => { apply(c.color); setViewerMenu(null); setHlSubMenu(null); }} />
+                ))}
+              </div>
+            )}
+          </div>
+        );
+        const canClearId = !!(m.uid && idHighlights[m.uid]);
+        const canClearText = !!(m.selection && textHighlights.some((h) => h.pattern === m.selection && h.type === "word"));
+        const canClearName = !!(m.name && textHighlights.some((h) => h.pattern === m.name && h.type === "name"));
+        return (
+        <div className="thread-menu viewer-menu" ref={(el) => placeMenuNearCursor(el, m.x, m.y)} style={{ left: m.x, top: m.y }}
+          onClick={(e) => e.stopPropagation()}
+          onMouseLeave={() => { setRespSubMenu(null); setHlSubMenu(null); }}
+          onMouseOver={(e) => { if (!(e.target as HTMLElement).closest("[data-sub]")) { if (respSubMenu) setRespSubMenu(null); if (hlSubMenu) setHlSubMenu(null); } }}
+        >
+          <button disabled={tabIdx < 0} onClick={() => {
+            setViewerMenu(null);
+            onTabClick(tabIdx);
+            setSelectedResponse(m.no);
+          }}>{tabIdx < 0 ? "(タブを閉じています)" : m.chat ? "このタブへ移動" : "このレスへ移動"}</button>
+          <hr className="menu-sep" />
+          {m.linkUrl && <button onClick={() => copy(m.linkUrl!, "URLをコピーしました")}>URLをコピー</button>}
+          {m.selection && <button onClick={() => copy(m.selection!, "コピーしました")}>選択テキストをコピー</button>}
+          {m.text && <button onClick={() => copy(m.text, "本文をコピーしました")}>本文をコピー</button>}
+          {items.length > 0 && (
+            <div className="menu-item-with-sub" data-sub="viewercmd" onMouseEnter={() => { setRespSubMenu("viewercmd"); setHlSubMenu(null); }} onClick={() => setRespSubMenu("viewercmd")}>
+              <span>コマンド</span>
+              <span className="menu-arrow">{"▶︎"}</span>
+              {respSubMenu === "viewercmd" && (
+                <div className="thread-menu menu-sub" style={nearRight ? { left: "auto", right: "100%" } : undefined} ref={fitSubMenu} onClick={(e) => e.stopPropagation()}>
+                  {items.map((c) => (
+                    <button key={c.id} onClick={() => { runUserCommand(c, values); setViewerMenu(null); }}>{c.name}</button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+          {(m.selection || m.uid || m.name) && (
+            <div className="menu-item-with-sub" data-sub="viewerhl"
+              onMouseEnter={() => { if (respSubMenu !== "viewerhl") { setRespSubMenu("viewerhl"); setHlSubMenu(null); } }}
+              onClick={() => setRespSubMenu("viewerhl")}
+            >
+              <span>ハイライト</span>
+              <span className="menu-arrow">{"\u25B6\uFE0E"}</span>
+              {respSubMenu === "viewerhl" && (
+                <div className="thread-menu menu-sub" style={nearRight ? { left: "auto", right: "100%" } : undefined} ref={fitSubMenu} onClick={(e) => e.stopPropagation()}>
+                  {m.selection && hlTarget("text", m.selection, <>「{m.selection.slice(0, 15)}」</>, (color) => {
+                    persistTextHighlights([...textHighlights.filter((h) => h.pattern !== m.selection || h.type !== "word"),
+                      { pattern: m.selection!, color, type: "word" as const }]);
+                  })}
+                  {m.uid && hlTarget("id", m.uid, <>ID:{m.uid}</>, (color) => {
+                    persistIdHighlights({ ...idHighlights, [m.uid!]: color });
+                  })}
+                  {m.name && hlTarget("name", m.name, <>名前「{m.name.slice(0, 12)}」</>, (color) => {
+                    persistTextHighlights([...textHighlights.filter((h) => h.pattern !== m.name || h.type !== "name"),
+                      { pattern: m.name!, color, type: "name" as const }]);
+                  })}
+                  {(canClearId || canClearText || canClearName) && (
+                    <button onMouseEnter={() => setHlSubMenu(null)} onClick={() => {
+                      if (canClearId) persistIdHighlights(Object.fromEntries(Object.entries(idHighlights).filter(([k]) => k !== m.uid)));
+                      if (canClearText) persistTextHighlights(textHighlights.filter((h) => !(h.pattern === m.selection && h.type === "word")));
+                      if (canClearName) persistTextHighlights(textHighlights.filter((h) => !(h.pattern === m.name && h.type === "name")));
+                      setViewerMenu(null); setHlSubMenu(null);
+                    }}>ハイライト解除</button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+          {m.uid && !m.chat && (
+            <>
+              <hr className="menu-sep" />
+              <button onClick={() => {
+                if (broadcastWhitelist[m.uid!]) removeFromWhitelist(m.uid!); else addToWhitelist([m.uid!]);
+                setViewerMenu(null);
+              }}>{broadcastWhitelist[m.uid] ? `ID:${m.uid} を配信ホワイトリストから解除` : `ID:${m.uid} を配信ホワイトリストに追加`}</button>
+            </>
           )}
         </div>
         );
