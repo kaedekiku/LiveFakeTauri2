@@ -4321,6 +4321,54 @@ img.twitch-emote.youtube-emoji { height: var(--tw-emote, 28px); }
 .viewer-latest-note { padding: 2px 8px; font-size: 0.9em; color: #1d3f66; background: #eef4fb; border-bottom: 1px solid #c9d8ea; }
 .dark .viewer-latest-note { color: #cfe2f7; background: #1f2b3a; border-bottom-color: #3d5573; }
 
+/* 固まる書き方のため判定に使っていない NG の正規表現 (設定には残している) */
+.ng-list li.ng-regex-off { opacity: 0.75; }
+.ng-regex-off-label { flex: none; font-size: 10px; padding: 0 4px; margin-left: 4px; border-radius: 3px; background: #fde4e4; color: #8a1414; }
+.dark .ng-regex-off-label { background: #3d1717; color: #ffb3b3; }
+
+/* 接続の状態の表示 (ビュワー・Twitch・YouTube のタブの右上。YouTube の使用量の表示の左) と、押すと出る一覧 */
+.conn-wrap { position: relative; flex: none; display: inline-flex; }
+.conn-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; line-height: 1.4; padding: 0 6px; margin: 0 2px 0 6px; border: 1px solid #c8c8c8; border-radius: 10px; background: #f5f5f5; color: #333; cursor: pointer; white-space: nowrap; }
+.conn-chip:hover { background: #ebebeb; }
+.conn-chip.warn { background: #fff1db; border-color: #e0a64a; color: #7a4600; }
+.conn-chip.ng { background: #fde4e4; border-color: #d9534f; color: #8a1414; font-weight: 600; }
+.conn-wrap .connect-lamp { display: inline-block; flex: 0 0 8px; width: 8px; height: 8px; border-radius: 50%; background: #aaa; }
+.conn-wrap .connect-lamp.ok { background: #2f9e5b; }
+.conn-wrap .connect-lamp.wait { background: #d4a017; }
+.conn-wrap .connect-lamp.warn { background: #e08a1e; }
+.conn-wrap .connect-lamp.ng { background: #d64545; }
+.conn-wrap .connect-lamp.idle { background: #aaa; }
+.viewer-toolbar .conn-wrap { margin-left: auto; }
+.conn-panel { position: fixed; z-index: 900; width: 380px; max-width: calc(100vw - 16px); max-height: 55vh; overflow: auto; padding: 6px; border: 1px solid #c8c8c8; border-radius: 6px; background: #fff; color: #222; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18); font-size: 12px; text-align: left; white-space: normal; }
+.conn-panel-head { display: flex; align-items: center; justify-content: space-between; font-weight: 600; padding: 0 2px 4px; border-bottom: 1px solid #e3e3e3; margin-bottom: 4px; }
+.conn-panel-head button { border: none; background: none; cursor: pointer; font-size: 14px; color: inherit; }
+.conn-row { display: flex; align-items: flex-start; gap: 6px; padding: 4px 2px; border-bottom: 1px solid #f0f0f0; }
+.conn-row .connect-lamp { margin-top: 4px; }
+.conn-row-main { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; }
+.conn-row-head { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.conn-row-kind { flex: none; font-size: 10px; padding: 0 4px; border-radius: 3px; background: #eee; color: #444; }
+.conn-row-kind.kind-twitch { background: #ede4ff; color: #4b2a8a; }
+.conn-row-kind.kind-youtube { background: #fde4e4; color: #8a1414; }
+.conn-row-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conn-row-state { flex: none; font-size: 11px; color: #555; }
+.conn-row.warn .conn-row-state { color: #9a5a00; font-weight: 600; }
+.conn-row.ng .conn-row-state { color: #b02020; font-weight: 600; }
+.conn-row-detail { font-size: 11px; color: #666; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conn-panel-note { font-size: 11px; color: #666; padding: 4px 2px 0; }
+.dark .conn-chip { background: #2a2a2a; border-color: #555; color: #ddd; }
+.dark .conn-chip:hover { background: #333; }
+.dark .conn-chip.warn { background: #3a2a10; border-color: #a8772a; color: #ffd28a; }
+.dark .conn-chip.ng { background: #3d1717; border-color: #b94545; color: #ffb3b3; }
+.dark .conn-panel { background: #222; color: #ddd; border-color: #555; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5); }
+.dark .conn-panel-head { border-bottom-color: #444; }
+.dark .conn-row { border-bottom-color: #333; }
+.dark .conn-row-kind { background: #333; color: #ccc; }
+.dark .conn-row-kind.kind-twitch { background: #2e2446; color: #d6c4ff; }
+.dark .conn-row-kind.kind-youtube { background: #3d1717; color: #ffb3b3; }
+.dark .conn-row-state, .dark .conn-row-detail, .dark .conn-panel-note { color: #aaa; }
+.dark .conn-row.warn .conn-row-state { color: #ffc46b; }
+.dark .conn-row.ng .conn-row-state { color: #ff8a8a; }
+
 /* ここまで。このファイル全体は app.css から CSS レイヤー lf-base として読み込まれる
    (利用者の CSS はレイヤーの外なので、指定の強さに関係なくこのファイルより優先される) */
 

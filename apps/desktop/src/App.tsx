@@ -10,7 +10,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type UIEventHandler,
 } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
   ClipboardList, RefreshCw, Pencil, FilePenLine, Save,
@@ -235,8 +235,18 @@ const isYoutubeNonVideoInput = (raw: string): boolean => {
 };
 const isYoutubeUrl = (url: string) => youtubeVideoFromUrl(url) !== null;
 const youtubeTabUrl = (video: string) => `https://www.youtube.com/watch?v=${video}`;
+// 「何秒前」の表示 (接続の状態の一覧で使う)
+const formatAgo = (at: number | undefined, now: number): string => {
+  if (!at) return "まだありません";
+  const s = Math.max(0, Math.floor((now - at) / 1000));
+  if (s < 60) return `${s}秒前`;
+  if (s < 3600) return `${Math.floor(s / 60)}分前`;
+  return `${Math.floor(s / 3600)}時間${Math.floor((s % 3600) / 60)}分前`;
+};
 // Twitch・YouTube のチャットのタブ (流れていくだけなので、取得・巡回・栞・書き込みはしない)
 const isChatUrl = (url: string) => isTwitchUrl(url) || isYoutubeUrl(url);
+// レス表示欄をキーでスクロールする操作 (位置の合わせ直しを止める)
+const SCROLL_KEYS = new Set(["PageUp", "PageDown", "ArrowUp", "ArrowDown", "Home", "End", " "]);
 // YouTube の絵文字の画像 (YouTube の画像配信サーバーのものだけ使う。Rust 側でも確かめている)
 const YT_EMOJI_URL_RE = /^https:\/\/yt[34]\.ggpht\.com\/[A-Za-z0-9_\-=/.~]{1,500}$/;
 // YouTube の投稿者の立場の色 (名前の色に使う。配信者=黄・モデレーター=青・メンバー=緑。それ以外は色を付けない)
@@ -699,16 +709,127 @@ const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const MAX_USER_REGEX_LEN = 512;
 // NG判定の正規表現をパターンごとに1回だけ生成して使い回す (書式エラーは null = 一致しない)。
 // "i" フラグのみで g を付けないため、使い回しても lastIndex の状態は持ち越されない
-const NG_REGEX_CACHE_MAX = 1000;
-const ngRegexCache = new Map<string, RegExp | null>();
-const getNgRegex = (source: string): RegExp | null => {
-  const hit = ngRegexCache.get(source);
-  if (hit !== undefined) return hit;
-  let re: RegExp | null;
-  try { re = new RegExp(source, "i"); } catch { re = null; }
-  if (ngRegexCache.size >= NG_REGEX_CACHE_MAX) ngRegexCache.clear();
-  ngRegexCache.set(source, re);
-  return re;
+// ===== 利用者の正規表現 (NG・読み上げの無音にする語・配信ホワイトリストの自動追加の語) は、別のスレッド (Worker) で実行する =====
+// 画面の中で実行すると、書き方によっては時間がかかり画面ごと固まるため (public/user-regex-worker.js)。
+// 結果は覚えておき、まだ結果が無いものは「一致しない」「置き換えない」として扱って Worker に頼み、結果が届いたら描き直す。
+// 新着・チャット・読み上げは、流す前に結果が届くのを待つ (inArrivalOrder・ttsInOrder)。
+// 時間内に終わらなかった正規表現は、判定に使わないことにする (設定には残す)。意味は今までどおり i 付き (大文字小文字を区別しない)
+type UserRegexOp = "test" | "replace";
+const USER_REGEX_CACHE_MAX = 20000;
+const USER_REGEX_BATCH = 400;
+const userRegexResults = new Map<string, boolean | string>();
+const userRegexQueue = new Map<string, { op: UserRegexOp; source: string; flags: string; texts: Set<string> }>();
+const userRegexWaiters: (() => void)[] = [];
+// 結果が届いたとき・正規表現を使わないことにしたときに呼ぶ (画面の描き直し・知らせ)
+const userRegexResultListeners = new Set<() => void>();
+const userRegexDisableListeners = new Set<(source: string) => void>();
+// 時間内に終わらなかったため、判定に使わないことにした正規表現 (設定には残す)
+const ngRegexDisabled = new Set<string>();
+let userRegexWorker: Worker | null = null;
+let userRegexRunning = false;
+let userRegexSeq = 0;
+// 結果が無くて Worker に頼んだ回数 (流す前に待つ必要があるかの目印)
+let userRegexMissCount = 0;
+const userRegexKey = (op: UserRegexOp, source: string, flags: string, text: string) => `${op}\u0001${flags}\u0001${source}\u0001${text}`;
+const rememberUserRegex = (key: string, value: boolean | string) => {
+  if (userRegexResults.size >= USER_REGEX_CACHE_MAX) {
+    let n = 0;
+    for (const k of userRegexResults.keys()) { userRegexResults.delete(k); if (++n >= USER_REGEX_CACHE_MAX / 4) break; }
+  }
+  userRegexResults.set(key, value);
+};
+// Worker に1回分を頼む。時間内に返ってこなければ Worker ごと止めて null
+const runUserRegexBatch = (op: UserRegexOp, source: string, flags: string, texts: string[]): Promise<(boolean | string)[] | null> =>
+  new Promise((resolve) => {
+    const fallback = () => texts.map((t) => (op === "test" ? false : t));
+    if (typeof Worker === "undefined") { resolve(fallback()); return; }
+    if (!userRegexWorker) {
+      try { userRegexWorker = new Worker("/user-regex-worker.js"); } catch (e) { console.warn("正規表現の Worker を作れませんでした", e); resolve(fallback()); return; }
+    }
+    const w = userRegexWorker;
+    const id = ++userRegexSeq;
+    // 文字数に応じて少し長めに待つ (ふつうの正規表現なら数ミリ秒で終わる)
+    const budget = 600 + texts.reduce((n, t) => n + t.length, 0) * 0.002;
+    const timer = setTimeout(() => {
+      w.terminate();
+      if (userRegexWorker === w) userRegexWorker = null;
+      resolve(null);
+    }, budget);
+    w.onmessage = (ev: MessageEvent<{ id: number; results: (boolean | string)[] }>) => {
+      if (ev.data?.id !== id) return;
+      clearTimeout(timer);
+      resolve(Array.isArray(ev.data.results) ? ev.data.results : fallback());
+    };
+    w.onerror = (ev) => {
+      clearTimeout(timer);
+      console.warn("正規表現の Worker でエラーがありました", ev.message);
+      w.terminate();
+      if (userRegexWorker === w) userRegexWorker = null;
+      resolve(fallback());
+    };
+    w.postMessage({ id, op, source, flags, texts });
+  });
+const pumpUserRegex = async () => {
+  while (userRegexQueue.size > 0) {
+    const first = userRegexQueue.entries().next().value;
+    if (!first) break;
+    const [groupKey, job] = first;
+    userRegexQueue.delete(groupKey);
+    if (ngRegexDisabled.has(job.source)) continue;
+    const texts = [...job.texts].filter((t) => !userRegexResults.has(userRegexKey(job.op, job.source, job.flags, t)));
+    for (let i = 0; i < texts.length; i += USER_REGEX_BATCH) {
+      const chunk = texts.slice(i, i + USER_REGEX_BATCH);
+      const out = await runUserRegexBatch(job.op, job.source, job.flags, chunk);
+      if (out === null) {
+        // 時間切れ: この正規表現は判定に使わない
+        ngRegexDisabled.add(job.source);
+        for (const fn of userRegexDisableListeners) fn(job.source);
+        break;
+      }
+      chunk.forEach((t, j) => rememberUserRegex(userRegexKey(job.op, job.source, job.flags, t), out[j] ?? (job.op === "test" ? false : t)));
+    }
+    for (const fn of userRegexResultListeners) fn();
+  }
+  userRegexRunning = false;
+  if (userRegexQueue.size > 0) { userRegexRunning = true; void pumpUserRegex(); return; }
+  for (const w of userRegexWaiters.splice(0)) w();
+};
+const enqueueUserRegex = (op: UserRegexOp, source: string, flags: string, text: string) => {
+  userRegexMissCount++;
+  const groupKey = `${op}\u0001${flags}\u0001${source}`;
+  let job = userRegexQueue.get(groupKey);
+  if (!job) { job = { op, source, flags, texts: new Set() }; userRegexQueue.set(groupKey, job); }
+  job.texts.add(text);
+  if (!userRegexRunning) { userRegexRunning = true; setTimeout(() => { void pumpUserRegex(); }, 0); }
+};
+// 一致するか (大文字小文字を区別しない)。結果がまだ無ければ Worker に頼んで undefined
+const userRegexTest = (source: string, text: string): boolean | undefined => {
+  if (ngRegexDisabled.has(source)) return false;
+  const v = userRegexResults.get(userRegexKey("test", source, "i", text));
+  if (v !== undefined) return v === true;
+  enqueueUserRegex("test", source, "i", text);
+  return undefined;
+};
+// 一致したところを取り除いた文字列 (大文字小文字を区別しない)。結果がまだ無ければ Worker に頼んで undefined
+const userRegexRemove = (source: string, text: string): string | undefined => {
+  if (ngRegexDisabled.has(source)) return text;
+  const v = userRegexResults.get(userRegexKey("replace", source, "gi", text));
+  if (typeof v === "string") return v;
+  enqueueUserRegex("replace", source, "gi", text);
+  return undefined;
+};
+// 頼んだ判定がすべて終わるまで待つ
+const userRegexSettled = (): Promise<void> =>
+  !userRegexRunning && userRegexQueue.size === 0 ? Promise.resolve() : new Promise((resolve) => { userRegexWaiters.push(resolve); });
+// probe (判定を頼む処理) を、新しく頼むものが無くなるまで繰り返す。
+// 正規表現を続けて当てるとき (1つ目で取り除いた残りに2つ目を当てる) は、1つ目の結果が届いてから2つ目を頼むため
+const userRegexSettleFor = async (probe: () => void) => {
+  for (let i = 0; i < 16; i++) {
+    await userRegexSettled();
+    const before = userRegexMissCount;
+    probe();
+    if (userRegexMissCount === before) return;
+  }
 };
 // ハイライト色は本文HTMLの style 属性に文字列で埋め込むため、#RGB〜#RRGGBBAA の16進表記以外は使わない
 const isSafeHexColor = (c: string): boolean => /^#[0-9a-fA-F]{3,8}$/.test(c);
@@ -868,6 +989,27 @@ type OgpDomainFilters = { allow: string[]; block: string[] };
 const escapeOgpText = (s: string): string =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 const isHttpUrl = (s: string | null | undefined): s is string => typeof s === "string" && /^https?:\/\//i.test(s);
+// 元 URL はリンク・保存に残し、画像の通信だけを検証済みの経路に通す。
+const protectedImageUrl = (url: string): string => {
+  if (!isTauriRuntime() || !isHttpUrl(url)) return url;
+  if (url.startsWith(`${convertFileSrc("", "safe-image")}?url=`)) return url;
+  return `${convertFileSrc("", "safe-image")}?url=${encodeURIComponent(url)}`;
+};
+const originalImageUrl = (url: string): string => {
+  if (!isTauriRuntime()) return url;
+  const prefix = `${convertFileSrc("", "safe-image")}?url=`;
+  if (!url.startsWith(prefix)) return url;
+  try { return decodeURIComponent(url.slice(prefix.length)); } catch { return url; }
+};
+const replaceThumbnail = (parent: HTMLElement, url: string, loading: "eager" | "lazy") => {
+  const img = document.createElement("img");
+  img.className = "response-thumb";
+  img.loading = loading;
+  img.referrerPolicy = "no-referrer";
+  img.alt = "";
+  img.src = protectedImageUrl(url);
+  parent.replaceChildren(img);
+};
 // 家庭内・自分の PC を指すアドレスか (画像を画面に直接読み込ませると、ルーターなどへのアクセスに使われうるため、
 // サムネイル・カードの画像にしない)。名前を引いた先までは調べられないので、IP アドレスの直書きと localhost 系の名前だけを見る
 const isPrivateHostUrl = (raw: string): boolean => {
@@ -908,7 +1050,7 @@ const buildOgpCardHtml = (card: OgpCardData): string => {
   try { host = new URL(card.url).hostname.replace(/^www\./, ""); } catch { host = ""; }
   const site = card.siteName ? escapeOgpText(card.siteName.trim()) : escapeOgpText(host);
   const img = isHttpUrl(card.image) && !isPrivateHostUrl(card.image)
-    ? `<span class="ogp-card-thumb"><img src="${escapeOgpText(card.image)}" loading="lazy" referrerpolicy="no-referrer" alt="" /></span>`
+    ? `<span class="ogp-card-thumb"><img src="${escapeOgpText(protectedImageUrl(card.image))}" loading="lazy" referrerpolicy="no-referrer" alt="" /></span>`
     : "";
   const url = escapeOgpText(card.url);
   const hover = `<span class="ogp-card-hover" aria-hidden="true">`
@@ -977,7 +1119,7 @@ const buildTweetCardHtml = (card: TweetCardData): string => {
   if (!isHttpUrl(card.url)) return "";
   const url = escapeOgpText(card.url);
   const avatar = isHttpUrl(card.authorAvatar)
-    ? `<img class="tweet-card-avatar" src="${escapeOgpText(card.authorAvatar)}" loading="lazy" referrerpolicy="no-referrer" alt="" />`
+    ? `<img class="tweet-card-avatar" src="${escapeOgpText(protectedImageUrl(card.authorAvatar))}" loading="lazy" referrerpolicy="no-referrer" alt="" />`
     : `<span class="tweet-card-avatar tweet-card-avatar-blank" aria-hidden="true"></span>`;
   const badge = card.isVerified ? `<span class="tweet-card-badge" title="認証済み">✓</span>` : "";
   const head = `<span class="tweet-card-head">`
@@ -1003,7 +1145,7 @@ const buildTweetCardHtml = (card: TweetCardData): string => {
         const h = Number.isFinite(p.height) ? Math.max(0, Math.floor(p.height)) : 0;
         const ratio = w > 0 && h > 0 ? ` style="aspect-ratio:${w}/${h}"` : "";
         const dim = w > 0 && h > 0 ? ` width="${w}" height="${h}"` : "";
-        return `<img class="tweet-card-photo" src="${escapeOgpText(p.url)}"${dim}${ratio} loading="lazy" referrerpolicy="no-referrer" alt="" />`;
+        return `<img class="tweet-card-photo" src="${escapeOgpText(protectedImageUrl(p.url))}"${dim}${ratio} loading="lazy" referrerpolicy="no-referrer" alt="" />`;
       }).join("")
       + `</span>`
     : "";
@@ -1025,7 +1167,7 @@ const buildTweetCardHtml = (card: TweetCardData): string => {
   let videoEl = "";
   if (videoSrc !== null) {
     const src = escapeOgpText(videoSrc);
-    const poster = isHttpUrl(card.videoPoster) ? ` poster="${escapeOgpText(card.videoPoster)}"` : "";
+    const poster = isHttpUrl(card.videoPoster) ? ` poster="${escapeOgpText(protectedImageUrl(card.videoPoster))}"` : "";
     videoEl = card.isGif
       ? `<video class="tweet-card-video-el" src="${src}"${poster} autoplay loop muted playsinline preload="metadata"></video>`
       : `<video class="tweet-card-video-el" src="${src}"${poster} controls playsinline preload="none"></video>`;
@@ -1072,13 +1214,13 @@ const renderResponseBody = (html: string, opts?: RenderBodyOpts): { __html: stri
         if (!rawHref) return match;
         const href = opts?.urlRules?.length ? applyUrlRules(rawHref, opts.urlRules) : rawHref;
         // 家庭内・自分の PC のアドレスの画像はサムネイルにしない (リンクとしては残す)
-        if (isPrivateHostUrl(href)) return `<a class="body-link" href="${href}" target="_blank" rel="noopener">${match}</a>`;
+        if (isPrivateHostUrl(href)) return `<a class="body-link" href="${escapeOgpText(href)}" target="_blank" rel="noopener">${match}</a>`;
         if (sizeGated) {
-          collectedThumbs.push(`<span class="thumb-link thumb-size-gate" data-lightbox-src="${href}" data-gate-src="${href}" data-size-limit="${opts.imageSizeLimitKb}"><span class="thumb-gate-loading">画像を確認中…</span></span>`);
+          collectedThumbs.push(`<span class="thumb-link thumb-size-gate" data-lightbox-src="${escapeOgpText(href)}" data-gate-src="${escapeOgpText(href)}" data-size-limit="${opts.imageSizeLimitKb}"><span class="thumb-gate-loading">画像を確認中…</span></span>`);
         } else {
-          collectedThumbs.push(`<span class="thumb-link" data-lightbox-src="${href}"><img class="response-thumb" src="${href}" loading="eager" referrerpolicy="no-referrer" alt="" /></span>`);
+          collectedThumbs.push(`<span class="thumb-link" data-lightbox-src="${escapeOgpText(href)}"><img class="response-thumb" src="${escapeOgpText(protectedImageUrl(href))}" loading="eager" referrerpolicy="no-referrer" alt="" /></span>`);
         }
-        return `<a class="body-link" href="${href}" target="_blank" rel="noopener">${match}</a>`;
+        return `<a class="body-link" href="${escapeOgpText(href)}" target="_blank" rel="noopener">${match}</a>`;
       }
     );
   }
@@ -1100,6 +1242,7 @@ const renderResponseBody = (html: string, opts?: RenderBodyOpts): { __html: stri
     /((?:https?:\/\/|ttps?:\/\/|ps:\/\/|s:\/\/|(?<![a-zA-Z]):\/\/)[^\s<>&"]+(?:&amp;[^\s<>&"]*)*|(?<!\S)(?:[a-zA-Z0-9][-a-zA-Z0-9]*\.)+[a-zA-Z]{2,}\/[^\s<>&"]+(?:&amp;[^\s<>&"]*)*)/gi,
     (match) => {
       // Skip if already inside a thumb-link or img tag
+      if (isTauriRuntime() && match.startsWith(convertFileSrc("", "safe-image"))) return match;
       if (match.match(/\.(jpg|jpeg|png|gif|webp)(\?|$)/i)) return match;
       // Skip twimg 動画: 上で <video src="..."> に変換済みなので二重リンク化しない
       if (!opts?.hideImages && opts?.tweetCards && /video\.twimg\.com\/[^\s"'<>]+\.mp4/i.test(match)) return match;
@@ -1695,8 +1838,10 @@ export default function App() {
   // タブ切替直後、画像・カードの読み込みで高さが変わるあいだレス表示欄を隠す (高さが安定したら表示)
   const [responsePaneSettling, setResponsePaneSettling] = useState(false);
   const responsePaneSettleRunRef = useRef(0);
-  // 最下行に追従中の scrollToBottom を止める関数 (ユーザー操作か、別の位置合わせが始まるまで追従する)
+  // いま動いている位置合わせ (最下行への追従・レスへの合わせ直し) を止める関数。位置合わせは同時に1つだけ動かす
+  // (ユーザー操作、別の位置合わせ、タブの切り替えで止める)。scrollAlignGenRef は、要素が出るのを待っている途中の古い位置合わせを止める目印
   const followBottomCleanupRef = useRef<(() => void) | null>(null);
+  const scrollAlignGenRef = useRef(0);
   const [responseGap, setResponseGap] = useState(10);
   const [smoothScroll, setSmoothScroll] = useState(true);
   const [maxOpenTabs, setMaxOpenTabs] = useState(20);
@@ -1748,7 +1893,8 @@ export default function App() {
   const [boardTabs, setBoardTabs] = useState<{boardUrl: string, title: string}[]>([]);
   const [activeBoardTabIndex, setActiveBoardTabIndex] = useState(-1);
   const [activePaneView, setActivePaneView] = useState<"threads" | "responses" | "viewer">("threads");
-  const tabCacheRef = useRef<Map<string, { responses: ThreadResponseItem[]; selectedResponse: number; scrollResponseNo?: number; scrollAtBottom?: boolean; newResponseStart?: number | null }>>(new Map());
+  // scrollOffset: 上端のレス (scrollResponseNo) の先頭が、表示欄の上端から何 px 上にあったか (長いレスの途中を読んでいた分)
+  const tabCacheRef = useRef<Map<string, { responses: ThreadResponseItem[]; selectedResponse: number; scrollResponseNo?: number; scrollOffset?: number; scrollAtBottom?: boolean; newResponseStart?: number | null }>>(new Map());
   const closedTabsRef = useRef<{ threadUrl: string; title: string }[]>([]);
   const [tabRestoreReady, setTabRestoreReady] = useState(false);
   const threadTabsRef = useRef<ThreadTab[]>([]);
@@ -2442,7 +2588,7 @@ export default function App() {
   };
   const viewerBodyHtml = (it: ViewerItem): string => {
     const deferred = isChatSource(it.source) && viewerTwitchClickToLoad && !viewerRevealed.has(it.seq);
-    const sig = [deferred, viewerCards, viewerThumbs, imageSizeLimit, darkMode, imageUrlRules.length, ogpDomainFilters.allow.join(","), ogpDomainFilters.block.join(","), viewerWordHighlightSig, it.text].join("\u0001");
+    const sig = [deferred, viewerCards, viewerThumbs, imageSizeLimit, darkMode, imageUrlRules.length, ogpDomainFilters.allow.join(","), ogpDomainFilters.block.join(","), viewerWordHighlightSig, userRegexVersion, ngDisabledVersion, it.text].join("\u0001");
     const cached = viewerBodyCacheRef.current.get(it.seq);
     if (cached && cached.sig === sig) return cached.html;
     const html = makeViewerBodyHtml(it, deferred);
@@ -2631,6 +2777,32 @@ export default function App() {
     setBroadcastWhitelist((prev) => { const next = { ...prev }; for (const id of ids) next[id] = true; return next; });
     setWhitelistAuto((prev) => ({ ...prev, ...added }));
     setStatus(`配信ホワイトリストに自動で追加しました: ${ids.map((id) => `ID:${id}`).join(" ")}`);
+  };
+  // 新着を流す: 作る (build) と流す (dispatch) に分け、正規表現の結果が足りなければ届くのを待って作り直してから流す。
+  // 待っている間に来た新着も、順番どおりに後ろへ並べる (NG に当たるレスを先に流してしまわないように)
+  const arrivalOrderRef = useRef<Promise<void>>(Promise.resolve());
+  const arrivalWaitingRef = useRef(0);
+  const inArrivalOrder = (build: () => ArrivalItem[], dispatch: (arrivals: ArrivalItem[]) => void) => {
+    const buildAll = () => {
+      const arrivals = build();
+      // 配信ホワイトリストの自動追加の語も、流す前に判定を頼んでおく
+      const cfg = whitelistAutoConfig;
+      if (cfg.enabled) {
+        const words = cfg.words.split(/\r?\n/).map((w) => w.trim()).filter(Boolean);
+        for (const x of arrivals) if (!x.isAbone && x.id) for (const w of words) ngMatch(w, x.plain);
+      }
+      return arrivals;
+    };
+    if (arrivalWaitingRef.current === 0) {
+      const before = userRegexMissCount;
+      const arrivals = buildAll();
+      if (userRegexMissCount === before) { dispatch(arrivals); return; }
+    }
+    arrivalWaitingRef.current++;
+    arrivalOrderRef.current = arrivalOrderRef.current
+      .then(async () => { await userRegexSettleFor(() => { buildAll(); }); dispatch(buildAll()); })
+      .catch((e) => console.warn("新着を流せませんでした", e))
+      .finally(() => { arrivalWaitingRef.current--; });
   };
   const pushBroadcastArrivals = (arrivals: ArrivalItem[]) => {
     applyWhitelistAutoAdd(arrivals);
@@ -2899,14 +3071,14 @@ export default function App() {
   const [searchHistoryDropdown, setSearchHistoryDropdown] = useState<{ type: "thread" | "response" } | null>(null);
   const [searchHistoryMenu, setSearchHistoryMenu] = useState<{ x: number; y: number; type: "thread" | "response"; word: string } | null>(null);
 
-  // Detect own post after re-fetch
-  useEffect(() => {
+  // 書き込んだあとの取得で、自分の書き込みを見つけて印を付ける (表示中のタブとは限らないので、取得したスレの行で調べる)
+  const markMyPostIfFound = (url: string, rows: ThreadResponseItem[]) => {
     const pending = pendingMyPostRef.current;
-    if (!pending) return;
-    if (fetchedResponses.length <= pending.prevCount) return;
+    if (!pending || pending.threadUrl !== url) return;
+    if (rows.length <= pending.prevCount) return;
     pendingMyPostRef.current = null;
     const normalizedBody = pending.body.replace(/\s+/g, " ").trim();
-    const newResponses = fetchedResponses.slice(pending.prevCount);
+    const newResponses = rows.slice(pending.prevCount);
     const matched = newResponses.find((r) => {
       const stripped = stripHtmlForMatch(r.body || "");
       return stripped === normalizedBody || stripped.includes(normalizedBody) || normalizedBody.includes(stripped);
@@ -2920,7 +3092,7 @@ export default function App() {
         return next;
       });
     }
-  }, [fetchedResponses]);
+  };
 
   useEffect(() => {
     if (!pendingAutoScrollRef.current) return;
@@ -2944,7 +3116,7 @@ export default function App() {
         if (!src) return;
         let sizePromise = cache.get(src);
         if (!sizePromise) {
-          sizePromise = fetch(src, { method: "HEAD" }).then((res) => {
+          sizePromise = fetch(protectedImageUrl(src), { method: "HEAD" }).then((res) => {
             const cl = res.headers.get("content-length");
             return cl ? parseInt(cl, 10) : null;
           }).catch(() => null);
@@ -2956,14 +3128,18 @@ export default function App() {
           delete gate.dataset.sizeLimit;
           if (size !== null && size > limitBytes) {
             const sizeStr = size >= 1024 * 1024 ? `${(size / 1024 / 1024).toFixed(1)}MB` : `${Math.round(size / 1024)}KB`;
-            gate.innerHTML = `<span class="thumb-gate-blocked" data-reveal-src="${src}">サイズ制限 (${sizeStr}) により非表示 — クリックで表示</span>`;
+            const blocked = document.createElement("span");
+            blocked.className = "thumb-gate-blocked";
+            blocked.dataset.revealSrc = src;
+            blocked.textContent = `サイズ制限 (${sizeStr}) により非表示 — クリックで表示`;
+            gate.replaceChildren(blocked);
           } else {
-            gate.innerHTML = `<img class="response-thumb" src="${src}" loading="eager" alt="" />`;
+            replaceThumbnail(gate, src, "eager");
           }
         }).catch(() => {
           if (!gate.dataset.gateSrc) return;
           delete gate.dataset.gateSrc;
-          gate.innerHTML = `<img class="response-thumb" src="${src}" loading="eager" alt="" />`;
+          replaceThumbnail(gate, src, "eager");
         });
       });
     };
@@ -3193,6 +3369,48 @@ export default function App() {
     }
   };
 
+  // 時間内に判定が終わらず、使わないことにした正規表現を知らせる (設定には残している)
+  const [ngDisabledVersion, setNgDisabledVersion] = useState(0);
+  const notifySlowNgRegexes = (slow: string[]) => {
+    const list = slow.map((s) => `/${s.length > 60 ? `${s.slice(0, 60)}…` : s}/`).join("\n");
+    setAppConfirm({
+      title: "使っていない正規表現があります",
+      message: `次の正規表現は、判定に時間がかかりすぎたため、使っていません (NG・読み上げの辞書などの設定には残しています)。\n${list}\n\n「(a+)+」のような繰り返しの中の繰り返しなどで、時間がかかることがあります。書き直すか、消してください。`,
+      buttons: [{ label: "OK", primary: true, onClick: () => {} }],
+    });
+    setStatus(`正規表現を ${slow.length} 件、判定に使っていません (時間がかかりすぎたため)`);
+  };
+  // Worker の結果が届いたら描き直す・時間切れを知らせる (まとめて1回)
+  const [userRegexVersion, setUserRegexVersion] = useState(0);
+  useEffect(() => {
+    let redraw: ReturnType<typeof setTimeout> | null = null;
+    let notify: ReturnType<typeof setTimeout> | null = null;
+    const slow: string[] = [];
+    const onResult = () => {
+      if (redraw) return;
+      redraw = setTimeout(() => { redraw = null; setUserRegexVersion((v) => v + 1); }, 50);
+    };
+    const onDisable = (source: string) => {
+      slow.push(source);
+      if (notify) return;
+      notify = setTimeout(() => {
+        notify = null;
+        setNgDisabledVersion((v) => v + 1);
+        notifySlowNgRegexesRef.current(slow.splice(0));
+      }, 300);
+    };
+    userRegexResultListeners.add(onResult);
+    userRegexDisableListeners.add(onDisable);
+    return () => {
+      userRegexResultListeners.delete(onResult);
+      userRegexDisableListeners.delete(onDisable);
+      if (redraw) clearTimeout(redraw);
+      if (notify) clearTimeout(notify);
+    };
+  }, []);
+  const notifySlowNgRegexesRef = useRef(notifySlowNgRegexes);
+  notifySlowNgRegexesRef.current = notifySlowNgRegexes;
+
   const persistNgFilters = async (next: NgFilters) => {
     setNgFilters(next);
     if (!isTauriRuntime()) return;
@@ -3322,8 +3540,8 @@ export default function App() {
   const ngMatch = (pattern: string, target: string): boolean => {
     if (pattern.startsWith("/") && pattern.endsWith("/") && pattern.length > 2) {
       if (pattern.length > MAX_USER_REGEX_LEN) return false;
-      const re = getNgRegex(pattern.slice(1, -1));
-      return re ? re.test(target) : false;
+      // Worker で判定する。結果がまだ無いうちは「一致しない」(届いたら描き直す・新着は届くまで待つ)
+      return userRegexTest(pattern.slice(1, -1), target) === true;
     }
     return target.toLowerCase().includes(pattern.toLowerCase());
   };
@@ -3408,23 +3626,26 @@ export default function App() {
     return bookmarkCacheRef.current[url] ?? null;
   };
 
-  const getVisibleResponseNo = (): number => {
+  // 表示欄の上端にかかっているレスと、その先頭が上端から何 px 上にあるか
+  const getVisibleAnchor = (): { no: number; offset: number } => {
     const container = responseScrollRef.current;
-    if (!container) return 0;
+    if (!container) return { no: 0, offset: 0 };
     const els = container.querySelectorAll<HTMLElement>("[data-response-no]");
     const containerTop = container.getBoundingClientRect().top;
     for (const el of els) {
       const rect = el.getBoundingClientRect();
       if (rect.bottom > containerTop) {
-        return Number(el.dataset.responseNo) || 0;
+        return { no: Number(el.dataset.responseNo) || 0, offset: Math.round(containerTop - rect.top) };
       }
     }
-    return 0;
+    return { no: 0, offset: 0 };
   };
+  const getVisibleResponseNo = (): number => getVisibleAnchor().no;
   const saveScrollPos = (url: string, responseNo?: number) => {
     if (isChatUrl(url)) return;
     const no = responseNo ?? getVisibleResponseNo();
-    if (no <= 1) return;
+    // 1番 (一番上) も覚える (覚えないと、前に覚えた途中の位置が残る)
+    if (no < 1) return;
     threadScrollPositions.current[url] = no;
     saveToFile("scroll-positions.json", threadScrollPositions.current);
   };
@@ -3449,14 +3670,22 @@ export default function App() {
     cached.selectedResponse = selectedResponse;
     if (responseScrollRef.current) {
       cached.scrollAtBottom = isScrollAtBottom();
-      cached.scrollResponseNo = getVisibleResponseNo();
-      saveScrollPos(curUrl);
+      const anchor = getVisibleAnchor();
+      cached.scrollResponseNo = anchor.no;
+      cached.scrollOffset = anchor.offset;
+      saveScrollPos(curUrl, anchor.no);
     }
   };
   // スレの表示欄から離れる (ビュワー・スレ一覧へ切り替える) 直前に、今の位置を覚えておく。
   // 表示欄は離れると DOM から外れ、戻ったときは作り直される (覚えていないと古い位置か一番上に戻ってしまう)
   const rememberBeforeLeavingResponses = () => {
+    beforeViewSwitch();
     if (activePaneView === "responses") saveActiveTabScrollState();
+  };
+  // 表示を切り替える前の後片付け: 待っている位置の保存を (今の表示欄のうちに) 済ませ、動いている位置合わせを止める
+  const beforeViewSwitch = () => {
+    flushScrollSave();
+    cancelScrollAlign();
   };
 
   // タブ切替直後のちらつき対策: レス表示欄を visibility: hidden にしておき、scrollHeight が 2 フレーム続けて同じに
@@ -3480,13 +3709,20 @@ export default function App() {
     requestAnimationFrame(tick);
   };
 
-  const scrollToBottom = () => {
-    // 前の追従を止める (二重に動かさない)
+  // 動いている位置合わせを止める (新しい位置合わせを始めるとき・タブを切り替えるとき)。止めた世代の番号を返す
+  const cancelScrollAlign = () => {
     if (followBottomCleanupRef.current) { followBottomCleanupRef.current(); followBottomCleanupRef.current = null; }
+    return ++scrollAlignGenRef.current;
+  };
+
+  const scrollToBottom = () => {
+    // 前の位置合わせを止める (二重に動かさない)
+    const gen = cancelScrollAlign();
     // Phase 0: the responses pane may not be mounted yet (e.g. switching from
     // the thread-list view unmounts it) — wait for the container to appear.
     let mountAttempts = 0;
     const start = () => {
+      if (scrollAlignGenRef.current !== gen) return;
       const c = responseScrollRef.current;
       if (!c) {
         if (mountAttempts < 10) {
@@ -3530,6 +3766,7 @@ export default function App() {
         }
       }, 150);
       const onNavKey = (e: KeyboardEvent) => {
+        if (isTypingTarget(e.target)) return;
         if (e.key === "PageUp" || e.key === "ArrowUp" || e.key === "Home") cleanup();
       };
 
@@ -3553,16 +3790,19 @@ export default function App() {
     start();
   };
 
-  const scrollToResponseNo = (no: number) => {
-    if (followBottomCleanupRef.current) { followBottomCleanupRef.current(); followBottomCleanupRef.current = null; }
-    if (no <= 1) return;
+  // offset: レスの先頭を、表示欄の上端より何 px 上に置くか (タブの記録から戻すとき。ふだんは 0 = レスの先頭を上端に)
+  const scrollToResponseNo = (no: number, offset = 0) => {
+    const gen = cancelScrollAlign();
+    if (no < 1) return;
     // Phase 1: wait for the element to appear in DOM (rAF retry)
     let attempts = 0;
     const tryScroll = () => {
+      if (scrollAlignGenRef.current !== gen) return;
       const container = responseScrollRef.current;
       const el = container?.querySelector<HTMLElement>(`[data-response-no="${no}"]`);
       if (el && container) {
         el.scrollIntoView({ block: "start", behavior: "instant" });
+        if (offset) container.scrollTop += offset;
 
         // Phase 2: correct scroll as images load and expand scrollHeight
         // ResizeObserver watches clientHeight (layout box) — doesn't fire when scrollHeight grows.
@@ -3573,9 +3813,11 @@ export default function App() {
 
         const correct = () => {
           if (!active) return;
+          // 表示が切り替わってこのレスが画面から外れていたら、合わせ直さない
+          if (!el.isConnected || !container.isConnected) { cleanup(); return; }
           const elRect = el.getBoundingClientRect();
           const cRect = container.getBoundingClientRect();
-          const delta = elRect.top - cRect.top;
+          const delta = elRect.top - cRect.top + offset;
           if (Math.abs(delta) > 2) container.scrollTop += delta;
         };
 
@@ -3585,6 +3827,11 @@ export default function App() {
         container.addEventListener("wheel", onUserInput, { passive: true });
         container.addEventListener("mousedown", onUserInput, { passive: true });
         container.addEventListener("touchstart", onUserInput, { passive: true });
+        // キーボードでスクロールしたときも止める (止めないと、画像の読み込みで元のレスへ引き戻す)
+        const onScrollKey = (e: KeyboardEvent) => {
+          if (!isTypingTarget(e.target) && SCROLL_KEYS.has(e.key)) cleanup();
+        };
+        window.addEventListener("keydown", onScrollKey);
 
         const pollInterval = setInterval(() => {
           if (!active) { clearInterval(pollInterval); return; }
@@ -3599,11 +3846,16 @@ export default function App() {
           active = false;
           clearInterval(pollInterval);
           if (correctionTimer) clearTimeout(correctionTimer);
+          clearTimeout(expireTimer);
           container.removeEventListener("wheel", onUserInput);
           container.removeEventListener("mousedown", onUserInput);
           container.removeEventListener("touchstart", onUserInput);
+          window.removeEventListener("keydown", onScrollKey);
+          if (followBottomCleanupRef.current === cleanup) followBottomCleanupRef.current = null;
         };
-        setTimeout(cleanup, 4000);
+        // 合わせ直しは 4 秒まで。次の位置合わせ・タブの切り替えでも止める
+        const expireTimer = setTimeout(cleanup, 4000);
+        followBottomCleanupRef.current = cleanup;
       } else if (attempts < 10) {
         attempts++;
         requestAnimationFrame(tryScroll);
@@ -3622,6 +3874,7 @@ export default function App() {
   };
 
   const openThreadInTab = (url: string, title: string) => {
+    beforeViewSwitch();
     setActivePaneView("responses");
     setResponseSearchQuery("");
     setResponseSearchMode(null);
@@ -3652,7 +3905,7 @@ export default function App() {
         setNewResponseStart(cached.newResponseStart ?? null);
         settleResponsePane();
         if (cached.scrollAtBottom) scrollToBottom();
-        else scrollToResponseNo(cached.scrollResponseNo ?? loadScrollPos(url));
+        else scrollToResponseNo(cached.scrollResponseNo ?? loadScrollPos(url), cached.scrollResponseNo != null ? cached.scrollOffset ?? 0 : 0);
       } else if (isTauriRuntime()) {
         invoke<string | null>("load_thread_cache", { threadUrl: url }).then((json) => {
           if (json) {
@@ -3693,6 +3946,9 @@ export default function App() {
     const newTabs = [...threadTabs, { threadUrl: url, title }];
     setThreadTabs(newTabs);
     setActiveTabIndex(newTabs.length - 1);
+    // 取得が終わったときの「表示中のタブか」の確認に使うので、描画を待たずに合わせておく
+    threadTabsRef.current = newTabs;
+    activeTabIndexRef.current = newTabs.length - 1;
     setFetchedResponses([]);
     const bm = loadBookmark(url);
     setSelectedResponse(bm ?? 1);
@@ -3704,7 +3960,8 @@ export default function App() {
         if (json) {
           try {
             const cached = JSON.parse(json) as ThreadResponseItem[];
-            if (cached.length > 0) {
+            const shownUrl = threadTabsRef.current[activeTabIndexRef.current]?.threadUrl;
+            if (cached.length > 0 && shownUrl === url) {
               setFetchedResponses(cached);
               tabCacheRef.current.set(url, { responses: cached, selectedResponse: bm ?? 1 });
               // Don't set newResponseStart from cache — first open should have no "new" marker
@@ -3724,6 +3981,9 @@ export default function App() {
 
   const closeTab = (index: number) => {
     if (index < 0 || index >= threadTabs.length) return;
+    // 待っている保存は閉じる前に済ませる (済ませないと、切り替え先の位置を閉じたタブの栞に書く)
+    flushScrollSave();
+    if (index === activeTabIndex) cancelScrollAlign();
     const closing = threadTabs[index];
     closedTabsRef.current.push({ threadUrl: closing.threadUrl, title: closing.title });
     if (closedTabsRef.current.length > 20) closedTabsRef.current.shift();
@@ -3734,7 +3994,9 @@ export default function App() {
     tabCacheRef.current.delete(closing.threadUrl);
     const nextTabs = threadTabs.filter((_, i) => i !== index);
     setThreadTabs(nextTabs);
+    threadTabsRef.current = nextTabs;
     if (nextTabs.length === 0) {
+      activeTabIndexRef.current = -1;
       setActiveTabIndex(-1);
       setFetchedResponses([]);
       setSelectedResponse(1);
@@ -3748,6 +4010,7 @@ export default function App() {
     } else {
       nextIndex = activeTabIndex;
     }
+    activeTabIndexRef.current = nextIndex;
     setActiveTabIndex(nextIndex);
     const tab = nextTabs[nextIndex];
     const cached = tabCacheRef.current.get(tab.threadUrl);
@@ -3757,13 +4020,15 @@ export default function App() {
       setSelectedResponse(cached.selectedResponse);
       settleResponsePane();
       if (cached.scrollAtBottom) scrollToBottom();
-      else scrollToResponseNo(cached.scrollResponseNo ?? loadScrollPos(tab.threadUrl));
+      else scrollToResponseNo(cached.scrollResponseNo ?? loadScrollPos(tab.threadUrl), cached.scrollResponseNo != null ? cached.scrollOffset ?? 0 : 0);
     }
     setThreadUrl(tab.threadUrl);
     setLocationInput(tab.threadUrl);
   };
 
   const onTabClick = (index: number) => {
+    beforeViewSwitch();
+    activeTabIndexRef.current = index;
     const paneWasUnmounted = activePaneView !== "responses";
     setActivePaneView("responses");
     if (index === activeTabIndex) {
@@ -3775,7 +4040,7 @@ export default function App() {
         if (cached) {
           settleResponsePane();
           if (cached.scrollAtBottom) scrollToBottom();
-          else scrollToResponseNo(cached.scrollResponseNo ?? loadScrollPos(tab.threadUrl));
+          else scrollToResponseNo(cached.scrollResponseNo ?? loadScrollPos(tab.threadUrl), cached.scrollResponseNo != null ? cached.scrollOffset ?? 0 : 0);
         } else {
           const savedNo = loadScrollPos(tab.threadUrl);
           if (savedNo > 1) scrollToResponseNo(savedNo);
@@ -3794,7 +4059,7 @@ export default function App() {
       setSelectedResponse(cached.selectedResponse);
       settleResponsePane();
       if (cached.scrollAtBottom) scrollToBottom();
-      else scrollToResponseNo(cached.scrollResponseNo ?? loadScrollPos(tab.threadUrl));
+      else scrollToResponseNo(cached.scrollResponseNo ?? loadScrollPos(tab.threadUrl), cached.scrollResponseNo != null ? cached.scrollOffset ?? 0 : 0);
     } else {
       setFetchedResponses([]);
       setSelectedResponse(1);
@@ -3807,21 +4072,43 @@ export default function App() {
   const closeOtherTabs = (keepIndex: number) => {
     const kept = threadTabs[keepIndex];
     if (!kept) return;
+    beforeViewSwitch();
+    // 表示していないタブを残すときは、ふつうのタブの切り替えと同じく、今のタブの位置を覚えてから残すタブの位置へ戻す
+    const switching = keepIndex !== activeTabIndex;
+    if (switching) saveActiveTabScrollState();
+    threadTabsRef.current = [kept];
+    activeTabIndexRef.current = 0;
     for (const tab of threadTabs) {
       if (tab.threadUrl !== kept.threadUrl) tabCacheRef.current.delete(tab.threadUrl);
     }
     setThreadTabs([kept]);
     setActiveTabIndex(0);
     const cached = tabCacheRef.current.get(kept.threadUrl);
-    if (cached) {
+    // 表示中のタブを残すときは、ほかのタブを閉じるだけ (今のレス・選択・位置はそのまま。古い記録を当てはめない)
+    if (cached && switching) {
       setFetchedResponses(cached.responses);
+      if (cached.selectedResponse !== selectedResponse) suppressResponseSelScrollRef.current = true;
       setSelectedResponse(cached.selectedResponse);
+      {
+        setLastFetchTime(threadFetchTimesRef.current[kept.threadUrl] ?? null);
+        settleResponsePane();
+        if (cached.scrollAtBottom) scrollToBottom();
+        else scrollToResponseNo(cached.scrollResponseNo ?? loadScrollPos(kept.threadUrl), cached.scrollResponseNo != null ? cached.scrollOffset ?? 0 : 0);
+      }
+    } else if (switching) {
+      // 残すタブの記録が無ければ取り直す (前のタブのレスを出したままにしない)
+      setFetchedResponses([]);
+      setSelectedResponse(1);
+      void fetchResponsesFromCurrent(kept.threadUrl);
     }
     setThreadUrl(kept.threadUrl);
     setLocationInput(kept.threadUrl);
   };
 
   const closeAllTabs = () => {
+    beforeViewSwitch();
+    threadTabsRef.current = [];
+    activeTabIndexRef.current = -1;
     tabCacheRef.current.clear();
     setThreadTabs([]);
     setActiveTabIndex(-1);
@@ -3952,41 +4239,45 @@ export default function App() {
         { threadUrl: tabUrl, limit: null, sinceResNo: lastResNo ?? null }
       );
       const fetched = result.responses;
+      markBoardFetch(tabUrl, true);
       if (fullRefetch) idRefetchDoneRef.current.add(tabUrl);
       const newRows = fullRefetch ? fetched.filter((r) => r.responseNo > (lastKnownNo ?? 0)) : fetched;
       // Merge: full list = previous cached + new rows (全件取り直しのときは取得結果で置き換え)
       const rows = fullRefetch ? fetched : lastResNo != null ? [...prevResponses, ...fetched] : fetched;
       if (rows.length === 0) return;
-      tabCacheRef.current.set(tabUrl, { responses: rows, selectedResponse: cached?.selectedResponse ?? 1, scrollResponseNo: cached?.scrollResponseNo, newResponseStart: cached?.newResponseStart });
+      // 位置の記録 (最下部にいたか・上端のレス) は引き継ぐ (落とすと、最下部を見ていたタブへ戻ったときに最下部へ行かない)
+      tabCacheRef.current.set(tabUrl, { responses: rows, selectedResponse: cached?.selectedResponse ?? 1, scrollResponseNo: cached?.scrollResponseNo, scrollOffset: cached?.scrollOffset, scrollAtBottom: cached?.scrollAtBottom, newResponseStart: cached?.newResponseStart });
       if (newRows.length === 0 && prevCount > 0) return; // no new responses
       if (prevCount > 0 && newRows.length > 0) {
         const now = new Date();
         const timeStr = `${now.getFullYear()}/${String(now.getMonth() + 1).padStart(2, "0")}/${String(now.getDate()).padStart(2, "0")} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
         threadFetchTimesRef.current[tabUrl] = timeStr;
-        const arrivals = newRows
+        inArrivalOrder(() => newRows
           .filter((r) => showsArrivalResNo(tabUrl, r.responseNo))
           .filter((r) => getNgResult({ name: r.name, mail: r.mail, time: r.dateAndId, text: r.body.replace(/<[^>]*>/g, "") }, tabUrl)?.mode !== "hide")
-          .map((r) => makeArrival(r, tabTitle, tabUrl, rows));
-        if (autoRefreshEnabled && arrivals.length > 0) {
-          const queueWasEmpty = arrivalQueueRef.current.length === 0;
-          arrivalQueueRef.current.push(...arrivals);
-          setArrivalQueueCount(arrivalQueueRef.current.length);
-          pushBroadcastArrivals(arrivals);
-          if (!arrivalPausedRef.current && !arrivalTimerRef.current && (currentArrivalItemRef.current === null || queueWasEmpty)) {
-            advanceToNextArrival();
+          .map((r) => makeArrival(r, tabTitle, tabUrl, rows)), (arrivals) => {
+          if (autoRefreshEnabled && arrivals.length > 0) {
+            const queueWasEmpty = arrivalQueueRef.current.length === 0;
+            arrivalQueueRef.current.push(...arrivals);
+            setArrivalQueueCount(arrivalQueueRef.current.length);
+            pushBroadcastArrivals(arrivals);
+            if (!arrivalPausedRef.current && !arrivalTimerRef.current && (currentArrivalItemRef.current === null || queueWasEmpty)) {
+              advanceToNextArrival();
+            }
           }
-        }
-        if (ttsEnabled && ttsMode !== "off") {
-          const site = detectSiteType(tabUrl);
-          for (const a of arrivals) {
-            if (!speaksResNo(tabUrl, a.responseNo)) continue;
-            const prefix = speakPrefixFor(site, a.responseNo, a.name);
-            ttsSpeakBoardArrival(a, prefix);
+          if (ttsEnabled && ttsMode !== "off") {
+            const site = detectSiteType(tabUrl);
+            for (const a of arrivals) {
+              if (!speaksResNo(tabUrl, a.responseNo)) continue;
+              const prefix = speakPrefixFor(site, a.responseNo, a.name);
+              ttsSpeakBoardArrival(a, prefix);
+            }
           }
-        }
+        });
       }
-    } catch {
-      // silent — background fetch failures are non-critical
+    } catch (error) {
+      // silent — background fetch failures are non-critical (接続の状態の一覧にだけ出す)
+      markBoardFetch(tabUrl, false, String(error));
     }
   };
 
@@ -4092,6 +4383,7 @@ export default function App() {
         limit: null,
       });
       const rows = result.responses;
+      markBoardFetch(url, true);
       const fetchedTitle = result.title ? decodeHtmlEntities(result.title) : null;
       // Update tab title if server returned a real title (e.g. from read.cgi HTML)
       if (fetchedTitle) {
@@ -4103,6 +4395,23 @@ export default function App() {
       if (rows.length === 0 && prevCount > 0) {
         setResponseListProbe(`ok rows=0 (kept cached ${prevCount})`);
         setStatus(`レス取得: 0件 (キャッシュ ${prevCount}件を維持)`);
+        return;
+      }
+      markMyPostIfFound(url, rows);
+      // 取得している間に別のタブへ切り替えていたら、そのタブの記録だけ新しくして、今の表示・位置・新着の印は動かさない
+      // (そのまま進むと、表示中のタブに前のタブのレスを出し、最下部へ動かしてしまう)
+      // 表示中のタブが無い (全部閉じた) ときも同じ (閉じたタブのレスを出さない)
+      const shownUrl = threadTabsRef.current[activeTabIndexRef.current]?.threadUrl;
+      if (shownUrl !== url) {
+        if (!opts?.keepSelection) setResponsesLoading(false);
+        if (rows.length > prevCount) {
+          tabCacheRef.current.set(url, cachedEntry
+            ? { ...cachedEntry, responses: rows }
+            : { responses: rows, selectedResponse: rows.length > 0 ? rows[0].responseNo : 1 });
+          invoke("save_thread_cache", { threadUrl: url, title: fetchedTitle ?? threadTabsRef.current.find((t) => t.threadUrl === url)?.title ?? "", responsesJson: JSON.stringify(rows) })
+            .catch((e) => console.warn("save_thread_cache failed", e));
+        }
+        setResponseListProbe(`ok rows=${rows.length} (tab changed; display kept)`);
         return;
       }
 
@@ -4120,6 +4429,7 @@ export default function App() {
         setFetchedResponses(rows);
         setSelectedResponse(rows.length > 0 ? rows[0].responseNo : 1);
         setTimeout(() => {
+          if (threadTabsRef.current[activeTabIndexRef.current]?.threadUrl !== url) return;
           if (responseScrollRef.current) responseScrollRef.current.scrollTop = 0;
         }, 50);
       } else {
@@ -4143,6 +4453,7 @@ export default function App() {
         responses: rows,
         selectedResponse: opts?.keepSelection && cachedEntry ? cachedEntry.selectedResponse : (rows.length > 0 ? rows[0].responseNo : 1),
         scrollResponseNo: keep?.scrollResponseNo,
+        scrollOffset: keep?.scrollOffset,
         scrollAtBottom: keep?.scrollAtBottom,
         newResponseStart: opts?.keepSelection ? cachedEntry?.newResponseStart : undefined,
       });
@@ -4178,10 +4489,10 @@ export default function App() {
           ?? fetchedThreads.find((t) => t.threadUrl === url)?.title
           ?? url;
         const newRows = rows.slice(prevCount);
-        const arrivals = newRows
+        inArrivalOrder(() => newRows
           .filter((r) => showsArrivalResNo(url, r.responseNo))
           .filter((r) => getNgResult({ name: r.name, mail: r.mail, time: r.dateAndId, text: r.body.replace(/<[^>]*>/g, "") }, url)?.mode !== "hide")
-          .map((r) => makeArrival(r, arrivalTitle, url, rows));
+          .map((r) => makeArrival(r, arrivalTitle, url, rows)), (arrivals) => {
         // Add to new arrivals pane when autoReload is ON
         if (autoRefreshEnabled && arrivals.length > 0) {
           const queueWasEmpty = arrivalQueueRef.current.length === 0;
@@ -4206,6 +4517,7 @@ export default function App() {
             ttsSpeakBoardArrival(a, prefix);
           }
         }
+        });
       } else {
         setNewResponseStart(null);
         setStatus(`responses loaded: ${rows.length}`);
@@ -4213,6 +4525,7 @@ export default function App() {
       setResponseListProbe(`ok rows=${rows.length}`);
     } catch (error) {
       const msg = String(error);
+      markBoardFetch(url, false, msg);
       // Keep existing responses on error instead of clearing
       setResponseListProbe(`error: ${msg}`);
       const isDatOchi = msg.includes("404") || msg.includes("Not Found") || msg.includes("HttpStatus");
@@ -4241,6 +4554,23 @@ export default function App() {
     speakPrefix(site, no, (site === "twitch" && !twitchSpeakName) || (site === "youtube" && !youtubeSpeakName) ? "" : name);
   // 設定 > 接続: Twitch チャンネル・スレを複数まとめて開く (開いているタブがそのまま受信・巡回の対象)
   const [twitchStatusMap, setTwitchStatusMap] = useState<Record<string, string>>({});
+  // 接続の状態の一覧に出す記録 (タブの URL ごと): 最後にメッセージ・コメントを受け取った時刻、掲示板の最後に取得できた時刻と直近のエラー
+  const connInfoRef = useRef<Record<string, { lastMsgAt?: number; okAt?: number; err?: string; errAt?: number }>>({});
+  const twitchStatusMsgRef = useRef<Record<string, string>>({});
+  // 掲示板の取得がエラーになった・直ったときだけ描き直す (取得のたびには描き直さない)
+  const [connVersion, setConnVersion] = useState(0);
+  const [connPanelOpen, setConnPanelOpen] = useState(false);
+  // 一覧を出す画面の位置 (押した表示の右下に右端をそろえ、画面からはみ出さないようにする)
+  const [connPanelPos, setConnPanelPos] = useState<{ left: number; top: number }>({ left: 0, top: 0 });
+  const [connTick, setConnTick] = useState(0);
+  const markBoardFetch = (url: string, ok: boolean, err?: string) => {
+    const info = (connInfoRef.current[url] ??= {});
+    const hadErr = !!info.err && (!info.okAt || (info.errAt ?? 0) > info.okAt);
+    if (ok) info.okAt = Date.now();
+    else { info.err = (err ?? "").slice(0, 200); info.errAt = Date.now(); }
+    const hasErr = !!info.err && (!info.okAt || (info.errAt ?? 0) > info.okAt);
+    if (hadErr !== hasErr) setConnVersion((v) => v + 1);
+  };
   const [connectTwitchInput, setConnectTwitchInput] = useState("");
   const [connectThreadInput, setConnectThreadInput] = useState("");
   const addConnectTabs = (entries: { url: string; title: string }[]) => {
@@ -4284,7 +4614,8 @@ export default function App() {
       if (list) list.push(m); else byChannel.set(m.channel, [m]);
     }
     const activeUrl = threadTabsRef.current[activeTabIndexRef.current]?.threadUrl;
-    const arrivals: ArrivalItem[] = [];
+    // 流す新着は、正規表現の結果を待つことがあるので、作る処理として持っておく (inArrivalOrder)
+    const builders: (() => ArrivalItem[])[] = [];
     for (const [channel, msgs] of byChannel) {
       const url = twitchTabUrl(channel);
       const tab = threadTabsRef.current.find((t) => t.threadUrl === url);
@@ -4348,15 +4679,20 @@ export default function App() {
         setFetchedResponses(rows);
         setLastFetchTime(formatChatTime(Date.now()));
       }
-      added.forEach((r, i) => {
-        if (getNgResult({ name: r.name, mail: r.mail, time: r.dateAndId, text: r.body }, url)?.mode === "hide") return;
-        const a = makeArrival(r, tab.title, url, rows);
-        if (events[i]) a.twitchEvent = events[i];
-        if (badgeLists[i]?.length) a.twitchBadges = badgeLists[i];
-        if (raws[i]) a.twitchRaw = raws[i];
-        arrivals.push(a);
+      builders.push(() => {
+        const out: ArrivalItem[] = [];
+        added.forEach((r, i) => {
+          if (getNgResult({ name: r.name, mail: r.mail, time: r.dateAndId, text: r.body }, url)?.mode === "hide") return;
+          const a = makeArrival(r, tab.title, url, rows);
+          if (events[i]) a.twitchEvent = events[i];
+          if (badgeLists[i]?.length) a.twitchBadges = badgeLists[i];
+          if (raws[i]) a.twitchRaw = raws[i];
+          out.push(a);
+        });
+        return out;
       });
     }
+    inArrivalOrder(() => builders.flatMap((f) => f()), (arrivals) => {
     if (arrivals.length === 0) return;
     // 新着ペイン・字幕・OBS連携 (掲示板の新着と同じ経路)
     const queueWasEmpty = arrivalQueueRef.current.length === 0;
@@ -4392,6 +4728,7 @@ export default function App() {
         for (const msg of teach.announces) ttsSpeak(msg, "");
       }
     }
+    });
   };
   // 設定 > Twitch > イベントの「テスト」: 開いている Twitch タブに、試しのイベントを1件流す (表示・読み上げ・OBS の確認用)
   const testTwitchEvent = (kind: string) => {
@@ -4450,7 +4787,8 @@ export default function App() {
       if (list) list.push(b); else byVideo.set(b.video, [b]);
     }
     const activeUrl = threadTabsRef.current[activeTabIndexRef.current]?.threadUrl;
-    const arrivals: ArrivalItem[] = [];
+    // 流す新着は、正規表現の結果を待つことがあるので、作る処理として持っておく (inArrivalOrder)
+    const builders: (() => ArrivalItem[])[] = [];
     const removedKeys: string[] = [];
     for (const [video, batches] of byVideo) {
       const url = youtubeTabUrl(video);
@@ -4541,6 +4879,8 @@ export default function App() {
         setFetchedResponses(rows);
         setLastFetchTime(formatChatTime(Date.now()));
       }
+      builders.push(() => {
+      const out: ArrivalItem[] = [];
       added.forEach((r, i) => {
         if (deletedNos.has(r.responseNo)) return;
         if (getNgResult({ name: r.name, mail: r.mail, time: r.dateAndId, text: r.body }, url)?.mode === "hide") return;
@@ -4549,9 +4889,13 @@ export default function App() {
         if (x?.ev) a.twitchEvent = x.ev;
         if (x?.raw) a.twitchRaw = x.raw;
         if (x?.key) a.chatKey = x.key;
-        arrivals.push(a);
+        out.push(a);
+      });
+      return out;
       });
     }
+    // 削除の反映も、前に流す新着より後になるよう同じ順番で行う
+    inArrivalOrder(() => builders.flatMap((f) => f()), (arrivals) => {
     if (removedKeys.length > 0) removeChatKeys(removedKeys);
     if (arrivals.length === 0) return;
     // 新着ペイン・字幕・OBS連携 (掲示板の新着と同じ経路)。溜めておく上限は Twitch と同じ設定を使う
@@ -4585,6 +4929,7 @@ export default function App() {
         ttsSpeakArrival({ ...a, text: escapeHtml(text) }, speakPrefixFor("youtube", a.responseNo, a.name));
       }
     }
+    });
   };
   // 設定 > YouTube > イベントの「テスト」: 開いている YouTube タブに、試しのイベントを1件流す (表示・読み上げ・OBS の確認用)
   const testYoutubeEvent = (kind: string) => {
@@ -4620,6 +4965,8 @@ export default function App() {
     await fetchResponsesFromCurrent(targetThreadUrl);
     void refreshThreadListSilently();
     setTimeout(() => {
+      // 書き込んだタブを表示しているときだけ (ビュワーから別のタブに書き込んだときなど、表示中のタブを動かさない)
+      if (threadTabsRef.current[activeTabIndexRef.current]?.threadUrl !== targetThreadUrl) return;
       const items = tabCacheRef.current.get(targetThreadUrl)?.responses;
       if (items && items.length > 0) {
         setSelectedResponse(items[items.length - 1].responseNo);
@@ -5056,7 +5403,7 @@ export default function App() {
     const p = pattern.trim();
     if (p.startsWith("/") && p.endsWith("/") && p.length > 2) {
       if (p.length > MAX_USER_REGEX_LEN) return text;
-      try { return text.replace(new RegExp(p.slice(1, -1), "gi"), ""); } catch { return text; }
+      return userRegexRemove(p.slice(1, -1), text) ?? text;
     }
     return text.replace(new RegExp(escapeRegExp(p), "gi"), "");
   };
@@ -5103,7 +5450,25 @@ export default function App() {
   // TTS: enqueue text for sequential playback
   // maxReadLength applies to plain text body only (HTML tags + entities decoded); prefix is always read in full
   // URL (http/https/ttp) は URL 単位で辞書・許可リストと照合して読みに置き換え、該当しなければ読まない
-  const ttsSpeak = (bodyText: string, prefix?: string, responseNo?: number, meta?: { name?: string; id?: string }, opts?: { keepTeachCommands?: boolean }) => {
+  // 読み上げは順番どおりに。読み上げない辞書に正規表現があって結果がまだ無いときは、届くのを待ってから読む
+  // (dry: 辞書の判定だけを頼んで読まない。先に一度通して、待つ必要があるかを調べる)
+  const ttsOrderRef = useRef<Promise<void>>(Promise.resolve());
+  const ttsWaitingRef = useRef(0);
+  const ttsInOrder = (run: (dry: boolean) => void) => {
+    if (ttsWaitingRef.current === 0) {
+      const before = userRegexMissCount;
+      run(true);
+      if (userRegexMissCount === before) { run(false); return; }
+    }
+    ttsWaitingRef.current++;
+    ttsOrderRef.current = ttsOrderRef.current
+      .then(async () => { await userRegexSettleFor(() => run(true)); run(false); })
+      .catch((e) => console.warn("読み上げられませんでした", e))
+      .finally(() => { ttsWaitingRef.current--; });
+  };
+  const ttsSpeak = (bodyText: string, prefix?: string, responseNo?: number, meta?: { name?: string; id?: string }, opts?: { keepTeachCommands?: boolean }) =>
+    ttsInOrder((dry) => ttsSpeakNow(bodyText, prefix, responseNo, meta, { ...opts, dry }));
+  const ttsSpeakNow = (bodyText: string, prefix?: string, responseNo?: number, meta?: { name?: string; id?: string }, opts?: { keepTeachCommands?: boolean; dry?: boolean }) => {
     if (!isTauriRuntime() || ttsMode === "off") return;
     // Skip system messages (res 1001/1002)
     if (responseNo != null && responseNo >= 1001) return;
@@ -5123,6 +5488,7 @@ export default function App() {
       if (e.skipWhole) return;
       plain = ttsRemoveMuteWord(plain, v);
     }
+    if (opts?.dry) return;
     // Apply TTS dictionary: fullReplace (全文置換) entries first (if matched, skip all remaining preprocessing)
     const dict = ttsDictRef.current;
     const fullReplaceEntry = dict.find((e) => e.fullReplace && e.from && plain.includes(e.from));
@@ -5174,11 +5540,14 @@ export default function App() {
   // 新着レス (通常あぼ～ん考慮) の読み上げ。あぼ～ん該当時は設定次第で
   // 「あぼーん」とだけ読むか、前置き含め完全にスキップする
   // 前置き (「レスN番さん」など) だけを読む。読み上げない辞書 (名前・ID) はここでも効かせる
-  const ttsSpeakNumberOnly = (prefix: string, meta: { name?: string; id?: string }) => {
+  const ttsSpeakNumberOnly = (prefix: string, meta: { name?: string; id?: string }) =>
+    ttsInOrder((dry) => ttsSpeakNumberOnlyNow(prefix, meta, dry));
+  const ttsSpeakNumberOnlyNow = (prefix: string, meta: { name?: string; id?: string }, dry: boolean) => {
     if (!isTauriRuntime() || ttsMode === "off" || !prefix) return;
     const mute = ttsMuteRef.current;
     if (meta.name && ttsMuteMatches(mute.names, meta.name)) return;
     if (meta.id && ttsMuteMatches(mute.ids, meta.id)) return;
+    if (dry) return;
     ttsQueueRef.current.push(prefix);
     void processTtsQueue();
   };
@@ -5817,10 +6186,12 @@ export default function App() {
   // getNgResult は ngFilters と threadUrl (この板のみ/このスレのみのスコープ判定) を参照する。
   // 新着受信時に全レスを判定し直さないよう、レスごとの結果を保存し、判定材料 (本文・名前・
   // メール・日時ID) が同じレスは再利用する。NG設定か開いているスレが変わったら全部捨てる
-  const ngCacheRef = useRef<{ filters: NgFilters | null; thread: string; byId: Map<number, { text: string; name: string; mail: string; time: string; hit: NgHit | null }> }>({ filters: null, thread: "", byId: new Map() });
+  const ngCacheRef = useRef<{ filters: NgFilters | null; thread: string; rx: number; byId: Map<number, { text: string; name: string; mail: string; time: string; hit: NgHit | null }> }>({ filters: null, thread: "", rx: -1, byId: new Map() });
   const ngResultMap = useMemo(() => {
     const cache = ngCacheRef.current;
-    const reusable = cache.filters === ngFilters && cache.thread === threadUrl;
+    // 正規表現の結果が届いた・使わないことにした (userRegexVersion・ngDisabledVersion) ときも作り直す
+    const rx = userRegexVersion * 100000 + ngDisabledVersion;
+    const reusable = cache.filters === ngFilters && cache.thread === threadUrl && cache.rx === rx;
     const nextById = new Map<number, { text: string; name: string; mail: string; time: string; hit: NgHit | null }>();
     const map = new Map<number, NgHit>();
     for (const r of responseItems) {
@@ -5831,10 +6202,10 @@ export default function App() {
       nextById.set(r.id, { text: r.text, name: r.name, mail: r.mail, time: r.time, hit });
       if (hit) map.set(r.id, hit);
     }
-    ngCacheRef.current = { filters: ngFilters, thread: threadUrl, byId: nextById };
+    ngCacheRef.current = { filters: ngFilters, thread: threadUrl, rx, byId: nextById };
     return map;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [responseItems, ngFilters, threadUrl]);
+  }, [responseItems, ngFilters, threadUrl, userRegexVersion, ngDisabledVersion]);
   const ngFilteredCount = ngResultMap.size;
   const visibleResponseItems = useMemo(() => responseItems.filter((r) => {
     const ngResult = ngResultMap.get(r.id);
@@ -5921,7 +6292,7 @@ export default function App() {
   // 同じレスは再利用する。表示に関わる設定 (下の bodySig) が1つでも変わったら全部捨てる
   const bodyCacheRef = useRef<{ sig: unknown[]; byId: Map<number, { text: string; hideImages: boolean; html: { __html: string } }> }>({ sig: [], byId: new Map() });
   const responseBodyHtmlMap = useMemo(() => {
-    const bodySig: unknown[] = [responseSearchQuery, showImagePreview, ngFilters, threadUrl, imageSizeLimit, imageUrlRules, ogpCardsEnabled, tweetCardsEnabled, ogpDomainFilters, textHighlights];
+    const bodySig: unknown[] = [responseSearchQuery, showImagePreview, ngFilters, threadUrl, imageSizeLimit, imageUrlRules, ogpCardsEnabled, tweetCardsEnabled, ogpDomainFilters, textHighlights, userRegexVersion, ngDisabledVersion];
     const cache = bodyCacheRef.current;
     const reusable = cache.sig.length === bodySig.length && cache.sig.every((v, i) => Object.is(v, bodySig[i]));
     const wordHighlights = textHighlights.filter((h) => h.type === "word");
@@ -5953,7 +6324,7 @@ export default function App() {
     bodyCacheRef.current = { sig: bodySig, byId: nextById };
     return map;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visibleResponseItems, ngResultMap, responseSearchQuery, showImagePreview, ngFilters, threadUrl, imageSizeLimit, imageUrlRules, ogpCardsEnabled, tweetCardsEnabled, ogpDomainFilters, textHighlights, darkMode, boardEmotesEnabled, emoteNameVersion]);
+  }, [visibleResponseItems, ngResultMap, responseSearchQuery, showImagePreview, ngFilters, threadUrl, imageSizeLimit, imageUrlRules, ogpCardsEnabled, tweetCardsEnabled, ogpDomainFilters, textHighlights, darkMode, boardEmotesEnabled, emoteNameVersion, userRegexVersion, ngDisabledVersion]);
 
   const goFromLocationInput = () => goToLocation(locationInput);
   // URL バーの文字列 (手入力・貼り付け) で移動する。Enter と「貼り付けて移動」は同じ経路
@@ -6424,10 +6795,19 @@ export default function App() {
     saveToFile("board-tree-scroll.json", top);
   };
   const scrollSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scrollSavePendingRef = useRef<(() => void) | null>(null);
+  // スクロールしてから 300ms 後に位置を保存する。タブを切り替えるときは flushScrollSave で切り替える前に済ませる
+  // (待っている間に切り替えると、前のタブの保存に切り替えた先の表示欄の位置を書いてしまう)
+  const flushScrollSave = () => {
+    if (scrollSaveTimerRef.current) { clearTimeout(scrollSaveTimerRef.current); scrollSaveTimerRef.current = null; }
+    const run = scrollSavePendingRef.current;
+    scrollSavePendingRef.current = null;
+    run?.();
+  };
   const onResponseScroll: UIEventHandler<HTMLDivElement> = () => {
     if (!responseScrollRef.current) return;
     if (scrollSaveTimerRef.current) clearTimeout(scrollSaveTimerRef.current);
-    scrollSaveTimerRef.current = setTimeout(() => {
+    scrollSavePendingRef.current = () => {
       const url = threadUrl.trim();
       if (!url || isChatUrl(url)) return; // Twitch・YouTube のチャットは位置を残さない
       const container = responseScrollRef.current;
@@ -6444,6 +6824,12 @@ export default function App() {
         const visibleNo = getVisibleResponseNo();
         if (visibleNo > 0) saveBookmark(url, visibleNo);
       }
+    };
+    scrollSaveTimerRef.current = setTimeout(() => {
+      scrollSaveTimerRef.current = null;
+      const run = scrollSavePendingRef.current;
+      scrollSavePendingRef.current = null;
+      run?.();
     }, 300);
   };
 
@@ -6969,6 +7355,7 @@ export default function App() {
   };
 
   const saveImage = async (url: string) => {
+    url = originalImageUrl(url);
     if (!isTauriRuntime()) return;
     let folder = imageSaveFolder;
     if (!folder) {
@@ -7505,7 +7892,7 @@ export default function App() {
       if (src) {
         const parent = gateBlocked.closest<HTMLElement>(".thumb-size-gate");
         if (parent) {
-          parent.innerHTML = `<img class="response-thumb" src="${src}" loading="lazy" alt="" />`;
+          replaceThumbnail(parent, src, "lazy");
         }
       }
       return true;
@@ -7738,6 +8125,7 @@ export default function App() {
     keep(listen<TwitchChatPayload>("twitch-message", (ev) => {
       const m = ev.payload;
       if (!m || typeof m.channel !== "string" || typeof m.text !== "string" || typeof m.login !== "string") return;
+      (connInfoRef.current[twitchTabUrl(m.channel)] ??= {}).lastMsgAt = Date.now();
       const pending = twitchPendingRef.current;
       pending.push(m);
       // 画面の反映が追いつかないほど溜まったら古いものから捨てる
@@ -7753,11 +8141,13 @@ export default function App() {
         : state === "connecting" ? "接続しています…"
         : `切断されました ${typeof message === "string" ? message : ""}`;
       setStatus(`Twitch #${channel}: ${label}`);
+      twitchStatusMsgRef.current[channel] = typeof message === "string" ? message.slice(0, 200) : "";
       setTwitchStatusMap((prev) => ({ ...prev, [channel]: state }));
     }), "twitch-status listen failed");
     keep(listen<YoutubeBatch>("youtube-message", (ev) => {
       const b = ev.payload;
       if (!b || typeof b.video !== "string" || !YT_VIDEO_ID_RE.test(b.video) || !Array.isArray(b.messages)) return;
+      if (b.messages.length > 0) (connInfoRef.current[youtubeTabUrl(b.video)] ??= {}).lastMsgAt = Date.now();
       const pending = youtubePendingRef.current;
       pending.push(b);
       // 画面の反映が追いつかないほど溜まったら古いものから捨てる
@@ -7894,6 +8284,87 @@ export default function App() {
       >
         <span className="yt-mark" aria-hidden="true">▶</span>YouTube API {q.used.toLocaleString()} / {q.limit.toLocaleString()} ({pct}%)
       </button>
+    );
+  };
+  useEffect(() => {
+    if (!connPanelOpen) return;
+    const id = window.setInterval(() => setConnTick((t) => t + 1), 5000);
+    return () => window.clearInterval(id);
+  }, [connPanelOpen]);
+  // 接続の状態の表示 (ビュワー・Twitch・YouTube のタブの右上)。押すと開いているタブごとの一覧を出す
+  const connChip = () => {
+    void connVersion; void connTick;
+    const now = Date.now();
+    type Row = { url: string; title: string; kind: "twitch" | "youtube" | "board"; level: "ok" | "wait" | "warn" | "ng" | "idle"; state: string; detail: string };
+    const rows: Row[] = threadTabs.map((t) => {
+      const info = connInfoRef.current[t.threadUrl] ?? {};
+      const ch = twitchChannelFromUrl(t.threadUrl);
+      if (ch) {
+        const st = twitchStatusMap[ch];
+        const level = st === "connected" ? "ok" : st === "disconnected" ? "warn" : "wait";
+        const state = st === "connected" ? "受信中" : st === "disconnected" ? "つなぎ直し中" : "接続中";
+        const why = st === "disconnected" ? twitchStatusMsgRef.current[ch] : "";
+        return { url: t.threadUrl, title: t.title, kind: "twitch", level, state, detail: `最後のメッセージ: ${formatAgo(info.lastMsgAt, now)}${why ? ` / ${why}` : ""}` };
+      }
+      const yt = youtubeVideoFromUrl(t.threadUrl);
+      if (yt) {
+        const ys = youtubeStatusMap[yt];
+        const s = ys?.state;
+        const level = s === "live" ? "ok" : s === "retrying" ? "warn" : s === "stopped" ? "ng" : s === "ended" ? "idle" : "wait";
+        const state = s === "live" ? "受信中" : s === "retrying" ? "やり直し中" : s === "stopped" ? "停止" : s === "ended" ? "配信終了" : "接続中";
+        const why = s === "retrying" || s === "stopped" ? ys?.message ?? "" : "";
+        return { url: t.threadUrl, title: t.title, kind: "youtube", level, state, detail: `最後のコメント: ${formatAgo(info.lastMsgAt, now)}${why ? ` / ${why}` : ""}` };
+      }
+      const hasErr = !!info.err && (!info.okAt || (info.errAt ?? 0) > info.okAt);
+      const level = hasErr ? "warn" : info.okAt ? "ok" : "wait";
+      const state = hasErr ? "取得エラー" : info.okAt ? "取得できています" : "未取得";
+      const detail = `最後に取得できた時刻: ${formatAgo(info.okAt, now)}${hasErr ? ` / ${info.err} (${formatAgo(info.errAt, now)})` : ""}`;
+      return { url: t.threadUrl, title: t.title, kind: "board", level, state, detail };
+    });
+    const worst = rows.some((r) => r.level === "ng") ? "ng" : rows.some((r) => r.level === "warn") ? "warn"
+      : rows.some((r) => r.level === "ok") ? "ok" : rows.some((r) => r.level === "wait") ? "wait" : "idle";
+    const issues = rows.filter((r) => r.level === "ng" || r.level === "warn").length;
+    const KIND_LABEL = { twitch: "Twitch", youtube: "YouTube", board: "掲示板" } as const;
+    return (
+      <span className="conn-wrap" onClick={(e) => e.stopPropagation()}>
+        <button
+          className={`conn-chip ${worst}`}
+          title={`接続の状態 (押すと一覧)${issues > 0 ? `\n注意が ${issues} 件あります` : ""}`}
+          onClick={(e) => {
+            const r = e.currentTarget.getBoundingClientRect();
+            const w = Math.min(380, window.innerWidth - 16);
+            setConnPanelPos({ left: Math.max(8, Math.min(r.right - w, window.innerWidth - w - 8)), top: r.bottom + 4 });
+            setConnPanelOpen((v) => !v);
+          }}
+        >
+          <span className={`connect-lamp ${worst}`} aria-hidden="true" />接続{issues > 0 ? ` ${issues}` : ""}
+        </button>
+        {connPanelOpen && (
+          <div className="conn-panel" role="dialog" aria-label="接続の状態" style={{ left: connPanelPos.left, top: connPanelPos.top }}>
+            <div className="conn-panel-head">
+              <span>接続の状態</span>
+              <button onClick={() => setConnPanelOpen(false)} title="閉じる">×</button>
+            </div>
+            {rows.length === 0 ? <div className="conn-panel-note">開いているタブはありません</div> : rows.map((r) => (
+              <div key={r.url} className={`conn-row ${r.level}`}>
+                <span className={`connect-lamp ${r.level}`} aria-hidden="true" />
+                <span className="conn-row-main">
+                  <span className="conn-row-head">
+                    <span className={`conn-row-kind kind-${r.kind}`}>{KIND_LABEL[r.kind]}</span>
+                    <span className="conn-row-title" title={r.url}>{r.title}</span>
+                    <span className="conn-row-state">{r.state}</span>
+                  </span>
+                  <span className="conn-row-detail" title={r.detail}>{r.detail}</span>
+                </span>
+              </div>
+            ))}
+            <div className="conn-panel-note">
+              掲示板の自動更新: {autoRefreshEnabled ? `オン (${autoRefreshInterval}秒ごと)` : "オフ (掲示板の時刻は手で読み込んだときだけ進みます)"}。
+              Twitch・YouTube は「受信中」のままなら受信はできています (コメントが来ていないだけ)
+            </div>
+          </div>
+        )}
+      </span>
     );
   };
   const reconnectYoutube = (video: string) => {
@@ -8447,6 +8918,7 @@ export default function App() {
         setResponseMenu(null);
         setLinkMenu(null);
         setViewerMenu(null);
+        setConnPanelOpen(false);
         setHlSubMenu(null);
         setTabMenu(null);
         setOpenMenu(null);
@@ -9229,6 +9701,7 @@ export default function App() {
               自動スクロール
             </label>
             <button onClick={() => setViewerItems([])} title="ビュワーの表示を消します">クリア</button>
+            {connChip()}
             {threadTabs.some((t) => isYoutubeUrl(t.threadUrl)) && youtubeQuotaChip()}
           </div>
           <div className="viewer-list" ref={viewerListRef}>
@@ -9548,6 +10021,7 @@ export default function App() {
                 {" "}[{fetchedResponses.length}]
               </span>
               <span className="thread-title-fetch-time">{lastFetchTime ?? ""}</span>
+              {isChatUrl(threadTabs[activeTabIndex].threadUrl) && connChip()}
               {isYoutubeUrl(threadTabs[activeTabIndex].threadUrl) && youtubeQuotaChip()}
               <span className="thread-title-actions">
                 <div className="title-split-wrap" onClick={(e) => e.stopPropagation()}>
@@ -10319,8 +10793,10 @@ export default function App() {
                       const mode = ngEntryMode(entry);
                       const scope = ngEntryScope(entry);
                       const isRegex = v.startsWith("/") && v.endsWith("/") && v.length > 2;
+                      void ngDisabledVersion;
+                      const regexOff = isRegex && ngRegexDisabled.has(v.slice(1, -1));
                       return (
-                        <li key={v}>
+                        <li key={v} className={regexOff ? "ng-regex-off" : undefined}>
                           {type !== "image_words" && (
                             <select
                               className="ng-mode-select"
@@ -10333,6 +10809,7 @@ export default function App() {
                           )}
                           {scope !== "global" && <span className="ng-mode-label" style={{ background: scope === "board" ? "#2a7a2a" : "#2a5a9a", color: "#fff" }}>{scope === "board" ? "板" : "スレ"}</span>}
                           {isRegex && <span className="ng-mode-label lf-bg6b4c9a-c-fff">正規表現</span>}
+                          {regexOff && <span className="ng-regex-off-label" title="判定に時間がかかりすぎたため、使っていません (起動し直すとまた試します)。書き直すか消してください">使っていません</span>}
                           <span>{maskDisplay(v)}</span>
                           <button className="ng-remove" onClick={() => removeNgEntry(type, v)}>×</button>
                         </li>
@@ -12560,8 +13037,10 @@ export default function App() {
                         {ngFilters[type].filter((entry) => settingsListMatch(ngVal(entry))).map((entry) => {
                           const v = ngVal(entry); const mode = ngEntryMode(entry); const scope = ngEntryScope(entry);
                           const isRegex = v.startsWith("/") && v.endsWith("/") && v.length > 2;
+                          void ngDisabledVersion;
+                          const regexOff = isRegex && ngRegexDisabled.has(v.slice(1, -1));
                           return (
-                            <li key={v}>
+                            <li key={v} className={regexOff ? "ng-regex-off" : undefined}>
                               {type !== "image_words" && (
                                 <select
                                   className="ng-mode-select"
@@ -12574,6 +13053,7 @@ export default function App() {
                               )}
                               {scope !== "global" && <span className="ng-mode-label" style={{ background: scope === "board" ? "#2a7a2a" : "#2a5a9a", color: "#fff" }}>{scope === "board" ? "板" : "スレ"}</span>}
                               {isRegex && <span className="ng-mode-label lf-bg6b4c9a-c-fff">正規表現</span>}
+                              {regexOff && <span className="ng-regex-off-label" title="判定に時間がかかりすぎたため、使っていません (起動し直すとまた試します)。書き直すか消してください">使っていません</span>}
                               <span>{maskDisplay(v)}</span>
                               <button className="ng-remove" onClick={() => removeNgEntry(type, v)}>×</button>
                             </li>

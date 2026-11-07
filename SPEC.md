@@ -154,7 +154,10 @@ Tauri App (livefake)
 ### 4.7 画像
 
 - 本文中の画像 URL を検出しサムネイル化 (サイズ 50〜600px 設定可)
-- サイズ制限: HEAD リクエストの Content-Length で判定、超過は「クリックで表示」
+- サムネイル・リンクカード・ポストカードの画像は `safe-image` (Rust 側の URI スキーム。Windows では `http://safe-image.localhost/?url=<元の URL>`) を通して取る。
+  `image_http_client` (家庭内アドレスへの接続・転送を止める) を使い回し、画像の種類で 30MB までのものだけ返す。失敗は 403。
+  `data-lightbox-src` などには元の URL を残す (`originalImageUrl` で戻せる)
+- サイズ制限: HEAD リクエスト (これも `safe-image` 経由) の Content-Length で判定、超過は「クリックで表示」
 - 画像ポップアップ: Tauri 別ウィンドウ。画像は `fetch_image` で取得し data URL 化
 - ホバープレビュー: 遅延設定 (0〜2000ms) / Ctrl+ホバー即時 / Ctrl+ホイールズーム (10〜500%)
 - 保存: `save_image_to_folder` で、設定の「画像の保存先」か、この起動中にフォルダの選択 (`open_folder_dialog`) で選んだフォルダへだけ保存する。
@@ -192,7 +195,8 @@ Tauri App (livefake)
   送信用は書き込み・スレ立て (`post_reply_multisite` / `create_thread_command` / `core-fetch` の `build_cookie_client`)
 - `core_proxy::transport_url` で、5ch を http で渡す設定のときだけ送る直前のアドレスを `http://○○.5ch.net/…` にする (dat・subject.txt・read.cgi・書き込みの各段階)
 - 詳しくは REQUIREMENTS 15.2
-- プロキシパスワードは Windows では DPAPI (ユーザースコープ) で暗号化して settings.ini に保存 (`dpapi:<base64>` 形式)。旧形式の平文値も読み込み時に後方互換で受理
+- プロキシパスワードは Windows では DPAPI (ユーザースコープ) で暗号化して settings.ini に保存 (`dpapi:<base64>` 形式)。旧形式の平文値も読み込み時に後方互換で受理。
+  暗号化に失敗したときは保存しない (`protect_password_for_storage`)
 
 ### 4.12 アップデートチェック
 

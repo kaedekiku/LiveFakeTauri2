@@ -1,5 +1,5 @@
 ﻿use core_proxy::{
-    protect_password, unprotect_password, update_proxy_settings,
+    unprotect_password, update_proxy_settings,
     ProxySettings, ProxyType, UrlReplaceRule,
     parse_url_replace_rules,
 };
@@ -473,12 +473,6 @@ struct FetchResponsesResult {
 /// するため。取得に成功した bbsmenu の中身に実際に登場するホスト名は `set_extra_allowed_hosts`
 /// で許可リストに追加登録される (既存のハードコードされた許可リストを置き換えるのではなく上乗せ)。
 async fn fetch_bbsmenu_cached() -> Result<serde_json::Value, String> {
-    let client = core_proxy::apply(reqwest::Client::builder()
-        .user_agent("Monazilla/1.00 LiveFake/0.1")
-        .timeout(std::time::Duration::from_secs(10)), core_proxy::ProxyRole::Receive)
-        .map_err(|e| e.to_string())?
-        .build()
-        .map_err(|e| e.to_string())?;
 
     let configured_url = core_store::load_settings_ini()
         .ok()
@@ -487,10 +481,10 @@ async fn fetch_bbsmenu_cached() -> Result<serde_json::Value, String> {
         .filter(|u| u.starts_with("http://") || u.starts_with("https://"))
         .unwrap_or_else(|| BBSMENU_URL.to_string());
 
-    match fetch_bbsmenu_json(&client, &configured_url).await {
+    match fetch_bbsmenu_json("Monazilla/1.00 LiveFake/0.1", &configured_url).await {
         Ok(menu) => {
             let _ = core_store::save_json("bbs-menu.json", &menu);
-            set_extra_allowed_hosts(extract_bbsmenu_hosts(&menu));
+            set_extra_allowed_hosts(core_fetch::keep_public_board_hosts(extract_bbsmenu_hosts(&menu)).await);
             Ok(menu)
         }
         Err(e) => {
@@ -903,7 +897,8 @@ async fn post_reply_multisite(
         Some(SiteType::Shitaraba) => {
             let client = core_proxy::apply(reqwest::Client::builder()
                 .user_agent("Monazilla/1.00 LiveFake/0.1")
-                .timeout(std::time::Duration::from_secs(30)), core_proxy::ProxyRole::Send)
+                .timeout(std::time::Duration::from_secs(30))
+                .redirect(core_fetch::post_redirect_policy()), core_proxy::ProxyRole::Send)
                 .map_err(|e| e.to_string())?
                 .build()
                 .map_err(|e| e.to_string())?;
@@ -921,7 +916,8 @@ async fn post_reply_multisite(
         Some(SiteType::Jpnkn) => {
             let client = core_proxy::apply(reqwest::Client::builder()
                 .user_agent("Monazilla/1.00 LiveFake/0.1")
-                .timeout(std::time::Duration::from_secs(30)), core_proxy::ProxyRole::Send)
+                .timeout(std::time::Duration::from_secs(30))
+                .redirect(core_fetch::post_redirect_policy()), core_proxy::ProxyRole::Send)
                 .map_err(|e| e.to_string())?
                 .build()
                 .map_err(|e| e.to_string())?;
@@ -974,7 +970,8 @@ async fn create_thread_command(
     match detect_site_type(&board_url) {
         Some(SiteType::Shitaraba) => {
             let client = core_proxy::apply(reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(30)), core_proxy::ProxyRole::Send)
+                .timeout(std::time::Duration::from_secs(30))
+                .redirect(core_fetch::post_redirect_policy()), core_proxy::ProxyRole::Send)
                 .map_err(|e| e.to_string())?
                 .build()
                 .map_err(|e| e.to_string())?;
@@ -984,7 +981,8 @@ async fn create_thread_command(
         }
         Some(SiteType::Jpnkn) => {
             let client = core_proxy::apply(reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(30)), core_proxy::ProxyRole::Send)
+                .timeout(std::time::Duration::from_secs(30))
+                .redirect(core_fetch::post_redirect_policy()), core_proxy::ProxyRole::Send)
                 .map_err(|e| e.to_string())?
                 .build()
                 .map_err(|e| e.to_string())?;
@@ -2612,6 +2610,9 @@ fn load_proxy_settings() -> Result<ProxySettingsPayload, String> {
 /// 保存して、次の通信から使う (パスワードは DPAPI で暗号化して保存。ログには出さない)
 #[tauri::command]
 fn save_proxy_settings(settings: ProxySettingsPayload) -> Result<(), String> {
+    // 両方とも成功してから書き込む。失敗時は既存の設定と実行中の接続を維持する。
+    let receive_password = core_proxy::protect_password_for_storage(&settings.receive.password)?;
+    let send_password = core_proxy::protect_password_for_storage(&settings.send.password)?;
     let mut updates = HashMap::new();
     updates.insert("Proxy.ProxyEnabled".to_string(), settings.enabled.to_string());
     updates.insert("Proxy.ProxyType".to_string(), ProxyType::from_name(&settings.proxy_type).as_scheme().to_string());
@@ -2620,11 +2621,11 @@ fn save_proxy_settings(settings: ProxySettingsPayload) -> Result<(), String> {
     updates.insert("Proxy.ProxyHost".to_string(), settings.receive.host.trim().to_string());
     updates.insert("Proxy.ProxyPort".to_string(), settings.receive.port.trim().to_string());
     updates.insert("Proxy.ProxyUsername".to_string(), settings.receive.username.clone());
-    updates.insert("Proxy.ProxyPassword".to_string(), protect_password(&settings.receive.password));
+    updates.insert("Proxy.ProxyPassword".to_string(), receive_password);
     updates.insert("Proxy.SendHost".to_string(), settings.send.host.trim().to_string());
     updates.insert("Proxy.SendPort".to_string(), settings.send.port.trim().to_string());
     updates.insert("Proxy.SendUsername".to_string(), settings.send.username.clone());
-    updates.insert("Proxy.SendPassword".to_string(), protect_password(&settings.send.password));
+    updates.insert("Proxy.SendPassword".to_string(), send_password);
     core_store::save_settings_ini(&updates).map_err(|e| e.to_string())?;
     update_proxy_settings(settings.to_settings());
     let _ = core_store::append_log(&format!("proxy: saved enabled={} type={} http_mode={}", settings.enabled, settings.proxy_type, settings.http_mode));
@@ -2758,23 +2759,8 @@ fn validate_public_http_url(raw: &str) -> Result<(), String> {
     let host_l = host.to_ascii_lowercase();
     let host_trim = host_l.trim_start_matches('[').trim_end_matches(']');
     if let Ok(ip) = host_trim.parse::<std::net::IpAddr>() {
-        let v4_blocked = |v4: std::net::Ipv4Addr| {
-            let o = v4.octets();
-            v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified() || v4.is_broadcast()
-                || o[0] == 0 // 0.0.0.0/8
-                || (o[0] == 100 && (o[1] & 0xC0) == 64) // 100.64.0.0/10 (CGNAT・VPN)
-        };
-        let blocked = match ip {
-            std::net::IpAddr::V4(v4) => v4_blocked(v4),
-            std::net::IpAddr::V6(v6) => {
-                let seg0 = v6.segments()[0];
-                v6.is_loopback() || v6.is_unspecified()
-                    || (seg0 & 0xFE00) == 0xFC00 // fc00::/7 (家庭内)
-                    || (seg0 & 0xFFC0) == 0xFE80 // fe80::/10 (リンクローカル)
-                    || v6.to_ipv4_mapped().map(v4_blocked).unwrap_or(false)
-            }
-        };
-        if blocked {
+        // DNS 解決時と IP 直書きで同じ判定を使う (NAT64 / 6to4 等も含む)。
+        if !core_fetch::is_public_ip(ip) {
             return Err("blocked private/loopback address".to_string());
         }
     } else if host_l == "localhost"
@@ -2792,6 +2778,7 @@ const IMAGE_MAX_BYTES: usize = 30 * 1024 * 1024;
 /// 画像を取りに行く通信 (転送先も1回ずつ確かめる。家庭内・自分の PC のアドレスへの転送は止める)
 fn image_http_client(timeout_secs: u64) -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
+        .no_proxy()
         .timeout(std::time::Duration::from_secs(timeout_secs))
         .dns_resolver(std::sync::Arc::new(PublicOnlyResolver))
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
@@ -2879,13 +2866,13 @@ async fn read_image_response(resp: reqwest::Response) -> Result<(Vec<u8>, String
         return Err(format!("HTTP {}", resp.status()));
     }
     let declared = declared_image_type(resp.headers().get(reqwest::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()));
-    if resp.content_length().is_some_and(|n| n as usize > IMAGE_MAX_BYTES) {
+    if resp.content_length().is_some_and(|n| n > IMAGE_MAX_BYTES as u64) {
         return Err("画像が大きすぎます (30MB まで)".to_string());
     }
     let mut resp = resp;
     let mut out = Vec::new();
     while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
-        if out.len() + chunk.len() > IMAGE_MAX_BYTES {
+        if out.len().saturating_add(chunk.len()) > IMAGE_MAX_BYTES {
             return Err("画像が大きすぎます (30MB まで)".to_string());
         }
         out.extend_from_slice(&chunk);
@@ -2893,6 +2880,76 @@ async fn read_image_response(resp: reqwest::Response) -> Result<(Vec<u8>, String
     // 中身で判断し、判断できなければ名乗りで判断する (HTML などの画像でないものは止める)
     let kind = sniff_image_type(&out).map(str::to_string).or(declared).ok_or_else(|| "画像ではありませんでした".to_string())?;
     Ok((out, kind))
+}
+
+/// 自動表示の画像の通信 (同じサーバーの画像が続いても接続を作り直さないよう、1つを使い回す)
+fn inline_image_client() -> Result<reqwest::Client, String> {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    if let Some(c) = CLIENT.get() {
+        return Ok(c.clone());
+    }
+    let c = image_http_client(30)?;
+    Ok(CLIENT.get_or_init(|| c).clone())
+}
+
+/// 自動表示用の画像も、DNS と各転送先を検証してから WebView に渡す。
+/// 画像データは再エンコードしない (GIF 等のアニメーションを維持)。全部をメモリに読むので、
+/// 大きすぎる画像・終わらない応答で重くならないよう、画像ウィンドウと同じ 30MB の上限を付ける。
+/// 利用者のサイズ設定は従来どおり HEAD で判定する。
+async fn inline_image_response(request: tauri::http::Request<Vec<u8>>) -> Result<tauri::http::Response<Vec<u8>>, String> {
+    let head = request.method() == tauri::http::Method::HEAD;
+    if !head && request.method() != tauri::http::Method::GET {
+        return Err("画像は GET / HEAD だけで取得できます".into());
+    }
+    let uri = reqwest::Url::parse(&request.uri().to_string()).map_err(|e| e.to_string())?;
+    let url = uri.query_pairs().find(|(k, _)| k == "url").map(|(_, v)| v.into_owned()).ok_or("画像 URL がありません")?;
+    validate_public_http_url(&url)?;
+    let client = inline_image_client()?;
+    let response = if head { client.head(&url) } else { client.get(&url) }
+        .send().await.map_err(|e| e.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("HTTP {}", response.status()));
+    }
+    let mut builder = tauri::http::Response::builder()
+        .header("Access-Control-Allow-Origin", "*")
+        .header("Access-Control-Expose-Headers", "Content-Length")
+        .header("Cache-Control", "private, max-age=300")
+        .header("X-Content-Type-Options", "nosniff");
+    if head {
+        if let Some(n) = response.headers().get(reqwest::header::CONTENT_LENGTH) {
+            builder = builder.header("Content-Length", n);
+        }
+        return builder.body(Vec::new()).map_err(|e| e.to_string());
+    }
+    let (bytes, kind) = read_image_response(response).await?;
+    builder.header("Content-Type", kind).body(bytes).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod inline_image_security_tests {
+    use super::*;
+
+    #[test]
+    fn inline_images_cannot_request_private_addresses_or_non_http_schemes() {
+        for url in ["http://127.0.0.1/a.jpg", "http://192.168.1.1/a.jpg",
+            "http://[::1]/a.jpg", "file:///C:/Windows/win.ini", "http://localhost/a.jpg",
+            "http://198.18.0.1/a.jpg", "http://224.0.0.1/a.jpg", "http://[64:ff9b::7f00:1]/a.jpg"] {
+            for method in ["GET", "HEAD"] {
+                let query: String = reqwest::Url::parse_with_params("http://safe-image.localhost/", &[("url", url)]).unwrap().into();
+                let request = tauri::http::Request::builder().method(method).uri(query).body(Vec::new()).unwrap();
+                assert!(tauri::async_runtime::block_on(inline_image_response(request)).is_err(), "{url}");
+            }
+        }
+    }
+
+    #[test]
+    fn image_protocol_rejects_post_and_missing_target() {
+        for method in ["GET", "POST"] {
+            let request = tauri::http::Request::builder().method(method)
+                .uri("http://safe-image.localhost/").body(Vec::new()).unwrap();
+            assert!(tauri::async_runtime::block_on(inline_image_response(request)).is_err());
+        }
+    }
 }
 
 /// Fetch an image URL and return a base64 data URL.
@@ -3671,6 +3728,9 @@ pub fn run() {
         if settings.as_ref().and_then(|m| m.get("App.smoothScroll")).map(|v| v == "false").unwrap_or(false) {
             args.push_str(" --disable-smooth-scrolling");
         }
+        // 正規表現の試し直しが多すぎたら、時間のかからない仕組みに切り替える (利用者の NG などの正規表現で画面が固まらないように)。
+        // i を付けない・後方参照や先読みを使わない正規表現に効く (利用者の正規表現は画面側で i を使わない形に書き換えて使う)
+        args.push_str(" --js-flags=--enable-experimental-regexp-engine-on-excessive-backtracks");
         // ディスクキャッシュの上限 (data\webview が際限なく大きくならないように)
         args.push_str(&format!(" --disk-cache-size={}", webview_cache_mb(settings.as_ref()) * 1024 * 1024));
         std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", args);
@@ -3715,6 +3775,17 @@ pub fn run() {
     }
 
     tauri::Builder::default()
+        .register_asynchronous_uri_scheme_protocol("safe-image", |_ctx, request, responder| {
+            tauri::async_runtime::spawn(async move {
+                let response = inline_image_response(request).await.unwrap_or_else(|_| {
+                    tauri::http::Response::builder().status(403)
+                        .header("Access-Control-Allow-Origin", "*")
+                        .header("Cache-Control", "no-store")
+                        .body(Vec::new()).expect("static image error response")
+                });
+                responder.respond(response);
+            });
+        })
         .manage(ImagePopupState(Mutex::new(Vec::new())))
         .manage(TwitchState(Mutex::new(HashMap::new())))
         .manage(twitch_badges::BadgeState::default())

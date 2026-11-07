@@ -741,10 +741,18 @@ impl Inner {
             return Ok(a);
         }
         let fresh = refresh(&self.http(), &a).await?;
-        if let Err(e) = save_auth(&fresh) {
-            self.log(&e);
+        {
+            // 更新を待っている間にログアウト (またはログインし直し) されていたら、保存しない
+            // (保存すると、消したはずのログイン情報が戻ってしまう)
+            let mut g = lock(&self.auth);
+            if g.as_ref().map(|cur| cur.refresh_token.as_str()) != Some(a.refresh_token.as_str()) {
+                return Err("ログインしていません".into());
+            }
+            if let Err(e) = save_auth(&fresh) {
+                self.log(&e);
+            }
+            *g = Some(fresh.clone());
         }
-        *lock(&self.auth) = Some(fresh.clone());
         Ok(fresh)
     }
 

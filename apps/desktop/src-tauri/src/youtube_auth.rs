@@ -446,9 +446,16 @@ impl Inner {
         if !(200..300).contains(&status) {
             let (code, _) = oauth_error(&body);
             if code == "invalid_grant" || code == "invalid_client" || code == "unauthorized_client" {
-                // 取り消された・期限切れ (同意画面が「テスト」のままだと 7 日で切れる)
-                *lock(&self.auth) = None;
-                remove_file(AUTH_FILE);
+                // 取り消された・期限切れ (同意画面が「テスト」のままだと 7 日で切れる)。
+                // 更新を待つ間にログアウト・ログインし直されていたら、新しいログインは消さない
+                {
+                    let mut g = lock(&self.auth);
+                    if g.as_ref().map(|cur| cur.refresh_token.as_str()) != Some(a.refresh_token.as_str()) {
+                        return Err("ログインし直されたため、前のログインの更新は使いません".into());
+                    }
+                    *g = None;
+                    remove_file(AUTH_FILE);
+                }
                 let msg = "ログインの期限が切れたか、取り消されました。もう一度ログインしてください (同意画面が「テスト」のままだと 7 日で切れます)".to_string();
                 let client_set = lock(&self.client).is_some();
                 self.set_status(|s| *s = AuthStatus { client_set, state: "error".into(), message: msg.clone(), ..Default::default() });
@@ -460,18 +467,22 @@ impl Inner {
         let v: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
         let access = v["access_token"].as_str().filter(|s| !s.is_empty()).ok_or("ログインの更新の応答の形式が違います")?.to_string();
         let expires_at = now() + v["expires_in"].as_u64().unwrap_or(3600).min(86_400);
-        let saved = {
+        {
             let mut g = lock(&self.auth);
             let Some(cur) = g.as_mut() else { return Err("ログアウトしました".into()) };
+            // 更新を待つ間にログインし直されていたら (別のログインになっていたら)、前のログインの結果を混ぜない
+            if cur.refresh_token != a.refresh_token {
+                return Err("ログインし直されたため、前のログインの更新は使いません".into());
+            }
             cur.access_token = access.clone();
             cur.expires_at = expires_at;
             if let Some(rt) = v["refresh_token"].as_str().filter(|s| !s.is_empty()) {
                 cur.refresh_token = rt.to_string();
             }
-            cur.clone()
-        };
-        if let Ok(t) = serde_json::to_string(&saved) {
-            let _ = save_protected(AUTH_FILE, &t, "ログイン情報");
+            // 保存も確かめたのと同じ間に行う (確かめたあとにログアウトされても、ファイルを戻さない)
+            if let Ok(t) = serde_json::to_string(&*cur) {
+                let _ = save_protected(AUTH_FILE, &t, "ログイン情報");
+            }
         }
         Ok(access)
     }

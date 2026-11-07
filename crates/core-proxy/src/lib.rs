@@ -297,6 +297,41 @@ mod proxy_tests {
 
 const DPAPI_PREFIX: &str = "dpapi:";
 
+/// 保存用途では暗号化に失敗した値を平文で書き出さない。
+pub fn protect_password_for_storage(plain: &str) -> Result<String, String> {
+    let protected = protect_password(plain);
+    checked_protected_password(plain, protected)
+}
+
+fn checked_protected_password(plain: &str, protected: String) -> Result<String, String> {
+    if !plain.is_empty() && (!protected.starts_with(DPAPI_PREFIX) || protected == plain) {
+        return Err("パスワードを暗号化できなかったため、設定を保存しませんでした".into());
+    }
+    Ok(protected)
+}
+
+#[cfg(test)]
+mod storage_security_tests {
+    use super::*;
+
+    #[test]
+    fn encryption_failure_is_not_accepted_as_a_stored_password() {
+        assert!(checked_protected_password("secret", "secret".into()).is_err());
+        assert!(checked_protected_password("secret", String::new()).is_err());
+        assert!(checked_protected_password("dpapi:plaintext", "dpapi:plaintext".into()).is_err());
+        assert_eq!(protect_password_for_storage("").unwrap(), "");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn protected_storage_still_roundtrips_with_dpapi() {
+        let stored = protect_password_for_storage("test-password-検証").unwrap();
+        assert!(stored.starts_with(DPAPI_PREFIX));
+        assert_eq!(unprotect_password(&stored), "test-password-検証");
+        assert_eq!(unprotect_password("legacy-password"), "legacy-password");
+    }
+}
+
 /// Encrypt a password for persistence. On Windows this uses DPAPI
 /// (current-user scope) and returns `dpapi:<base64>`. On other platforms,
 /// or if encryption fails, the plaintext is stored as-is.

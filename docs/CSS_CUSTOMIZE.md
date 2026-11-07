@@ -489,6 +489,7 @@ Twitch・YouTube のタブでは、同じ `.compose-window` がチャットの�
 │   ├─ .viewer-chip.viewer-all-toggle (.on)         「選んだスレを流す」(オンのとき .on)
 │   ├─ .viewer-toggle                               自動スクロール
 │   ├─ .viewer-grow                                 間を空ける要素
+│   ├─ .conn-wrap > .conn-chip (.ok / .wait / .warn / .ng / .idle)   接続の状態 (押すと .conn-panel の一覧)
 │   └─ .youtube-quota-chip                          YouTube の API の使用量 (YouTube タブを開いているとき。3.13 参照)
 ├─ .viewer-list                                 表示の一覧
 │   ├─ .viewer-empty                                まだ何も無いときの説明
@@ -516,6 +517,9 @@ Twitch・YouTube のタブでは、同じ `.compose-window` がチャットの�
 | `.ogp-card-thumb-failed` | リンクカードの画像が読み込めなかったとき (既定では画像の枠ごと隠す) |
 | `.ogp-card.ogp-card-skeleton` / `.ogp-card-skel-img` | リンクカードを読み込んでいる間の仮のカード / その画像の枠 (本物のカードと同じ高さ) |
 | `.youtube-quota-chip` (`.warn` / `.danger`) / `.yt-mark` | YouTube の API の使用量 (YouTube タブのタイトルの帯・ビュワーの上の段。80% で `.warn`、95% で `.danger`) / その中の ▶ の印 |
+| `.ng-list li.ng-regex-off` / `.ng-regex-off-label` | 判定に時間がかかりすぎたため使っていない NG の正規表現の行と「使っていません」の印 (設定には残る。起動し直すとまた試す) |
+| `.conn-wrap` / `.conn-chip` (`.ok` / `.wait` / `.warn` / `.ng` / `.idle`) / `.conn-wrap .connect-lamp` | 接続の状態 (ビュワーの上の段と、Twitch・YouTube タブのタイトルの帯。YouTube の使用量の左) / その中の色の丸 (いちばん悪い状態の色) |
+| `.conn-panel` / `.conn-panel-head` / `.conn-row` (`.ok` など) / `.conn-row-kind` (`.kind-twitch` / `.kind-youtube` / `.kind-board`) / `.conn-row-title` / `.conn-row-state` / `.conn-row-detail` / `.conn-panel-note` | 接続の状態を押すと出る一覧 (タブごとの状態・時刻・エラー) |
 | `.yt-status-banner` (`.yt-status-stopped` / `.yt-status-ended` / `.yt-status-retrying`) | 受信が止まっている YouTube タブの、タイトルの下の帯 (理由と「つなぎ直す」「タブを閉じる」) |
 | `.thread-tab-close` / `.title-action-btn` / `.tool-bar button` | タブの × / スレタイバー・新着レスペインのボタン / ツールバーのボタン（常に薄い枠が付く） |
 

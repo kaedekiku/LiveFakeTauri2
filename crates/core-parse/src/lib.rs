@@ -315,7 +315,9 @@ pub fn parse_shitaraba_responses(body: &[u8]) -> (Vec<(u32, DatEntry)>, Option<S
 ///                `<dd>本文<br></dd>`
 pub fn parse_shitaraba_html_responses(body: &[u8]) -> (Vec<(u32, DatEntry)>, Option<String>) {
     let text = decode_euc_jp(body);
-    let lower = text.to_lowercase();
+    // タグを探すための小文字化は ASCII だけにする (to_lowercase だと「Å」などで長さが変わり、
+    // ここで求めた位置で元の文字列を切ると文字の途中になってパニックする)
+    let lower = text.to_ascii_lowercase();
 
     // Extract page title
     let title = lower.find("<title>").and_then(|i| {
@@ -377,7 +379,7 @@ pub fn parse_shitaraba_html_responses(body: &[u8]) -> (Vec<(u32, DatEntry)>, Opt
         let body_trimmed = {
             let trimmed = body_raw.trim_end();
             let mut end = trimmed.len();
-            let lt = trimmed.to_lowercase();
+            let lt = trimmed.to_ascii_lowercase();
             while end >= 4 && lt[..end].ends_with("<br>") {
                 end -= 4;
             }
@@ -402,7 +404,7 @@ pub fn parse_shitaraba_html_responses(body: &[u8]) -> (Vec<(u32, DatEntry)>, Opt
         if no > 0 {
             // Name from <b>...</b>
             let name = {
-                let ldt = dt_part.to_lowercase();
+                let ldt = dt_part.to_ascii_lowercase();
                 ldt.find("<b>").and_then(|i| {
                     let rest = &dt_part[i + 3..];
                     ldt[i + 3..].find("</b>").map(|j| strip_html_tags(&rest[..j]))
@@ -417,7 +419,7 @@ pub fn parse_shitaraba_html_responses(body: &[u8]) -> (Vec<(u32, DatEntry)>, Opt
 
             // Mail from <a href="mailto:...">
             let mail = {
-                let ldt = dt_part.to_lowercase();
+                let ldt = dt_part.to_ascii_lowercase();
                 ldt.find("mailto:").and_then(|i| {
                     let rest = &dt_part[i + 7..];
                     rest.find('"').map(|j| rest[..j].to_string())
@@ -526,6 +528,26 @@ mod tests {
         assert_eq!(e.name, "名前：付き");
         assert_eq!(e.mail, "sage");
         assert_eq!(e.date_and_id, "2026/01/24(土) 05:44:53 ID:AD8Oclf.0");
+    }
+
+    #[test]
+    fn parse_shitaraba_html_responses_survives_case_changing_characters() {
+        // 「Å」(オングストローム記号 U+212B) は to_lowercase で「å」になりバイト数が変わる。題名・名前・本文のどこにあっても解析できること
+        let html = r##"<html><head><TITLE>Åのスレ - 1 - したらば掲示板</TITLE></head><body><dl>
+<DT id="comment_1"> <a href="https://jbbs.shitaraba.net/bbs/read.cgi/internet/4073/1/1">1</a>：<B>Å名無し</B>：2026/01/24(土) 05:17:41 ID:abc </DT>
+<DD>Åの本文<BR>2行目<BR></DD>
+<dt id="comment_2"> <a href="https://jbbs.shitaraba.net/bbs/read.cgi/internet/4073/1/2">2</a>：<a href="mailto:sage"><b>名無し</b></a>：2026/01/24(土) 05:18:00 ID:def </dt>
+<dd>ÅÅÅ<br></dd>
+</dl></body></html>"##;
+        let (bytes, _, had_errors) = encoding_rs::EUC_JP.encode(html);
+        assert!(!had_errors, "EUC-JP で表せる文字だけで作る");
+        let (entries, title) = parse_shitaraba_html_responses(&bytes);
+        assert_eq!(title.as_deref(), Some("Åのスレ - 1 - したらば掲示板"));
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].1.name, "Å名無し");
+        assert!(entries[0].1.body.starts_with("Åの本文"), "{}", entries[0].1.body);
+        assert_eq!(entries[1].1.mail, "sage");
+        assert!(entries[1].1.body.starts_with("ÅÅÅ"), "{}", entries[1].1.body);
     }
 
     #[test]

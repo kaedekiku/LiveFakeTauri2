@@ -211,6 +211,93 @@ fn send_url(url: &str) -> String {
     core_proxy::transport_url(url, core_proxy::ProxyRole::Send)
 }
 
+/// 掲示板が返した転送・フォームでも、最初の投稿と同じ宛先制限を保つ。
+/// HTTP への変換はこの検証の後で、利用者が指定したローカルプロキシにだけ行う。
+fn validate_post_target(url: &str) -> Result<(), FetchError> {
+    let u = Url::parse(url)?;
+    if !matches!(u.scheme(), "http" | "https") || !u.username().is_empty()
+        || u.password().is_some() || post_site_type(url).is_none()
+    {
+        return Err(FetchError::Blocked("投稿先が許可された掲示板ではありません".into()));
+    }
+    Ok(())
+}
+
+/// 書き込みの送り先のサイト (サブドメインの無い 5ch.io も、同意画面などで使われうるので 5ch として扱う)
+fn post_site_type(url: &str) -> Option<SiteType> {
+    if !is_allowed_url(url) {
+        let host = Url::parse(url).ok()?.host_str()?.to_ascii_lowercase();
+        return (host == "5ch.io").then_some(SiteType::FiveCh);
+    }
+    detect_site_type(url)
+}
+
+fn checked_post_url(base: &str, target: &str) -> Result<String, FetchError> {
+    let base_url = Url::parse(base)?;
+    let mut resolved = Url::parse(&normalize_5ch_url(base_url.join(target)?.as_str()))?;
+    // HTTPS の投稿フローを外部の平文通信へ落とさない。
+    if base_url.scheme() == "https" && resolved.scheme() == "http" {
+        resolved.set_scheme("https").map_err(|_| FetchError::Blocked("投稿先の方式が正しくありません".into()))?;
+    }
+    validate_post_target(resolved.as_str())?;
+    if post_site_type(base) != post_site_type(resolved.as_str()) {
+        return Err(FetchError::Blocked("別の掲示板サイトへの投稿転送は許可されていません".into()));
+    }
+    Ok(resolved.to_string())
+}
+
+/// したらば・JPNKN の通常の転送は保ち、別サイトへの本文の転送は止める。
+/// 止めるときはエラーにせず、その転送の応答 (3xx) で終える (書き込みは届いているので、失敗と見せない)。
+pub fn post_redirect_policy() -> Policy {
+    Policy::custom(|attempt| {
+        if attempt.previous().len() >= 10 {
+            return attempt.error("too many posting redirects");
+        }
+        let target = attempt.url();
+        let previous = attempt.previous().last();
+        if validate_post_target(target.as_str()).is_err()
+            || previous.is_some_and(|p| post_site_type(p.as_str()) != post_site_type(target.as_str())
+                || (p.scheme() == "https" && target.scheme() != "https"))
+        {
+            attempt.stop()
+        } else {
+            attempt.follow()
+        }
+    })
+}
+
+#[cfg(test)]
+mod post_target_security_tests {
+    use super::*;
+
+    #[test]
+    fn normal_relative_confirm_and_domain_migration_are_preserved() {
+        let base = "https://mao.5ch.io/test/bbs.cgi";
+        assert_eq!(checked_post_url(base, "../test/bbs.cgi?guid=ON").unwrap(),
+            "https://mao.5ch.io/test/bbs.cgi?guid=ON");
+        assert_eq!(checked_post_url(base, "//greta.5ch.net/test/bbs.cgi").unwrap(),
+            "https://greta.5ch.io/test/bbs.cgi");
+        assert_eq!(checked_post_url(base, "http://mao.5ch.io/test/bbs.cgi").unwrap(), base);
+        assert!(validate_post_target("https://jbbs.shitaraba.net/bbs/write.cgi/game/1/2/").is_ok());
+        assert!(validate_post_target("https://bbs.jpnkn.com/test/bbs.cgi").is_ok());
+        // サブドメインの無い 5ch.io (5ch.net からの移行も) は 5ch として通す
+        assert_eq!(checked_post_url(base, "https://5ch.net/consent").unwrap(), "https://5ch.io/consent");
+        assert!(checked_post_url(base, "https://5ch.io.evil.example/").is_err());
+    }
+
+    #[test]
+    fn server_controlled_redirects_and_forms_cannot_escape_the_allowlist() {
+        let base = "https://mao.5ch.io/test/bbs.cgi";
+        for target in ["https://evil.example/", "//127.0.0.1/admin", "http://192.168.1.1/",
+            "file:///C:/Windows/win.ini", "https://mao.5ch.io.evil.example/", "https://user@mao.5ch.io/",
+            "https://bbs.jpnkn.com/test/bbs.cgi", "https://jbbs.shitaraba.net/bbs/write.cgi/"] {
+            assert!(checked_post_url(base, target).is_err(), "{target}");
+            let form = format!("<form action=\"{target}\"><input name=\"bbs\" value=\"test\"></form>");
+            assert!(parse_confirm_submit_form_internal(&form, base).is_err(), "{target}");
+        }
+    }
+}
+
 fn receive_url(url: &str) -> String {
     core_proxy::transport_url(url, core_proxy::ProxyRole::Receive)
 }
@@ -231,17 +318,44 @@ pub fn normalize_5ch_url(input: &str) -> String {
     input.replace("5ch.net", "5ch.io")
 }
 
-pub async fn fetch_bbsmenu_json(client: &Client, url: &str) -> Result<Value, FetchError> {
-    let parsed = Url::parse(url)?;
-    // bbsmenu 取得元はユーザー設定で変更できるため、OGP 取得と同じ検証
-    // (http/https 限定・私有アドレスやループバックへの接続を拒否) を先に通す。
-    validate_ogp_target(&parsed).await?;
-    let response = client.get(parsed).send().await?;
-    let status = response.status();
-    if !status.is_success() {
-        return Err(FetchError::HttpStatus(status));
+/// 板一覧の取得で追う転送の最大回数
+const BBSMENU_MAX_REDIRECTS: usize = 5;
+
+/// 板一覧 (bbsmenu.json) を取る。取得元はユーザー設定で変えられるので、OGP 取得と同じく
+/// http/https 限定・家庭内やループバックのアドレスを断る。転送は自動ではたどらず、行き先も1回ずつ確かめる。
+/// プロキシを使わないときは、確かめたアドレスにそのままつなぐ (確かめたあとで名前の向き先を変えられても家庭内へつながらない)。
+/// 受信用のプロキシの設定は今までどおり使う (プロキシを使うときは、つなぐ先の名前はプロキシが引く)
+pub async fn fetch_bbsmenu_json(user_agent: &str, url: &str) -> Result<Value, FetchError> {
+    let mut current = Url::parse(url)?;
+    for _hop in 0..=BBSMENU_MAX_REDIRECTS {
+        let (domain, addrs) = validate_ogp_target(&current).await?;
+        let mut builder = Client::builder()
+            .user_agent(user_agent)
+            .redirect(Policy::none())
+            .timeout(std::time::Duration::from_secs(10));
+        if let Some(domain) = domain.as_deref() {
+            builder = builder.resolve_to_addrs(domain, &addrs);
+        }
+        let client = core_proxy::apply(builder, core_proxy::ProxyRole::Receive)
+            .map_err(|e| FetchError::Parse(e.to_string()))?
+            .build()?;
+        let response = client.get(current.as_str()).send().await?;
+        let status = response.status();
+        if status.is_redirection() {
+            let location = response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+                .ok_or(FetchError::HttpStatus(status))?;
+            current = current.join(location)?;
+            continue;
+        }
+        if !status.is_success() {
+            return Err(FetchError::HttpStatus(status));
+        }
+        return Ok(response.json::<Value>().await?);
     }
-    Ok(response.json::<Value>().await?)
+    Err(FetchError::Blocked("too many redirects".into()))
 }
 
 /// 取得した bbsmenu JSON (`menu_list[].category_content[].url`) に実際に登場するホスト名を集める。
@@ -264,14 +378,44 @@ pub fn extract_bbsmenu_hosts(menu: &Value) -> HashSet<String> {
             };
             if let Ok(parsed) = Url::parse(url_str) {
                 if matches!(parsed.scheme(), "http" | "https") {
-                    if let Some(host) = parsed.host_str() {
-                        hosts.insert(host.to_ascii_lowercase());
+                    // 掲示板として許可するのは名前のホストだけ (IP で書かれたもの・localhost・.local は、
+                    // 家庭内や自分の PC を指しうるので許可しない)
+                    // 末尾のドット (`localhost.` など。意味はドット無しと同じ) を取ってから判定し、1語だけの名前も外す
+                    if let Some(url::Host::Domain(host)) = parsed.host() {
+                        let host = host.trim_end_matches('.').to_ascii_lowercase();
+                        if host.contains('.') && host != "localhost" && !host.ends_with(".localhost") && !host.ends_with(".local") {
+                            hosts.insert(host);
+                        }
                     }
                 }
             }
         }
     }
     hosts
+}
+
+/// 板一覧から足すホストのうち、もともと許可しているもの (5ch・したらば・JPNKN) 以外は名前を引き、
+/// 家庭内・自分の PC のアドレスになるものを外す (板一覧の配信元を操られても、家庭内の機器を掲示板として扱わない)。
+/// 足すときの確認なので、あとで名前の向き先を変えられる手口までは防げない
+pub async fn keep_public_board_hosts(hosts: HashSet<String>) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for host in hosts.into_iter().take(500) {
+        if is_builtin_board_host(&host) {
+            out.insert(host);
+            continue;
+        }
+        let public = match tokio::net::lookup_host((host.as_str(), 443)).await {
+            Ok(addrs) => {
+                let addrs: Vec<_> = addrs.collect();
+                !addrs.is_empty() && addrs.iter().all(|a| is_public_ip(a.ip()))
+            }
+            Err(_) => false,
+        };
+        if public {
+            out.insert(host);
+        }
+    }
+    out
 }
 
 /// bbsmenu から動的に導出された、追加で許可するホスト名の集合 (常に 5ch 系として扱う)。
@@ -1258,11 +1402,7 @@ fn detect_post_form_action(html: &str) -> Option<String> {
 }
 
 fn resolve_post_url(thread_url: &str, action: &str) -> Result<String, FetchError> {
-    if let Some(stripped) = action.strip_prefix("//") {
-        return Ok(format!("https://{stripped}"));
-    }
-    let base = Url::parse(thread_url)?;
-    Ok(base.join(action)?.to_string())
+    checked_post_url(thread_url, action)
 }
 
 pub fn resolve_dat_url_from_thread_url(thread_url: &str) -> Result<String, FetchError> {
@@ -1383,12 +1523,16 @@ pub fn is_allowed_url(url: &str) -> bool {
         Some(h) => h,
         None => return false,
     };
+    is_builtin_board_host(host) || is_extra_allowed_host(host)
+}
+
+/// もともと許可している掲示板のホスト (板一覧から足したものは含めない)
+fn is_builtin_board_host(host: &str) -> bool {
     host.ends_with(".5ch.io")
         || host.ends_with(".5ch.net")
         || host.ends_with(".2ch.net")
         || host == "jbbs.shitaraba.net"
         || host == "bbs.jpnkn.com"
-        || is_extra_allowed_host(host)
         || shitaraba_override_matches(host)
         || jpnkn_override_matches(host)
 }
@@ -1842,8 +1986,11 @@ async fn decode_5ch_response(
     let status = resp.status().as_u16();
     let ct = resp.headers().get("content-type")
         .and_then(|v| v.to_str().ok()).map(|s| s.to_string());
+    // 書き込みはもう届いているので、許可の外への転送はエラーにせず、たどらないだけにする
+    // (エラーにすると、届いた書き込みを失敗と見せて二重に書き込ませてしまう)
     let redir = resp.headers().get("location")
-        .and_then(|v| v.to_str().ok()).map(|s| s.to_string());
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| checked_post_url(resp.url().as_str(), s).ok());
     let bytes = resp.bytes().await?;
     let (body, _, _) = SHIFT_JIS.decode(&bytes);
     Ok((status, ct, body.into_owned(), redir))
@@ -1900,6 +2047,8 @@ async fn reqwest_post_5ch(
     fields: &[(&str, &str)],
     extra_cookies: Option<&str>,
 ) -> Result<(u16, Option<String>, String), FetchError> {
+    validate_post_target(thread_url)?;
+    validate_post_target(post_url)?;
     let (client, jar) = build_cookie_client("Monazilla/1.00 LiveFake/0.1")?;
     seed_extra_cookies(&jar, post_url, extra_cookies);
 
@@ -1954,11 +2103,7 @@ async fn reqwest_post_5ch(
     } else if page == Post5chPage::Consent {
         // Step 5: Uplift/consent form — submit consent then retry original POST (1回だけ)
         if let Some(consent_form) = find_first_generic_form(&resp_body) {
-            let consent_url = if consent_form.action.starts_with("http") {
-                normalize_5ch_url(&consent_form.action)
-            } else {
-                consent_form.action.clone()
-            };
+            let consent_url = checked_post_url(post_url, &consent_form.action)?;
             let consent_body = consent_form.fields.iter()
                 .map(|(k, v)| {
                     let (sjis, _, _) = SHIFT_JIS.encode(v);
@@ -2002,6 +2147,7 @@ fn curl_exec(
     cookie_jar: &std::path::Path,
     extra_cookies: Option<&str>,
 ) -> Result<(u16, Option<String>, Option<String>, String), FetchError> {
+    validate_post_target(url)?;
     let separator = "---CURL_5CH_META---";
     let write_fmt = format!(
         "\n{}\n%{{http_code}}\n%{{content_type}}\n%{{redirect_url}}",
@@ -2036,6 +2182,7 @@ fn curl_exec(
     }
     args.push("-w".into());
     args.push(write_fmt);
+    args.push("--".into());
     args.push(url.into());
 
     let mut cmd = Command::new("curl");
@@ -2075,7 +2222,8 @@ fn curl_exec(
     let meta_lines: Vec<&str> = meta_str.lines().collect();
     let status: u16 = meta_lines.first().and_then(|s| s.parse().ok()).unwrap_or(0);
     let content_type = meta_lines.get(1).map(|s| s.to_string()).filter(|s| !s.is_empty());
-    let redirect_url = meta_lines.get(2).map(|s| s.to_string()).filter(|s| !s.is_empty());
+    let redirect_url = meta_lines.get(2).filter(|s| !s.is_empty())
+        .and_then(|s| checked_post_url(url, s).ok());
 
     let (decoded, _, _) = SHIFT_JIS.decode(body_bytes);
     Ok((status, content_type, redirect_url, decoded.into_owned()))
@@ -2190,11 +2338,7 @@ fn curl_post_5ch_inner(
     } else if !has_confirm && status == 200 {
         // uplift/consent page — submit consent form and retry original POST
         if let Some(consent_form) = find_first_generic_form(&resp_body) {
-            let consent_url = if consent_form.action.starts_with("http") {
-                normalize_5ch_url(&consent_form.action)
-            } else {
-                consent_form.action.clone()
-            };
+            let consent_url = checked_post_url(post_url, &consent_form.action)?;
             let consent_body = consent_form
                 .fields
                 .iter()
@@ -3070,6 +3214,43 @@ mod tests {
         });
         let hosts = extract_bbsmenu_hosts(&menu);
         assert_eq!(hosts, HashSet::from(["newsplus.5ch.io".to_string(), "greta.5ch.io".to_string()]));
+    }
+
+    #[test]
+    fn extract_bbsmenu_hosts_skips_ip_and_local_hosts() {
+        let menu: Value = serde_json::json!({
+            "menu_list": [{
+                "category_name": "x",
+                "category_content": [
+                    { "url": "http://192.168.1.1/board/" },
+                    { "url": "http://127.0.0.1:8080/b/" },
+                    { "url": "http://[::1]/b/" },
+                    { "url": "http://8.8.8.8/b/" },
+                    { "url": "http://localhost/b/" },
+                    { "url": "http://router.local/b/" },
+                    { "url": "http://localhost./b/" },
+                    { "url": "http://LOCALHOST../b/" },
+                    { "url": "http://intranet/b/" },
+                    { "url": "http://app.localhost./b/" },
+                    { "url": "https://mao.5ch.io/ngt/" }
+                ]
+            }]
+        });
+        assert_eq!(extract_bbsmenu_hosts(&menu), HashSet::from(["mao.5ch.io".to_string()]));
+    }
+
+    #[tokio::test]
+    async fn keep_public_board_hosts_keeps_builtin_hosts_without_lookup() {
+        let kept = super::keep_public_board_hosts(HashSet::from(["mao.5ch.io".to_string(), "jbbs.shitaraba.net".to_string()])).await;
+        assert_eq!(kept, HashSet::from(["mao.5ch.io".to_string(), "jbbs.shitaraba.net".to_string()]));
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn keep_public_board_hosts_drops_names_that_resolve_to_private() {
+        // localtest.me は 127.0.0.1 になる公開の名前 (ネットワークが要る)
+        let kept = super::keep_public_board_hosts(HashSet::from(["localtest.me".to_string()])).await;
+        assert!(kept.is_empty(), "{kept:?}");
     }
 
     #[test]
