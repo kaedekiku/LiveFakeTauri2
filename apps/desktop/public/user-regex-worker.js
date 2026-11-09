@@ -15,10 +15,17 @@ self.onmessage = (event) => {
   }
   const results = texts.map((t) => {
     const s = String(t);
-    if (!re) return op === "test" ? false : s;
+    if (!re) return op === "replace" ? s : false;
     if (op === "test") {
       re.lastIndex = 0;
       return re.test(s);
+    }
+    // 画像URL置換: 一致すれば置き換えた文字列、一致しなければ false
+    if (op === "rewrite") {
+      re.lastIndex = 0;
+      if (!re.test(s)) return false;
+      re.lastIndex = 0;
+      return s.replace(re, String(data.replacement ?? ""));
     }
     return s.replace(re, "");
   });

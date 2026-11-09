@@ -566,6 +566,90 @@ pub fn play_wav_from_bytes(_wav: &[u8]) -> Result<(), TtsError> {
     Err(TtsError::NotSupported)
 }
 
+/// WAV の再生にかかる時間 (RIFF/WAVE の fmt の byte rate と data の大きさから求める)。形が違えば None
+pub fn wav_duration(wav: &[u8]) -> Option<std::time::Duration> {
+    if wav.len() < 12 || &wav[0..4] != b"RIFF" || &wav[8..12] != b"WAVE" {
+        return None;
+    }
+    let mut pos = 12usize;
+    let mut byte_rate = 0u32;
+    while pos.checked_add(8)? <= wav.len() {
+        let id = &wav[pos..pos + 4];
+        let size = u32::from_le_bytes(wav[pos + 4..pos + 8].try_into().ok()?) as usize;
+        let body = pos + 8;
+        if id == b"fmt " && body + 12 <= wav.len() {
+            byte_rate = u32::from_le_bytes(wav[body + 8..body + 12].try_into().ok()?);
+        }
+        if id == b"data" {
+            if byte_rate == 0 {
+                return None;
+            }
+            let len = size.min(wav.len() - body);
+            return Some(std::time::Duration::from_secs_f64(len as f64 / byte_rate as f64));
+        }
+        pos = body.checked_add(size)?.checked_add(size & 1)?;
+    }
+    None
+}
+
+/// 再生の状態: 再生中の WAV (SND_ASYNC で再生している間は、データを持ち続ける必要がある) と、停止の回数。
+/// 「止めたか」の確認・再生の開始・停止は、すべてこの鍵の中で行う (確認と開始の間に停止が入って、止めたあとに鳴らないように)
+struct WavPlayState {
+    wav: Option<Vec<u8>>,
+    stop_gen: u64,
+}
+
+static WAV_PLAY: std::sync::Mutex<WavPlayState> = std::sync::Mutex::new(WavPlayState { wav: None, stop_gen: 0 });
+
+/// いまの停止の回数 (合成を始める前に覚えておき、play_wav_async_if に渡す)
+pub fn wav_stop_gen() -> u64 {
+    WAV_PLAY.lock().unwrap_or_else(|e| e.into_inner()).stop_gen
+}
+
+/// 止めていなければ (停止の回数が gen のままなら) WAV を止められる形で再生する。すぐ戻る (終わるまで待つのは呼ぶ側)。
+/// 再生したら true、止めていたので再生しなかったら false
+#[cfg(windows)]
+pub fn play_wav_async_if(wav: Vec<u8>, gen: u64) -> Result<bool, TtsError> {
+    use windows::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_FLAGS, SND_MEMORY, SND_NODEFAULT};
+    use windows::core::PCWSTR;
+    let mut st = WAV_PLAY.lock().unwrap_or_else(|e| e.into_inner());
+    if st.stop_gen != gen {
+        return Ok(false);
+    }
+    // 前の音を止めてから、前のデータを手放す (再生中のデータを先に手放さない)
+    unsafe {
+        let _ = PlaySoundW(PCWSTR::null(), None, SND_FLAGS(0));
+    }
+    st.wav = Some(wav);
+    if let Some(w) = st.wav.as_ref() {
+        // データは WAV_PLAY に置いたまま、次の再生か stop_wav まで手放さない
+        unsafe {
+            let _ = PlaySoundW(PCWSTR(w.as_ptr() as *const u16), None, SND_ASYNC | SND_MEMORY | SND_NODEFAULT);
+        }
+    }
+    Ok(true)
+}
+
+#[cfg(not(windows))]
+pub fn play_wav_async_if(_wav: Vec<u8>, _gen: u64) -> Result<bool, TtsError> {
+    Err(TtsError::NotSupported)
+}
+
+/// 再生中の音を止め、停止の回数を進める (合成中・再生待ちのものは、このあと再生しない)
+pub fn stop_wav() {
+    let mut st = WAV_PLAY.lock().unwrap_or_else(|e| e.into_inner());
+    st.stop_gen = st.stop_gen.wrapping_add(1);
+    #[cfg(windows)]
+    {
+        use windows::Win32::Media::Audio::{PlaySoundW, SND_FLAGS};
+        use windows::core::PCWSTR;
+        unsafe {
+            let _ = PlaySoundW(PCWSTR::null(), None, SND_FLAGS(0));
+        }
+    }
+    st.wav = None;
+}
+
 /// Simple URL encoding for VOICEVOX API
 fn urlencoding(text: &str) -> String {
     let mut encoded = String::new();
@@ -622,5 +706,49 @@ mod tests {
         let result = bouyomi_speak("C:\\malware.exe", "test", 0, 0, 0, 0);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("RemoteTalk.exe"));
+    }
+
+    fn wav(byte_rate: u32, data_len: usize, extra_chunk: bool) -> Vec<u8> {
+        let mut v = Vec::new();
+        v.extend_from_slice(b"RIFF");
+        v.extend_from_slice(&0u32.to_le_bytes());
+        v.extend_from_slice(b"WAVE");
+        v.extend_from_slice(b"fmt ");
+        v.extend_from_slice(&16u32.to_le_bytes());
+        v.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        v.extend_from_slice(&1u16.to_le_bytes()); // mono
+        v.extend_from_slice(&24000u32.to_le_bytes());
+        v.extend_from_slice(&byte_rate.to_le_bytes());
+        v.extend_from_slice(&2u16.to_le_bytes());
+        v.extend_from_slice(&16u16.to_le_bytes());
+        if extra_chunk {
+            v.extend_from_slice(b"LIST");
+            v.extend_from_slice(&3u32.to_le_bytes());
+            v.extend_from_slice(&[0, 0, 0, 0]); // 奇数の大きさ + 詰め物
+        }
+        v.extend_from_slice(b"data");
+        v.extend_from_slice(&(data_len as u32).to_le_bytes());
+        v.resize(v.len() + data_len, 0);
+        v
+    }
+
+    #[test]
+    fn wav_duration_from_header() {
+        let d = wav_duration(&wav(48000, 96000, false)).unwrap();
+        assert_eq!(d.as_millis(), 2000);
+        let d = wav_duration(&wav(48000, 24000, true)).unwrap();
+        assert_eq!(d.as_millis(), 500);
+        assert!(wav_duration(b"not a wav file").is_none());
+        assert!(wav_duration(&wav(0, 100, false)).is_none());
+    }
+
+    /// 止めたあとは、止める前に覚えた回数では再生しない (確認と開始が同じ鍵の中なので、止めたあとに鳴らない)
+    #[cfg(windows)]
+    #[test]
+    fn stale_gen_does_not_play() {
+        let g = wav_stop_gen();
+        stop_wav();
+        assert_ne!(wav_stop_gen(), g);
+        assert!(!play_wav_async_if(Vec::new(), g).unwrap());
     }
 }

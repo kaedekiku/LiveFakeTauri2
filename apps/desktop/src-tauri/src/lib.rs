@@ -96,6 +96,12 @@ fn overlay_retract(state: tauri::State<'_, OverlayState>, keys: Vec<String>) {
     state.hub.retract(&keys);
 }
 
+/// OBS 表示をすべて消す (配信への出力の緊急停止)。履歴も消すので、OBS をつなぎ直しても出ない
+#[tauri::command]
+fn overlay_clear(state: tauri::State<'_, OverlayState>) {
+    state.hub.clear();
+}
+
 /// OBS 表示のレイアウト (名前 → 見た目の設定と追加 CSS) をまるごと差し替える
 #[tauri::command]
 fn overlay_set_layouts(
@@ -1385,6 +1391,37 @@ fn get_data_dir() -> Result<String, String> {
     core_store::portable_data_dir()
         .map(|p| p.to_string_lossy().into_owned())
         .map_err(|e| e.to_string())
+}
+
+/// フォルダをエクスプローラーで開く (呼ぶ側で決めた場所だけ。利用者の入力したパスは渡さない)
+fn open_folder_in_explorer(dir: &std::path::Path) -> Result<(), String> {
+    if !dir.is_dir() {
+        return Err("フォルダがありません".into());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        restore_original_temp(&mut Command::new("explorer.exe")).arg(dir).spawn().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open").arg(dir).spawn().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        Command::new("xdg-open").arg(dir).spawn().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    #[allow(unreachable_code)]
+    Err("unsupported platform".to_string())
+}
+
+/// データフォルダをエクスプローラーで開く (Web ページを開く命令は http(s) しか受け付けないため、別に用意する)
+#[tauri::command]
+fn open_data_folder() -> Result<(), String> {
+    let dir = core_store::portable_data_dir().map_err(|e| e.to_string())?;
+    open_folder_in_explorer(&dir)
 }
 
 /// 起動時に data\tmp へ向ける前の TEMP / TMP (外部アプリを起動するときに戻すため)
@@ -2718,6 +2755,8 @@ async fn voicevox_speak_text(
     intonation_scale: f64,
     volume_scale: f64,
 ) -> Result<(), String> {
+    // 読み上げの「今すぐ停止」の回数 (合成中に止めたら、合成が終わっても再生しない・再生中なら待つのをやめる)
+    let gen = core_tts::wav_stop_gen();
     let wav = core_tts::voicevox_speak(
         &endpoint,
         &text,
@@ -2729,14 +2768,27 @@ async fn voicevox_speak_text(
     )
     .await
     .map_err(|e| e.to_string())?;
-
-    // Play via Win32 PlaySoundW (async, temp file)
-    core_tts::play_wav_from_bytes(&wav).map_err(|e| e.to_string())
+    // 止められる形で再生し、終わるまで待つ (読み上げを順番どおりにするため)。
+    // 合成している間に止めたときは再生しない (確認と再生の開始は、停止と同じ鍵の中で行う)。止めたら待つのをやめる
+    let duration = core_tts::wav_duration(&wav).unwrap_or(std::time::Duration::from_secs(30)).min(std::time::Duration::from_secs(600));
+    if !core_tts::play_wav_async_if(wav, gen).map_err(|e| e.to_string())? {
+        return Ok(());
+    }
+    let started = std::time::Instant::now();
+    while started.elapsed() < duration + std::time::Duration::from_millis(100) {
+        if core_tts::wav_stop_gen() != gen {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    Ok(())
 }
 
 #[tauri::command]
 async fn tts_stop() -> Result<(), String> {
     // Stop current speech and clear queue
+    // VOICEVOX の再生中の音も止める (停止の回数も進め、合成中のものは再生しない)
+    core_tts::stop_wav();
     let mut queue = core_tts::tts_queue().lock().await;
     queue.clear();
     // Also stop SAPI if it's running (フラグを立てるだけで即座に返るため、スレッド分離は不要)
@@ -3878,6 +3930,7 @@ pub fn run() {
             probe_post_finalize_submit_from_input,
             check_for_updates,
             get_data_dir,
+            open_data_folder,
             twitch_sync,
             twitch_set_badges,
             twitch_auth_status,
@@ -3906,6 +3959,7 @@ pub fn run() {
             overlay_stop,
             overlay_publish,
             overlay_retract,
+            overlay_clear,
             overlay_set_layouts,
             open_file_dialog,
             open_folder_dialog,

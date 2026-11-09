@@ -256,8 +256,16 @@
     }, 100);
   }
 
+  // 番号の古いもの (止める前に取りかかっていた字幕など) は受け付けない。メイン画面を読み込み直したとき (boot が変わる) は数え直す
+  var lastEntryBoot = "";
+  var lastEntrySeq = -1;
   window.__subtitleEntry = function(entry) {
     var e = entry || {};
+    if (typeof e.seq === "number" && typeof e.boot === "string") {
+      if (e.boot === lastEntryBoot && e.seq <= lastEntrySeq) return;
+      lastEntryBoot = e.boot;
+      lastEntrySeq = e.seq;
+    }
     if (e.scroll) window.__setScrollConfig(e.scroll);
     // ヘッダ: [スレ名] 番号 名前：名前 [メール] 投稿日：日付 ID (n/回数)。show で項目ごとに非表示 (非表示分は詰める)
     var show = e.show || {};

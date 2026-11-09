@@ -294,6 +294,12 @@ impl OverlayHub {
         let _ = self.tx.send(serde_json::json!({ "type": "remove", "keys": keys }).to_string());
     }
 
+    /// 表示をすべて消す (配信への出力の緊急停止)。履歴も消し、表示中の OBS に知らせる
+    pub fn clear(&self) {
+        self.history.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        let _ = self.tx.send(serde_json::json!({ "type": "clear" }).to_string());
+    }
+
     /// レイアウトの一覧をまるごと差し替え、変わったものを表示中の OBS に知らせる (値の検証は表示側でも行う)。
     /// 「標準」が無ければ空の設定で足す
     pub fn set_layouts(&self, layouts: HashMap<String, OverlayLayout>) -> Result<(), OverlayError> {
@@ -541,6 +547,28 @@ mod tests {
         keys.sort_unstable();
         assert_eq!(keys, vec!["badgeList", "boot", "color", "emotes", "event", "giant", "id", "key", "name", "no", "site", "source", "text", "type", "uid"]);
         assert_eq!(v["text"], text);
+    }
+
+    #[test]
+    fn clear_empties_history() {
+        let hub = OverlayHub::new();
+        hub.publish(&[OverlayComment {
+            source: "twitch".into(),
+            site: "Twitch".into(),
+            no: None,
+            name: "a".into(),
+            uid: String::new(),
+            text: "x".into(),
+            color: String::new(),
+            event: None,
+            badge_list: Vec::new(),
+            emotes: Vec::new(),
+            giant: false,
+            key: String::new(),
+        }]);
+        assert_eq!(hub.recent(10).len(), 1);
+        hub.clear();
+        assert!(hub.recent(10).is_empty());
     }
 
     #[test]

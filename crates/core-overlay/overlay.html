@@ -287,6 +287,7 @@ function connect() {
     if (m.type === 'hello') { if (typeof m.pageVersion === 'string' && m.pageVersion !== PAGE_VERSION) reloadForNewVersion(); }
     else if (m.type === 'comment') add(m);
     else if (m.type === 'remove' && Array.isArray(m.keys)) removeKeys(m.keys);
+    else if (m.type === 'clear') list.replaceChildren();
     else if (m.type === 'appearance' && m.layout === layoutName) applyLook(m.appearance);
     else if (m.type === 'layout_css' && m.layout === layoutName) loadUserCss();
   };

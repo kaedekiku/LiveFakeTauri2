@@ -17,7 +17,7 @@ import {
   Star, X, ChevronLeft, ChevronRight, ChevronDown, Ban,
   Image, Film, ExternalLink,
   Subtitles, Volume2, VolumeX, Ear, EarOff, ChevronUp, Search, PanelLeftClose, PanelLeftOpen, Smile,
-  Tv, LayoutGrid, Globe,
+  Tv, LayoutGrid, Globe, Play,
 } from "lucide-react";
 
 type MenuInfo = { topLevelKeys: number; normalizedSample: string };
@@ -714,11 +714,11 @@ const MAX_USER_REGEX_LEN = 512;
 // 結果は覚えておき、まだ結果が無いものは「一致しない」「置き換えない」として扱って Worker に頼み、結果が届いたら描き直す。
 // 新着・チャット・読み上げは、流す前に結果が届くのを待つ (inArrivalOrder・ttsInOrder)。
 // 時間内に終わらなかった正規表現は、判定に使わないことにする (設定には残す)。意味は今までどおり i 付き (大文字小文字を区別しない)
-type UserRegexOp = "test" | "replace";
+type UserRegexOp = "test" | "replace" | "rewrite";
 const USER_REGEX_CACHE_MAX = 20000;
 const USER_REGEX_BATCH = 400;
 const userRegexResults = new Map<string, boolean | string>();
-const userRegexQueue = new Map<string, { op: UserRegexOp; source: string; flags: string; texts: Set<string> }>();
+const userRegexQueue = new Map<string, { op: UserRegexOp; source: string; flags: string; replacement: string; texts: Set<string> }>();
 const userRegexWaiters: (() => void)[] = [];
 // 結果が届いたとき・正規表現を使わないことにしたときに呼ぶ (画面の描き直し・知らせ)
 const userRegexResultListeners = new Set<() => void>();
@@ -730,7 +730,7 @@ let userRegexRunning = false;
 let userRegexSeq = 0;
 // 結果が無くて Worker に頼んだ回数 (流す前に待つ必要があるかの目印)
 let userRegexMissCount = 0;
-const userRegexKey = (op: UserRegexOp, source: string, flags: string, text: string) => `${op}\u0001${flags}\u0001${source}\u0001${text}`;
+const userRegexKey = (op: UserRegexOp, source: string, flags: string, text: string, replacement = "") => `${op}\u0001${flags}\u0001${source}\u0001${replacement}\u0001${text}`;
 const rememberUserRegex = (key: string, value: boolean | string) => {
   if (userRegexResults.size >= USER_REGEX_CACHE_MAX) {
     let n = 0;
@@ -739,9 +739,9 @@ const rememberUserRegex = (key: string, value: boolean | string) => {
   userRegexResults.set(key, value);
 };
 // Worker に1回分を頼む。時間内に返ってこなければ Worker ごと止めて null
-const runUserRegexBatch = (op: UserRegexOp, source: string, flags: string, texts: string[]): Promise<(boolean | string)[] | null> =>
+const runUserRegexBatch = (op: UserRegexOp, source: string, flags: string, replacement: string, texts: string[]): Promise<(boolean | string)[] | null> =>
   new Promise((resolve) => {
-    const fallback = () => texts.map((t) => (op === "test" ? false : t));
+    const fallback = () => texts.map((t) => (op === "replace" ? t : false));
     if (typeof Worker === "undefined") { resolve(fallback()); return; }
     if (!userRegexWorker) {
       try { userRegexWorker = new Worker("/user-regex-worker.js"); } catch (e) { console.warn("正規表現の Worker を作れませんでした", e); resolve(fallback()); return; }
@@ -767,7 +767,7 @@ const runUserRegexBatch = (op: UserRegexOp, source: string, flags: string, texts
       if (userRegexWorker === w) userRegexWorker = null;
       resolve(fallback());
     };
-    w.postMessage({ id, op, source, flags, texts });
+    w.postMessage({ id, op, source, flags, replacement, texts });
   });
 const pumpUserRegex = async () => {
   while (userRegexQueue.size > 0) {
@@ -776,17 +776,17 @@ const pumpUserRegex = async () => {
     const [groupKey, job] = first;
     userRegexQueue.delete(groupKey);
     if (ngRegexDisabled.has(job.source)) continue;
-    const texts = [...job.texts].filter((t) => !userRegexResults.has(userRegexKey(job.op, job.source, job.flags, t)));
+    const texts = [...job.texts].filter((t) => !userRegexResults.has(userRegexKey(job.op, job.source, job.flags, t, job.replacement)));
     for (let i = 0; i < texts.length; i += USER_REGEX_BATCH) {
       const chunk = texts.slice(i, i + USER_REGEX_BATCH);
-      const out = await runUserRegexBatch(job.op, job.source, job.flags, chunk);
+      const out = await runUserRegexBatch(job.op, job.source, job.flags, job.replacement, chunk);
       if (out === null) {
         // 時間切れ: この正規表現は判定に使わない
         ngRegexDisabled.add(job.source);
         for (const fn of userRegexDisableListeners) fn(job.source);
         break;
       }
-      chunk.forEach((t, j) => rememberUserRegex(userRegexKey(job.op, job.source, job.flags, t), out[j] ?? (job.op === "test" ? false : t)));
+      chunk.forEach((t, j) => rememberUserRegex(userRegexKey(job.op, job.source, job.flags, t, job.replacement), out[j] ?? (job.op === "replace" ? t : false)));
     }
     for (const fn of userRegexResultListeners) fn();
   }
@@ -794,11 +794,11 @@ const pumpUserRegex = async () => {
   if (userRegexQueue.size > 0) { userRegexRunning = true; void pumpUserRegex(); return; }
   for (const w of userRegexWaiters.splice(0)) w();
 };
-const enqueueUserRegex = (op: UserRegexOp, source: string, flags: string, text: string) => {
+const enqueueUserRegex = (op: UserRegexOp, source: string, flags: string, text: string, replacement = "") => {
   userRegexMissCount++;
-  const groupKey = `${op}\u0001${flags}\u0001${source}`;
+  const groupKey = `${op}\u0001${flags}\u0001${source}\u0001${replacement}`;
   let job = userRegexQueue.get(groupKey);
-  if (!job) { job = { op, source, flags, texts: new Set() }; userRegexQueue.set(groupKey, job); }
+  if (!job) { job = { op, source, flags, replacement, texts: new Set() }; userRegexQueue.set(groupKey, job); }
   job.texts.add(text);
   if (!userRegexRunning) { userRegexRunning = true; setTimeout(() => { void pumpUserRegex(); }, 0); }
 };
@@ -818,18 +818,30 @@ const userRegexRemove = (source: string, text: string): string | undefined => {
   enqueueUserRegex("replace", source, "gi", text);
   return undefined;
 };
+// 画像URL置換のルール1つを当てる (i は付けない)。一致すれば置き換えた文字列、一致しなければ false。
+// 結果がまだ無ければ Worker に頼んで undefined。時間切れで使わないことにしたルールは「一致しない」
+const userRegexRewrite = (source: string, replacement: string, text: string): string | false | undefined => {
+  if (ngRegexDisabled.has(source)) return false;
+  const v = userRegexResults.get(userRegexKey("rewrite", source, "", text, replacement));
+  if (v !== undefined) return typeof v === "string" ? v : false;
+  enqueueUserRegex("rewrite", source, "", text, replacement);
+  return undefined;
+};
 // 頼んだ判定がすべて終わるまで待つ
 const userRegexSettled = (): Promise<void> =>
   !userRegexRunning && userRegexQueue.size === 0 ? Promise.resolve() : new Promise((resolve) => { userRegexWaiters.push(resolve); });
 // probe (判定を頼む処理) を、新しく頼むものが無くなるまで繰り返す。
-// 正規表現を続けて当てるとき (1つ目で取り除いた残りに2つ目を当てる) は、1つ目の結果が届いてから2つ目を頼むため
-const userRegexSettleFor = async (probe: () => void) => {
-  for (let i = 0; i < 16; i++) {
+// 正規表現を続けて当てるとき (1つ目で取り除いた残りに2つ目を当てる) は、1つ目の結果が届いてから2つ目を頼むため、
+// 当たる正規表現の数だけ回る。すべての結果がそろえば true。そろわなければ false (呼ぶ側は、途中の結果のままは流さない)
+const USER_REGEX_SETTLE_ROUNDS = 400;
+const userRegexSettleFor = async (probe: () => void): Promise<boolean> => {
+  for (let i = 0; i < USER_REGEX_SETTLE_ROUNDS; i++) {
     await userRegexSettled();
     const before = userRegexMissCount;
     probe();
-    if (userRegexMissCount === before) return;
+    if (userRegexMissCount === before) return true;
   }
+  return false;
 };
 // ハイライト色は本文HTMLの style 属性に文字列で埋め込むため、#RGB〜#RRGGBBAA の16進表記以外は使わない
 const isSafeHexColor = (c: string): boolean => /^#[0-9a-fA-F]{3,8}$/.test(c);
@@ -926,13 +938,14 @@ const isAsciiArt = (html: string): boolean => {
 
 type UrlReplaceRuleOpts = { pattern: string; replacement: string; referer?: string };
 
-const applyUrlRules = (url: string, rules: UrlReplaceRuleOpts[]): string => {
+// 画像URL置換のルールを順に当て、最初に一致したルールで置き換える。正規表現は Worker で実行する (画面が固まらないように)。
+// 結果がまだ無いときは undefined (呼ぶ側はリンクだけにして、結果が届いたら描き直す)
+const applyUrlRules = (url: string, rules: UrlReplaceRuleOpts[]): string | undefined => {
   for (const rule of rules) {
     if (rule.pattern.length > MAX_USER_REGEX_LEN) continue;
-    try {
-      const re = new RegExp(rule.pattern);
-      if (re.test(url)) return url.replace(re, rule.replacement);
-    } catch { /* ignore bad regex */ }
+    const r = userRegexRewrite(rule.pattern, rule.replacement, url);
+    if (r === undefined) return undefined;
+    if (typeof r === "string") return r;
   }
   return url;
 };
@@ -1212,7 +1225,10 @@ const renderResponseBody = (html: string, opts?: RenderBodyOpts): { __html: stri
       (match) => {
         const rawHref = normalizeExternalUrl(match);
         if (!rawHref) return match;
-        const href = opts?.urlRules?.length ? applyUrlRules(rawHref, opts.urlRules) : rawHref;
+        const ruled = opts?.urlRules?.length ? applyUrlRules(rawHref, opts.urlRules) : rawHref;
+        // 置き換えの結果がまだ無いときは、リンクだけにする (サムネイルは結果が届いて描き直したときに出す)
+        if (ruled === undefined) return `<a class="body-link" href="${escapeOgpText(rawHref)}" target="_blank" rel="noopener">${match}</a>`;
+        const href = ruled;
         // 家庭内・自分の PC のアドレスの画像はサムネイルにしない (リンクとしては残す)
         if (isPrivateHostUrl(href)) return `<a class="body-link" href="${escapeOgpText(href)}" target="_blank" rel="noopener">${match}</a>`;
         if (sizeGated) {
@@ -2672,7 +2688,7 @@ export default function App() {
     // OBS 表示へも送る (Twitch・YouTube は ID を出さない・番号は無い)。掲示板のレスは配信ホワイトリストの ID のものだけ
     // (「開いているスレのレスをすべて流す」がオンでも、OBS には全部は出さない)
     const forOverlay = add.filter((it) => isChatSource(it.source) || broadcastWhitelistRef.current[it.uid]);
-    if (isTauriRuntime() && overlayEnabledRef.current && forOverlay.length > 0) {
+    if (isTauriRuntime() && overlayEnabledRef.current && forOverlay.length > 0 && !outputBlocked()) {
       const items = forOverlay.map((it) => ({
         source: it.source, site: it.site, no: isChatSource(it.source) ? null : it.no,
         name: it.name, uid: isChatSource(it.source) ? "" : it.uid, text: it.text, color: it.color,
@@ -2782,6 +2798,20 @@ export default function App() {
   // 待っている間に来た新着も、順番どおりに後ろへ並べる (NG に当たるレスを先に流してしまわないように)
   const arrivalOrderRef = useRef<Promise<void>>(Promise.resolve());
   const arrivalWaitingRef = useRef(0);
+  // 読み上げの「今すぐ停止」の回数。停止より前に受け取って結果を待っていた分は、読み上げない
+  const ttsGenRef = useRef(0);
+  // 0 より大きい間は読み上げない (停止より前に受け取った新着を流すとき)
+  const ttsSuppressRef = useRef(0);
+  // 配信への出力 (読み上げ・字幕・OBS 表示) の緊急停止。受信と手元の表示は続ける (保存しない。起動し直すと戻る)
+  const [broadcastHalted, setBroadcastHalted] = useState(false);
+  const broadcastHaltedRef = useRef(false);
+  // 止めた回数。受け取ったときと流すときで違えば、その間に止めている (再開していても、その発言は配信へ出さない)
+  const haltGenRef = useRef(0);
+  // 0 より大きい間は、配信への出力 (新着レスペイン・字幕・OBS 表示・読み上げ) に出さない
+  const outputSuppressRef = useRef(0);
+  const outputBlocked = () => broadcastHaltedRef.current || outputSuppressRef.current > 0;
+  // YouTube で削除された発言の目印 (結果を待っている新着を流す直前に除く)
+  const removedChatKeysRef = useRef<Set<string>>(new Set());
   const inArrivalOrder = (build: () => ArrivalItem[], dispatch: (arrivals: ArrivalItem[]) => void) => {
     const buildAll = () => {
       const arrivals = build();
@@ -2799,8 +2829,22 @@ export default function App() {
       if (userRegexMissCount === before) { dispatch(arrivals); return; }
     }
     arrivalWaitingRef.current++;
+    const gen = ttsGenRef.current;
+    const hg = haltGenRef.current;
+    // 受け取った時点で止めていたか (止めている間に受け取った発言は、結果を待つ間に再開しても配信へ出さない)
+    const haltedAtReceipt = broadcastHaltedRef.current;
     arrivalOrderRef.current = arrivalOrderRef.current
-      .then(async () => { await userRegexSettleFor(() => { buildAll(); }); dispatch(buildAll()); })
+      .then(async () => {
+        // 結果がそろわないときは、途中の結果 (NG・辞書を当てきっていない本文) のままは流さない
+        if (!(await userRegexSettleFor(() => { buildAll(); }))) { console.warn("正規表現の結果がそろわないため、新着を流しませんでした"); return; }
+        const arrivals = buildAll();
+        // 待っている間に読み上げを止めたときは、停止より前に受け取った分を読み上げない。
+        // 待っている間に配信への出力を止めた (再開した) ときは、その発言を配信へ出さない (手元の表示・ログは続ける)
+        const haltedSince = haltedAtReceipt || hg !== haltGenRef.current;
+        if (haltedSince) outputSuppressRef.current++;
+        if (gen !== ttsGenRef.current) ttsSuppressRef.current++;
+        try { dispatch(arrivals); } finally { if (gen !== ttsGenRef.current) ttsSuppressRef.current--; if (haltedSince) outputSuppressRef.current--; }
+      })
       .catch((e) => console.warn("新着を流せませんでした", e))
       .finally(() => { arrivalWaitingRef.current--; });
   };
@@ -2815,6 +2859,8 @@ export default function App() {
   subtitleSyncEnabledRef.current = subtitleSyncEnabled;
   // 字幕へ送ったレスの通し番号と、字幕から報告された表示終了予定時刻 (performance.now() 基準)
   const subtitleSeqRef = useRef(0);
+  // この画面の起動ごとの目印 (字幕ウィンドウが、番号の古いものを受け付けないために使う。画面を読み込み直すと番号が 0 から始まるため)
+  const subtitleBootRef = useRef(`${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
   // 字幕からの報告: 最下行到達予定時刻 (bottomAt) と、到達後の表示時間 (holdMs)。同期 ON のとき新着ペイン側と合成する
   const subtitleEndAtRef = useRef<{ seq: number; bottomAt: number; holdMs: number } | null>(null);
   // 新着ペイン側の同じ情報 (最下行に達した時刻と、その後の表示時間)。scheduleArrivalAdvance で確定する
@@ -3375,7 +3421,7 @@ export default function App() {
     const list = slow.map((s) => `/${s.length > 60 ? `${s.slice(0, 60)}…` : s}/`).join("\n");
     setAppConfirm({
       title: "使っていない正規表現があります",
-      message: `次の正規表現は、判定に時間がかかりすぎたため、使っていません (NG・読み上げの辞書などの設定には残しています)。\n${list}\n\n「(a+)+」のような繰り返しの中の繰り返しなどで、時間がかかることがあります。書き直すか、消してください。`,
+      message: `次の正規表現は、判定に時間がかかりすぎたため、使っていません (NG・読み上げの辞書・画像URL置換などの設定には残しています)。\n${list}\n\n「(a+)+」のような繰り返しの中の繰り返しなどで、時間がかかることがあります。書き直すか、消してください。`,
       buttons: [{ label: "OK", primary: true, onClick: () => {} }],
     });
     setStatus(`正規表現を ${slow.length} 件、判定に使っていません (時間がかかりすぎたため)`);
@@ -3411,6 +3457,29 @@ export default function App() {
   const notifySlowNgRegexesRef = useRef(notifySlowNgRegexes);
   notifySlowNgRegexesRef.current = notifySlowNgRegexes;
 
+  const ngFiltersRef = useRef(ngFilters);
+  ngFiltersRef.current = ngFilters;
+  // 消した直後に出す「取り消す」(8秒で消える)。消した内容は配信用のマスクのため文には出さない
+  const [undoToast, setUndoToast] = useState<{ id: number; text: string; undo: () => void } | null>(null);
+  const undoToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showUndo = (text: string, undo: () => void) => {
+    if (undoToastTimerRef.current) clearTimeout(undoToastTimerRef.current);
+    const id = Date.now();
+    setUndoToast({ id, text, undo });
+    undoToastTimerRef.current = setTimeout(() => { undoToastTimerRef.current = null; setUndoToast((t) => (t?.id === id ? null : t)); }, 8000);
+  };
+  // 一覧から1件消し、「取り消す」で同じ場所に戻す (読み上げの辞書など、state だけで保存するもの)
+  const removeWithUndo = <T,>(text: string, set: (fn: (prev: T[]) => T[]) => void, list: T[], i: number) => {
+    const entry = list[i];
+    if (entry === undefined) return;
+    set((prev) => prev.filter((x) => x !== entry));
+    showUndo(text, () => set((prev) => {
+      if (prev.includes(entry)) return prev;
+      const next = [...prev];
+      next.splice(Math.min(i, next.length), 0, entry);
+      return next;
+    }));
+  };
   const persistNgFilters = async (next: NgFilters) => {
     setNgFilters(next);
     if (!isTauriRuntime()) return;
@@ -3455,8 +3524,19 @@ export default function App() {
   };
 
   const removeNgEntry = (type: NgCategory, value: string) => {
+    const idx = ngFilters[type].findIndex((v) => ngVal(v) === value);
+    if (idx < 0) return;
+    const removed = ngFilters[type][idx];
     void persistNgFilters({ ...ngFilters, [type]: ngFilters[type].filter((v) => ngVal(v) !== value) });
     setStatus(`removed NG ${type}: ${value}`);
+    // 取り消すと、同じ場所に戻す (その間に同じものを足していれば何もしない)
+    showUndo("NG を1件消しました", () => {
+      const cur = ngFiltersRef.current;
+      if (cur[type].some((v) => ngVal(v) === value)) return;
+      const list = [...cur[type]];
+      list.splice(Math.min(idx, list.length), 0, removed);
+      void persistNgFilters({ ...cur, [type]: list });
+    });
   };
 
   // 登録済みのNGエントリのモード(透明あぼ～ん/通常あぼ～ん)を後から変更する (画像NGは対象外、常に画像のみ非表示)
@@ -4258,7 +4338,7 @@ export default function App() {
           .map((r) => makeArrival(r, tabTitle, tabUrl, rows)), (arrivals) => {
           if (autoRefreshEnabled && arrivals.length > 0) {
             const queueWasEmpty = arrivalQueueRef.current.length === 0;
-            arrivalQueueRef.current.push(...arrivals);
+            if (!outputBlocked()) arrivalQueueRef.current.push(...arrivals); // 出力を止めている間 (止めている間に受け取ったもの) は新着レスペインにも積まない
             setArrivalQueueCount(arrivalQueueRef.current.length);
             pushBroadcastArrivals(arrivals);
             if (!arrivalPausedRef.current && !arrivalTimerRef.current && (currentArrivalItemRef.current === null || queueWasEmpty)) {
@@ -4496,7 +4576,7 @@ export default function App() {
         // Add to new arrivals pane when autoReload is ON
         if (autoRefreshEnabled && arrivals.length > 0) {
           const queueWasEmpty = arrivalQueueRef.current.length === 0;
-          arrivalQueueRef.current.push(...arrivals);
+          if (!outputBlocked()) arrivalQueueRef.current.push(...arrivals); // 出力を止めている間 (止めている間に受け取ったもの) は新着レスペインにも積まない
           setArrivalQueueCount(arrivalQueueRef.current.length);
           pushBroadcastArrivals(arrivals);
           if (!arrivalPausedRef.current && !arrivalTimerRef.current && (currentArrivalItemRef.current === null || queueWasEmpty)) {
@@ -4696,7 +4776,7 @@ export default function App() {
     if (arrivals.length === 0) return;
     // 新着ペイン・字幕・OBS連携 (掲示板の新着と同じ経路)
     const queueWasEmpty = arrivalQueueRef.current.length === 0;
-    arrivalQueueRef.current.push(...arrivals);
+    if (!outputBlocked()) arrivalQueueRef.current.push(...arrivals); // 出力を止めている間 (止めている間に受け取ったもの) は新着レスペインにも積まない
     const twitchQueued = arrivalQueueRef.current.filter((a) => isTwitchUrl(a.threadUrl)).length;
     if (twitchQueued > twitchMaxQueuedArrivals) {
       let drop = twitchQueued - twitchMaxQueuedArrivals;
@@ -4883,9 +4963,11 @@ export default function App() {
       const out: ArrivalItem[] = [];
       added.forEach((r, i) => {
         if (deletedNos.has(r.responseNo)) return;
+        const x = extras[i];
+        // 結果を待っている間に削除された発言は流さない
+        if (x?.key && removedChatKeysRef.current.has(x.key)) return;
         if (getNgResult({ name: r.name, mail: r.mail, time: r.dateAndId, text: r.body }, url)?.mode === "hide") return;
         const a = makeArrival(r, tab.title, url, rows);
-        const x = extras[i];
         if (x?.ev) a.twitchEvent = x.ev;
         if (x?.raw) a.twitchRaw = x.raw;
         if (x?.key) a.chatKey = x.key;
@@ -4894,13 +4976,18 @@ export default function App() {
       return out;
       });
     }
-    // 削除の反映も、前に流す新着より後になるよう同じ順番で行う
+    // 削除はすぐ反映する (もう流したものを消す)。結果を待っている新着は、流す直前にこの目印で除く
+    if (removedKeys.length > 0) {
+      const rk = removedChatKeysRef.current;
+      for (const k of removedKeys) rk.add(k);
+      if (rk.size > 5000) { let n = 0; for (const k of rk) { rk.delete(k); if (++n >= 1000) break; } }
+      removeChatKeys(removedKeys);
+    }
     inArrivalOrder(() => builders.flatMap((f) => f()), (arrivals) => {
-    if (removedKeys.length > 0) removeChatKeys(removedKeys);
     if (arrivals.length === 0) return;
     // 新着ペイン・字幕・OBS連携 (掲示板の新着と同じ経路)。溜めておく上限は Twitch と同じ設定を使う
     const queueWasEmpty = arrivalQueueRef.current.length === 0;
-    arrivalQueueRef.current.push(...arrivals);
+    if (!outputBlocked()) arrivalQueueRef.current.push(...arrivals); // 出力を止めている間 (止めている間に受け取ったもの) は新着レスペインにも積まない
     const queued = arrivalQueueRef.current.filter((a) => isYoutubeUrl(a.threadUrl)).length;
     if (queued > twitchMaxQueuedArrivals) {
       let drop = queued - twitchMaxQueuedArrivals;
@@ -5455,14 +5542,22 @@ export default function App() {
   const ttsOrderRef = useRef<Promise<void>>(Promise.resolve());
   const ttsWaitingRef = useRef(0);
   const ttsInOrder = (run: (dry: boolean) => void) => {
+    // 停止より前に受け取った新着・配信への出力を止めている間は読み上げない
+    if (ttsSuppressRef.current > 0 || outputBlocked()) return;
     if (ttsWaitingRef.current === 0) {
       const before = userRegexMissCount;
       run(true);
       if (userRegexMissCount === before) { run(false); return; }
     }
     ttsWaitingRef.current++;
+    const gen = ttsGenRef.current;
     ttsOrderRef.current = ttsOrderRef.current
-      .then(async () => { await userRegexSettleFor(() => run(true)); run(false); })
+      .then(async () => {
+        const ok = await userRegexSettleFor(() => run(true));
+        // 結果がそろわない・待っている間に「今すぐ停止」した・配信への出力を止めたときは読まない
+        if (!ok || gen !== ttsGenRef.current || broadcastHaltedRef.current) return;
+        run(false);
+      })
       .catch((e) => console.warn("読み上げられませんでした", e))
       .finally(() => { ttsWaitingRef.current--; });
   };
@@ -5613,6 +5708,7 @@ export default function App() {
 
   // TTS: stop playback and clear queue; returns a promise so callers can await full stop
   const ttsStop = (): Promise<void> => {
+    ttsGenRef.current++;
     ttsQueueRef.current = [];
     ttsProcessingRef.current = false;
     if (isTauriRuntime()) return invoke("tts_stop").catch(() => {}) as Promise<void>;
@@ -5643,6 +5739,7 @@ export default function App() {
   const subtitleUpdate = (data: { threadTitle?: string; name?: string; mail?: string; id?: string; date?: string; body?: string; responseNo?: number; idSeq?: number; idCount?: number }, item?: ArrivalItem) => {
     // タイマー経由で呼ばれるため、設定・ハイライトは ref で最新値を読む (古いレンダーの値を使わない)
     if (!isTauriRuntime() || !subtitleVisibleRef.current) return;
+    if (outputBlocked()) return; // 配信への出力を止めている間 (止めている間に受け取ったもの) は字幕に出さない
     // 通し番号: 字幕からの表示終了報告を現在のレスと突き合わせるために使う
     const seq = ++subtitleSeqRef.current;
     subtitleEndAtRef.current = null;
@@ -5669,7 +5766,9 @@ export default function App() {
           // 置換文字列に $ が含まれても特殊解釈されないよう関数形式で置換する
           slots.forEach((s, i) => { bodyHtml = bodyHtml.replace(s.full, () => htmls[i] ?? ""); });
           if (item) bodyHtml = arrivalEmoteHtml(item, bodyHtml);
-          return invoke("subtitle_update", { data: { ...data, seq, scroll, show, bodyHtml, idColor, ...subtitleTwitchExtras(item) } });
+          // カードを待っている間に、出力を止めた・次の字幕に進んだときは送らない (古い本文がまた出ないように)
+          if (broadcastHaltedRef.current || seq !== subtitleSeqRef.current) return;
+          return invoke("subtitle_update", { data: { ...data, seq, boot: subtitleBootRef.current, scroll, show, bodyHtml, idColor, ...subtitleTwitchExtras(item) } });
         })
         .catch((e) => console.warn("subtitle_update:", e));
       return;
@@ -5678,9 +5777,37 @@ export default function App() {
       ? renderResponseBodyHighlighted(data.body, "", { hideImages: true }, wordHighlights).__html
       : undefined;
     if (bodyHtml && item) bodyHtml = arrivalEmoteHtml(item, bodyHtml);
-    invoke("subtitle_update", { data: { ...data, seq, scroll, show, bodyHtml, idColor, ...subtitleTwitchExtras(item) } }).catch((e) => console.warn("subtitle_update:", e));
+    invoke("subtitle_update", { data: { ...data, seq, boot: subtitleBootRef.current, scroll, show, bodyHtml, idColor, ...subtitleTwitchExtras(item) } }).catch((e) => console.warn("subtitle_update:", e));
   };
 
+  // 配信への出力 (読み上げ・字幕・OBS 表示) を止める / 再開する。受信・新着レスペイン・ビュワーなど手元の表示は続ける
+  const haltBroadcast = () => {
+    broadcastHaltedRef.current = true;
+    haltGenRef.current++;
+    setBroadcastHalted(true);
+    void ttsStop();
+    if (isTauriRuntime()) {
+      // 字幕は空にする (表示中の内容を消す)
+      if (subtitleVisibleRef.current) {
+        subtitleEndAtRef.current = null;
+        void invoke("subtitle_update", { data: { seq: ++subtitleSeqRef.current, boot: subtitleBootRef.current, body: "" } }).catch((e) => console.warn("subtitle_update:", e));
+      }
+      void invoke("overlay_clear").catch((e) => console.warn("overlay_clear failed", e));
+    }
+    // 新着レスペインも止める: 待ち行列と表示中のレスを消す (止めている間に届いた分はためない)
+    arrivalQueueRef.current = [];
+    setArrivalQueueCount(0);
+    arrivalRunIdRef.current++;
+    if (arrivalTimerRef.current) { clearTimeout(arrivalTimerRef.current); arrivalTimerRef.current = null; }
+    currentArrivalItemRef.current = null;
+    setCurrentArrivalItem(null);
+    setStatus("読み上げ・字幕・OBS 表示・新着レスペインを止めました。受信とスレ・ビュワーの表示は続けます");
+  };
+  const resumeBroadcast = () => {
+    broadcastHaltedRef.current = false;
+    setBroadcastHalted(false);
+    setStatus("読み上げ・字幕・OBS 表示・新着レスペインを再開しました (止めていた間の分は流しません)");
+  };
   const advanceToNextArrival = () => {
     arrivalRunIdRef.current++;
     arrivalFinalDeadlineRef.current = null;
@@ -8410,11 +8537,12 @@ export default function App() {
       .then((fn) => { if (disposed) fn(); else unlisten = fn; }).catch((e) => console.warn("compose-popup-closed listen failed", e));
     return () => { disposed = true; if (unlisten) unlisten(); };
   }, []);
-  // 字幕ヘッダに一時停止状態と残りキュー数を表示
+  // 字幕ヘッダに一時停止状態と残りキュー数を表示 (出力を止めている間は、字幕には何も出さない)
   useEffect(() => {
     if (!isTauriRuntime() || !subtitleVisible) return;
-    void invoke("subtitle_status", { paused: arrivalPaused, remaining: arrivalQueueCount }).catch((e) => console.warn("subtitle_status:", e));
-  }, [arrivalPaused, arrivalQueueCount, subtitleVisible]);
+    const data = broadcastHalted ? { paused: false, remaining: 0 } : { paused: arrivalPaused, remaining: arrivalQueueCount };
+    void invoke("subtitle_status", data).catch((e) => console.warn("subtitle_status:", e));
+  }, [arrivalPaused, arrivalQueueCount, subtitleVisible, broadcastHalted]);
   // メインのスレ表示。レス表示欄はスレ一覧表示 (activePaneView === "threads") のあいだ DOM から外れ、
   // スレを開くと別の要素として作り直されるため、表示切り替えのたびに監視を付け直す。
   useEffect(() => {
@@ -9020,6 +9148,15 @@ export default function App() {
             )}
           </div>
         ))}
+        {/* 読み上げ・字幕・OBS 表示への出力の緊急停止 (メニュー欄の右端) */}
+        <span className="menu-bar-grow" />
+        <button
+          className={`broadcast-halt-btn${broadcastHalted ? " on" : ""}`}
+          onClick={() => (broadcastHalted ? resumeBroadcast() : haltBroadcast())}
+          title={broadcastHalted
+            ? "読み上げ・字幕・OBS 表示・新着レスペインを止めています。押すと再開します (止めていた間の分は流しません)"
+            : "読み上げ・字幕・OBS 表示への出力をすぐ止めて、表示中の内容と待っている分を消します。新着レスペインも止めます。受信と、スレ・ビュワーの表示は続けます"}
+        >{broadcastHalted ? <><Play size={12} />停止中</> : <><Ban size={12} />読み上げ・字幕・OBSを止める</>}</button>
       </header>
       <div className="tool-bar">
         <button onClick={() => setBoardPaneVisible((v) => !v)} title={boardPaneVisible ? "板一覧を非表示" : "板一覧を表示"}>
@@ -11070,16 +11207,19 @@ export default function App() {
               const arrivals: ArrivalItem[] = items
                 .filter((item) => showsArrivalResNo(curThreadUrl, item.id))
                 .map((item) => makeArrival({ responseNo: item.id, name: item.name, mail: item.mail, dateAndId: item.time, body: item.text }, tabTitle, curThreadUrl, fetchedResponses));
+              if (broadcastHaltedRef.current) { setStatus("読み上げ・字幕・OBS を止めているため、新着として流しません (再開してから選んでください)"); return; }
               setStatus(`レス ${startNo} から新着として流します (${arrivals.length}件)`);
               if (arrivals.length === 0) return;
               const queueWasEmpty = arrivalQueueRef.current.length === 0;
-              arrivalQueueRef.current.push(...arrivals);
+              if (!outputBlocked()) arrivalQueueRef.current.push(...arrivals); // 出力を止めている間 (止めている間に受け取ったもの) は新着レスペインにも積まない
               setArrivalQueueCount(arrivalQueueRef.current.length);
               pushBroadcastArrivals(arrivals);
               if (!arrivalPausedRef.current && !arrivalTimerRef.current && (currentArrivalItemRef.current === null || queueWasEmpty)) {
                 advanceToNextArrival();
               }
-            }} title="このレスから後を、新着レスとして新着レスペイン・字幕に流します (配信ホワイトリストの ID のレスはビュワー・OBS 表示にも流れます)">このレスから新着として流す</button>
+            }} disabled={broadcastHalted} title={broadcastHalted
+              ? "読み上げ・字幕・OBS を止めているため使えません (メニュー欄の右端の「停止中」を押して再開してから選んでください)"
+              : "このレスから後を、新着レスとして新着レスペイン・字幕に流します (配信ホワイトリストの ID のレスはビュワー・OBS 表示にも流れます)"}>このレスから新着として流す</button>
           )}
           <button onClick={() => void runResponseAction("toggle-aa")}>
             {(() => {
@@ -11652,6 +11792,13 @@ export default function App() {
           </div>
         </div>
       )}
+      {undoToast && (
+        <div className="undo-toast" role="status">
+          <span className="undo-toast-text">{undoToast.text}</span>
+          <button className="undo-toast-btn" onClick={() => { undoToast.undo(); setUndoToast(null); setStatus("取り消しました"); }}>取り消す</button>
+          <button className="undo-toast-close" onClick={() => setUndoToast(null)} title="閉じる">×</button>
+        </div>
+      )}
       {appConfirm && (
         <div className="app-confirm-overlay" onClick={() => setAppConfirm(null)}>
           <div className="app-confirm" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
@@ -12066,9 +12213,7 @@ export default function App() {
                   }}>デフォルトに戻す</button>
                   <button onClick={() => {
                     if (!isTauriRuntime()) return;
-                    invoke<string>("get_data_dir").then((dir) => {
-                      invoke("open_external_url", { url: dir }).catch(() => {});
-                    }).catch(() => {});
+                    invoke("open_data_folder").catch((e) => { console.warn("open_data_folder failed", e); setStatus(`データフォルダを開けませんでした: ${String(e)}`); });
                   }}>データフォルダを開く</button>
                 </div>
                 <div className="lf-fs0_8em-c-sub-mt4">
@@ -12537,7 +12682,7 @@ export default function App() {
                           <input type="checkbox" checked={!!entry.fullReplace} onChange={(e) => setTtsDictEntries((prev) => prev.map((x, j) => j === i ? { ...x, fullReplace: e.target.checked } : x))} />
                         </td>
                         <td className="lf-p3-6">
-                          <button onClick={() => setTtsDictEntries((prev) => prev.filter((_, j) => j !== i))}>削除</button>
+                          <button onClick={() => removeWithUndo("読み上げ辞書を1件消しました", setTtsDictEntries, ttsDictEntries, i)}>削除</button>
                         </td>
                       </tr>
                     ))}
@@ -12586,7 +12731,7 @@ export default function App() {
                           <input type={maskInputType} value={entry.to} onChange={(e) => setTtsIpAllow((prev) => prev.map((x, j) => j === i ? { ...x, to: e.target.value } : x))} className="lf-w220" />
                         </td>
                         <td className="lf-p3-6">
-                          <button onClick={() => setTtsIpAllow((prev) => prev.filter((_, j) => j !== i))}>削除</button>
+                          <button onClick={() => removeWithUndo("読み上げ許可リストを1件消しました", setTtsIpAllow, ttsIpAllow, i)}>削除</button>
                         </td>
                       </tr>
                     ))}
@@ -12637,7 +12782,7 @@ export default function App() {
                             : <span className="settings-note">常に</span>}
                         </td>
                         <td className="lf-p3-6">
-                          <button onClick={() => setTtsMuteDict((prev) => ({ ...prev, [kind]: prev[kind].filter((_, j) => j !== i) }))}>削除</button>
+                          <button onClick={() => removeWithUndo("読み上げない語を1件消しました", (fn: (prev: typeof ttsMuteDict[typeof kind]) => typeof ttsMuteDict[typeof kind]) => setTtsMuteDict((prev) => ({ ...prev, [kind]: fn(prev[kind]) })), ttsMuteDict[kind], i)}>削除</button>
                         </td>
                       </tr>
                     )))}

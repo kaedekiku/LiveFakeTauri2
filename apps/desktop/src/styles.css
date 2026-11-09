@@ -4228,6 +4228,24 @@ img.twitch-emote.youtube-emoji { height: var(--tw-emote, 28px); }
 .tool-bar .arrival-tools button.active { background: #dde4ff; border-color: #9aa8e0; }
 .dark .tool-bar .arrival-tools button.active { background: #33405e; border-color: #5a6a9a; }
 .tool-bar .arrival-tools button:disabled { opacity: 0.5; cursor: default; }
+/* 読み上げ・字幕・OBS 表示への出力の緊急停止 (メニュー欄の右端。止めている間は赤) */
+.menu-bar-grow { flex: 1 1 auto; }
+.menu-bar .broadcast-halt-btn { display: inline-flex; align-items: center; gap: 3px; flex: none; margin: 1px 2px; padding: 0 8px; height: 20px; font-size: 11px;
+  border: 1px solid #b8b8b8; border-radius: 3px; background: #f6f6f6; color: #333; cursor: pointer; white-space: nowrap; }
+.menu-bar .broadcast-halt-btn:hover { background: #fde4e4; border-color: #d9534f; color: #8a1414; }
+.menu-bar .broadcast-halt-btn.on { background: #d64545; border-color: #b02020; color: #fff; font-weight: 600; }
+.dark .menu-bar .broadcast-halt-btn { background: #2a2a2a; border-color: #555; color: #ddd; }
+.dark .menu-bar .broadcast-halt-btn:hover { background: #3d1717; border-color: #b94545; color: #ffb3b3; }
+.dark .menu-bar .broadcast-halt-btn.on { background: #b93a3a; border-color: #e06060; color: #fff; }
+/* 消した直後の「取り消す」 */
+.undo-toast { position: fixed; left: 50%; bottom: 36px; transform: translateX(-50%); z-index: 1200; display: flex; align-items: center; gap: 8px; max-width: calc(100vw - 32px); padding: 6px 8px 6px 12px; border-radius: 6px; background: #333; color: #fff; font-size: 12px; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25); }
+.undo-toast-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.undo-toast-btn { flex: none; border: 1px solid #8ab4ff; border-radius: 4px; background: transparent; color: #a9c8ff; font-size: 12px; padding: 1px 8px; cursor: pointer; }
+.undo-toast-btn:hover { background: rgba(138, 180, 255, 0.15); }
+.undo-toast-close { flex: none; border: none; background: none; color: #ccc; cursor: pointer; font-size: 14px; padding: 0 2px; }
+.dark .undo-toast { background: #e8e8e8; color: #111; }
+.dark .undo-toast-btn { border-color: #2f62c8; color: #1f4fae; }
+.dark .undo-toast-close { color: #555; }
 
 /* ビュワーの見出し (掲示板のレス): 板・メール欄・書き込み回数 */
 .viewer-board { color: #555; font-weight: 700; }
