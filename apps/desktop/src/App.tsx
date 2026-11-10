@@ -17,7 +17,7 @@ import {
   Star, X, ChevronLeft, ChevronRight, ChevronDown, Ban,
   Image, Film, ExternalLink,
   Subtitles, Volume2, VolumeX, Ear, EarOff, ChevronUp, Search, PanelLeftClose, PanelLeftOpen, Smile,
-  Tv, LayoutGrid, Globe, Play,
+  Tv, LayoutGrid, Globe, Play, FileText,
 } from "lucide-react";
 
 type MenuInfo = { topLevelKeys: number; normalizedSample: string };
@@ -95,6 +95,8 @@ type ThreadTab = {
   ttsOff?: boolean;
   /** ビュワーの「選んだスレを流す」の対象にする (掲示板のスレだけ)。既定 (未設定) はオン、false でオフ */
   viewerOn?: boolean;
+  /** 掲示板のログを残す (設定の「ログを残すスレ」が「選んだスレだけ」のときに使う)。既定 (未設定) はオフ */
+  logOn?: boolean;
 };
 
 const stripHtmlForMatch = (html: string): string =>
@@ -1862,6 +1864,18 @@ export default function App() {
   const [smoothScroll, setSmoothScroll] = useState(true);
   const [maxOpenTabs, setMaxOpenTabs] = useState(20);
   const [logRetentionDays, setLogRetentionDays] = useState(7);
+  // 掲示板のログ (data/logs)。残すスレ: 開いたスレ全部 (既定) / 選んだスレだけ / 残さない。日数・容量 (0 = 無制限) を過ぎたものは古いものから消す
+  type BoardLogMode = "all" | "selected" | "off";
+  const [boardLogMode, setBoardLogMode] = useState<BoardLogMode>("all");
+  const boardLogModeRef = useRef<BoardLogMode>("all");
+  boardLogModeRef.current = boardLogMode;
+  const [boardLogDays, setBoardLogDays] = useState(365);
+  const [boardLogMaxMb, setBoardLogMaxMb] = useState(1000);
+  const [boardLogDaysDraft, setBoardLogDaysDraft] = useState("365");
+  const [boardLogMaxMbDraft, setBoardLogMaxMbDraft] = useState("1000");
+  useEffect(() => { setBoardLogDaysDraft(String(boardLogDays)); }, [boardLogDays]);
+  useEffect(() => { setBoardLogMaxMbDraft(String(boardLogMaxMb)); }, [boardLogMaxMb]);
+  const [boardLogError, setBoardLogError] = useState("");
   // ブラウザ (WebView2) のディスクキャッシュ上限 (MB)。起動時に Rust 側が settings.ini から読むため再起動後に反映
   const [webviewCacheMb, setWebviewCacheMb] = useState(100);
   const smoothScrollRef = useRef(true);
@@ -2154,7 +2168,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   type SettingsCategory = "display" | "posting" | "tts" | "tts-dict" | "proxy" | "ng" | "subtitle" | "highlights" | "presets" | "reset" | "info" | "twitch" | "youtube" | "viewer" | "connect" | "commands";
   const SETTINGS_CATEGORIES: SettingsCategory[] = ["display", "posting", "tts", "tts-dict", "ng", "highlights", "subtitle", "connect", "twitch", "youtube", "viewer", "commands", "proxy", "presets", "reset", "info"];
-  const SETTINGS_CATEGORY_LABELS: Record<SettingsCategory, string> = { display: "表示", posting: "書き込み", tts: "読み上げ", "tts-dict": "読み上げ辞書", subtitle: "字幕", proxy: "プロキシ", ng: "NG", highlights: "ハイライト", presets: "プリセット", reset: "リセット", info: "情報", twitch: "Twitch", youtube: "YouTube", viewer: "ビュワー", connect: "接続", commands: "コマンド" };
+  const SETTINGS_CATEGORY_LABELS: Record<SettingsCategory, string> = { display: "表示", posting: "書き込み", tts: "読み上げ", "tts-dict": "読み上げ辞書", subtitle: "字幕", proxy: "プロキシ", ng: "NG", highlights: "ハイライト", presets: "プリセット", reset: "リセット", info: "情報", twitch: "Twitch", youtube: "YouTube", viewer: "ビュワー", connect: "接続とログ", commands: "コマンド" };
   // 設定画面の保存まわりの状態 (詳細は「設定画面の保存 / 復元 / リセット / プリセット」の節)
   const settingsOpenRef = useRef(false);
   settingsOpenRef.current = settingsOpen;
@@ -4044,6 +4058,8 @@ export default function App() {
             if (cached.length > 0 && shownUrl === url) {
               setFetchedResponses(cached);
               tabCacheRef.current.set(url, { responses: cached, selectedResponse: bm ?? 1 });
+              // 掲示板のログ: 保存分から開いたときも書く (dat 落ちで取得できないスレも残すため。書いていないレスだけを書く)
+              writeBoardLog(url, title, cached);
               // Don't set newResponseStart from cache — first open should have no "new" marker
               const savedNo = loadScrollPos(url);
               if (savedNo > 1) scrollToResponseNo(savedNo);
@@ -4478,6 +4494,8 @@ export default function App() {
         return;
       }
       markMyPostIfFound(url, rows);
+      // 掲示板のログ: 取得のたびに書き足す (新しいレスが無いときも。この起動で初めてなら、スレ全体を渡す)
+      writeBoardLog(url, fetchedTitle ?? threadTabsRef.current.find((t) => t.threadUrl === url)?.title ?? "", rows, prevCount + 1);
       // 取得している間に別のタブへ切り替えていたら、そのタブの記録だけ新しくして、今の表示・位置・新着の印は動かさない
       // (そのまま進むと、表示中のタブに前のタブのレスを出し、最下部へ動かしてしまう)
       // 表示中のタブが無い (全部閉じた) ときも同じ (閉じたタブのレスを出さない)
@@ -5649,6 +5667,55 @@ export default function App() {
   // タブごとの読み上げのオンオフ (スレ・Twitch チャンネル単位)。「このレスから読み上げ」は自分で選んだ操作なので対象外
   const isTabTtsOff = (url: string) => threadTabsRef.current.some((t) => t.threadUrl === url && t.ttsOff);
   // ビュワーの「選んだスレを流す」の対象か (設定 > 接続 の「ビュワー」のチェック・タブの右クリックで切り替える)
+  // 掲示板のログを残すタブか (設定の「ログを残すスレ」とタブごとのチェック)
+  const tabLogOn = (t: ThreadTab, mode: BoardLogMode) => !isChatUrl(t.threadUrl) && (mode === "all" || (mode === "selected" && t.logOn === true));
+  const isTabLogOn = (url: string) => threadTabsRef.current.some((t) => t.threadUrl === url && tabLogOn(t, boardLogModeRef.current));
+  // この起動のあいだに、スレ全体を一度渡したスレ (2回目からは新しいレスだけを渡す。書いていないものだけを書くのは Rust 側)
+  const boardLogSentRef = useRef<Set<string>>(new Set());
+  const toBoardLogRes = (r: ThreadResponseItem) => ({
+    no: r.responseNo, name: r.name, mail: r.mail, dateAndId: r.dateAndId, body: r.body,
+    nameText: decodeHtmlEntities(r.name.replace(/<[^>]*>/g, "")),
+    uid: r.dateAndId.match(/ID:(\S+)/)?.[1] ?? "",
+    posted: r.dateAndId.replace(/\s+ID:\S+/g, "").replace(/\s+BE[:：]\d+[^\s]*/gi, "").trim(),
+    text: decodeHtmlEntities(r.body.replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]*>/g, "")).trim(),
+  });
+  // スレのレスをログに書き足す (取得のたび)。newFrom より前のレスは、この起動で一度スレ全体を渡していれば渡さない
+  const writeBoardLog = (url: string, title: string, rows: ThreadResponseItem[], newFrom = 0, opts?: { force?: boolean; full?: boolean }) => {
+    if (!isTauriRuntime() || rows.length === 0 || isChatUrl(url)) return;
+    if (!opts?.force && !isTabLogOn(url)) return;
+    const first = !boardLogSentRef.current.has(url) || opts?.full;
+    const list = first ? rows : rows.filter((r) => r.responseNo >= newFrom);
+    if (list.length === 0) return;
+    void invoke<{ written: number; needFull: boolean }>("board_log_append", {
+      threadUrl: url, title, board: boardNameOfUrl(url), responses: list.map(toBoardLogRes), full: opts?.full ?? false,
+    }).then((res) => {
+      boardLogSentRef.current.add(url);
+      setBoardLogError("");
+      // 新しくログを作るのに、スレの途中のレスしか渡せていなかったとき: 持っているスレ全体を渡し直す
+      if (res.needFull) writeBoardLog(url, title, tabCacheRef.current.get(url)?.responses ?? rows, 0, { force: true, full: true });
+    }).catch((e) => { console.warn("board_log_append failed", e); setBoardLogError(`${String(e)} (${title || url})`); });
+  };
+  const toggleTabLog = (url: string) => {
+    const tab = threadTabsRef.current.find((t) => t.threadUrl === url);
+    if (!tab || isChatUrl(url)) return;
+    const on = tab.logOn !== true;
+    setThreadTabs((prev) => prev.map((t) => (t.threadUrl === url ? { ...t, logOn: on } : t)));
+    // 残すようにしたら、いま持っているレスをすぐ書く
+    if (on && boardLogModeRef.current === "selected") writeBoardLog(url, tab.title, tabCacheRef.current.get(url)?.responses ?? [], 0, { force: true });
+  };
+  // 日数・容量を過ぎたログを消す (読み込んだとき・設定を保存したとき・1時間ごと。設定画面を開いている間は、まだ確定していないので消さない)
+  const boardLogLimitsRef = useRef({ days: 365, maxMb: 1000 });
+  boardLogLimitsRef.current = { days: boardLogDays, maxMb: boardLogMaxMb };
+  useEffect(() => {
+    if (!isTauriRuntime() || !appSettingsReady || settingsOpen) return;
+    const prune = () => {
+      const { days, maxMb } = boardLogLimitsRef.current;
+      void invoke<number>("board_log_prune", { days, maxMb }).catch((e) => console.warn("board_log_prune failed", e));
+    };
+    prune();
+    const id = window.setInterval(prune, 60 * 60 * 1000);
+    return () => window.clearInterval(id);
+  }, [boardLogDays, boardLogMaxMb, appSettingsReady, settingsOpen]);
   const isTabViewerOn = (url: string) => threadTabsRef.current.some((t) => t.threadUrl === url && t.viewerOn !== false);
   const toggleTabViewer = (url: string) => {
     setThreadTabs((prev) => prev.map((t) => (t.threadUrl === url ? { ...t, viewerOn: t.viewerOn === false } : t)));
@@ -7810,6 +7877,9 @@ export default function App() {
       if (map["App.updateNoticeSeen"] !== undefined) setUpdateNoticeSeen(map["App.updateNoticeSeen"]);
       if (map["App.viewerComposeTarget"] !== undefined) setViewerComposeTarget(map["App.viewerComposeTarget"]);
       if (map["App.logRetentionDays"]) { const n = parseInt(map["App.logRetentionDays"], 10); if (!isNaN(n) && n >= 0) setLogRetentionDays(n); }
+      if (map["App.boardLogMode"] === "all" || map["App.boardLogMode"] === "selected" || map["App.boardLogMode"] === "off") setBoardLogMode(map["App.boardLogMode"]);
+      if (map["App.boardLogDays"]) { const n = parseInt(map["App.boardLogDays"], 10); if (!isNaN(n) && n >= 0 && n <= 3650) setBoardLogDays(n); }
+      if (map["App.boardLogMaxMb"]) { const n = parseInt(map["App.boardLogMaxMb"], 10); if (!isNaN(n) && n >= 0 && n <= 100000) setBoardLogMaxMb(n); }
       if (map["App.webviewCacheMb"]) { const n = parseInt(map["App.webviewCacheMb"], 10); if (!isNaN(n)) setWebviewCacheMb(Math.max(10, Math.min(1000, n))); }
       if (map["App.imageSaveFolder"] !== undefined) setImageSaveFolder(map["App.imageSaveFolder"]);
       if (map["App.bbsmenuUrl"] !== undefined && map["App.bbsmenuUrl"].trim()) setBbsmenuUrl(map["App.bbsmenuUrl"]);
@@ -8579,6 +8649,9 @@ export default function App() {
       "App.smoothScroll": String(smoothScroll),
       "App.maxOpenTabs": String(maxOpenTabs),
       "App.logRetentionDays": String(logRetentionDays),
+      "App.boardLogMode": boardLogMode,
+      "App.boardLogDays": String(boardLogDays),
+      "App.boardLogMaxMb": String(boardLogMaxMb),
       "App.twitchSpeakName": String(twitchSpeakName),
       "App.twitchBadges": String(twitchBadgesEnabled),
       "App.twitchEmoteSize": String(twitchEmoteSize),
@@ -8659,7 +8732,7 @@ export default function App() {
   useEffect(() => {
     if (!isTauriRuntime() || !appSettingsLoadedRef.current || settingsOpenRef.current) return;
     void invoke("save_app_settings", { settings: buildAppSettingsMap() }).catch(() => {});
-  }, [responsesFontSize, responseGap, autoRefreshInterval, autoRefreshEnabled, autoScrollEnabled, smoothScroll, maxOpenTabs, logRetentionDays, tabSiteColors, tabWidthFixed, boardTabWidth, threadTabWidth, autoUpdateCheck, lastUpdateCheck, knownLatestVersion, updateNoticeSeen, viewerComposeTarget, webviewCacheMb, overlayEnabled, overlayPort, latestPanelHeight, latestPanelOpen, viewerFontFamily, viewerFontSize, viewerFontBold, viewerShow, latestShow, viewerCards, viewerAllResponses, viewerThumbs, viewerTwitchClickToLoad, twitchSpeakName, twitchBadgesEnabled, twitchEmoteSize, twitchGiantEmoteSize, twitchEmoteSpeak, twitchEmoteMax, subtitleEmoteSize, subtitleGiantEmoteSize, boardEmotesEnabled, twitchTeachEnabled, twitchTeachAnnounce, twitchMaxQueuedArrivals, twitchMaxTtsBacklog, youtubeMethod, youtubeApiInterval, youtubeSpeakName, youtubeTargetOn, youtubeTargetHours, youtubeDailyQuota, youtubeWriteReserve, chatSendConfirm, imageSaveFolder, bbsmenuUrl, shitarabaHost, jpnknHost,
+  }, [responsesFontSize, responseGap, autoRefreshInterval, autoRefreshEnabled, autoScrollEnabled, smoothScroll, maxOpenTabs, logRetentionDays, boardLogMode, boardLogDays, boardLogMaxMb, tabSiteColors, tabWidthFixed, boardTabWidth, threadTabWidth, autoUpdateCheck, lastUpdateCheck, knownLatestVersion, updateNoticeSeen, viewerComposeTarget, webviewCacheMb, overlayEnabled, overlayPort, latestPanelHeight, latestPanelOpen, viewerFontFamily, viewerFontSize, viewerFontBold, viewerShow, latestShow, viewerCards, viewerAllResponses, viewerThumbs, viewerTwitchClickToLoad, twitchSpeakName, twitchBadgesEnabled, twitchEmoteSize, twitchGiantEmoteSize, twitchEmoteSpeak, twitchEmoteMax, subtitleEmoteSize, subtitleGiantEmoteSize, boardEmotesEnabled, twitchTeachEnabled, twitchTeachAnnounce, twitchMaxQueuedArrivals, twitchMaxTtsBacklog, youtubeMethod, youtubeApiInterval, youtubeSpeakName, youtubeTargetOn, youtubeTargetHours, youtubeDailyQuota, youtubeWriteReserve, chatSendConfirm, imageSaveFolder, bbsmenuUrl, shitarabaHost, jpnknHost,
       mainAlwaysOnBottom, cssAllowExternalUrls, streamMaskEnabled, ngAboneSpeakEnabled,
       ttsMode, ttsEnabled, ttsMaxReadLength, ttsUrlOmitEnabled, ttsBoardMode, sapiVoiceIndex, sapiRate, sapiVolume,
       voicevoxEndpoint, voicevoxSpeakerId, voicevoxSpeedScale, voicevoxPitchScale, voicevoxIntonationScale, voicevoxVolumeScale,
@@ -9799,6 +9872,7 @@ export default function App() {
                 }}
               >
                 {tab.ttsOff && <EarOff size={11} className="tab-tts-off" aria-label="読み上げオフ" />}
+                {boardLogMode === "selected" && tabLogOn(tab, boardLogMode) && <FileText size={11} className="tab-log-on" aria-label="ログを残しています" />}
                 <span className="thread-tab-title title">{tab.title}</span>
                 {tabCacheRef.current.has(tab.threadUrl) && (
                   <span className="tab-res-count">({tabCacheRef.current.get(tab.threadUrl)!.responses.length})</span>
@@ -9828,7 +9902,7 @@ export default function App() {
                 {VIEWER_SITE_LABEL[src]}
               </label>
             ))}
-            <label className={`viewer-chip viewer-all-toggle${viewerAllResponses ? " on" : ""}`} title={`オン: 設定 > 接続 で「ビュワー」にチェックを入れたスレ (またはタブの右クリック →「ビュワーに流す」) のレスを、ホワイトリストに関係なく流します。オフ: 配信ホワイトリストの ID のレスだけを流します (チャットはいつも全部)。OBS 表示には、オンでもチャットとホワイトリストの ID のレスだけを送ります。選んだスレのレスは「スレの最新レス」の欄に追加しません。\n選んでいるスレ: ${threadTabs.filter((t) => t.viewerOn !== false && !isChatUrl(t.threadUrl)).length} 件`}>
+            <label className={`viewer-chip viewer-all-toggle${viewerAllResponses ? " on" : ""}`} title={`オン: 設定 > 接続とログ で「ビュワー」にチェックを入れたスレ (またはタブの右クリック →「ビュワーに流す」) のレスを、ホワイトリストに関係なく流します。オフ: 配信ホワイトリストの ID のレスだけを流します (チャットはいつも全部)。OBS 表示には、オンでもチャットとホワイトリストの ID のレスだけを送ります。選んだスレのレスは「スレの最新レス」の欄に追加しません。\n選んでいるスレ: ${threadTabs.filter((t) => t.viewerOn !== false && !isChatUrl(t.threadUrl)).length} 件`}>
               <input type="checkbox" checked={viewerAllResponses} onChange={(e) => setViewerAllResponses(e.target.checked)} />
               選んだスレを流す
             </label>
@@ -11407,6 +11481,11 @@ export default function App() {
               {threadTabs[tabMenu.tabIndex].ttsOff ? "このタブの読み上げをオンにする" : "このタブの読み上げをオフにする"}
             </button>
           )}
+          {threadTabs[tabMenu.tabIndex] && !isChatUrl(threadTabs[tabMenu.tabIndex].threadUrl) && boardLogMode === "selected" && (
+            <button onClick={() => { toggleTabLog(threadTabs[tabMenu.tabIndex].threadUrl); setTabMenu(null); }} title="このスレのログ (data\\logs) を残す・やめる">
+              {threadTabs[tabMenu.tabIndex].logOn === true ? "このスレのログを残さない" : "このスレのログを残す"}
+            </button>
+          )}
           {threadTabs[tabMenu.tabIndex] && !isChatUrl(threadTabs[tabMenu.tabIndex].threadUrl) && (
             <button onClick={() => { toggleTabViewer(threadTabs[tabMenu.tabIndex].threadUrl); setTabMenu(null); }} title="ビュワーの「選んだスレを流す」の対象にする・やめる">
               {threadTabs[tabMenu.tabIndex].viewerOn !== false ? "ビュワーに流さない" : "ビュワーに流す"}
@@ -11985,9 +12064,9 @@ export default function App() {
                   <input type="number" value={maxOpenTabs} min={1} max={50} step={1} onChange={(e) => setMaxOpenTabs(Math.max(1, Math.min(50, Number(e.target.value))))} />
                 </label>
                 <label className="settings-row">
-                  <span>ログ保持日数</span>
+                  <span>動作記録の保持日数</span>
                   <input type="number" value={logRetentionDays} min={0} max={365} step={1} onChange={(e) => setLogRetentionDays(Math.max(0, Math.min(365, Number(e.target.value))))} />
-                  <span className="settings-hint">0 = 無制限</span>
+                  <span className="settings-hint">0 = 無制限 (LiveFake の動作の記録 data\eventlog の日数。スレのログは 設定 &gt; 接続とログ)</span>
                 </label>
                 <label className="settings-row" title="画像・リンクカードなどを表示したときにブラウザ部分が保存するキャッシュの上限です。data\webview フォルダに保存されます">
                   <span>ブラウザのキャッシュ上限 (MB)</span>
@@ -13367,7 +13446,7 @@ export default function App() {
               <div className="settings-cat" data-cat="connect">
               <section className="settings-section" data-section="main">
                 {settingsSectionHeading("connect", "main")}
-              <p className="settings-hint">開いているスレのタブと Twitch・YouTube のタブが、巡回・受信の対象です。ここからまとめて追加したり、読み上げをタブごとに切り替えたりできます。</p>
+              <p className="settings-hint">開いているスレのタブと Twitch・YouTube のタブが、巡回・受信の対象です。ここからまとめて追加したり、読み上げ・掲示板のログをタブごとに切り替えたりできます。</p>
               <fieldset>
                 <legend>Twitch チャンネル</legend>
                 <div className="settings-row">
@@ -13387,6 +13466,74 @@ export default function App() {
                 <div className="settings-row">
                   <textarea value={connectThreadInput} onChange={(e) => setConnectThreadInput(e.target.value)} rows={2} placeholder="スレッドの URL (改行・空白区切りで複数)" className="lf-grow" />
                   <button onClick={submitConnectThreads}>追加</button>
+                </div>
+              </fieldset>
+              <fieldset>
+                <legend>掲示板のログ</legend>
+                <p className="settings-hint">
+                  開いたスレのレスを、データフォルダの logs に1スレ1ファイルで残します (配信ログビュワー用の JSONL と、ほかの専ブラ用の dat)。
+                  新しいレスを取得するたびに書き足します。ほかの人の名前・発言がこの PC に残ります。外部へは送りません。
+                </p>
+                <div className="settings-row board-log-mode">
+                  <span>ログを残すスレ:</span>
+                  <label><input type="radio" name="board-log-mode" checked={boardLogMode === "all"} onChange={() => setBoardLogMode("all")} />開いたスレ全部</label>
+                  <label><input type="radio" name="board-log-mode" checked={boardLogMode === "selected"} onChange={() => setBoardLogMode("selected")} />選んだスレだけ</label>
+                  <label><input type="radio" name="board-log-mode" checked={boardLogMode === "off"} onChange={() => setBoardLogMode("off")} />残さない</label>
+                </div>
+                <p className="settings-hint">「選んだスレだけ」のときは、下の一覧の「ログ」のチェック (またはタブの右クリック) で選びます。残しているタブには印が付きます。</p>
+                <label className="settings-row">
+                  <span>残す日数</span>
+                  <input type="number" min={0} max={3650} step={1} value={boardLogDaysDraft} className="lf-w60"
+                    onChange={(e) => setBoardLogDaysDraft(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                    onBlur={() => {
+                      const cur = boardLogDays;
+                      const raw = Number(boardLogDaysDraft);
+                      const n = boardLogDaysDraft.trim() === "" || !Number.isFinite(raw) ? cur : Math.max(0, Math.min(3650, Math.round(raw)));
+                      setBoardLogDaysDraft(String(n));
+                      if (n === cur) return;
+                      if (n === 0 || (cur !== 0 && n > cur)) { setBoardLogDays(n); return; }
+                      setAppConfirm({
+                        title: "ログを残す日数を短くします",
+                        message: `「設定を保存」すると、最後に書いてから${n}日を過ぎたスレのログが消えます (元に戻せません)。よろしいですか?`,
+                        buttons: [
+                          { label: "短くする", primary: true, onClick: () => setBoardLogDays(n) },
+                          { label: "やめる", onClick: () => setBoardLogDaysDraft(String(cur)) },
+                        ],
+                      });
+                    }} />
+                  <span>日 (最後に書いた日から。0 = 無制限、既定 365)</span>
+                </label>
+                <label className="settings-row">
+                  <span>容量の上限</span>
+                  <input type="number" min={0} max={100000} step={10} value={boardLogMaxMbDraft} className="lf-w60"
+                    onChange={(e) => setBoardLogMaxMbDraft(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                    onBlur={() => {
+                      const cur = boardLogMaxMb;
+                      const raw = Number(boardLogMaxMbDraft);
+                      const n = boardLogMaxMbDraft.trim() === "" || !Number.isFinite(raw) ? cur : Math.max(0, Math.min(100000, Math.round(raw)));
+                      setBoardLogMaxMbDraft(String(n));
+                      if (n === cur) return;
+                      if (n === 0 || (cur !== 0 && n > cur)) { setBoardLogMaxMb(n); return; }
+                      setAppConfirm({
+                        title: "ログの容量の上限を小さくします",
+                        message: `「設定を保存」すると、全部のログが${n}MB を超えている分が、古いスレから消えます (元に戻せません)。よろしいですか?`,
+                        buttons: [
+                          { label: "小さくする", primary: true, onClick: () => setBoardLogMaxMb(n) },
+                          { label: "やめる", onClick: () => setBoardLogMaxMbDraft(String(cur)) },
+                        ],
+                      });
+                    }} />
+                  <span>MB (0 = 無制限、既定 1000)</span>
+                </label>
+                <p className="settings-hint">日数・容量を過ぎたログは、起動したとき・設定を変えたとき・1時間ごとに、最後に書いたのが古いスレから消します。アプリが動くための保存 (cache.db) とは別です。</p>
+                {boardLogError && <p className="settings-hint board-log-error">⚠ ログを書けませんでした: {boardLogError}</p>}
+                <div className="settings-row">
+                  <button onClick={() => {
+                    if (!isTauriRuntime()) return;
+                    invoke("board_log_open_folder").catch((e) => { console.warn("board_log_open_folder failed", e); setStatus(`ログのフォルダを開けませんでした: ${String(e)}`); });
+                  }}>ログのフォルダを開く</button>
                 </div>
               </fieldset>
               <fieldset>
@@ -13426,6 +13573,11 @@ export default function App() {
                           {!ch && !yt && (
                             <label title="ビュワーの「選んだスレを流す」がオンのとき、このスレのレスをビュワーに流す">
                               <input type="checkbox" checked={t.viewerOn !== false} onChange={() => toggleTabViewer(t.threadUrl)} />ビュワー
+                            </label>
+                          )}
+                          {!ch && !yt && (
+                            <label title={boardLogMode === "selected" ? "このスレのログ (data\\logs) を残す" : boardLogMode === "all" ? "「開いたスレ全部」なので、このスレのログを残しています (選ぶには、下の「ログを残すスレ」を「選んだスレだけ」に)" : "「残さない」になっています"}>
+                              <input type="checkbox" checked={tabLogOn(t, boardLogMode)} disabled={boardLogMode !== "selected"} onChange={() => toggleTabLog(t.threadUrl)} />ログ
                             </label>
                           )}
                           <button onClick={() => { setSettingsOpen(false); onTabClick(i); }}>開く</button>

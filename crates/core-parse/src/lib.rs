@@ -61,6 +61,12 @@ pub fn decode_euc_jp(bytes: &[u8]) -> String {
 }
 
 /// Decode bytes as Shift_JIS.
+/// 文字列を Shift_JIS にする (dat の書き出し用)。Shift_JIS に無い文字は `&#数字;` (HTML の数値文字参照) になる
+pub fn encode_shift_jis(text: &str) -> Vec<u8> {
+    let (bytes, _, _) = SHIFT_JIS.encode(text);
+    bytes.into_owned()
+}
+
 pub fn decode_shift_jis(bytes: &[u8]) -> String {
     let (decoded, _, _) = SHIFT_JIS.decode(bytes);
     decoded.into_owned()

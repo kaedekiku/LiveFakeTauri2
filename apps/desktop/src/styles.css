@@ -4237,6 +4237,12 @@ img.twitch-emote.youtube-emoji { height: var(--tw-emote, 28px); }
 .dark .menu-bar .broadcast-halt-btn { background: #2a2a2a; border-color: #555; color: #ddd; }
 .dark .menu-bar .broadcast-halt-btn:hover { background: #3d1717; border-color: #b94545; color: #ffb3b3; }
 .dark .menu-bar .broadcast-halt-btn.on { background: #b93a3a; border-color: #e06060; color: #fff; }
+/* 掲示板のログ: 残しているタブの印 (「選んだスレだけ」のとき) と、書けなかったときの文 */
+.thread-tab .tab-log-on { flex: none; margin-right: 2px; color: #2f8f5b; }
+.dark .thread-tab .tab-log-on { color: #6fd39b; }
+.board-log-mode label { display: inline-flex; align-items: center; gap: 3px; margin-right: 10px; }
+.board-log-error { color: #b02020; }
+.dark .board-log-error { color: #ff8a8a; }
 /* 消した直後の「取り消す」 */
 .undo-toast { position: fixed; left: 50%; bottom: 36px; transform: translateX(-50%); z-index: 1200; display: flex; align-items: center; gap: 8px; max-width: calc(100vw - 32px); padding: 6px 8px 6px 12px; border-radius: 6px; background: #333; color: #fff; font-size: 12px; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25); }
 .undo-toast-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

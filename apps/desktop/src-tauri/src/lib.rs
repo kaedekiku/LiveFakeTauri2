@@ -1417,6 +1417,286 @@ fn open_folder_in_explorer(dir: &std::path::Path) -> Result<(), String> {
     Err("unsupported platform".to_string())
 }
 
+// ===== 掲示板のログ =====
+// 開いたスレ (設定で選んだスレ) のレスを、data/logs/<5ch|shitaraba|jpnkn>/<板>/<スレ番号>.jsonl (配信ログビュワー用) と
+// .dat (5ch と同じ形・Shift_JIS。ほかの専ブラ用) に書き足す。日数・容量を過ぎたものは古いものから消す。
+// パスは、対応している掲示板のスレの URL から取り出し、形を確かめた板名とスレ番号だけで作る (ほかの場所には書かない)。外部へは送らない
+static BOARD_LOG_LOCK: Mutex<Option<HashMap<std::path::PathBuf, u32>>> = Mutex::new(None);
+/// 1ファイルの大きさの上限 (1スレ1000レスなら数MB。超えたらそのファイルには書かない)
+const BOARD_LOG_FILE_MAX: u64 = 64 * 1024 * 1024;
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BoardLogRes {
+    no: u32,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    mail: String,
+    /// 掲示板の「日付 ID」の欄そのまま (dat 用)
+    #[serde(default)]
+    date_and_id: String,
+    /// 本文 (掲示板の HTML のまま。dat 用)
+    #[serde(default)]
+    body: String,
+    /// 以下は JSONL 用 (タグを除いた文字)
+    #[serde(default)]
+    name_text: String,
+    #[serde(default)]
+    uid: String,
+    #[serde(default)]
+    posted: String,
+    #[serde(default)]
+    text: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BoardLogAppendResult {
+    written: usize,
+    /// ログのファイルを新しく作ったが、最初のレスから書けていない (画面側は、スレ全体を渡し直す)
+    need_full: bool,
+}
+
+fn board_log_dir_path() -> Result<std::path::PathBuf, String> {
+    core_store::portable_data_dir().map(|p| p.join("logs")).map_err(|e| e.to_string())
+}
+
+fn board_log_name_ok(s: &str, max: usize) -> bool {
+    !s.is_empty() && s.len() <= max && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+/// スレの URL から、ログの置き場所 (サイト・板のフォルダ名・スレ番号) を取り出す。対応している掲示板のスレの形でなければ None
+fn board_log_location(thread_url: &str) -> Option<(&'static str, String, String)> {
+    if !core_fetch::is_allowed_url(thread_url) {
+        return None;
+    }
+    let site = core_fetch::detect_site_type(thread_url)?;
+    let url = reqwest::Url::parse(thread_url).ok()?;
+    let segs: Vec<&str> = url.path_segments()?.filter(|s| !s.is_empty()).collect();
+    let (site_dir, board, key) = match site {
+        core_fetch::SiteType::Shitaraba => {
+            if segs.len() < 5 || segs[0] != "bbs" || segs[1] != "read.cgi" {
+                return None;
+            }
+            ("shitaraba", format!("{}_{}", segs[2], segs[3]), segs[4].to_string())
+        }
+        core_fetch::SiteType::FiveCh | core_fetch::SiteType::Jpnkn => {
+            if segs.len() < 4 || segs[0] != "test" || segs[1] != "read.cgi" {
+                return None;
+            }
+            (if site == core_fetch::SiteType::Jpnkn { "jpnkn" } else { "5ch" }, segs[2].to_string(), segs[3].to_string())
+        }
+    };
+    if !board_log_name_ok(&board, 80) || key.is_empty() || key.len() > 20 || !key.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some((site_dir, board, key))
+}
+
+fn board_log_clip(s: &str, max: usize) -> String {
+    s.chars().filter(|c| *c != '\0').take(max).collect()
+}
+
+/// dat の1行の欄 (改行と、欄の区切りの "<>" を含めない)
+fn board_log_dat_field(s: &str) -> String {
+    board_log_clip(s, 20000).replace(['\r', '\n'], " ").replace("<>", "&lt;&gt;")
+}
+
+fn board_log_now() -> String {
+    chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f%:z").to_string()
+}
+
+/// JSONL に書いてある最後のレス番号 (無ければ 0)
+fn board_log_last_no(path: &std::path::Path) -> u32 {
+    let Ok(text) = std::fs::read_to_string(path) else { return 0 };
+    text.lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter_map(|v| v.get("no").and_then(|n| n.as_u64()))
+        .max()
+        .unwrap_or(0) as u32
+}
+
+/// スレのレスをログに書き足す (書いていないレス番号のものだけ)。
+/// 新しくファイルを作るときに、渡されたレスが最初からでなければ書かずに need_full を返す (full = true なら、そのまま書く)
+#[tauri::command(async)]
+fn board_log_append(thread_url: String, title: String, board: String, responses: Vec<BoardLogRes>, full: Option<bool>) -> Result<BoardLogAppendResult, String> {
+    use std::io::Write;
+    let Some((site_dir, board_dir, key)) = board_log_location(&thread_url) else {
+        return Err("ログを残せるスレの URL ではありません".into());
+    };
+    let dir = board_log_dir_path()?.join(site_dir).join(&board_dir);
+    let jsonl = dir.join(format!("{key}.jsonl"));
+    let dat = dir.join(format!("{key}.dat"));
+    let mut guard = BOARD_LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let last_map = guard.get_or_insert_with(HashMap::new);
+    let jsonl_exists = jsonl.is_file();
+    let last = if jsonl_exists { *last_map.entry(jsonl.clone()).or_insert_with(|| board_log_last_no(&jsonl)) } else { 0 };
+    let mut rows: Vec<&BoardLogRes> = responses.iter().filter(|r| r.no > last && r.no <= 100_000).collect();
+    rows.sort_by_key(|r| r.no);
+    rows.dedup_by_key(|r| r.no);
+    if rows.is_empty() {
+        return Ok(BoardLogAppendResult { written: 0, need_full: false });
+    }
+    if !jsonl_exists && !full.unwrap_or(false) && rows.first().map(|r| r.no > 1).unwrap_or(false) {
+        return Ok(BoardLogAppendResult { written: 0, need_full: true });
+    }
+    if std::fs::metadata(&jsonl).map(|m| m.len()).unwrap_or(0) >= BOARD_LOG_FILE_MAX {
+        return Err("ログのファイルが上限に達したため、書いていません".into());
+    }
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let at = board_log_now();
+    let title = board_log_clip(&title, 300);
+    let src = match site_dir { "shitaraba" => "shitaraba", "jpnkn" => "jpnkn", _ => "5ch" };
+    let mut out = String::new();
+    if !jsonl_exists {
+        out.push_str(&serde_json::json!({ "v": 1, "type": "start", "at": at, "title": title, "url": thread_url }).to_string());
+        out.push('\n');
+    }
+    for r in &rows {
+        let mut m = serde_json::Map::new();
+        m.insert("v".into(), 1.into());
+        m.insert("at".into(), at.clone().into());
+        m.insert("src".into(), src.into());
+        let mut put = |k: &str, v: String| {
+            if !v.is_empty() {
+                m.insert(k.into(), v.into());
+            }
+        };
+        put("where", title.clone());
+        put("url", thread_url.clone());
+        put("board", board_log_clip(&board, 200));
+        put("name", board_log_clip(&r.name_text, 300));
+        put("uid", board_log_clip(&r.uid, 200));
+        put("mail", board_log_clip(&r.mail, 300));
+        put("posted", board_log_clip(&r.posted, 200));
+        put("text", board_log_clip(&r.text, 20000));
+        m.insert("no".into(), r.no.into());
+        out.push_str(&serde_json::Value::Object(m).to_string());
+        out.push('\n');
+    }
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&jsonl).map_err(|e| e.to_string())?;
+    f.write_all(out.as_bytes()).map_err(|e| e.to_string())?;
+    // dat: 5ch と同じ1行1レスの形 (名前<>メール<>日付 ID<>本文<>スレタイ。スレタイは1行目だけ)
+    let dat_exists = std::fs::metadata(&dat).map(|m| m.len() > 0).unwrap_or(false);
+    let mut dat_text = String::new();
+    for (i, r) in rows.iter().enumerate() {
+        let t = if !dat_exists && i == 0 { board_log_dat_field(&title) } else { String::new() };
+        dat_text.push_str(&format!(
+            "{}<>{}<>{}<>{}<>{}\n",
+            board_log_dat_field(&r.name),
+            board_log_dat_field(&r.mail),
+            board_log_dat_field(&r.date_and_id),
+            board_log_dat_field(&r.body),
+            t
+        ));
+    }
+    if std::fs::metadata(&dat).map(|m| m.len()).unwrap_or(0) < BOARD_LOG_FILE_MAX {
+        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&dat).map_err(|e| e.to_string())?;
+        f.write_all(&core_fetch::encode_shift_jis(&dat_text)).map_err(|e| e.to_string())?;
+    }
+    let max_no = rows.last().map(|r| r.no).unwrap_or(last);
+    last_map.insert(jsonl.clone(), max_no.max(last));
+    Ok(BoardLogAppendResult { written: rows.len(), need_full: false })
+}
+
+/// 日数・容量を過ぎたログを消す (最後に書いた時刻が古いスレから)。days・max_mb が 0 なら、その決まりは使わない。
+/// 消すのは logs の下の 5ch・shitaraba・jpnkn の板のフォルダの中の .jsonl・.dat だけ (ほかのファイル・フォルダには触らない)
+#[tauri::command(async)]
+fn board_log_prune(days: u32, max_mb: u32) -> Result<usize, String> {
+    let base = board_log_dir_path()?;
+    // スレごと (板のフォルダ + スレ番号) に、ファイルと最後に書いた時刻と大きさをまとめる
+    struct Item { files: Vec<std::path::PathBuf>, modified: std::time::SystemTime, size: u64 }
+    let mut items: HashMap<std::path::PathBuf, Item> = HashMap::new();
+    for site in ["5ch", "shitaraba", "jpnkn"] {
+        let Ok(boards) = std::fs::read_dir(base.join(site)) else { continue };
+        for b in boards.flatten() {
+            if !b.file_type().map(|t| t.is_dir()).unwrap_or(false) || !board_log_name_ok(&b.file_name().to_string_lossy(), 80) {
+                continue;
+            }
+            let Ok(files) = std::fs::read_dir(b.path()) else { continue };
+            for f in files.flatten() {
+                if !f.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                    continue;
+                }
+                let name = f.file_name().to_string_lossy().into_owned();
+                let Some((stem, ext)) = name.rsplit_once('.') else { continue };
+                if !(ext == "jsonl" || ext == "dat") || stem.is_empty() || stem.len() > 20 || !stem.bytes().all(|c| c.is_ascii_digit()) {
+                    continue;
+                }
+                let Ok(meta) = f.metadata() else { continue };
+                let modified = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+                let item = items.entry(b.path().join(stem)).or_insert(Item { files: Vec::new(), modified, size: 0 });
+                item.files.push(f.path());
+                item.size += meta.len();
+                if modified > item.modified {
+                    item.modified = modified;
+                }
+            }
+        }
+    }
+    let mut list: Vec<Item> = items.into_values().collect();
+    list.sort_by_key(|i| i.modified);
+    let now = std::time::SystemTime::now();
+    let mut total: u64 = list.iter().map(|i| i.size).sum();
+    let max = (max_mb as u64) * 1024 * 1024;
+    let _guard = BOARD_LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut removed = 0;
+    for item in &list {
+        let too_old = days > 0 && now.duration_since(item.modified).map(|d| d.as_secs() > days as u64 * 86400).unwrap_or(false);
+        let too_big = max > 0 && total > max;
+        if !(too_old || too_big) {
+            continue;
+        }
+        for f in &item.files {
+            if std::fs::remove_file(f).is_ok() {
+                removed += 1;
+            }
+        }
+        total = total.saturating_sub(item.size);
+    }
+    drop(_guard);
+    // 書き足し用に覚えている最後のレス番号は、消したファイルの分を忘れる
+    if removed > 0 {
+        if let Some(map) = BOARD_LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+            map.retain(|p, _| p.is_file());
+        }
+    }
+    Ok(removed)
+}
+
+/// 掲示板のログのフォルダ (無ければ作る) をエクスプローラーで開く
+#[tauri::command]
+fn board_log_open_folder() -> Result<(), String> {
+    let dir = board_log_dir_path()?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    open_folder_in_explorer(&dir)
+}
+
+#[cfg(test)]
+mod board_log_tests {
+    use super::*;
+
+    #[test]
+    fn location_from_thread_url() {
+        assert_eq!(board_log_location("https://mao.5ch.io/test/read.cgi/ngt/9240230711/"), Some(("5ch", "ngt".to_string(), "9240230711".to_string())));
+        assert_eq!(board_log_location("https://jbbs.shitaraba.net/bbs/read.cgi/game/12345/1700000000/"), Some(("shitaraba", "game_12345".to_string(), "1700000000".to_string())));
+        assert_eq!(board_log_location("https://bbs.jpnkn.com/test/read.cgi/abc/1700000000/"), Some(("jpnkn", "abc".to_string(), "1700000000".to_string())));
+        assert!(board_log_location("https://evil.example/test/read.cgi/a/1/").is_none());
+        assert!(board_log_location("https://mao.5ch.io/test/read.cgi/../1/").is_none());
+        assert!(board_log_location("https://mao.5ch.io/test/read.cgi/ngt/12ab/").is_none());
+        assert!(board_log_location("https://mao.5ch.io/ngt/subject.txt").is_none());
+    }
+
+    #[test]
+    fn dat_field_has_no_separator_or_newline() {
+        let f = board_log_dat_field("a<>b\nc");
+        assert!(!f.contains("<>") && !f.contains('\n'));
+        let sj = core_fetch::encode_shift_jis("テスト😀");
+        assert_eq!(core_fetch::decode_shift_jis(&sj), "テスト&#128512;");
+    }
+}
+
 /// データフォルダをエクスプローラーで開く (Web ページを開く命令は http(s) しか受け付けないため、別に用意する)
 #[tauri::command]
 fn open_data_folder() -> Result<(), String> {
@@ -3931,6 +4211,9 @@ pub fn run() {
             check_for_updates,
             get_data_dir,
             open_data_folder,
+            board_log_append,
+            board_log_prune,
+            board_log_open_folder,
             twitch_sync,
             twitch_set_badges,
             twitch_auth_status,

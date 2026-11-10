@@ -8,6 +8,8 @@ use std::sync::{Arc, OnceLock, RwLock};
 use thiserror::Error;
 use url::Url;
 use core_parse::{parse_dat_line, parse_subject_line};
+/// 掲示板のログの dat を書くために、アプリ側からも使えるようにする
+pub use core_parse::{decode_shift_jis, encode_shift_jis};
 use encoding_rs::{EUC_JP, SHIFT_JIS};
 
 pub const BBSMENU_URL: &str = "https://menu.5ch.io/bbsmenu.json";

@@ -429,7 +429,9 @@ Twitch・YouTube のタブでは、同じ `.compose-window` がチャットの�
 | `.settings-note` / `.settings-note-block` | 表の上などの小さな説明文 / その下に余白を付けたもの |
 | `.settings-row-stack` | 縦に並べる設定行 |
 | `.mask-note` | 「登録項目のマスク: オン」の状態表示と切り替えボタン（切り替えは 設定 > 表示） |
-| `.connect-list` → `.connect-lamp` (`.ok` / `.wait` / `.ng`) / `.connect-title` / `.connect-state` / `.connect-fill` / `.connect-count` | 設定 > 接続 の開いているタブの一覧 / 状態ランプ / 題名 / 状態の文字 / 埋まり具合のバー / N/1000 |
+| `.connect-list` → `.connect-lamp` (`.ok` / `.wait` / `.ng`) / `.connect-title` / `.connect-state` / `.connect-fill` / `.connect-count` | 設定 > 接続とログ の開いているタブの一覧 / 状態ランプ / 題名 / 状態の文字 / 埋まり具合のバー / N/1000 |
+| `.board-log-mode` / `.board-log-error` | 設定 > 接続とログ の「ログを残すスレ」の選び方の並び / ログを書けなかったときの文 |
+| `.thread-tab .tab-log-on` | 掲示板のログを残しているスレのタブの印 (「選んだスレだけ」のとき) |
 | `.twitch-event-table` | 設定 > Twitch > イベント・設定 > YouTube > イベント の種類ごとの表 |
 | `.youtube-method` | 設定 > YouTube の取得方法の選択肢 |
 | `.proxy-box` / `.proxy-top` / `.proxy-grid` (`.proxy-off`) / `.proxy-label` `.proxy-head` `.proxy-host` `.proxy-port` `.proxy-user` `.proxy-pass` `.proxy-type` | 設定 > プロキシ の枠・上の切り替え・入力欄の並び (オフのときは `.proxy-off`) |
