@@ -1,6 +1,7 @@
 ﻿import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright';
+import { loginSetCookieRecord } from './probe_redact.mjs';
 
 const desktopDir = process.cwd();
 const root = path.resolve(desktopDir, '..', '..');
@@ -42,7 +43,8 @@ cdp.on('Network.responseReceivedExtraInfo', (e) => {
   if (setCookie && reqMap.has(e.requestId)) {
     const rec = reqMap.get(e.requestId);
     if (rec.url.includes('/_login') || rec.url.includes('uplift.5ch.io/log')) {
-      loginSetCookies.push({ url: rec.url, set_cookie_raw: setCookie });
+      // Cookie の値は残さない (レポートは docs/ に書かれる)。名前と有無だけ
+      loginSetCookies.push(loginSetCookieRecord(rec.url, setCookie));
     }
   }
   if (reqMap.has(e.requestId)) {

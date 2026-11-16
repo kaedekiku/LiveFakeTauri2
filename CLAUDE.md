@@ -51,7 +51,8 @@ cd apps/desktop && npx tauri build --no-bundle --config src-tauri/tauri.test.con
 # --- テスト ---
 cargo test --workspace                    # Rustユニットテスト
 cargo test --workspace -- --ignored       # ネットワーク接続テスト含む
-cd apps/desktop && npm run test:e2e       # E2E (確認用の識別子で Tauri を起動し実際の5chサーバーと通信。ふだんの LiveFake と並べて動く)
+cd apps/desktop && npm run test:e2e       # E2E (確認用の識別子で Tauri を起動し実際の5chサーバーと通信。ふだんの LiveFake と並べて動く。
+                                          # 保存先は毎回つくる空のフォルダ target/e2e-data/run-… で、ふだんのデータには書かない)
 
 # --- Lint ---
 cargo clippy --workspace -- -D warnings  # Rust lint

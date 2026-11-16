@@ -269,37 +269,71 @@ fn for_log(s: &str) -> String {
 #[tauri::command]
 pub fn run_command(id: String, values: CommandValues) -> Result<(), String> {
     let cmd = load().into_iter().find(|c| c.id == id && c.enabled).ok_or_else(|| "コマンドが見つかりません".to_string())?;
-    let result = run_found_command(&cmd, &values);
-    // 渡したリンクは先頭に書く (引数が長くて行の終わりが切れても、何を開いたかが分かるように)
-    let link = values.link.as_deref().map(|l| format!(" リンク: {}", for_log(l))).unwrap_or_default();
+    let result = plan_command(&cmd, &values).and_then(|planned| execute_planned(&planned).map(|()| planned));
+    let line = command_log_line(&cmd, &values, &result);
     let _ = match &result {
-        Ok(what) => core_store::append_log(&format!("command: 「{}」{link} / {}", for_log(&cmd.name), for_log(what))),
-        Err(e) => core_store::append_log_level("WARN", &format!("command: 「{}」{link} / 実行しませんでした: {}", for_log(&cmd.name), for_log(e))),
+        Ok(_) => core_store::append_log(&line),
+        Err(_) => core_store::append_log_level("WARN", &line),
     };
     result.map(|_| ())
 }
 
-/// 実行して、記録用の説明 (何をどう開いたか) を返す
-fn run_found_command(cmd: &UserCommand, values: &CommandValues) -> Result<String, String> {
+/// 実行するもの (置き換えを済ませたあと)
+#[derive(Debug)]
+enum Planned {
+    Url(String),
+    Program { program: String, args: Vec<String> },
+}
+
+/// 置き換えと確かめを済ませて、実行するものを決める (まだ実行しない)
+fn plan_command(cmd: &UserCommand, values: &CommandValues) -> Result<Planned, String> {
     match cmd.kind.as_str() {
         "url" => {
             let (u, _) = substitute(cmd.url.trim(), values)?;
             let url = http_url(&u).ok_or_else(|| "置き換えたあとの URL が http / https ではないので開きません".to_string())?;
-            crate::open_external_url(url.clone())?;
-            Ok(format!("URL を開きました: {url}"))
+            Ok(Planned::Url(url))
         }
         "program" => {
             if !is_exe_path(&cmd.program) || !std::path::Path::new(&cmd.program).is_file() {
                 return Err(format!("プログラムが見つかりません: {}", cmd.program));
             }
-            let args = build_program_args(&cmd.args, values)?;
-            crate::restore_original_temp(&mut std::process::Command::new(&cmd.program))
-                .args(&args)
-                .spawn()
-                .map_err(|e| format!("起動できませんでした: {e}"))?;
-            Ok(format!("{} を起動しました: {:?}", cmd.program, args))
+            Ok(Planned::Program { program: cmd.program.clone(), args: build_program_args(&cmd.args, values)? })
         }
         _ => Err("種類が正しくありません".into()),
+    }
+}
+
+fn execute_planned(planned: &Planned) -> Result<(), String> {
+    match planned {
+        // 開けなかった理由に URL の中身を混ぜない (記録に残るため)
+        Planned::Url(url) => crate::open_external_url(url.clone()).map_err(|_| "URL を開けませんでした".to_string()),
+        Planned::Program { program, args } => crate::restore_original_temp(&mut std::process::Command::new(program))
+            .args(args)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("起動できませんでした: {e}")),
+    }
+}
+
+/// URL のホスト (記録用。パス・クエリ・ユーザー名は書かない)
+fn host_for_log(url: &str) -> String {
+    reqwest::Url::parse(url).ok().and_then(|u| u.host_str().map(for_log)).unwrap_or_else(|| "(不明)".into())
+}
+
+/// 日別ログに書く 1 行。残すのは、コマンド名・種類・成否・開いた先のホスト・引数の個数まで。
+/// リンクのパスやクエリ (期限付きの署名が入ることがある)・選んだ文字・スレのタイトルなどの値は書かない
+/// (不具合の報告にログを添えたとき、相手に渡らないように)
+fn command_log_line(cmd: &UserCommand, values: &CommandValues, result: &Result<Planned, String>) -> String {
+    let name = for_log(&cmd.name);
+    match result {
+        Ok(Planned::Url(url)) => format!("command: 「{name}」 / URL を開きました (ホスト: {})", host_for_log(url)),
+        Ok(Planned::Program { program, args }) => {
+            let exe = std::path::Path::new(program).file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+            let link = values.link.as_deref().map(|l| format!("、リンクのホスト: {}", host_for_log(l))).unwrap_or_default();
+            format!("command: 「{name}」 / {} を起動しました (引数 {} 個{link})", for_log(&exe), args.len())
+        }
+        // 実行しなかった理由の文は、この中で作った決まった文だけ (値は入らない)
+        Err(e) => format!("command: 「{name}」 / 実行しませんでした: {}", for_log(e)),
     }
 }
 
@@ -420,5 +454,56 @@ mod tests {
         assert!(validate_command(&c("$LINK"), &[], &[]).is_ok());
         assert!(validate_command(&c("file:///C:/x"), &[], &[]).is_err());
         assert!(validate_command(&c("javascript:alert(1)"), &[], &[]).is_err());
+    }
+
+    // 日別ログに、リンクのパスやクエリ (署名)・選んだ文字・タイトルを残さない (成功したとき・しなかったとき)
+    #[test]
+    fn log_line_keeps_no_values() {
+        let secret = ["SIGSECRET123", "private-path", "えらんだひみつ", "ひみつのタイトル", "ひみつの板"];
+        let v = CommandValues {
+            link: Some("https://files.example.com/private-path/a.png?X-Amz-Signature=SIGSECRET123".into()),
+            text: Some("えらんだひみつ".into()),
+            url: Some("https://egg.5ch.io/test/read.cgi/x/123/".into()),
+            title: Some("ひみつのタイトル".into()),
+            board_name: Some("ひみつの板".into()),
+            number: Some("12".into()),
+        };
+        let exe = std::env::current_exe().unwrap().to_string_lossy().into_owned();
+        let url_cmd = |url: &str| UserCommand { id: "u1".into(), name: "ひらく".into(), kind: "url".into(), program: String::new(), args: String::new(), url: url.into(), enabled: true, confirm: true };
+        let prog_cmd = |args: &str| UserCommand { id: "p1".into(), name: "うごかす".into(), kind: "program".into(), program: exe.clone(), args: args.into(), url: String::new(), enabled: true, confirm: true };
+        let mut lines = Vec::new();
+        // 成功 (実行はしない。置き換えまで)
+        for c in [url_cmd("$LINK"), url_cmd("https://www.google.com/search?q=$TEXTU&t=$TITLE"), prog_cmd(r#"--x "$LINK" "q=$TEXT" "$TITLE" "$BOARDNAME""#)] {
+            let planned = plan_command(&c, &v);
+            assert!(planned.is_ok(), "{planned:?}");
+            lines.push(command_log_line(&c, &v, &planned));
+        }
+        // 実行しなかった (選んだ文字が - で始まる / リンクが家庭内 / プログラムが無い)
+        let mut bad = v.clone();
+        bad.text = Some("-えらんだひみつ".into());
+        let c = prog_cmd(r#""$TEXT" "$LINK""#);
+        let r = plan_command(&c, &bad);
+        assert!(r.is_err());
+        lines.push(command_log_line(&c, &bad, &r));
+        let mut local = v.clone();
+        local.link = Some("http://192.168.0.1/private-path?sig=SIGSECRET123".into());
+        let c = url_cmd("$LINK");
+        let r = plan_command(&c, &local);
+        assert!(r.is_err());
+        lines.push(command_log_line(&c, &local, &r));
+        let c = UserCommand { program: r"C:\no\such\tool.exe".into(), ..prog_cmd(r#""$LINK""#) };
+        let r = plan_command(&c, &v);
+        assert!(r.is_err());
+        lines.push(command_log_line(&c, &v, &r));
+        for line in &lines {
+            for s in secret {
+                assert!(!line.contains(s), "記録に値が残っている: {line}");
+            }
+        }
+        // 対照: 何を実行したか・成否は追える (名前・ホスト・引数の個数)
+        assert!(lines[0].contains("ひらく") && lines[0].contains("files.example.com") && lines[0].contains("開きました"), "{}", lines[0]);
+        assert!(lines[1].contains("www.google.com"), "{}", lines[1]);
+        assert!(lines[2].contains("うごかす") && lines[2].contains("引数 5 個") && lines[2].contains("files.example.com"), "{}", lines[2]);
+        assert!(lines[3].contains("実行しませんでした") && lines[4].contains("実行しませんでした") && lines[5].contains("tool.exe"), "{lines:?}");
     }
 }

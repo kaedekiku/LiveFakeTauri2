@@ -382,7 +382,30 @@ pub fn bouyomi_speak(
     volume: i32,
     voice: i32,
 ) -> Result<(), TtsError> {
-    // Validate path ends with RemoteTalk.exe
+    check_remote_talk_path(remote_talk_path)?;
+
+    // Sanitize text: remove null bytes, limit to 2000 chars
+    let sanitized: String = text.replace('\0', "");
+    let truncated: String = sanitized.chars().take(2000).collect();
+
+    // RemoteTalk.exe uses positional arguments:
+    //   RemoteTalk /T [text] [speed] [tone] [volume] [voice]
+    //   speed: -1=default, 50~300
+    //   tone:  -1=default, 50~200
+    //   volume: -1=default, 0~100
+    //   voice: 0=default, 1~8=built-in, 9+=SAPI
+    let args = vec!["/T".to_string(), truncated, speed.to_string(), tone.to_string(), volume.to_string(), voice.to_string()];
+    let mut st = BOUYOMI.lock().unwrap_or_else(|e| e.into_inner());
+    if st.stopping {
+        // 止めている途中に頼まれた分は、止め終わってから渡す (止める指示に巻き込まれて消えないように)
+        st.pending.push((remote_talk_path.to_string(), args));
+        return Ok(());
+    }
+    st.talk(remote_talk_path, &args)
+}
+
+/// RemoteTalk.exe の場所か (ファイル名を確かめる。別のプログラムを起動させないため)
+fn check_remote_talk_path(remote_talk_path: &str) -> Result<(), TtsError> {
     let path = std::path::Path::new(remote_talk_path);
     let file_name = path
         .file_name()
@@ -399,46 +422,98 @@ pub fn bouyomi_speak(
             remote_talk_path
         )));
     }
+    Ok(())
+}
 
-    // Sanitize text: remove null bytes, limit to 2000 chars
-    let sanitized: String = text.replace('\0', "");
-    let truncated: String = sanitized.chars().take(2000).collect();
-
-    // RemoteTalk.exe uses positional arguments:
-    //   RemoteTalk /T [text] [speed] [tone] [volume] [voice]
-    //   speed: -1=default, 50~300
-    //   tone:  -1=default, 50~200
-    //   volume: -1=default, 0~100
-    //   voice: 0=default, 1~8=built-in, 9+=SAPI
+fn spawn_remote_talk(remote_talk_path: &str, args: &[String]) -> Result<std::process::Child, TtsError> {
+    let mut cmd = std::process::Command::new(remote_talk_path);
+    cmd.args(args);
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x08000000;
-        std::process::Command::new(remote_talk_path)
-            .arg("/T")
-            .arg(&truncated)
-            .arg(speed.to_string())
-            .arg(tone.to_string())
-            .arg(volume.to_string())
-            .arg(voice.to_string())
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()
-            .map_err(|e| TtsError::Bouyomi(format!("Failed to start RemoteTalk.exe: {}", e)))?;
+        cmd.creation_flags(CREATE_NO_WINDOW);
     }
-    #[cfg(not(target_os = "windows"))]
-    {
-        std::process::Command::new(remote_talk_path)
-            .arg("/T")
-            .arg(&truncated)
-            .arg(speed.to_string())
-            .arg(tone.to_string())
-            .arg(volume.to_string())
-            .arg(voice.to_string())
-            .spawn()
-            .map_err(|e| TtsError::Bouyomi(format!("Failed to start RemoteTalk.exe: {}", e)))?;
-    }
+    cmd.spawn().map_err(|e| TtsError::Bouyomi(format!("Failed to start RemoteTalk.exe: {}", e)))
+}
 
-    Ok(())
+/// 棒読みちゃんへ渡したものの覚え (止めるときに使う)
+struct BouyomiState {
+    /// 最後に止めてから文章を渡した RemoteTalk.exe の場所 (渡していなければ None。
+    /// LiveFake が何も渡していないのに、ほかのソフトが棒読みちゃんに頼んだ分を止めないため)
+    path: Option<String>,
+    /// 文章を渡している途中の RemoteTalk.exe (終わったものは外す)
+    children: Vec<std::process::Child>,
+    /// 止めている途中か
+    stopping: bool,
+    /// 止めている途中に頼まれた分 (場所と引数)
+    pending: Vec<(String, Vec<String>)>,
+}
+
+impl BouyomiState {
+    fn talk(&mut self, remote_talk_path: &str, args: &[String]) -> Result<(), TtsError> {
+        self.children.retain_mut(|c| !matches!(c.try_wait(), Ok(Some(_))));
+        let child = spawn_remote_talk(remote_talk_path, args)?;
+        self.children.push(child);
+        self.path = Some(remote_talk_path.to_string());
+        Ok(())
+    }
+}
+
+static BOUYOMI: std::sync::Mutex<BouyomiState> = std::sync::Mutex::new(BouyomiState { path: None, children: Vec::new(), stopping: false, pending: Vec::new() });
+
+/// プロセスが終わるのを、期限まで待つ (終わったら true)
+fn wait_until(child: &mut std::process::Child, deadline: std::time::Instant) -> bool {
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return true,
+            Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(10)),
+            _ => return false,
+        }
+    }
+}
+
+/// 棒読みちゃんにすでに渡した文章を止める (LiveFake の停止・緊急停止に合わせる)。
+/// 最後に止めてから何も渡していなければ、何もしない (false)。止める指示を送ったら true。
+/// 棒読みちゃんの待ち行列は1つなので、ほかのソフトが頼んだ分も一緒に止まる
+pub fn bouyomi_stop() -> Result<bool, TtsError> {
+    use std::time::{Duration, Instant};
+    let (path, mut children) = {
+        let mut st = BOUYOMI.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(path) = st.path.take() else { return Ok(false) };
+        st.stopping = true;
+        (path, std::mem::take(&mut st.children))
+    };
+    // 渡している途中の分が棒読みちゃんに届くのを待つ (届く前に取り消すと、取り消しのあとに届いて読まれる)。
+    // 待っても終わらないものは、渡すのをやめさせる
+    let deadline = Instant::now() + Duration::from_millis(1500);
+    for c in &mut children {
+        if !wait_until(c, deadline) {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+    }
+    // 残りを全部取り消してから、今読んでいる行を飛ばす (逆の順だと、飛ばした次の行が読まれ始める)
+    let mut result = Ok(true);
+    for cmd in ["/Clear", "/Skip"] {
+        match spawn_remote_talk(&path, &[cmd.to_string()]) {
+            Ok(mut c) => {
+                if !wait_until(&mut c, Instant::now() + Duration::from_secs(2)) {
+                    let _ = c.kill();
+                    let _ = c.wait();
+                    result = Err(TtsError::Bouyomi(format!("RemoteTalk.exe {cmd} did not finish")));
+                }
+            }
+            Err(e) => result = Err(e),
+        }
+    }
+    // 止めている途中に頼まれた分を、ここで渡す
+    let mut st = BOUYOMI.lock().unwrap_or_else(|e| e.into_inner());
+    st.stopping = false;
+    for (p, args) in std::mem::take(&mut st.pending) {
+        let _ = st.talk(&p, &args);
+    }
+    result
 }
 
 // ===== VOICEVOX (HTTP API) =====
@@ -699,6 +774,77 @@ mod tests {
         assert_eq!(item.response_no, 2);
         assert!(q.next_item().is_none());
         assert!(!q.is_speaking());
+    }
+
+    /// 記録用の代役の RemoteTalk.exe を作る (受け取った引数を、同じフォルダの calls.log に 1 行ずつ書く。
+    /// /T のときは、棒読みちゃんへ渡すのに時間がかかる場面を作るため、少し待ってから書く)
+    #[cfg(windows)]
+    fn stub_remote_talk(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("livefake-bouyomi-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("stub.rs");
+        std::fs::write(&src, r#"
+use std::io::Write;
+fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(|a| a == "/T").unwrap_or(false) { std::thread::sleep(std::time::Duration::from_millis(300)); }
+    let log = std::env::current_exe().unwrap().with_file_name("calls.log");
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(log).unwrap();
+    writeln!(f, "{}", args.join("\t")).unwrap();
+}
+"#).unwrap();
+        let exe = dir.join("RemoteTalk.exe");
+        let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".into());
+        let out = std::process::Command::new(rustc).arg("--edition=2021").arg("-o").arg(&exe).arg(&src).output().expect("rustc を起動できない");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        // できたての exe は最初の起動が遅いことがある (ウイルス対策の検査など)。時間を計る前に 1 回動かしておく
+        let log = dir.join("calls.log");
+        let _ = std::process::Command::new(&exe).arg("/warmup").status();
+        let _ = std::fs::remove_file(&log);
+        (exe, log)
+    }
+
+    // 止めるとき、棒読みちゃんへ渡した文章も止める: 渡している途中の分が届いてから、残りを取り消し、今の行を飛ばす。
+    // 止めている途中に頼まれた分は、止め終わってから渡す
+    #[cfg(windows)]
+    #[test]
+    fn bouyomi_stop_clears_then_skips() {
+        let (exe, log) = stub_remote_talk("stop");
+        let exe_s = exe.to_string_lossy().into_owned();
+        let read = || std::fs::read_to_string(&log).unwrap_or_default();
+        // 何も渡していなければ、何も送らない (ほかのソフトが頼んだ分を止めない)
+        assert!(!bouyomi_stop().unwrap());
+        assert_eq!(read(), "");
+
+        bouyomi_speak(&exe_s, "ながいぶん", -1, -1, -1, 0).unwrap();
+        bouyomi_speak(&exe_s, "つぎのぶん", -1, -1, -1, 0).unwrap();
+        let exe2 = exe_s.clone();
+        let late = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            bouyomi_speak(&exe2, "とめたあとのぶん", -1, -1, -1, 0).unwrap();
+        });
+        assert!(bouyomi_stop().unwrap(), "渡した文章があるので、止める指示を送る");
+        late.join().unwrap();
+        // 止めたあとに頼まれた分が届くまで待つ
+        let mut lines: Vec<String> = Vec::new();
+        for _ in 0..100 {
+            lines = read().lines().map(|l| l.split('\t').take(2).collect::<Vec<_>>().join(" ")).collect();
+            if lines.len() >= 5 { break; }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let pos = |what: &str| lines.iter().position(|l| l == what).unwrap_or_else(|| panic!("{what} が無い: {lines:?}"));
+        let (clear, skip) = (pos("/Clear"), pos("/Skip"));
+        assert!(pos("/T ながいぶん") < clear && pos("/T つぎのぶん") < clear, "渡している途中の分が届いてから取り消す: {lines:?}");
+        assert!(clear < skip, "残りを取り消してから、今の行を飛ばす: {lines:?}");
+        assert!(skip < pos("/T とめたあとのぶん"), "止めている途中に頼まれた分は、止め終わってから渡す: {lines:?}");
+        // 止めたあと何も渡していない間は、もう送らない。そのあと渡したら、また止められる
+        let n = read().lines().count();
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        assert!(bouyomi_stop().unwrap(), "止めたあとに渡した分があるので、もう一度止められる");
+        assert!(!bouyomi_stop().unwrap());
+        assert_eq!(read().lines().count(), n + 2);
+        let _ = std::fs::remove_dir_all(exe.parent().unwrap());
     }
 
     #[test]

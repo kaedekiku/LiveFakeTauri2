@@ -64,10 +64,55 @@ fn load_protected(name: &str) -> Option<String> {
     Some(core_proxy::unprotect_password(stored.trim()))
 }
 
-fn remove_file(name: &str) {
-    if let Some(p) = data_path(name) {
-        let _ = std::fs::remove_file(p);
+/// ログイン情報のファイルを消す。消せないときは、ログアウト済みの目印を置く (次の起動で読み直さないように)
+fn remove_auth_file() -> crate::auth_file::Removed {
+    remove_or_mark(AUTH_FILE)
+}
+
+/// ファイルを消す。消せないときは、削除済みの目印を置く
+fn remove_or_mark(name: &str) -> crate::auth_file::Removed {
+    data_path(name).map(|p| crate::auth_file::remove_or_mark(&p)).unwrap_or(crate::auth_file::Removed::Gone)
+}
+
+/// 起動時: 保存済みの OAuth クライアント (削除したときに消せなかったものは読まない)
+fn load_client_file() -> Option<String> {
+    let path = data_path(CLIENT_FILE)?;
+    if !crate::auth_file::usable_at_start(&path) {
+        return None;
     }
+    load_protected(CLIENT_FILE)
+}
+
+/// Google 側の許可を取り消す (窓口のアドレスは、決まった値を呼ぶ側が渡す。試験では手元の受け口に替える)。
+/// すでに無効なトークン (400 invalid_token。取り消し済み・期限切れ) は、取り消すものが残っていないので、取り消し済みとして扱う
+async fn revoke_at(http: &reqwest::Client, token: &str, revoke_url: &str) -> crate::auth_file::Revoked {
+    use crate::auth_file::Revoked;
+    match http.post(revoke_url).form(&[("token", token)]).send().await {
+        Ok(r) if r.status().is_success() => Revoked::Done,
+        Ok(r) if r.status().as_u16() == 400 => {
+            let code = r.bytes().await.ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()).and_then(|v| v["error"].as_str().map(str::to_string)).unwrap_or_default();
+            if code == "invalid_token" { Revoked::Done } else { Revoked::Unknown }
+        }
+        _ => Revoked::Unknown,
+    }
+}
+
+/// ログイン情報を保存する (保存できたら、前のログアウトの目印を消す)
+fn save_auth_file(text: &str) -> Result<(), String> {
+    save_protected(AUTH_FILE, text, "ログイン情報")?;
+    match data_path(AUTH_FILE) {
+        Some(p) => crate::auth_file::clear_mark(&p),
+        None => Ok(()),
+    }
+}
+
+/// 起動時: 保存済みのログイン情報 (ログアウトしたときに消せなかったものは読まない)
+fn load_auth_file() -> Option<String> {
+    let path = data_path(AUTH_FILE)?;
+    if !crate::auth_file::usable_at_start(&path) {
+        return None;
+    }
+    load_protected(AUTH_FILE)
 }
 
 const CLIENT_FILE: &str = "youtube-oauth-client.bin";
@@ -205,8 +250,8 @@ impl YoutubeAuthState {
     /// 起動時に1回: 保存済みのクライアント・ログイン情報を読む
     pub fn init(&self, app: AppHandle) {
         *lock(&self.0.app) = Some(app);
-        let client = load_protected(CLIENT_FILE).and_then(|t| serde_json::from_str::<Client>(&t).ok()).filter(|c| client_id_ok(&c.id) && client_secret_ok(&c.secret));
-        let auth = load_protected(AUTH_FILE).and_then(|t| serde_json::from_str::<AuthData>(&t).ok());
+        let client = load_client_file().and_then(|t| serde_json::from_str::<Client>(&t).ok()).filter(|c| client_id_ok(&c.id) && client_secret_ok(&c.secret));
+        let auth = load_auth_file().and_then(|t| serde_json::from_str::<AuthData>(&t).ok());
         // 別のクライアントで発行されたログイン情報は使わない
         let auth = auth.filter(|a| client.as_ref().is_some_and(|c| c.id == a.client_id));
         let (client_set, logged_in, title) = (client.is_some(), auth.is_some(), auth.as_ref().map(|a| a.channel_title.clone()).unwrap_or_default());
@@ -235,6 +280,10 @@ impl YoutubeAuthState {
         }
         let c = Client { id, secret };
         save_protected(CLIENT_FILE, &serde_json::to_string(&c).map_err(|e| e.to_string())?, "クライアントの情報")?;
+        // 前に削除したときの目印が残っていると、次の起動でこのクライアントまで捨ててしまう
+        if let Some(p) = data_path(CLIENT_FILE) {
+            crate::auth_file::clear_mark(&p).map_err(|_| "前に削除したときの目印を消せなかったため、次回の起動ではクライアントを設定し直すことになります".to_string())?;
+        }
         let changed = lock(&self.0.client).as_ref().is_none_or(|old| old.id != c.id);
         *lock(&self.0.client) = Some(c);
         if changed {
@@ -249,9 +298,17 @@ impl YoutubeAuthState {
     pub async fn clear_client(&self) -> AuthStatus {
         self.0.logout().await;
         *lock(&self.0.client) = None;
-        remove_file(CLIENT_FILE);
-        self.0.set_status(|s| s.client_set = false);
-        self.0.log("oauth client removed");
+        // 消せなかったときは、削除済みの目印を置く (次の起動で、消したはずのクライアントが戻らないように)。
+        // ログアウトで済まなかったこと (message) に続けて、画面で知らせる
+        let removed = remove_or_mark(CLIENT_FILE);
+        let note = crate::auth_file::left_file_message("クライアントの情報", &removed);
+        self.0.set_status(|s| {
+            s.client_set = false;
+            if let Some(note) = &note {
+                s.message = if s.message.is_empty() { note.clone() } else { format!("{}{note}", s.message) };
+            }
+        });
+        self.0.log(if note.is_some() { "oauth client removed (file not removed)" } else { "oauth client removed" });
         self.status()
     }
 
@@ -388,7 +445,7 @@ impl Inner {
             match channel_of(&http, &access, quota.as_ref()).await {
                 Ok((channel_id, channel_title)) => {
                     let a = AuthData { access_token: access, refresh_token: refresh, expires_at, client_id: c.id.clone(), channel_id, channel_title: channel_title.clone() };
-                    let save_note = serde_json::to_string(&a).map_err(|e| e.to_string()).and_then(|t| save_protected(AUTH_FILE, &t, "ログイン情報")).err();
+                    let save_note = serde_json::to_string(&a).map_err(|e| e.to_string()).and_then(|t| save_auth_file(&t)).err();
                     *lock(&self.auth) = Some(a);
                     self.set_status(|s| {
                         s.logged_in = true;
@@ -416,15 +473,26 @@ impl Inner {
         if let Some(t) = lock(&self.login_task).take() {
             t.abort();
         }
+        use crate::auth_file::{Removed, Revoked};
         let a = lock(&self.auth).take();
-        if let Some(a) = a {
-            let _ = self.http().post(REVOKE_URL).form(&[("token", a.refresh_token.as_str())]).send().await;
-            self.log("logged out");
-        }
-        remove_file(AUTH_FILE);
+        // Google 側の取り消しと、この PC のファイルの削除は、結果を別々に持つ (どちらかが失敗しても、済んだことにしない)
+        let revoked = match a {
+            Some(a) => revoke_at(&self.http(), &a.refresh_token, REVOKE_URL).await,
+            None => Revoked::NotNeeded,
+        };
+        let removed = remove_auth_file();
+        let message = crate::auth_file::logout_message("Google", revoked, &removed);
+        self.log(&format!(
+            "logged out (revoke: {revoked:?} / local file: {})",
+            match removed {
+                Removed::Gone => "removed",
+                Removed::Marked => "not removed, marked",
+                Removed::Left(_) => "not removed",
+            }
+        ));
         lock(&self.chat_ids).clear();
         let client_set = lock(&self.client).is_some();
-        self.set_status(|s| *s = AuthStatus { client_set, state: "none".into(), ..Default::default() });
+        self.set_status(|s| *s = AuthStatus { client_set, state: "none".into(), message, ..Default::default() });
     }
 
     /// 期限が近ければ更新したアクセストークンを返す
@@ -454,7 +522,7 @@ impl Inner {
                         return Err("ログインし直されたため、前のログインの更新は使いません".into());
                     }
                     *g = None;
-                    remove_file(AUTH_FILE);
+                    let _ = remove_auth_file();
                 }
                 let msg = "ログインの期限が切れたか、取り消されました。もう一度ログインしてください (同意画面が「テスト」のままだと 7 日で切れます)".to_string();
                 let client_set = lock(&self.client).is_some();
@@ -481,7 +549,7 @@ impl Inner {
             }
             // 保存も確かめたのと同じ間に行う (確かめたあとにログアウトされても、ファイルを戻さない)
             if let Ok(t) = serde_json::to_string(&*cur) {
-                let _ = save_protected(AUTH_FILE, &t, "ログイン情報");
+                let _ = save_auth_file(&t);
             }
         }
         Ok(access)
@@ -634,6 +702,22 @@ fn core_youtube_channel_id(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Google 側の取り消し: 成功・すでに無効・断られた・つながらない
+    #[test]
+    fn revoke_reports_what_google_answered() {
+        use crate::auth_file::{test_http, Revoked};
+        let http = reqwest::Client::builder().timeout(Duration::from_secs(30)).build().unwrap();
+        let run = |base: &str| tauri::async_runtime::block_on(revoke_at(&http, "ref", &format!("{base}/revoke")));
+        assert_eq!(run(&test_http::serve(|_| (200, "{}"))), Revoked::Done);
+        // すでに無効なトークンは、取り消すものが残っていない
+        assert_eq!(run(&test_http::serve(|_| (400, r#"{"error":"invalid_token","error_description":"Token expired or revoked"}"#))), Revoked::Done);
+        // ほかの理由で断られた・窓口が応えない・つながらない: 済んだことにしない
+        assert_eq!(run(&test_http::serve(|_| (400, r#"{"error":"invalid_request"}"#))), Revoked::Unknown);
+        assert_eq!(run(&test_http::serve(|_| (400, "not json"))), Revoked::Unknown);
+        assert_eq!(run(&test_http::serve(|_| (503, ""))), Revoked::Unknown);
+        assert_eq!(run(&test_http::unreachable()), Revoked::Unknown);
+    }
 
     #[test]
     fn client_shapes() {

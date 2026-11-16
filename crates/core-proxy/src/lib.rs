@@ -152,22 +152,47 @@ pub fn proxy_settings() -> &'static Mutex<ProxySettings> {
     SETTINGS.get_or_init(|| Mutex::new(ProxySettings::default()))
 }
 
+/// 保存してある設定を読めなかった (プロキシを使う設定かどうかが分からない) ときの、読み直す関数。
+/// これが入っている間は、プロキシの対象の通信を通さない (プロキシなしで出ていって、接続元が伝わらないように)
+static PENDING_RELOAD: Mutex<Option<ReloadFn>> = Mutex::new(None);
+
+/// 設定を読み直す関数 (読めたら設定、読めなければ None)
+pub type ReloadFn = fn() -> Option<ProxySettings>;
+
 /// Replace the global proxy settings. Called when the user saves proxy config and at startup.
 pub fn update_proxy_settings(settings: ProxySettings) {
     if let Ok(mut guard) = proxy_settings().lock() {
         *guard = settings;
     }
+    *PENDING_RELOAD.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
-fn current() -> ProxySettings {
-    proxy_settings().lock().map(|g| g.clone()).unwrap_or_default()
+/// 保存してある設定を読めなかったときに呼ぶ。読めるまで、プロキシの対象の通信を通さない。
+/// `reload` は通信のたびに呼ばれ、読めたら設定を返す (読めなければ None)。読めた設定は、その通信から使う
+pub fn hold_until_readable(reload: ReloadFn) {
+    *PENDING_RELOAD.lock().unwrap_or_else(|e| e.into_inner()) = Some(reload);
+}
+
+/// 設定が分からないまま通信しようとしたときの知らせ
+const UNKNOWN_SETTINGS_MESSAGE: &str = "設定ファイル (settings.ini) を読めないため、プロキシを使う設定かどうかが分かりません。設定と違う経路で通信しないよう、掲示板との通信を止めています (ファイルを読めるようになると、次の通信から再開します)";
+
+/// いまの設定。保存してある設定を読めていない間は、読み直してみて、まだ読めなければエラー
+fn current() -> Result<ProxySettings, ProxyError> {
+    let reload = *PENDING_RELOAD.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(reload) = reload {
+        match reload() {
+            Some(settings) => update_proxy_settings(settings),
+            None => return Err(ProxyError::Other(UNKNOWN_SETTINGS_MESSAGE.into())),
+        }
+    }
+    Ok(proxy_settings().lock().map(|g| g.clone()).unwrap_or_default())
 }
 
 // ===== 通信への反映 =====
 
 /// クライアントの作り方にプロキシ (と、キャッシュを使わない指定) を足す。プロキシを使わない設定なら何もしない
 pub fn apply(builder: reqwest::ClientBuilder, role: ProxyRole) -> Result<reqwest::ClientBuilder, ProxyError> {
-    apply_with(&current(), builder, role)
+    apply_with(&current()?, builder, role)
 }
 
 pub fn apply_with(settings: &ProxySettings, builder: reqwest::ClientBuilder, role: ProxyRole) -> Result<reqwest::ClientBuilder, ProxyError> {
@@ -189,7 +214,11 @@ pub fn apply_with(settings: &ProxySettings, builder: reqwest::ClientBuilder, rol
 /// (2chAPIProxy が処理するのは http の 5ch.net 形式。5ch.io への置き換えと https 化はプロキシ側が行う)。
 /// それ以外はそのまま返す。画面に出す・保存するアドレスには使わない (送る直前だけに使う)
 pub fn transport_url(url: &str, role: ProxyRole) -> String {
-    transport_url_with(&current(), url, role)
+    // 設定が分からない間は、そのまま返す (その通信は apply が止める)
+    match current() {
+        Ok(settings) => transport_url_with(&settings, url, role),
+        Err(_) => url.to_string(),
+    }
 }
 
 pub fn transport_url_with(settings: &ProxySettings, url: &str, role: ProxyRole) -> String {
@@ -281,6 +310,33 @@ mod proxy_tests {
         for h in ["192.168.0.1", "proxy.example.com", "localhost.evil.example", ""] {
             assert!(!is_local_host(h), "{h}");
         }
+    }
+
+    // 保存してある設定を読めていない間は、通信を通さない。読めたら、その通信から読めた設定を使う
+    #[test]
+    fn unknown_settings_block_until_reloaded() {
+        static READABLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        fn reload() -> Option<ProxySettings> {
+            READABLE.load(std::sync::atomic::Ordering::SeqCst).then(|| {
+                let ep = ProxyEndpoint { host: "localhost".into(), port: "8080".into(), username: String::new(), password: String::new() };
+                ProxySettings { enabled: true, proxy_type: ProxyType::Http, no_cache: false, http_mode: true, receive: ep.clone(), send: ep }
+            })
+        }
+        update_proxy_settings(ProxySettings::default());
+        assert!(apply(reqwest::Client::builder(), ProxyRole::Receive).is_ok());
+        hold_until_readable(reload);
+        for role in [ProxyRole::Receive, ProxyRole::Send] {
+            let e = apply(reqwest::Client::builder(), role).err().map(|e| e.to_string()).unwrap_or_default();
+            assert!(e.contains("settings.ini"), "{e}");
+        }
+        assert_eq!(transport_url("https://mi.5ch.io/x", ProxyRole::Receive), "https://mi.5ch.io/x");
+        READABLE.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(apply(reqwest::Client::builder(), ProxyRole::Send).is_ok());
+        assert_eq!(transport_url("https://mi.5ch.io/x", ProxyRole::Receive), "http://mi.5ch.net/x");
+        // 読めたあとは読み直さない (保存した設定がそのまま使われる)
+        READABLE.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert!(apply(reqwest::Client::builder(), ProxyRole::Receive).is_ok());
+        update_proxy_settings(ProxySettings::default());
     }
 
     #[test]

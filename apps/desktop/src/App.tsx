@@ -1,3 +1,4 @@
+/// <reference types="vite/client" />
 import {
   Fragment,
   useEffect,
@@ -39,6 +40,20 @@ type UpdateCheckResult = {
 // コマンド (設定 > コマンド): 右クリックメニューの「コマンド ▶」に出す、利用者が登録したプログラム・URL。
 // 実行は Rust (user_commands.rs) が保存した登録から行う (プログラムの場所は画面から渡さない)
 type UserCommand = { id: string; name: string; kind: "program" | "url"; program: string; args: string; url: string; enabled: boolean; confirm: boolean };
+// 保存したタブの一覧を1件ずつ確かめる (URL が文字列でないもの (null など) は外し、題名が文字列でなければ空にする)。
+// 壊れた1件で画面全体が描けなくならないように (読み込む側 (Rust) でも同じことをして、外した件数を dropped に入れて渡す)
+const sanitizeSavedTabs = <T,>(tabs: unknown[], urlKey: string): { tabs: T[]; dropped: number } => {
+  const ok: T[] = [];
+  for (const t of tabs) {
+    if (!t || typeof t !== "object") continue;
+    const o = t as Record<string, unknown>;
+    if (typeof o[urlKey] !== "string" || !(o[urlKey] as string).trim()) continue;
+    ok.push({ ...o, title: typeof o.title === "string" ? o.title : "" } as T);
+  }
+  return { tabs: ok, dropped: tabs.length - ok.length };
+};
+// 配信の前に効かせる辞書のファイル (読めないとき・壊れているときは、空では使わず配信への出力を止めて読み直す)
+const OUTPUT_DICT_FILES: string[] = ["ng-settings.json", "ng_filters.json", "tts-mute-dict.json"];
 // その置き換え文字を使っているか ($TEXT は $TEXTU・$TEXTE と区別する)
 const commandUses = (c: UserCommand, name: string) => new RegExp(`\\$${name}(?![A-Z])`).test(c.kind === "program" ? c.args : c.url);
 // "1.2.3" 形式のバージョンを比べる (a が新しければ正)
@@ -76,6 +91,29 @@ type NgFilters = { words: (string | NgEntry)[]; ids: (string | NgEntry)[]; names
 type NgInvisibleMode = "off" | "abone" | "hide";
 type NgCategory = "words" | "ids" | "names" | "mails" | "thread_words" | "image_words";
 const ngVal = (e: string | NgEntry): string => typeof e === "string" ? e : e.value;
+// 正規表現として書けているか (作るだけで、文字には当てない。結果は覚えておく)
+const userRegexSyntaxCache = new Map<string, boolean>();
+const userRegexSyntaxOk = (source: string): boolean => {
+  let ok = userRegexSyntaxCache.get(source);
+  if (ok === undefined) {
+    try { new RegExp(source, "gi"); ok = true; } catch { ok = false; }
+    if (userRegexSyntaxCache.size > 2000) userRegexSyntaxCache.clear();
+    userRegexSyntaxCache.set(source, ok);
+  }
+  return ok;
+};
+// 辞書の語が「/正規表現/」の形で、判定に使えないときの理由 (使える・正規表現の形でないなら null)。
+// long = 長すぎる / syntax = 書き方の誤り / failed = 時間切れ・Worker が動かなくて、判定に使わなくした
+const userRegexUnusable = (value: string): "long" | "syntax" | "failed" | null => {
+  const p = value.trim();
+  if (!(p.startsWith("/") && p.endsWith("/") && p.length > 2)) return null;
+  if (p.length > MAX_USER_REGEX_LEN) return "long";
+  const source = p.slice(1, -1);
+  if (!userRegexSyntaxOk(source)) return "syntax";
+  return ngRegexDisabled.has(source) ? "failed" : null;
+};
+// 辞書の語に、判定に使えない正規表現が含まれるか (あれば、その辞書が効く出力を止める。効かないまま流さないため)
+const hasFailedUserRegex = (values: string[]): boolean => values.some((v) => userRegexUnusable(v) !== null);
 const ngEntryMode = (e: string | NgEntry): NgMode => typeof e === "string" ? "hide" : e.mode;
 const ngEntryScope = (e: string | NgEntry): "global" | "board" | "thread" => typeof e === "string" ? "global" : (e.scope ?? "global");
 const ngEntryScopeUrl = (e: string | NgEntry): string | undefined => typeof e === "string" ? undefined : e.scopeUrl;
@@ -133,6 +171,21 @@ const MAX_SEARCH_HISTORY = 20;
 const MENU_EDGE_PADDING = 8;
 
 // --- File-based persistence helpers (Portable JSON via save_generic_json IPC) ---
+// 開発用のサーバー (npx tauri dev / vite) で動かすときだけ: 起動時の読み込みの結果をわざと遅らせる (読み込みの順番に頼る不具合を
+// 再現するため)。localStorage の "lf.devDelay" に {"bookmarks.json": 3000, "load_session_tabs": 2000} のように書く。
+// 配布するビルドでは import.meta.env.DEV が false になり、何もしない
+const devDelay = async (name: string): Promise<void> => {
+  if (!import.meta.env.DEV) return;
+  let ms = 0;
+  try { ms = Number((JSON.parse(localStorage.getItem("lf.devDelay") || "{}") as Record<string, unknown>)[name]) || 0; } catch { ms = 0; }
+  if (ms > 0) await new Promise((r) => setTimeout(r, Math.min(ms, 30000)));
+};
+const devDelayed = async <T,>(name: string, p: Promise<T>): Promise<T> => {
+  const v = await p;
+  await devDelay(name);
+  return v;
+};
+
 const saveToFile = (filename: string, data: unknown) => {
   if (isTauriRuntime()) {
     invoke("save_generic_json", { filename, data }).catch(() => {});
@@ -141,7 +194,7 @@ const saveToFile = (filename: string, data: unknown) => {
 const loadFromFile = async <T,>(filename: string): Promise<T | null> => {
   if (!isTauriRuntime()) return null;
   try {
-    const v = await invoke<T | null>("load_generic_json", { filename });
+    const v = await devDelayed(filename, invoke<T | null>("load_generic_json", { filename }));
     return v;
   } catch { return null; }
 };
@@ -744,9 +797,11 @@ const rememberUserRegex = (key: string, value: boolean | string) => {
 const runUserRegexBatch = (op: UserRegexOp, source: string, flags: string, replacement: string, texts: string[]): Promise<(boolean | string)[] | null> =>
   new Promise((resolve) => {
     const fallback = () => texts.map((t) => (op === "replace" ? t : false));
-    if (typeof Worker === "undefined") { resolve(fallback()); return; }
+    // Worker が使えない・作れない・止まったときは「判定できなかった」(null)。「一致しない」「そのまま」として流さない
+    // (配信の前に効かせる辞書が効かないまま流れるため。呼ぶ側は、その正規表現を判定に使えないものとして扱い、知らせる)
+    if (typeof Worker === "undefined") { resolve(null); return; }
     if (!userRegexWorker) {
-      try { userRegexWorker = new Worker("/user-regex-worker.js"); } catch (e) { console.warn("正規表現の Worker を作れませんでした", e); resolve(fallback()); return; }
+      try { userRegexWorker = new Worker("/user-regex-worker.js"); } catch (e) { console.warn("正規表現の Worker を作れませんでした", e); resolve(null); return; }
     }
     const w = userRegexWorker;
     const id = ++userRegexSeq;
@@ -767,7 +822,7 @@ const runUserRegexBatch = (op: UserRegexOp, source: string, flags: string, repla
       console.warn("正規表現の Worker でエラーがありました", ev.message);
       w.terminate();
       if (userRegexWorker === w) userRegexWorker = null;
-      resolve(fallback());
+      resolve(null);
     };
     w.postMessage({ id, op, source, flags, replacement, texts });
   });
@@ -783,7 +838,7 @@ const pumpUserRegex = async () => {
       const chunk = texts.slice(i, i + USER_REGEX_BATCH);
       const out = await runUserRegexBatch(job.op, job.source, job.flags, job.replacement, chunk);
       if (out === null) {
-        // 時間切れ: この正規表現は判定に使わない
+        // 時間切れ・Worker が動かない: この正規表現は判定に使わない (配信の前に効かせる辞書にあれば、出力を止める)
         ngRegexDisabled.add(job.source);
         for (const fn of userRegexDisableListeners) fn(job.source);
         break;
@@ -1203,7 +1258,12 @@ type RenderBodyOpts = {
   ogpBlock?: string[];
 };
 
-const renderResponseBody = (html: string, opts?: RenderBodyOpts): { __html: string } => {
+// 5ch は改行を「 <br> 」(前後に半角スペース) で、本文も前後にスペースを付けて送ってくるので、改行の前後と本文の前後にスペースが1つずつ残る。
+// スペースをそのまま見せる欄 (ビュワー・新着レス欄) で行頭に空白が出ないよう、表示の直前に1つずつ取り除く
+// (保存済みのレス・ログは元のまま。スレの表示欄はもともと行頭の空白が出ない)
+const trimBreakSpaces = (text: string): string => text.replace(/ ?\n ?/g, "\n").replace(/^ /, "").replace(/ $/, "");
+
+const renderResponseBody =(html: string, opts?: RenderBodyOpts): { __html: string } => {
   let safe = html
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<a\s[^>]*>(.*?)<\/a>/gi, "$1")
@@ -1646,12 +1706,17 @@ export default function App() {
       setTwitchAuth((prev) => ({ ...prev, state: "error", message: String(e) }));
     } finally { setTwitchAuthBusy(false); }
   };
+  // ログアウトで済んでいないこと (サービス側の許可の取り消し・この PC のログイン情報の削除) があれば知らせる
+  const notifyLogoutIncomplete = (title: string, message: string | undefined) => {
+    if (!message) return;
+    setAppConfirm({ title, message, buttons: [{ label: "OK", primary: true, onClick: () => {} }] });
+  };
   const logoutTwitch = () => {
     setAppConfirm({
       title: "Twitch からログアウト",
       message: "Twitch からログアウトしますか?\nTwitch 側の許可も取り消し、保存したログイン情報を削除します。",
       buttons: [
-        { label: "ログアウト", danger: true, onClick: () => { setTwitchAuthBusy(true); void invoke("twitch_logout").catch((e) => console.warn("twitch_logout failed", e)).finally(() => setTwitchAuthBusy(false)); } },
+        { label: "ログアウト", danger: true, onClick: () => { setTwitchAuthBusy(true); void invoke<TwitchAuthStatus>("twitch_logout").then((st) => { setTwitchAuth(st); notifyLogoutIncomplete("Twitch のログアウト", st?.message); }).catch((e) => console.warn("twitch_logout failed", e)).finally(() => setTwitchAuthBusy(false)); } },
         { label: "キャンセル", onClick: () => {} },
       ],
     });
@@ -1740,7 +1805,7 @@ export default function App() {
       title: "YouTube の OAuth クライアント",
       message: "保存したクライアント ID とシークレットを削除しますか?\nログアウトもします (Google 側の許可も取り消します)。",
       buttons: [
-        { label: "削除", danger: true, onClick: () => { setYoutubeAuthBusy(true); void invoke<YoutubeAuthStatus>("youtube_auth_clear_client").then((st) => { setYoutubeAuth(st); setYoutubeClientMsg({ text: "削除しました", error: false }); }).catch((e) => setYoutubeClientMsg({ text: String(e), error: true })).finally(() => setYoutubeAuthBusy(false)); } },
+        { label: "削除", danger: true, onClick: () => { setYoutubeAuthBusy(true); void invoke<YoutubeAuthStatus>("youtube_auth_clear_client").then((st) => { setYoutubeAuth(st); setYoutubeClientMsg(st?.message ? { text: "削除しましたが、済んでいないことがあります", error: true } : { text: "削除しました", error: false }); notifyLogoutIncomplete("YouTube のクライアントの削除", st?.message); }).catch((e) => setYoutubeClientMsg({ text: String(e), error: true })).finally(() => setYoutubeAuthBusy(false)); } },
         { label: "キャンセル", onClick: () => {} },
       ],
     });
@@ -1760,7 +1825,7 @@ export default function App() {
       title: "YouTube (Google) からログアウト",
       message: "ログアウトしますか?\nGoogle 側の許可も取り消し、保存したログイン情報を削除します。",
       buttons: [
-        { label: "ログアウト", danger: true, onClick: () => { setYoutubeAuthBusy(true); void invoke<YoutubeAuthStatus>("youtube_auth_logout").then((st) => setYoutubeAuth(st)).catch((e) => console.warn("youtube_auth_logout failed", e)).finally(() => setYoutubeAuthBusy(false)); } },
+        { label: "ログアウト", danger: true, onClick: () => { setYoutubeAuthBusy(true); void invoke<YoutubeAuthStatus>("youtube_auth_logout").then((st) => { setYoutubeAuth(st); notifyLogoutIncomplete("YouTube (Google) のログアウト", st?.message); }).catch((e) => console.warn("youtube_auth_logout failed", e)).finally(() => setYoutubeAuthBusy(false)); } },
         { label: "キャンセル", onClick: () => {} },
       ],
     });
@@ -1831,6 +1896,9 @@ export default function App() {
   const [thumbSize, setThumbSize] = useState(200);
   const [restoreSession, setRestoreSession] = useState(true);
   const restoreSessionRef = useRef(true);
+  // 文字の大きさ: settings.ini の共通の値と、画面の設定に欄ごとの値があったか (欄ごとの値を優先するため)
+  const iniCommonFontRef = useRef<number | null>(null);
+  const paneFontFromLayoutRef = useRef({ boards: false, threads: false, responses: false, common: false });
   // メインウィンドウを常に最背面に表示する(「常に最前面」の逆)。浮遊ウィンドウ・OBS連携ウィンドウ・字幕には適用しない
   const [mainAlwaysOnBottom, setMainAlwaysOnBottom] = useState(false);
   const hoverPreviewEnabledRef = useRef(hoverPreviewEnabled);
@@ -1895,8 +1963,34 @@ export default function App() {
   const [proxyMsg, setProxyMsg] = useState<{ text: string; error: boolean } | null>(null);
   // この PC を指すホスト (2chAPIProxy などのローカルのプロキシ)。http で渡すのはこのときだけ (Rust 側でも同じ検査)
   const isLocalProxyHost = (h: string) => /^(localhost|::1|\[::1\]|127(\.\d{1,3}){3})$/i.test(h.trim());
+  // 保存してあるプロキシの設定を画面に読み込めたか (読めていない間は、画面の既定値「使わない」を保存させない)
+  const proxyLoadedRef = useRef(false);
+  const loadProxySettings = (): Promise<boolean> =>
+    invoke<{ enabled: boolean; proxyType: string; noCache: boolean; httpMode: boolean; receive: ProxyEndpoint; send: ProxyEndpoint }>("load_proxy_settings").then((s) => {
+      setProxyEnabled(s.enabled);
+      setProxyType(s.proxyType === "socks5" || s.proxyType === "socks4" ? s.proxyType : "http");
+      setProxyNoCache(s.noCache === true);
+      setProxyHttpMode(s.httpMode === true);
+      const ep = (e: Partial<ProxyEndpoint> | undefined): ProxyEndpoint => ({ host: e?.host ?? "", port: e?.port ?? "", username: e?.username ?? "", password: e?.password ?? "" });
+      setProxyReceive(ep(s.receive));
+      setProxySend(ep(s.send));
+      proxyLoadedRef.current = true;
+      return true;
+    }).catch((e) => {
+      console.warn("load_proxy_settings:", e);
+      setProxyMsg({ text: "保存してある設定を読めていません (設定ファイルが使用中の可能性があります)。この画面の内容は保存してある設定ではありません", error: true });
+      return false;
+    });
   const saveProxySettings = () => {
     if (!isTauriRuntime()) return;
+    if (!proxyLoadedRef.current) {
+      // 読めていないまま保存すると、保存してある設定が画面の既定値で消える。先に読み直す
+      void loadProxySettings().then((ok) => {
+        if (ok) setProxyMsg({ text: "保存してある設定を読み直しました。まだ保存していません。内容を確かめてから、もう一度「保存」を押してください", error: true });
+        else setProxyMsg({ text: "保存してある設定を読めないため、保存しませんでした (設定ファイルが使用中の可能性があります)", error: true });
+      });
+      return;
+    }
     const badPort = [proxyReceive, proxySend].some((e) => e.host.trim() && e.port.trim() && !/^\d{1,5}$/.test(e.port.trim()));
     if (badPort) { setProxyMsg({ text: "ポートは数字で入力してください", error: true }); return; }
     invoke("save_proxy_settings", { settings: { enabled: proxyEnabled, proxyType, noCache: proxyNoCache, httpMode: proxyHttpMode, receive: proxyReceive, send: proxySend } })
@@ -2166,6 +2260,11 @@ export default function App() {
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // 起動したときに読めなかったプロキシの設定は、設定画面を開いたときにも読み直す (読めたあとも、画面が既定値のままにならないように)
+  useEffect(() => {
+    if (!settingsOpen || !isTauriRuntime() || proxyLoadedRef.current) return;
+    void loadProxySettings().then((ok) => { if (ok) setProxyMsg(null); });
+  }, [settingsOpen]);
   type SettingsCategory = "display" | "posting" | "tts" | "tts-dict" | "proxy" | "ng" | "subtitle" | "highlights" | "presets" | "reset" | "info" | "twitch" | "youtube" | "viewer" | "connect" | "commands";
   const SETTINGS_CATEGORIES: SettingsCategory[] = ["display", "posting", "tts", "tts-dict", "ng", "highlights", "subtitle", "connect", "twitch", "youtube", "viewer", "commands", "proxy", "presets", "reset", "info"];
   const SETTINGS_CATEGORY_LABELS: Record<SettingsCategory, string> = { display: "表示", posting: "書き込み", tts: "読み上げ", "tts-dict": "読み上げ辞書", subtitle: "字幕", proxy: "プロキシ", ng: "NG", highlights: "ハイライト", presets: "プリセット", reset: "リセット", info: "情報", twitch: "Twitch", youtube: "YouTube", viewer: "ビュワー", connect: "接続とログ", commands: "コマンド" };
@@ -2176,7 +2275,32 @@ export default function App() {
   const defaultLayoutPrefsRef = useRef<Record<string, unknown> | null>(null);
   const defaultAppSettingsRef = useRef<Record<string, string> | null>(null);
   type AppConfirm = { title?: string; message: string; buttons: { label: string; onClick: () => void; primary?: boolean; danger?: boolean }[] };
-  const [appConfirm, setAppConfirm] = useState<AppConfirm | null>(null);
+  const [appConfirm, setAppConfirmRaw] = useState<AppConfirm | null>(null);
+  // 知らせ (ボタンが「OK」だけのダイアログ) は、何か出ている間は待たせ、閉じたら順番に出す (あとの知らせが前の知らせを消さないように)。
+  // 確認 (ボタンが複数) はすぐ出す。そのとき出ていた知らせは、まだ読まれていないので待ち行列の先頭に戻す
+  const appConfirmNowRef = useRef<AppConfirm | null>(null);
+  const noticeQueueRef = useRef<AppConfirm[]>([]);
+  const isNoticeDialog = (d: AppConfirm) => d.buttons.length === 1 && d.buttons[0].label === "OK";
+  const setAppConfirm = (next: AppConfirm | null) => {
+    const cur = appConfirmNowRef.current;
+    if (next && isNoticeDialog(next)) {
+      if (cur) {
+        const same = (d: AppConfirm) => d.title === next.title && d.message === next.message;
+        if (!same(cur) && !noticeQueueRef.current.some(same)) noticeQueueRef.current.push(next);
+        return;
+      }
+    } else if (next && cur && isNoticeDialog(cur)) {
+      noticeQueueRef.current.unshift(cur);
+    }
+    appConfirmNowRef.current = next;
+    setAppConfirmRaw(next);
+  };
+  useEffect(() => {
+    if (appConfirm !== null || noticeQueueRef.current.length === 0) return;
+    const next = noticeQueueRef.current.shift() ?? null;
+    appConfirmNowRef.current = next;
+    setAppConfirmRaw(next);
+  }, [appConfirm]);
   // 確認ダイアログのキー操作: Enter で決定 (取り消しのきかないボタン (danger) だけのときは決定しない)・Esc でキャンセル。
   // ダイアログを出したキーの押しっぱなし (Ctrl+Enter の長押しなど) では決定しない
   useEffect(() => {
@@ -2632,7 +2756,7 @@ export default function App() {
   };
   const makeViewerBodyHtml = (it: ViewerItem, deferred: boolean): string => {
     const cards = viewerCards && !deferred;
-    let html = renderResponseBody(escapeHtml(it.text), {
+    let html = renderResponseBody(escapeHtml(trimBreakSpaces(it.text)), {
       // 画像NG に当たるものは URL ごと隠す。サムネイルを出さないとき (オフ・クリック待ち) は、URL はリンクとして残してサムネイルの行だけ外す
       hideImages: matchesImageWords(it.text),
       imageSizeLimitKb: imageSizeLimit,
@@ -2823,10 +2947,35 @@ export default function App() {
   const haltGenRef = useRef(0);
   // 0 より大きい間は、配信への出力 (新着レスペイン・字幕・OBS 表示・読み上げ) に出さない
   const outputSuppressRef = useRef(0);
-  const outputBlocked = () => broadcastHaltedRef.current || outputSuppressRef.current > 0;
+  // 配信へ出す前に効かせる辞書 (NG・読み上げない辞書) の読み込みの状態。読み込み終える (ok) まで、配信への出力
+  // (新着レスペイン・字幕・OBS 表示・読み上げ) を止める (手元のスレ・ビュワーの表示は続ける)。ファイルが無いのは ok (初めて使うとき)。
+  // あるのに読めないときは failed のまま止め、間をおいて読み直す
+  type OutputDictState = "loading" | "ok" | "failed";
+  const outputDictsRef = useRef<Record<string, OutputDictState>>(isTauriRuntime() ? { ng: "loading", mute: "loading" } : {});
+  const outputDictsReady = () => Object.values(outputDictsRef.current).every((v) => v === "ok");
+  // 配信の前に効かせる辞書に、判定できなかった正規表現があるか (あれば、効かないまま流さないよう出力を止める。下で辞書を読む関数に置き換える)
+  const outputRegexBlockRef = useRef<() => boolean>(() => false);
+  // 正規表現のために出力を止める状態になったら片付ける (下で中身を入れる。判定できなくなった知らせから、すぐ呼ぶ)
+  const syncRegexBlockRef = useRef<() => void>(() => {});
+  const outputBlocked = () => broadcastHaltedRef.current || outputSuppressRef.current > 0 || !outputDictsReady() || outputRegexBlockRef.current();
   // YouTube で削除された発言の目印 (結果を待っている新着を流す直前に除く)
   const removedChatKeysRef = useRef<Set<string>>(new Set());
-  const inArrivalOrder = (build: () => ArrivalItem[], dispatch: (arrivals: ArrivalItem[]) => void) => {
+  // Twitch・YouTube の発言を受け取った瞬間の停止の状態 (少しためてから流すので、流すときではなく受け取ったときで判断する)
+  type HaltStamp = { rxHalted?: boolean; rxGen?: number };
+  const haltStamp = (): HaltStamp => ({ rxHalted: broadcastHaltedRef.current, rxGen: haltGenRef.current });
+  // 止めている間に受け取った・受け取ってから流すまでに止めた発言か (配信への出力にだけ出さない。手元の表示は続ける)
+  const heldFromOutput = (x: HaltStamp) => x.rxHalted === true || (x.rxGen !== undefined && x.rxGen !== haltGenRef.current);
+  // 受け取った順のまま、配信へ出さないもの・出すもののひと続きに分ける
+  const splitByHeld = <T extends HaltStamp>(items: T[]) => {
+    const runs: { items: T[]; held: boolean }[] = [];
+    for (const x of items) {
+      const held = heldFromOutput(x);
+      const last = runs[runs.length - 1];
+      if (last && last.held === held) last.items.push(x); else runs.push({ items: [x], held });
+    }
+    return runs;
+  };
+  const inArrivalOrder = (build: () => ArrivalItem[], dispatch: (arrivals: ArrivalItem[]) => void, opts?: { held?: boolean }) => {
     const buildAll = () => {
       const arrivals = build();
       // 配信ホワイトリストの自動追加の語も、流す前に判定を頼んでおく
@@ -2840,13 +2989,18 @@ export default function App() {
     if (arrivalWaitingRef.current === 0) {
       const before = userRegexMissCount;
       const arrivals = buildAll();
-      if (userRegexMissCount === before) { dispatch(arrivals); return; }
+      if (userRegexMissCount === before) {
+        // 止めている間に受け取った発言 (opts.held) は、もう再開していても配信へ出さない
+        if (opts?.held) outputSuppressRef.current++;
+        try { dispatch(arrivals); } finally { if (opts?.held) outputSuppressRef.current--; }
+        return;
+      }
     }
     arrivalWaitingRef.current++;
     const gen = ttsGenRef.current;
     const hg = haltGenRef.current;
     // 受け取った時点で止めていたか (止めている間に受け取った発言は、結果を待つ間に再開しても配信へ出さない)
-    const haltedAtReceipt = broadcastHaltedRef.current;
+    const haltedAtReceipt = broadcastHaltedRef.current || opts?.held === true;
     arrivalOrderRef.current = arrivalOrderRef.current
       .then(async () => {
         // 結果がそろわないときは、途中の結果 (NG・辞書を当てきっていない本文) のままは流さない
@@ -2989,6 +3143,11 @@ export default function App() {
   type TtsMuteKind = keyof TtsMuteDict;
   const EMPTY_TTS_MUTE: TtsMuteDict = { names: [], words: [], ids: [] };
   const [ttsMuteDict, setTtsMuteDict] = useState<TtsMuteDict>(EMPTY_TTS_MUTE);
+  useEffect(() => {
+    if (!outputDictAppliedRef.current.has("mute")) return;
+    outputDictAppliedRef.current.delete("mute");
+    outputDictsRef.current.mute = "ok";
+  }, [ttsMuteDict]);
   const ttsMuteRef = useRef<TtsMuteDict>(EMPTY_TTS_MUTE);
   ttsMuteRef.current = ttsMuteDict;
   const ttsMuteLoadedRef = useRef(false);
@@ -3078,6 +3237,8 @@ export default function App() {
   // まだ既定値のままの state で settings.ini を上書きし、直前まで保存されていた値
   // (棒読みちゃんの実行ファイルパス等) を消してしまう
   const appSettingsLoadedRef = useRef(false);
+  // 設定ファイルを読み込めた回数 (読み直しに成功したときに、開いている設定画面の戻り先を合わせるため)
+  const [appSettingsLoadVersion, setAppSettingsLoadVersion] = useState(0);
   // settings.ini を読み終えた (読み込み前の既定値で動き出してほしくない処理が待つ)
   const [appSettingsReady, setAppSettingsReady] = useState(false);
   const threadScrollPositions = useRef<Record<string, number>>({});
@@ -3419,13 +3580,43 @@ export default function App() {
 
   const isFavoriteBoard = (url: string) => favorites.boards.some((b) => b.url === url);
 
-  const loadNgFilters = async () => {
+  // 配信へ出す前に効かせる辞書を読めなかったことを知らせる (最初の1回だけ。読めるまで配信への出力を止めている)
+  const outputDictWarnedRef = useRef<Set<string>>(new Set());
+  const OUTPUT_DICT_LABEL: Record<string, string> = { ng: "NG (ng-settings.json)", mute: "読み上げない辞書 (tts-mute-dict.json)" };
+  const outputDictFailed = (name: string, e: unknown, retry: () => void, attempt: number) => {
+    outputDictsRef.current[name] = "failed";
+    console.warn(`load ${name} failed`, e);
+    if (!outputDictWarnedRef.current.has(name)) {
+      outputDictWarnedRef.current.add(name);
+      setStatus(`${OUTPUT_DICT_LABEL[name] ?? name} を読み込めませんでした。読み込めるまで、配信への出力を止めています`);
+      setAppConfirm({
+        title: "読み込めない辞書があります",
+        message: `${OUTPUT_DICT_LABEL[name] ?? name} を読み込めませんでした (${String(e)})。\n\n読み込めるまで、配信への出力 (読み上げ・字幕・OBS 表示・新着レスペイン) を止めています (効かないまま流さないため)。スレ・ビュワーの表示は続けます。\n少し間をおいて自動で読み直し、読み込めたら再開します。`,
+        buttons: [{ label: "OK", primary: true, onClick: () => {} }],
+      });
+    }
+    const delays = [3000, 10000, 30000];
+    window.setTimeout(retry, delays[Math.min(attempt, delays.length - 1)] ?? 60000);
+  };
+  // 辞書を state に入れたあと、その描画が終わってから「読み込み済み」にする (それまでに届いた分は、古い (空の) 辞書で流さない)
+  const outputDictAppliedRef = useRef<Set<string>>(new Set());
+  const outputDictLoaded = (name: string) => {
+    outputDictAppliedRef.current.add(name);
+  };
+  useEffect(() => {
+    if (!outputDictAppliedRef.current.has("ng")) return;
+    outputDictAppliedRef.current.delete("ng");
+    outputDictsRef.current.ng = "ok";
+  }, [ngFilters]);
+  const loadNgFilters = async (attempt = 0) => {
     if (!isTauriRuntime()) return;
     try {
       const data = await invoke<NgFilters>("load_ng_filters");
       setNgFilters({ ...data, mails: data.mails ?? [], thread_words: data.thread_words ?? [], invisible: normalizeInvisibleMode(data.invisible) });
-    } catch {
-      // no saved NG filters yet
+      outputDictLoaded("ng");
+    } catch (e) {
+      // ファイルはあるのに読めない (無いときは空の NG が返る)
+      outputDictFailed("ng", e, () => void loadNgFilters(attempt + 1), attempt);
     }
   };
 
@@ -3434,12 +3625,49 @@ export default function App() {
   const notifySlowNgRegexes = (slow: string[]) => {
     const list = slow.map((s) => `/${s.length > 60 ? `${s.slice(0, 60)}…` : s}/`).join("\n");
     setAppConfirm({
-      title: "使っていない正規表現があります",
-      message: `次の正規表現は、判定に時間がかかりすぎたため、使っていません (NG・読み上げの辞書・画像URL置換などの設定には残しています)。\n${list}\n\n「(a+)+」のような繰り返しの中の繰り返しなどで、時間がかかることがあります。書き直すか、消してください。`,
+      title: "判定できない正規表現があります",
+      message: `次の正規表現は、判定に時間がかかりすぎたか、判定の仕組みが動かなかったため、判定に使っていません (NG・読み上げの辞書・画像URL置換などの設定には残しています)。\n${list}\n\n効かないまま流さないよう、書き直すか消すまで、NG にある正規表現なら配信への出力 (読み上げ・字幕・OBS 表示・新着レスペイン) を、読み上げない辞書にある正規表現なら読み上げを止めています。\n「(a+)+」のような繰り返しの中の繰り返しなどで、時間がかかることがあります。判定の仕組みが動かなかったときは、LiveFake を起動し直すと、もう一度判定します。`,
       buttons: [{ label: "OK", primary: true, onClick: () => {} }],
     });
-    setStatus(`正規表現を ${slow.length} 件、判定に使っていません (時間がかかりすぎたため)`);
+    setStatus(`正規表現を ${slow.length} 件、判定に使っていません (時間がかかりすぎたか、判定の仕組みが動かなかったため)`);
   };
+  // 書き方の誤り・長すぎで判定に使えない正規表現は、登録させない (登録できてしまうと、効かないまま流れるか、出力が止まる)。断ったら true
+  const refuseUnusableRegex = (value: string): boolean => {
+    const why = userRegexUnusable(value);
+    if (why !== "syntax" && why !== "long") return false;
+    const reason = why === "syntax" ? "正規表現の書き方に誤りがあるため" : `前後の / を含めて ${MAX_USER_REGEX_LEN} 文字を超えているため`;
+    setAppConfirm({
+      title: "この正規表現は登録できません",
+      message: `${value.length > 80 ? `${value.slice(0, 80)}…` : value}\n\n${reason}、判定に使えません。書き直してから登録してください。`,
+      buttons: [{ label: "OK", primary: true, onClick: () => {} }],
+    });
+    setStatus(`正規表現を登録しませんでした (${reason})`);
+    return true;
+  };
+  // すでに辞書にある、書き方の誤り・長すぎの正規表現を知らせる (設定ファイルを読み込んだ・取り込んだ・欄の中で書き換えたとき)。
+  // その辞書が効く出力は、書き直すか消すまで止めている (hasFailedUserRegex)
+  const notifyUnusableRegexEntries = (list: { value: string; where: string }[]) => {
+    const lines = list.map((x) => `・${x.value.length > 60 ? `${x.value.slice(0, 60)}…` : x.value} (${x.where})`).join("\n");
+    setAppConfirm({
+      title: "判定できない正規表現があります",
+      message: `次の正規表現は、書き方に誤りがあるか、前後の / を含めて ${MAX_USER_REGEX_LEN} 文字を超えているため、判定に使えません。\n${lines}\n\n効かないまま流さないよう、書き直すか消すまで、NG にある正規表現なら配信への出力 (読み上げ・字幕・OBS 表示・新着レスペイン) を、読み上げない辞書にある正規表現なら読み上げを止めています。`,
+      buttons: [{ label: "OK", primary: true, onClick: () => {} }],
+    });
+    setStatus(`正規表現を ${list.length} 件、判定に使えません (書き方に誤りがあるか、長すぎるため)`);
+  };
+  const unusableRegexNotifiedRef = useRef<Set<string>>(new Set());
+  // 辞書の中の、まだ知らせていない「書き方の誤り・長すぎ」の正規表現を知らせる (欄の中で書いている途中のものを拾わないよう、少し待ってから)
+  const notifyNewUnusableRegex = (entries: { value: string; where: string }[]) => {
+    const fresh = entries.filter((x) => {
+      const why = userRegexUnusable(x.value);
+      return (why === "syntax" || why === "long") && !unusableRegexNotifiedRef.current.has(`${x.where}\u0001${x.value}`);
+    });
+    if (fresh.length === 0) return;
+    for (const x of fresh) unusableRegexNotifiedRef.current.add(`${x.where}\u0001${x.value}`);
+    notifyUnusableRegexEntries(fresh);
+  };
+  const notifyNewUnusableRegexRef = useRef(notifyNewUnusableRegex);
+  notifyNewUnusableRegexRef.current = notifyNewUnusableRegex;
   // Worker の結果が届いたら描き直す・時間切れを知らせる (まとめて1回)
   const [userRegexVersion, setUserRegexVersion] = useState(0);
   useEffect(() => {
@@ -3451,6 +3679,8 @@ export default function App() {
       redraw = setTimeout(() => { redraw = null; setUserRegexVersion((v) => v + 1); }, 50);
     };
     const onDisable = (source: string) => {
+      // 知らせ (少しまとめてから出す) を待たずに、配信への出力に残っているものをすぐ片付ける
+      syncRegexBlockRef.current();
       slow.push(source);
       if (notify) return;
       notify = setTimeout(() => {
@@ -3473,6 +3703,23 @@ export default function App() {
 
   const ngFiltersRef = useRef(ngFilters);
   ngFiltersRef.current = ngFilters;
+  // NG・読み上げない辞書に、書き方の誤り・長すぎの正規表現があれば知らせる (読み込んだとき・書き換えたとき。少し待ってから)
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const f = ngFiltersRef.current;
+      const m = ttsMuteRef.current;
+      notifyNewUnusableRegexRef.current([
+        ...[...f.words, ...f.names, ...f.mails].map((e) => ({ value: ngVal(e), where: "NG: ng-settings.json" })),
+        ...[...m.words, ...m.names, ...m.ids].map((e) => ({ value: e.value, where: "読み上げない辞書: tts-mute-dict.json" })),
+      ]);
+    }, 1500);
+    return () => window.clearTimeout(timer);
+  }, [ngFilters, ttsMuteDict]);
+  // NG (レスに当てる語・名前・メール) に判定できなかった正規表現があれば、配信への出力を止める (ID は完全一致で照合するので見ない)
+  outputRegexBlockRef.current = () => {
+    const f = ngFiltersRef.current;
+    return hasFailedUserRegex([...f.words, ...f.names, ...f.mails].map(ngVal));
+  };
   // 消した直後に出す「取り消す」(8秒で消える)。消した内容は配信用のマスクのため文には出さない
   const [undoToast, setUndoToast] = useState<{ id: number; text: string; undo: () => void } | null>(null);
   const undoToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -3507,6 +3754,8 @@ export default function App() {
   const addNgEntry = (type: NgCategory, value: string, mode?: NgMode, scope?: "global" | "board" | "thread") => {
     const trimmed = value.trim();
     if (!trimmed) return;
+    // NG の ID は完全一致で照合する (正規表現として使わない。5ch の ID には + や / が入る) ので、正規表現の確かめはしない
+    if (type !== "ids" && refuseUnusableRegex(trimmed)) return;
     if (ngFilters[type].some((e) => ngVal(e) === trimmed)) {
       setStatus(`already in NG ${type}: ${trimmed}`);
       return;
@@ -3709,11 +3958,24 @@ export default function App() {
   };
 
   const bookmarkCacheRef = useRef<Record<string, number>>({});
+  // 栞 (bookmarks.json) と表示位置 (scroll-positions.json) は、ファイルの読み込みが終わるまで保存しない。
+  // 終わる前に保存すると、読み込み途中の一部 (この起動で覚えた分だけ) でファイル全体を上書きして、ほかのスレの分が消えるため。
+  // 終わる前に覚えた分は、読み込んだ分と合わせて (新しく覚えた分を優先して) 読み込み後に1回保存する
+  const makeReady = () => { let resolve: () => void = () => {}; const promise = new Promise<void>((r) => { resolve = r; }); return { promise, resolve, loaded: false, pending: false }; };
+  const bookmarksLoadRef = useRef(makeReady());
+  const scrollPosLoadRef = useRef(makeReady());
+  const persistBookmarks = () => {
+    if (!bookmarksLoadRef.current.loaded) { bookmarksLoadRef.current.pending = true; return; }
+    saveToFile("bookmarks.json", bookmarkCacheRef.current);
+  };
+  const persistScrollPositions = () => {
+    if (!scrollPosLoadRef.current.loaded) { scrollPosLoadRef.current.pending = true; return; }
+    saveToFile("scroll-positions.json", threadScrollPositions.current);
+  };
   const saveBookmark = (url: string, responseNo: number) => {
     if (isChatUrl(url)) return; // Twitch・YouTube のチャットは流れていくだけなので栞は残さない
     bookmarkCacheRef.current[url] = responseNo;
-    const data = bookmarkCacheRef.current;
-    saveToFile("bookmarks.json", data);
+    persistBookmarks();
   };
 
   const loadBookmark = (url: string): number | null => {
@@ -3741,15 +4003,17 @@ export default function App() {
     // 1番 (一番上) も覚える (覚えないと、前に覚えた途中の位置が残る)
     if (no < 1) return;
     threadScrollPositions.current[url] = no;
-    saveToFile("scroll-positions.json", threadScrollPositions.current);
+    persistScrollPositions();
   };
   const loadScrollPos = (url: string): number => {
     return threadScrollPositions.current[url] ?? 0;
   };
+  // タブの位置を覚えるときの「最下部にいるか」。描画の丸め誤差 (数 px) だけを最下部とみなす
+  // (広くすると、最下部の少し上で離れたタブが、戻ったときに最下部へ動いてしまう。それ以外は先頭のレス番号＋ずれ幅で戻す)
   const isScrollAtBottom = () => {
     const c = responseScrollRef.current;
     if (!c) return false;
-    return c.scrollHeight - c.scrollTop - c.clientHeight < 50;
+    return c.scrollHeight - c.scrollTop - c.clientHeight < 3;
   };
 
   // Capture the active tab's live scroll state into tabCacheRef.
@@ -3777,10 +4041,15 @@ export default function App() {
     if (activePaneView === "responses") saveActiveTabScrollState();
   };
   // 表示を切り替える前の後片付け: 待っている位置の保存を (今の表示欄のうちに) 済ませ、動いている位置合わせを止める
-  const beforeViewSwitch = () => {
+  // keepNav: 表示中のタブ・画面が変わらない操作 (裏のタブを閉じるなど) のとき。起動時の読み込みを取り消さない
+  const beforeViewSwitch = (opts?: { keepNav?: boolean }) => {
+    if (!opts?.keepNav) navGenRef.current++;
     flushScrollSave();
     cancelScrollAlign();
   };
+  // 利用者が表示を切り替えた回数 (タブを開く・閉じる・切り替える・ビュワーやスレ一覧へ移る)。
+  // 起動時の保存分の読み込みなど、遅れて届く結果は、待つ間にこれが変わっていたら画面に反映しない
+  const navGenRef = useRef(0);
 
   // タブ切替直後のちらつき対策: レス表示欄を visibility: hidden にしておき、scrollHeight が 2 フレーム続けて同じに
   // なったら (最長 0.4 秒) 表示する。隠している間も scrollToBottom / scrollToResponseNo は動くので、
@@ -4077,13 +4346,17 @@ export default function App() {
 
   const closeTab = (index: number) => {
     if (index < 0 || index >= threadTabs.length) return;
+    // 表示中のタブを閉じたときだけ数える (裏のタブを閉じても、表のタブの起動時の読み込みは取り消さない)
+    if (index === activeTabIndex) navGenRef.current++;
     // 待っている保存は閉じる前に済ませる (済ませないと、切り替え先の位置を閉じたタブの栞に書く)
     flushScrollSave();
     if (index === activeTabIndex) cancelScrollAlign();
     const closing = threadTabs[index];
     closedTabsRef.current.push({ threadUrl: closing.threadUrl, title: closing.title });
     if (closedTabsRef.current.length > 20) closedTabsRef.current.shift();
-    if (index === activeTabIndex) {
+    // 本文を表示し終える前 (起動時の読み込み待ちなど) に閉じたときは、栞・位置を保存しない
+    // (まだ位置を決めていないので、初めの値 (1番) で栞を上書きしてしまう)
+    if (index === activeTabIndex && tabCacheRef.current.has(closing.threadUrl)) {
       saveBookmark(closing.threadUrl, selectedResponse);
       saveScrollPos(closing.threadUrl);
     }
@@ -4108,6 +4381,9 @@ export default function App() {
     }
     activeTabIndexRef.current = nextIndex;
     setActiveTabIndex(nextIndex);
+    // 閉じたのが表示中ではないタブなら、一覧と選択の番号だけを直す
+    // (表示中の本文・選んでいるレス・スクロールには触れない。触れると、前に離れたときの位置へ戻ってしまう)
+    if (index !== activeTabIndex) return;
     const tab = nextTabs[nextIndex];
     const cached = tabCacheRef.current.get(tab.threadUrl);
     if (cached) {
@@ -4168,7 +4444,8 @@ export default function App() {
   const closeOtherTabs = (keepIndex: number) => {
     const kept = threadTabs[keepIndex];
     if (!kept) return;
-    beforeViewSwitch();
+    // 表示中のタブを残すときは、表示は変わらない (起動時の読み込みを取り消さない)
+    beforeViewSwitch({ keepNav: keepIndex === activeTabIndex });
     // 表示していないタブを残すときは、ふつうのタブの切り替えと同じく、今のタブの位置を覚えてから残すタブの位置へ戻す
     const switching = keepIndex !== activeTabIndex;
     if (switching) saveActiveTabScrollState();
@@ -4343,6 +4620,8 @@ export default function App() {
       if (rows.length === 0) return;
       // 位置の記録 (最下部にいたか・上端のレス) は引き継ぐ (落とすと、最下部を見ていたタブへ戻ったときに最下部へ行かない)
       tabCacheRef.current.set(tabUrl, { responses: rows, selectedResponse: cached?.selectedResponse ?? 1, scrollResponseNo: cached?.scrollResponseNo, scrollOffset: cached?.scrollOffset, scrollAtBottom: cached?.scrollAtBottom, newResponseStart: cached?.newResponseStart });
+      // 掲示板のログ: 裏のタブで取得した分も書き足す (書けた最後のレス番号より後だけ。表のタブに戻ったときに抜けないように)
+      writeBoardLog(tabUrl, result.title ?? tabTitle, rows);
       if (newRows.length === 0 && prevCount > 0) return; // no new responses
       if (prevCount > 0 && newRows.length > 0) {
         const now = new Date();
@@ -4448,7 +4727,7 @@ export default function App() {
     setThreadLastReadCount(lastReadMap);
     setFavNewCounts(counts);
     setFavNewCountsFetched(true);
-    setStatus(`お気に入り新着確認完了 (${counts.size}/${favorites.threads.length}スレ)`);
+    setStatus(`お気に入りスレの新着を確認しました (${counts.size}/${favorites.threads.length}スレ)`);
   };
 
   const fetchResponsesFromCurrent = async (targetThreadUrl?: string, opts?: { keepSelection?: boolean; resetScroll?: boolean }) => {
@@ -4495,7 +4774,7 @@ export default function App() {
       }
       markMyPostIfFound(url, rows);
       // 掲示板のログ: 取得のたびに書き足す (新しいレスが無いときも。この起動で初めてなら、スレ全体を渡す)
-      writeBoardLog(url, fetchedTitle ?? threadTabsRef.current.find((t) => t.threadUrl === url)?.title ?? "", rows, prevCount + 1);
+      writeBoardLog(url, fetchedTitle ?? threadTabsRef.current.find((t) => t.threadUrl === url)?.title ?? "", rows);
       // 取得している間に別のタブへ切り替えていたら、そのタブの記録だけ新しくして、今の表示・位置・新着の印は動かさない
       // (そのまま進むと、表示中のタブに前のタブのレスを出し、最下部へ動かしてしまう)
       // 表示中のタブが無い (全部閉じた) ときも同じ (閉じたタブのレスを出さない)
@@ -4637,7 +4916,7 @@ export default function App() {
   // Rust 側 (twitch_sync) が受信したチャットを "twitch-message" イベントで受け取り、Twitch タブのレスとして積む。
   // 1件 = 1レスとし、ID 欄にログイン名を入れる (ID の NG・ハイライト・書き込み回数・配信ホワイトリストがそのまま効く)。
   // 本文と名前は HTML として解釈されないようエスケープしてから積む (表示時に文字参照が戻されて文字として出る)
-  type TwitchChatPayload = { channel: string; id?: unknown; login: string; name: string; color: string; text: string; receivedAt: number; event?: TwitchEventData | null; badges?: unknown; emotes?: unknown; giant?: unknown };
+  type TwitchChatPayload = { channel: string; id?: unknown; login: string; name: string; color: string; text: string; receivedAt: number; event?: TwitchEventData | null; badges?: unknown; emotes?: unknown; giant?: unknown } & HaltStamp;
   // Twitch タブのレス番号 → 発言 ID (返信に使う。タブに残っている分だけ)
   const twitchMsgIdRef = useRef<Map<string, Map<number, string>>>(new Map());
   const twitchPendingRef = useRef<TwitchChatPayload[]>([]);
@@ -4702,6 +4981,10 @@ export default function App() {
     const pending = twitchPendingRef.current;
     if (pending.length === 0) return;
     twitchPendingRef.current = [];
+    // 止めている間に受け取った分と、そうでない分を、受け取った順に分けて流す
+    for (const run of splitByHeld(pending)) processTwitchMessages(run.items, run.held);
+  };
+  const processTwitchMessages = (pending: TwitchChatPayload[], held: boolean) => {
     const byChannel = new Map<string, TwitchChatPayload[]>();
     for (const m of pending) {
       if (m.color && /^#[0-9a-f]{6}$/i.test(m.color)) {
@@ -4826,7 +5109,7 @@ export default function App() {
         for (const msg of teach.announces) ttsSpeak(msg, "");
       }
     }
-    });
+    }, { held });
   };
   // 設定 > Twitch > イベントの「テスト」: 開いている Twitch タブに、試しのイベントを1件流す (表示・読み上げ・OBS の確認用)
   const testTwitchEvent = (kind: string) => {
@@ -4851,7 +5134,7 @@ export default function App() {
   // 本文と名前は HTML として解釈されないようエスケープしてから積む。
   // 削除された発言は、タブでは本文を「(削除されました)」にし、まだ流していない新着・ビュワー・OBS 表示からは消す
   type YoutubeMessagePayload = { id: string; channelId: string; name: string; text: string; emojis?: unknown; owner?: unknown; moderator?: unknown; member?: unknown; verified?: unknown; event?: YoutubeEventData | null };
-  type YoutubeBatch = { video: string; receivedAt: number; messages: YoutubeMessagePayload[]; deleted: string[]; deletedAuthors: string[] };
+  type YoutubeBatch = { video: string; receivedAt: number; messages: YoutubeMessagePayload[]; deleted: string[]; deletedAuthors: string[] } & HaltStamp;
   const youtubePendingRef = useRef<YoutubeBatch[]>([]);
   const youtubeFlushTimerRef = useRef<number | null>(null);
   // タブごとの 発言 ID → レス番号・投稿者 (削除の知らせと照らし合わせる。タブに残っている分だけ)
@@ -4879,6 +5162,10 @@ export default function App() {
     const pending = youtubePendingRef.current;
     if (pending.length === 0) return;
     youtubePendingRef.current = [];
+    // 止めている間に受け取った分と、そうでない分を、受け取った順に分けて流す
+    for (const run of splitByHeld(pending)) processYoutubeBatches(run.items, run.held);
+  };
+  const processYoutubeBatches = (pending: YoutubeBatch[], held: boolean) => {
     const byVideo = new Map<string, YoutubeBatch[]>();
     for (const b of pending) {
       const list = byVideo.get(b.video);
@@ -5034,7 +5321,7 @@ export default function App() {
         ttsSpeakArrival({ ...a, text: escapeHtml(text) }, speakPrefixFor("youtube", a.responseNo, a.name));
       }
     }
-    });
+    }, { held });
   };
   // 設定 > YouTube > イベントの「テスト」: 開いている YouTube タブに、試しのイベントを1件流す (表示・読み上げ・OBS の確認用)
   const testYoutubeEvent = (kind: string) => {
@@ -5512,6 +5799,18 @@ export default function App() {
     }
     return text.replace(new RegExp(escapeRegExp(p), "gi"), "");
   };
+  // 読み上げない辞書 (本文ワード) を当てる。skip = レス全体を読まない指定の語に当たった / text = 語句だけ除く指定の語を除いたあと。
+  // 本文と、読みを置き換えたあとの文の両方に当てる (ttsSpeakNow)
+  const ttsApplyMuteWords = (text: string): { skip: boolean; text: string } => {
+    let out = text;
+    for (const e of ttsMuteRef.current.words) {
+      const v = e.value.trim();
+      if (!v || !ngMatch(v, out)) continue;
+      if (e.skipWhole) return { skip: true, text: out };
+      out = ttsRemoveMuteWord(out, v);
+    }
+    return { skip: false, text: out };
+  };
   // URL 1 個 (トークン) の読み方を決める。
   //  1. 通常の読み上げ辞書: キーワードに "://" を含む項目は URL 文字列との部分一致 (先頭・途中・末尾いずれも可)、
   //     含まない項目はホスト名との部分一致 (例: "youtube" → www.youtube.com) で照合し、一致したら URL 全体を読みに置き換える
@@ -5559,9 +5858,12 @@ export default function App() {
   // (dry: 辞書の判定だけを頼んで読まない。先に一度通して、待つ必要があるかを調べる)
   const ttsOrderRef = useRef<Promise<void>>(Promise.resolve());
   const ttsWaitingRef = useRef(0);
+  // 読み上げない辞書に、判定できなかった正規表現があるか (あれば読み上げに渡さない)
+  const ttsRegexBlocked = () => { const m = ttsMuteRef.current; return hasFailedUserRegex([...m.words, ...m.names, ...m.ids].map((e) => e.value)); };
   const ttsInOrder = (run: (dry: boolean) => void) => {
-    // 停止より前に受け取った新着・配信への出力を止めている間は読み上げない
-    if (ttsSuppressRef.current > 0 || outputBlocked()) return;
+    // 停止より前に受け取った新着・配信への出力を止めている間は読み上げない。
+    // 読み上げない辞書に判定できなかった正規表現があるときも読まない (読ませない語を読まないように)
+    if (ttsSuppressRef.current > 0 || outputBlocked() || ttsRegexBlocked()) return;
     if (ttsWaitingRef.current === 0) {
       const before = userRegexMissCount;
       run(true);
@@ -5572,8 +5874,10 @@ export default function App() {
     ttsOrderRef.current = ttsOrderRef.current
       .then(async () => {
         const ok = await userRegexSettleFor(() => run(true));
-        // 結果がそろわない・待っている間に「今すぐ停止」した・配信への出力を止めたときは読まない
-        if (!ok || gen !== ttsGenRef.current || broadcastHaltedRef.current) return;
+        // 結果がそろわない・待っている間に「今すぐ停止」した・配信への出力を止めたときは読まない。
+        // 待っている間に、正規表現が判定できなくなったとき (この発言の判定で時間切れになったときも) も読まない
+        // (判定に使わなくした正規表現は「一致しない」として返るので、ここで確かめないと、読ませない語のある発言を読んでしまう)
+        if (!ok || gen !== ttsGenRef.current || outputBlocked() || ttsRegexBlocked()) return;
         run(false);
       })
       .catch((e) => console.warn("読み上げられませんでした", e))
@@ -5595,18 +5899,22 @@ export default function App() {
     // 教育・忘却のコマンドは読まない (棒読みちゃんにも渡さない)。Twitch のチャットで許可されたものだけ、棒読みちゃんへそのまま渡す
     if (!opts?.keepTeachCommands) plain = plain.replace(TEACH_CMD_RE, " ");
     // 読み上げない辞書 (本文ワード): レス全体スキップ指定なら読まない、そうでなければ語句だけ除去
-    for (const e of mute.words) {
-      const v = e.value.trim();
-      if (!v || !ngMatch(v, plain)) continue;
-      if (e.skipWhole) return;
-      plain = ttsRemoveMuteWord(plain, v);
-    }
-    if (opts?.dry) return;
+    const muted = ttsApplyMuteWords(plain);
+    if (muted.skip) return;
+    plain = muted.text;
+    // このあと、読み上げ辞書 (全文置換・部分置換)・Twitch 教育辞書・URL の読みで文字が変わる。置き換えた読みに読み上げない語が
+    // 入ることがあるので (教育は視聴者が登録できる)、置き換えたあとの文でも読み上げない辞書を確かめる。
+    // 予習 (dry) でも置き換えたあとの文まで作って判定を頼む (ここで止めると、その文の正規表現の判定が届かない)
     // Apply TTS dictionary: fullReplace (全文置換) entries first (if matched, skip all remaining preprocessing)
     const dict = ttsDictRef.current;
     const fullReplaceEntry = dict.find((e) => e.fullReplace && e.from && plain.includes(e.from));
     if (fullReplaceEntry) {
-      ttsQueueRef.current.push(prefix ? `${prefix} ${fullReplaceEntry.to}` : fullReplaceEntry.to);
+      const read = ttsApplyMuteWords(fullReplaceEntry.to);
+      if (opts?.dry || read.skip) return;
+      // 読み上げない語を除いたときだけ整える (除いて空になったら読まない)。除いていなければ、登録した読みをそのまま読む
+      const body = read.text === fullReplaceEntry.to ? fullReplaceEntry.to : read.text.replace(/[ \t]{2,}/g, " ").trim();
+      if (read.text !== fullReplaceEntry.to && !body) return;
+      ttsQueueRef.current.push(prefix ? `${prefix} ${body}` : body);
       void processTtsQueue();
       return;
     }
@@ -5638,6 +5946,11 @@ export default function App() {
         return urlOmit ? URL_OMIT_MARK : "";
       })
       .join("");
+    // 読みを置き換えたあとの本文でも、読み上げない辞書を確かめる (長さで切る前に。「URL省略」を入れる前に)
+    const replaced = ttsApplyMuteWords(plain);
+    if (replaced.skip) return;
+    plain = replaced.text;
+    if (opts?.dry) return;
     if (urlOmit) plain = plain.replace(/\u0001(?:\s*\u0001)*/g, " URL省略 ");
     plain = plain.replace(/[ \t]{2,}/g, " ").trim();
     if (!plain) return;
@@ -5669,9 +5982,37 @@ export default function App() {
   // ビュワーの「選んだスレを流す」の対象か (設定 > 接続 の「ビュワー」のチェック・タブの右クリックで切り替える)
   // 掲示板のログを残すタブか (設定の「ログを残すスレ」とタブごとのチェック)
   const tabLogOn = (t: ThreadTab, mode: BoardLogMode) => !isChatUrl(t.threadUrl) && (mode === "all" || (mode === "selected" && t.logOn === true));
-  const isTabLogOn = (url: string) => threadTabsRef.current.some((t) => t.threadUrl === url && tabLogOn(t, boardLogModeRef.current));
-  // この起動のあいだに、スレ全体を一度渡したスレ (2回目からは新しいレスだけを渡す。書いていないものだけを書くのは Rust 側)
-  const boardLogSentRef = useRef<Set<string>>(new Set());
+  // ログを書く・消すのに使う「保存した (確定した) 値」。変えるのは、起動して設定を読み込んだときと、設定ファイルへの書き込みが
+  // 成功したときだけ (設定画面で選んでいる途中の値・保存に失敗した値は使わない)。読み込むまでは null で、ログを書かない・消さない
+  type BoardLogCommitted = { mode: BoardLogMode; days: number; maxMb: number };
+  const boardLogCommittedRef = useRef<BoardLogCommitted | null>(null);
+  const [boardLogCommitVersion, setBoardLogCommitVersion] = useState(0);
+  const committedBoardLog = () => boardLogCommittedRef.current;
+  const commitBoardLogFrom = (map: Record<string, string>) => {
+    const m = map["App.boardLogMode"];
+    const d = parseInt(map["App.boardLogDays"] ?? "", 10);
+    const mb = parseInt(map["App.boardLogMaxMb"] ?? "", 10);
+    // 設定ファイルに無い・形が違うときは、画面の既定値と同じ (開いたスレ全部・365日・1000MB)
+    const next: BoardLogCommitted = {
+      mode: m === "all" || m === "selected" || m === "off" ? m : "all",
+      days: !isNaN(d) && d >= 0 && d <= 3650 ? d : 365,
+      maxMb: !isNaN(mb) && mb >= 0 && mb <= 100000 ? mb : 1000,
+    };
+    const prev = boardLogCommittedRef.current;
+    boardLogCommittedRef.current = next;
+    if (!prev || prev.mode !== next.mode || prev.days !== next.days || prev.maxMb !== next.maxMb) setBoardLogCommitVersion((v) => v + 1);
+  };
+  const isTabLogOn = (url: string) => {
+    const c = committedBoardLog();
+    return !!c && threadTabsRef.current.some((t) => t.threadUrl === url && tabLogOn(t, c.mode));
+  };
+  // この起動のあいだに書けた最後のレス番号 (スレごと)。次からはそれより後のレスだけを渡す (無ければスレ全体を渡す)。
+  // 表示しているレスの件数ではなくレス番号で覚える (裏のタブで増えた分も抜けないように)。書いていないものだけを書くのは Rust 側
+  const boardLogLastNoRef = useRef<Map<string, number>>(new Map());
+  // dat を直す待ちのスレの、直すのに足りないレス番号 (Rust が返す。手元にそろったら一度だけスレ全体を渡す)
+  const boardLogRepairRef = useRef<Map<string, number[]>>(new Map());
+  // この起動でログに渡したレス番号 (スレごと)
+  const boardLogSentNosRef = useRef<Map<string, Set<number>>>(new Map());
   const toBoardLogRes = (r: ThreadResponseItem) => ({
     no: r.responseNo, name: r.name, mail: r.mail, dateAndId: r.dateAndId, body: r.body,
     nameText: decodeHtmlEntities(r.name.replace(/<[^>]*>/g, "")),
@@ -5679,20 +6020,45 @@ export default function App() {
     posted: r.dateAndId.replace(/\s+ID:\S+/g, "").replace(/\s+BE[:：]\d+[^\s]*/gi, "").trim(),
     text: decodeHtmlEntities(r.body.replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]*>/g, "")).trim(),
   });
-  // スレのレスをログに書き足す (取得のたび)。newFrom より前のレスは、この起動で一度スレ全体を渡していれば渡さない
-  const writeBoardLog = (url: string, title: string, rows: ThreadResponseItem[], newFrom = 0, opts?: { force?: boolean; full?: boolean }) => {
+  // スレのレスをログに書き足す (表のタブ・裏のタブの取得のたび、保存分から開いたとき)。
+  // この起動で書けた最後のレス番号より後のレスだけを渡す (この起動でまだ書いていないスレと、まだ渡していない古い番号が手元に来たスレは、
+  // 持っているスレ全体を渡して抜けを補う)
+  const writeBoardLog = (url: string, title: string, rows: ThreadResponseItem[], opts?: { force?: boolean; full?: boolean }) => {
     if (!isTauriRuntime() || rows.length === 0 || isChatUrl(url)) return;
+    // 設定を読み込むまでは書かない (保存した「ログを残すスレ」が分からないため)
+    if (!committedBoardLog()) return;
     if (!opts?.force && !isTabLogOn(url)) return;
-    const first = !boardLogSentRef.current.has(url) || opts?.full;
-    const list = first ? rows : rows.filter((r) => r.responseNo >= newFrom);
+    const lastNo = boardLogLastNoRef.current.get(url);
+    // dat を直す待ちで、足りなかったレスが手元に全部そろったら、一度だけスレ全体を渡す (直すため。毎回は渡さない)
+    const missing = boardLogRepairRef.current.get(url);
+    const have = missing && missing.length > 0 ? new Set(rows.map((r) => r.responseNo)) : null;
+    const repairNow = !!have && missing!.every((n) => have.has(n));
+    // この起動で渡したレス番号 (再読み込みなどで、書けた最後の番号より前のレスが新しく手元に来たら、スレ全体を渡して抜けを補う)
+    const sentNos = boardLogSentNosRef.current.get(url);
+    const gap = lastNo !== undefined && rows.some((r) => r.responseNo <= lastNo && !(sentNos?.has(r.responseNo) ?? false));
+    // この起動で初めて書くときもスレ全体として渡す (前の起動までに抜けたレスを補えるように)
+    const full = opts?.full === true || repairNow || gap || lastNo === undefined;
+    const list = lastNo === undefined || full ? rows : rows.filter((r) => r.responseNo > lastNo);
     if (list.length === 0) return;
-    void invoke<{ written: number; needFull: boolean }>("board_log_append", {
-      threadUrl: url, title, board: boardNameOfUrl(url), responses: list.map(toBoardLogRes), full: opts?.full ?? false,
+    const sentMax = list.reduce((m, r) => Math.max(m, r.responseNo), 0);
+    void invoke<{ written: number; needFull: boolean; repairMissing?: number[] }>("board_log_append", {
+      threadUrl: url, title, board: boardNameOfUrl(url), responses: list.map(toBoardLogRes), full,
     }).then((res) => {
-      boardLogSentRef.current.add(url);
       setBoardLogError("");
-      // 新しくログを作るのに、スレの途中のレスしか渡せていなかったとき: 持っているスレ全体を渡し直す
-      if (res.needFull) writeBoardLog(url, title, tabCacheRef.current.get(url)?.responses ?? rows, 0, { force: true, full: true });
+      if (res.repairMissing && res.repairMissing.length > 0) boardLogRepairRef.current.set(url, res.repairMissing);
+      else boardLogRepairRef.current.delete(url);
+      if (!res.needFull) {
+        const set = boardLogSentNosRef.current.get(url) ?? new Set<number>();
+        for (const r of list) set.add(r.responseNo);
+        boardLogSentNosRef.current.set(url, set);
+      }
+      // スレ全体が要るとき (新しくログを作るのにスレの途中のレスしか無かった・dat の行数が合わない): 持っているスレ全体を渡し直す。
+      // 渡し直す直前にも、保存した「ログを残すスレ」とタブのチェックを確かめる (待つ間に「残さない」にしたら書かない)
+      if (res.needFull) {
+        if (isTabLogOn(url)) writeBoardLog(url, title, tabCacheRef.current.get(url)?.responses ?? rows, { force: true, full: true });
+        return;
+      }
+      boardLogLastNoRef.current.set(url, Math.max(boardLogLastNoRef.current.get(url) ?? 0, sentMax));
     }).catch((e) => { console.warn("board_log_append failed", e); setBoardLogError(`${String(e)} (${title || url})`); });
   };
   const toggleTabLog = (url: string) => {
@@ -5700,22 +6066,22 @@ export default function App() {
     if (!tab || isChatUrl(url)) return;
     const on = tab.logOn !== true;
     setThreadTabs((prev) => prev.map((t) => (t.threadUrl === url ? { ...t, logOn: on } : t)));
-    // 残すようにしたら、いま持っているレスをすぐ書く
-    if (on && boardLogModeRef.current === "selected") writeBoardLog(url, tab.title, tabCacheRef.current.get(url)?.responses ?? [], 0, { force: true });
+    // 残すようにしたら、いま持っているレスをすぐ書く (保存した「ログを残すスレ」が「選んだスレだけ」のときだけ)
+    if (on && committedBoardLog()?.mode === "selected") writeBoardLog(url, tab.title, tabCacheRef.current.get(url)?.responses ?? [], { force: true });
   };
-  // 日数・容量を過ぎたログを消す (読み込んだとき・設定を保存したとき・1時間ごと。設定画面を開いている間は、まだ確定していないので消さない)
-  const boardLogLimitsRef = useRef({ days: 365, maxMb: 1000 });
-  boardLogLimitsRef.current = { days: boardLogDays, maxMb: boardLogMaxMb };
+  // 日数・容量を過ぎたログを消す (読み込んだとき・設定を保存したとき・1時間ごと)。
+  // 使うのは保存した日数・容量だけ (設定画面を開いている間は、まだ確定していないので消さない)
   useEffect(() => {
     if (!isTauriRuntime() || !appSettingsReady || settingsOpen) return;
     const prune = () => {
-      const { days, maxMb } = boardLogLimitsRef.current;
-      void invoke<number>("board_log_prune", { days, maxMb }).catch((e) => console.warn("board_log_prune failed", e));
+      const c = committedBoardLog();
+      if (settingsOpenRef.current || !c) return;
+      void invoke<number>("board_log_prune", { days: c.days, maxMb: c.maxMb }).catch((e) => console.warn("board_log_prune failed", e));
     };
     prune();
     const id = window.setInterval(prune, 60 * 60 * 1000);
     return () => window.clearInterval(id);
-  }, [boardLogDays, boardLogMaxMb, appSettingsReady, settingsOpen]);
+  }, [boardLogCommitVersion, appSettingsReady, settingsOpen]);
   const isTabViewerOn = (url: string) => threadTabsRef.current.some((t) => t.threadUrl === url && t.viewerOn !== false);
   const toggleTabViewer = (url: string) => {
     setThreadTabs((prev) => prev.map((t) => (t.threadUrl === url ? { ...t, viewerOn: t.viewerOn === false } : t)));
@@ -5834,7 +6200,7 @@ export default function App() {
           slots.forEach((s, i) => { bodyHtml = bodyHtml.replace(s.full, () => htmls[i] ?? ""); });
           if (item) bodyHtml = arrivalEmoteHtml(item, bodyHtml);
           // カードを待っている間に、出力を止めた・次の字幕に進んだときは送らない (古い本文がまた出ないように)
-          if (broadcastHaltedRef.current || seq !== subtitleSeqRef.current) return;
+          if (outputBlocked() || seq !== subtitleSeqRef.current) return;
           return invoke("subtitle_update", { data: { ...data, seq, boot: subtitleBootRef.current, scroll, show, bodyHtml, idColor, ...subtitleTwitchExtras(item) } });
         })
         .catch((e) => console.warn("subtitle_update:", e));
@@ -5848,10 +6214,11 @@ export default function App() {
   };
 
   // 配信への出力 (読み上げ・字幕・OBS 表示) を止める / 再開する。受信・新着レスペイン・ビュワーなど手元の表示は続ける
-  const haltBroadcast = () => {
-    broadcastHaltedRef.current = true;
+  // 配信への出力に残っているものを片付ける: 読み上げを止め、字幕を空にし、OBS 表示を消し、新着レスペインの待ち行列と表示中のレスを消す。
+  // 結果を待っている新着も、あとから配信へ出さない (haltGen)。止めるとき (haltBroadcast) と、止める条件が成り立ったとき
+  // (配信の前に効かせる辞書の正規表現が判定できなくなった、など) に呼ぶ
+  const clearBroadcastOutputs = () => {
     haltGenRef.current++;
-    setBroadcastHalted(true);
     void ttsStop();
     if (isTauriRuntime()) {
       // 字幕は空にする (表示中の内容を消す)
@@ -5868,6 +6235,25 @@ export default function App() {
     if (arrivalTimerRef.current) { clearTimeout(arrivalTimerRef.current); arrivalTimerRef.current = null; }
     currentArrivalItemRef.current = null;
     setCurrentArrivalItem(null);
+  };
+  // 正規表現が判定できないために出力を止めている状態が「成り立った」ときに、1回だけ片付ける
+  // (NG などで配信への出力を止める → 全部片付ける。読み上げない辞書だけ → 読み上げを止める)。
+  // 判定できなくなった知らせ (すぐ) と、描き直しのあと (辞書を読み込んだ・編集したとき) の両方から呼ぶ
+  const regexBlockStateRef = useRef({ output: false, tts: false });
+  const syncRegexBlock = () => {
+    const output = outputRegexBlockRef.current();
+    const tts = ttsRegexBlocked();
+    const prev = regexBlockStateRef.current;
+    if (output && !prev.output) clearBroadcastOutputs();
+    else if (tts && !prev.tts) void ttsStop();
+    regexBlockStateRef.current = { output, tts };
+  };
+  syncRegexBlockRef.current = syncRegexBlock;
+  useEffect(() => { syncRegexBlockRef.current(); });
+  const haltBroadcast = () => {
+    broadcastHaltedRef.current = true;
+    setBroadcastHalted(true);
+    clearBroadcastOutputs();
     setStatus("読み上げ・字幕・OBS 表示・新着レスペインを止めました。受信とスレ・ビュワーの表示は続けます");
   };
   const resumeBroadcast = () => {
@@ -7011,7 +7397,7 @@ export default function App() {
         // At bottom: save last response no so restore scrolls to bottom
         const lastNo = fetchedResponses[fetchedResponses.length - 1].responseNo;
         threadScrollPositions.current[url] = lastNo;
-        saveToFile("scroll-positions.json", threadScrollPositions.current);
+        persistScrollPositions();
         saveBookmark(url, lastNo);
       } else {
         saveScrollPos(url);
@@ -7219,7 +7605,9 @@ export default function App() {
           setThreadPanePx(nextThread);
           setResponseTopRatio(parsed.responseTopRatio);
         }
-        const fallbackFs = typeof parsed.fontSize === "number" ? parsed.fontSize : 12;
+        // 欄ごとの値を優先する。無い欄だけ、共通の値 (画面の設定の fontSize、無ければ settings.ini の共通の文字サイズ) を使う
+        const fallbackFs = typeof parsed.fontSize === "number" ? parsed.fontSize : (iniCommonFontRef.current ?? 12);
+        paneFontFromLayoutRef.current = { boards: typeof parsed.boardsFontSize === "number", threads: typeof parsed.threadsFontSize === "number", responses: typeof parsed.responsesFontSize === "number", common: typeof parsed.fontSize === "number" };
         setBoardsFontSize(typeof parsed.boardsFontSize === "number" ? parsed.boardsFontSize : fallbackFs);
         setThreadsFontSize(typeof parsed.threadsFontSize === "number" ? parsed.threadsFontSize : fallbackFs);
         setResponsesFontSize(typeof parsed.responsesFontSize === "number" ? parsed.responsesFontSize : fallbackFs);
@@ -7296,17 +7684,30 @@ export default function App() {
       defaultLayoutPrefsRef.current = buildLayoutPrefsPayload();
       defaultAppSettingsRef.current = buildAppSettingsMap();
     }
-    // Layout prefs from file (settings.json via IPC)
-    if (isTauriRuntime()) {
-      invoke<string>("load_layout_prefs").then((raw) => {
+    // 利用者の表示の切り替えを確かめる基準は、起動したとき (画面の設定・タブの一覧・本文を読み込む前の待ち時間を全部含める)
+    const navAtStartup = navGenRef.current;
+    // Layout prefs from file (settings.json via IPC)。前回のタブ・板を戻すか (「前回のタブを復元」) は画面の設定にあるので、
+    // 読み込んでから決める (読み込む前に決めると、オフでも戻してしまう)
+    const layoutLoaded: Promise<void> = isTauriRuntime()
+      ? devDelayed("load_layout_prefs", invoke<string>("load_layout_prefs")).then((raw) => {
         if (raw) applyLayoutPrefs(raw);
+      }).catch((e) => { console.warn("load_layout_prefs failed", e); }).finally(() => {
         layoutPrefsLoadedRef.current = true;
-      }).catch(() => { layoutPrefsLoadedRef.current = true; });
-    } else {
-      layoutPrefsLoadedRef.current = true;
-    }
+        // settings.ini が先に届いていたら、その共通の文字サイズを、画面の設定に値が無い欄に使う
+        // (画面の設定ファイルが無いときも、どちらの順番で読み込んでも同じ大きさにする)
+        const n = iniCommonFontRef.current;
+        const has = paneFontFromLayoutRef.current;
+        if (n !== null && !has.common) {
+          if (!has.boards) setBoardsFontSize(n);
+          if (!has.threads) setThreadsFontSize(n);
+          if (!has.responses) setResponsesFontSize(n);
+        }
+      })
+      : Promise.resolve().then(() => { layoutPrefsLoadedRef.current = true; });
+    void layoutLoaded.then(() => runSessionRestore(navAtStartup));
+    const runSessionRestore = (navAtStart: number) => {
     // Restore last selected board
-    if (restoreSessionRef.current && pendingLastBoardRef.current) {
+    if (restoreSessionRef.current && pendingLastBoardRef.current && navGenRef.current === navAtStart) {
       const lb = pendingLastBoardRef.current;
       setSelectedBoard(lb.boardName);
       setLocationInput(lb.url);
@@ -7315,12 +7716,45 @@ export default function App() {
       void fetchThreadListFromCurrent(lb.url);
       pendingLastBoardRef.current = null;
     }
+    // 保存したタブの一覧に壊れた分があって外したときに知らせる (元のファイルの写しは、読み込む側が残してある)
+    const notifyDroppedTabs = (kind: string, n: number, file: string, copyFailed: boolean) => {
+      if (n <= 0) return;
+      const msg = copyFailed
+        ? `前回の${kind}のタブのうち ${n} 件は中身が壊れていたため、復元できませんでした。元のファイルの写しを残せなかったので、元の中身を守るため、この起動の間は ${file} に保存しません`
+        : `前回の${kind}のタブのうち ${n} 件は中身が壊れていたため、復元できませんでした (元のファイルの写しを「${file}.broken-数字」として残しました)`;
+      setStatus(msg);
+      setAppConfirm({ title: "復元できなかったタブがあります", message: `${msg}。\n\nほかのタブは復元しました。`, buttons: [{ label: "OK", primary: true, onClick: () => {} }] });
+    };
     // Restore thread tabs
-    const applyRestoredTabs = (tabsRaw: string | null): boolean => {
+    // navAtStart: タブの一覧を読み込み始めたときの「表示を切り替えた回数」。読み込む間に利用者が表示を切り替えていたら
+    // (タブを開く・閉じる・ビュワーへ移るなど)、戻したタブは一覧に加えるだけにして、今の画面・選んでいるタブはそのままにする
+    const applyRestoredTabs = (tabsRaw: string | null, navAtStart: number): boolean => {
       if (!tabsRaw) return false;
       try {
-        const parsed = JSON.parse(tabsRaw) as { tabs: ThreadTab[]; activeIndex: number };
+        const parsed = JSON.parse(tabsRaw) as { tabs: ThreadTab[]; activeIndex: number; dropped?: number; copyFailed?: boolean };
+        if (Array.isArray(parsed.tabs)) {
+          const san = sanitizeSavedTabs<ThreadTab>(parsed.tabs, "threadUrl");
+          parsed.tabs = san.tabs;
+          notifyDroppedTabs("スレ", (typeof parsed.dropped === "number" ? parsed.dropped : 0) + san.dropped, "session_tabs.json", parsed.copyFailed === true);
+        }
         if (Array.isArray(parsed.tabs) && parsed.tabs.length > 0) {
+          if (navGenRef.current !== navAtStart) {
+            const cur = threadTabsRef.current;
+            const have = new Set(cur.map((t) => t.threadUrl));
+            // 利用者が開いたタブを先に確保し、残りの枠に前回のタブを戻す (上限で切ると、利用者のタブが消えてしまう)
+            const room = Math.max(0, maxOpenTabsRef.current - cur.length);
+            const added = parsed.tabs.filter((t) => !have.has(t.threadUrl)).slice(0, room);
+            const merged = [...added, ...cur];
+            threadTabsRef.current = merged;
+            setThreadTabs(merged);
+            const curIdx = activeTabIndexRef.current;
+            if (curIdx >= 0) {
+              const next = Math.min(curIdx + added.length, merged.length - 1);
+              activeTabIndexRef.current = next;
+              setActiveTabIndex(next);
+            }
+            return true;
+          }
           setThreadTabs(parsed.tabs);
           const idx = typeof parsed.activeIndex === "number" ? parsed.activeIndex : 0;
           const safeIdx = Math.min(idx, parsed.tabs.length - 1);
@@ -7330,8 +7764,13 @@ export default function App() {
             setThreadUrl(activeTab.threadUrl);
             setLocationInput(activeTab.threadUrl);
             if (isTauriRuntime()) {
-              invoke<string | null>("load_thread_cache", { threadUrl: activeTab.threadUrl })
-                .then((json) => {
+              // 本文・栞・表示位置の3つがそろってから位置を決める (栞が遅れて届くと、最下部へ飛んでその番号を栞として書いてしまう)
+              Promise.all([
+                devDelayed("load_thread_cache", invoke<string | null>("load_thread_cache", { threadUrl: activeTab.threadUrl })),
+                bookmarksLoadRef.current.promise,
+                scrollPosLoadRef.current.promise,
+              ])
+                .then(([json]) => {
                   if (json) {
                     const responses = JSON.parse(json) as ThreadResponseItem[];
                     const bm = loadBookmark(activeTab.threadUrl);
@@ -7339,15 +7778,22 @@ export default function App() {
                     // Restore to: bookmark > saved scroll pos > last response (bottom)
                     const lastNo = responses.length > 0 ? responses[responses.length - 1].responseNo : 1;
                     const restoreNo = bm ?? (savedNo > 1 ? savedNo : lastNo);
-                    tabCacheRef.current.set(activeTab.threadUrl, {
-                      responses,
-                      selectedResponse: restoreNo,
-                    });
+                    // 読み込みを待つ間に表示を切り替えていたら (別のタブを開いた・タブを閉じた・ビュワーへ移った)、
+                    // このスレのキャッシュに入れるだけにして、表示とスクロールは変えない
+                    // (そのまま進むと、タブ名は別のスレなのに本文がこのスレになる・閉じたタブの本文やスレの表示に戻る)
+                    const stillShown = () => navGenRef.current === navAtStart;
+                    if (!tabCacheRef.current.has(activeTab.threadUrl)) {
+                      tabCacheRef.current.set(activeTab.threadUrl, {
+                        responses,
+                        selectedResponse: restoreNo,
+                      });
+                    }
+                    if (!stillShown()) return;
                     setActivePaneView("responses");
                     setFetchedResponses(responses);
                     setSelectedResponse(restoreNo);
                     if (restoreNo >= lastNo) {
-                      setTimeout(() => { if (responseScrollRef.current) responseScrollRef.current.scrollTop = responseScrollRef.current.scrollHeight; }, 200);
+                      setTimeout(() => { if (stillShown() && responseScrollRef.current) responseScrollRef.current.scrollTop = responseScrollRef.current.scrollHeight; }, 200);
                     } else if (restoreNo > 1) {
                       scrollToResponseNo(restoreNo);
                     }
@@ -7362,11 +7808,37 @@ export default function App() {
       return false;
     };
     const finishRestore = () => setTabRestoreReady(true);
+    // 起動時に「あるのに読めなかった」データファイルを知らせる (その起動の間は、Rust 側が上書きを断っている)。
+    // settings.ini は別に知らせて読み直すので除く
+    if (isTauriRuntime()) {
+      window.setTimeout(() => {
+        void invoke<string[]>("data_unreadable_files").then((files) => {
+          // 名前の後ろに \u0001broken が付いたものは「中身が壊れていた」ファイル (写しを残してある)
+          // 配信の前に効かせる辞書は、専用のダイアログで知らせる (空では使わず、読めるまで配信への出力を止めて読み直すため)
+          const locked = files.filter((f) => !f.endsWith("\u0001broken") && f !== "settings.ini" && !OUTPUT_DICT_FILES.includes(f));
+          const broken = files.filter((f) => f.endsWith("\u0001broken")).map((f) => f.slice(0, -"\u0001broken".length)).filter((f) => !OUTPUT_DICT_FILES.includes(f));
+          if (locked.length === 0 && broken.length === 0) return;
+          const parts: string[] = [];
+          if (locked.length > 0) parts.push(`次のファイルを起動したときに読み込めませんでした (ほかのソフトが使用中など):\n${locked.map((f) => `・${f}`).join("\n")}\n中身を失わないよう、この起動の間はこれらのファイルを上書きしません (この間の変更は保存されません)。LiveFake を起動し直すと読み直します。`);
+          if (broken.length > 0) parts.push(`次のファイルは中身が壊れていて読み込めませんでした:\n${broken.map((f) => `・${f}`).join("\n")}\n壊れていた中身は、同じフォルダに「名前.broken-数字」として写しを残しました (手で直せます)。このファイルは空の状態から使い直します。`);
+          setAppConfirm({
+            title: "読み込めなかったファイルがあります",
+            message: parts.join("\n\n"),
+            buttons: [{ label: "OK", primary: true, onClick: () => {} }],
+          });
+        }).catch((e) => console.warn("data_unreadable_files failed", e));
+      }, 4000);
+    }
     if (restoreSessionRef.current) {
       const applyBoardTabs = (raw: string | null) => {
         if (!raw) return;
         try {
-          const parsed = JSON.parse(raw) as { tabs: {boardUrl: string, title: string}[]; activeIndex: number };
+          const parsed = JSON.parse(raw) as { tabs: {boardUrl: string, title: string}[]; activeIndex: number; dropped?: number; copyFailed?: boolean };
+          if (Array.isArray(parsed.tabs)) {
+            const san = sanitizeSavedTabs<{ boardUrl: string; title: string }>(parsed.tabs, "boardUrl");
+            parsed.tabs = san.tabs;
+            notifyDroppedTabs("板", (typeof parsed.dropped === "number" ? parsed.dropped : 0) + san.dropped, "session_board_tabs.json", parsed.copyFailed === true);
+          }
           if (Array.isArray(parsed.tabs) && parsed.tabs.length > 0) {
             setBoardTabs(parsed.tabs);
             const idx = typeof parsed.activeIndex === "number" ? Math.min(parsed.activeIndex, parsed.tabs.length - 1) : 0;
@@ -7383,8 +7855,8 @@ export default function App() {
             .catch(() => {})
         );
         restorePromises.push(
-          invoke<string>("load_session_tabs")
-            .then((raw) => { if (raw) applyRestoredTabs(raw); })
+          devDelayed("load_session_tabs", invoke<string>("load_session_tabs"))
+            .then((raw) => { if (raw) applyRestoredTabs(raw, navAtStart); })
             .catch(() => {})
         );
       }
@@ -7396,6 +7868,7 @@ export default function App() {
     } else {
       finishRestore();
     }
+    };
     // Silently refresh board list from server
     void fetchBoardCategories();
     void loadFavorites();
@@ -7403,11 +7876,23 @@ export default function App() {
     void loadNgFilters();
     // Restore from file-based persistence (Portable mode)
     if (isTauriRuntime()) {
+      // 読み込んだ分と、読み込みが終わる前にこの起動で覚えた分を合わせる (新しく覚えた分を優先)。
+      // 読めなかったファイルは Rust 側が上書きを断るので、保存しても中身は消えない
       loadFromFile<Record<string, number>>("bookmarks.json").then((d) => {
-        if (d && typeof d === "object") Object.assign(bookmarkCacheRef.current, d);
+        if (d && typeof d === "object") bookmarkCacheRef.current = { ...d, ...bookmarkCacheRef.current };
+      }).finally(() => {
+        const st = bookmarksLoadRef.current;
+        st.loaded = true;
+        if (st.pending) { st.pending = false; persistBookmarks(); }
+        st.resolve();
       });
       loadFromFile<Record<string, number>>("scroll-positions.json").then((d) => {
-        if (d && typeof d === "object") Object.assign(threadScrollPositions.current, d);
+        if (d && typeof d === "object") threadScrollPositions.current = { ...d, ...threadScrollPositions.current };
+      }).finally(() => {
+        const st = scrollPosLoadRef.current;
+        st.loaded = true;
+        if (st.pending) { st.pending = false; persistScrollPositions(); }
+        st.resolve();
       });
       loadFromFile<string[]>("name-history.json").then((d) => {
         if (Array.isArray(d) && d.length > 0) setNameHistory(d);
@@ -7481,15 +7966,7 @@ export default function App() {
     }
     if (isTauriRuntime()) {
       // Load proxy settings
-      invoke<{ enabled: boolean; proxyType: string; noCache: boolean; httpMode: boolean; receive: ProxyEndpoint; send: ProxyEndpoint }>("load_proxy_settings").then((s) => {
-        setProxyEnabled(s.enabled);
-        setProxyType(s.proxyType === "socks5" || s.proxyType === "socks4" ? s.proxyType : "http");
-        setProxyNoCache(s.noCache === true);
-        setProxyHttpMode(s.httpMode === true);
-        const ep = (e: Partial<ProxyEndpoint> | undefined): ProxyEndpoint => ({ host: e?.host ?? "", port: e?.port ?? "", username: e?.username ?? "", password: e?.password ?? "" });
-        setProxyReceive(ep(s.receive));
-        setProxySend(ep(s.send));
-      }).catch((e) => console.warn("load_proxy_settings:", e));
+      void loadProxySettings();
       // Load ImageViewURLReplace rules
       invoke<UrlReplaceRule[]>("load_image_url_replace").then((rules) => {
         setImageUrlRules(rules);
@@ -7501,7 +7978,7 @@ export default function App() {
     if (!tabRestoreReady) return;
     const data = JSON.stringify({ tabs: threadTabs, activeIndex: activeTabIndex });
     if (isTauriRuntime()) {
-      invoke("save_session_tabs", { data }).catch(() => {});
+      invoke("save_session_tabs", { data }).catch((e) => console.warn("save_session_tabs failed", e));
     }
   }, [tabRestoreReady, threadTabs, activeTabIndex]);
 
@@ -7509,7 +7986,7 @@ export default function App() {
   useEffect(() => {
     if (!tabRestoreReady) return;
     const data = JSON.stringify({ tabs: boardTabs, activeIndex: activeBoardTabIndex });
-    if (isTauriRuntime()) { invoke("save_session_board_tabs", { data }).catch(() => {}); }
+    if (isTauriRuntime()) { invoke("save_session_board_tabs", { data }).catch((e) => console.warn("save_session_board_tabs failed", e)); }
   }, [tabRestoreReady, boardTabs, activeBoardTabIndex]);
 
   useEffect(() => {
@@ -7789,10 +8266,10 @@ export default function App() {
       const blockedHosts = [...new Set(files.flatMap((f) => f.strippedHosts))];
       const oversized = files.filter((f) => f.oversized).map((f) => f.name);
       if (blockedHosts.length > 0) {
-        setStatus(`カスタムCSS: 外部URL参照をブロックしました (${blockedHosts.join(", ")}) — 許可する場合は設定を変更してください`);
+        setStatus(`カスタムCSS: 外部URL参照をブロックしました (${blockedHosts.join(", ")})。許可する場合は設定を変更してください`);
       }
       if (oversized.length > 0) {
-        setStatus(`カスタムCSS: サイズ上限(512KB)超過のため読み込みをスキップ: ${oversized.join(", ")}`);
+        setStatus(`カスタムCSS: サイズ上限 (512KB) を超えたため読み込みませんでした: ${oversized.join(", ")}`);
       }
       return true;
     } catch (e) {
@@ -7812,7 +8289,20 @@ export default function App() {
 
   // settings.ini の内容 (キー → 文字列) を state に反映する。起動時の読み込みと、設定画面の復元・リセットで使う
   const applyAppSettings = (map: Record<string, string>) => {
-      if (map["App.fontSize"]) { const n = parseInt(map["App.fontSize"], 10); if (!isNaN(n)) { setResponsesFontSize(n); setBoardsFontSize(n); setThreadsFontSize(n); } }
+      // 共通の文字サイズ: 画面の設定に欄ごとの値がある欄には使わない (読み込む順番で文字の大きさが変わらないように)。
+      // 画面の設定がまだ届いていないときは覚えておき、届いたときに欄ごとの値が無い欄にだけ使う
+      if (map["App.fontSize"]) {
+        const n = parseInt(map["App.fontSize"], 10);
+        if (!isNaN(n)) {
+          iniCommonFontRef.current = n;
+          const has = paneFontFromLayoutRef.current;
+          if (layoutPrefsLoadedRef.current && !has.common) {
+            if (!has.responses) setResponsesFontSize(n);
+            if (!has.boards) setBoardsFontSize(n);
+            if (!has.threads) setThreadsFontSize(n);
+          }
+        }
+      }
       if (map["App.responseGap"]) { const n = parseInt(map["App.responseGap"], 10); if (!isNaN(n)) setResponseGap(n); }
       if (map["App.autoReloadIntervalSec"]) { const n = parseInt(map["App.autoReloadIntervalSec"], 10); if (!isNaN(n)) setAutoRefreshInterval(n); }
       if (map["App.autoReload"]) setAutoRefreshEnabled(map["App.autoReload"] === "true");
@@ -7913,12 +8403,42 @@ export default function App() {
       if (map["Posting.composeOpen"]) setComposeOpen(map["Posting.composeOpen"] === "true");
   };
   // Load app settings from settings.ini on startup
+  // 読み込みに失敗したときは「読み込み済み」にしない: 設定の自動保存・手での保存・掲示板のログ・削除を止めたまま、間をおいて読み直す
+  // (失敗したまま進むと、既定値のままの設定でファイル全体を上書きしてしまう。ログの「残さない」も「開いたスレ全部」になる)
   useEffect(() => {
     if (!isTauriRuntime()) { appSettingsLoadedRef.current = true; setAppSettingsReady(true); return; }
-    invoke<Record<string, string>>("load_app_settings")
-      .then((map) => { applyAppSettings(map); runStartupUpdateCheck(map); })
-      .catch(() => {})
-      .finally(() => { appSettingsLoadedRef.current = true; setAppSettingsReady(true); });
+    let disposed = false;
+    let timer: number | null = null;
+    const delays = [3000, 10000, 30000];
+    const load = (attempt: number) => {
+      devDelayed("load_app_settings", invoke<Record<string, string>>("load_app_settings"))
+        .then((map) => {
+          if (disposed) return;
+          applyAppSettings(map);
+          commitBoardLogFrom(map);
+          appSettingsLoadedRef.current = true;
+          setAppSettingsLoadVersion((v) => v + 1);
+          if (attempt > 0) setStatus("設定ファイルを読み込みました。設定の保存と掲示板のログを再開します");
+          runStartupUpdateCheck(map);
+        })
+        .catch((e) => {
+          if (disposed) return;
+          console.warn("load_app_settings failed", e);
+          setStatus(`設定ファイルを読み込めませんでした (${String(e)})。読み込めるまで、設定の保存と掲示板のログを止めています`);
+          // スレを開いている間はステータスバーにお知らせが出ないので、最初の1回はダイアログでも知らせる
+          if (attempt === 0) {
+            setAppConfirm({
+              title: "設定ファイルを読み込めませんでした",
+              message: `${String(e)}\n\n読み込めるまで、設定の保存 (自動・手動とも) と掲示板のログを止めています。少し間をおいて自動で読み直し、読み込めたら再開します。`,
+              buttons: [{ label: "OK", primary: true, onClick: () => {} }],
+            });
+          }
+          timer = window.setTimeout(() => load(attempt + 1), delays[Math.min(attempt, delays.length - 1)] ?? 60000);
+        })
+        .finally(() => { if (!disposed) setAppSettingsReady(true); });
+    };
+    load(0);
+    return () => { disposed = true; if (timer !== null) window.clearTimeout(timer); };
   }, []);
 
   // Load TTS dictionary on startup
@@ -7932,10 +8452,15 @@ export default function App() {
       setTtsIpAllow(entries);
       ttsIpAllowLoadedRef.current = true;
     }).catch((e) => { console.warn("load_tts_ip_allow failed", e); });
-    invoke<Partial<TtsMuteDict>>("load_tts_mute_dict").then((d) => {
-      setTtsMuteDict({ names: d.names ?? [], words: d.words ?? [], ids: d.ids ?? [] });
-      ttsMuteLoadedRef.current = true;
-    }).catch((e) => { console.warn("load_tts_mute_dict failed", e); });
+    const loadMute = (attempt: number) => {
+      invoke<Partial<TtsMuteDict>>("load_tts_mute_dict").then((d) => {
+        ttsMuteSkipSaveRef.current = true;
+        setTtsMuteDict({ names: d.names ?? [], words: d.words ?? [], ids: d.ids ?? [] });
+        ttsMuteLoadedRef.current = true;
+        outputDictLoaded("mute");
+      }).catch((e) => outputDictFailed("mute", e, () => loadMute(attempt + 1), attempt));
+    };
+    loadMute(0);
   }, []);
 
   // Load OGP domain filters on startup
@@ -7977,8 +8502,11 @@ export default function App() {
     if (!isTauriRuntime() || !ttsIpAllowLoadedRef.current) return;
     void invoke("save_tts_ip_allow", { entries: ttsIpAllow }).catch((e) => { console.warn("save_tts_ip_allow failed", e); });
   }, [ttsIpAllow]);
+  // 読み込んだ直後の1回は保存し直さない (利用者が編集したときだけ保存する。読んだだけでファイルを書き換えないように)
+  const ttsMuteSkipSaveRef = useRef(false);
   useEffect(() => {
     if (!isTauriRuntime() || !ttsMuteLoadedRef.current) return;
+    if (ttsMuteSkipSaveRef.current) { ttsMuteSkipSaveRef.current = false; return; }
     void invoke("save_tts_mute_dict", { dict: ttsMuteDict }).catch((e) => { console.warn("save_tts_mute_dict failed", e); });
   }, [ttsMuteDict]);
 
@@ -8324,7 +8852,8 @@ export default function App() {
       if (!m || typeof m.channel !== "string" || typeof m.text !== "string" || typeof m.login !== "string") return;
       (connInfoRef.current[twitchTabUrl(m.channel)] ??= {}).lastMsgAt = Date.now();
       const pending = twitchPendingRef.current;
-      pending.push(m);
+      // 受け取った瞬間の停止の状態を付けておく (流すまでの間に再開しても、止めている間の分は配信へ出さない)
+      pending.push({ ...m, ...haltStamp() });
       // 画面の反映が追いつかないほど溜まったら古いものから捨てる
       if (pending.length > 2000) pending.splice(0, pending.length - 2000);
       if (twitchFlushTimerRef.current === null) {
@@ -8346,7 +8875,7 @@ export default function App() {
       if (!b || typeof b.video !== "string" || !YT_VIDEO_ID_RE.test(b.video) || !Array.isArray(b.messages)) return;
       if (b.messages.length > 0) (connInfoRef.current[youtubeTabUrl(b.video)] ??= {}).lastMsgAt = Date.now();
       const pending = youtubePendingRef.current;
-      pending.push(b);
+      pending.push({ ...b, ...haltStamp() });
       // 画面の反映が追いつかないほど溜まったら古いものから捨てる
       if (pending.length > 500) pending.splice(0, pending.length - 500);
       if (youtubeFlushTimerRef.current === null) {
@@ -8731,7 +9260,9 @@ export default function App() {
   // ファイルを上書きしてしまわないよう appSettingsLoadedRef で待つ
   useEffect(() => {
     if (!isTauriRuntime() || !appSettingsLoadedRef.current || settingsOpenRef.current) return;
-    void invoke("save_app_settings", { settings: buildAppSettingsMap() }).catch(() => {});
+    const map = buildAppSettingsMap();
+    // 設定画面を閉じているときの値は確定済み。書き込みが成功したら、ログに使う値にも入れる
+    void invoke("save_app_settings", { settings: map }).then(() => commitBoardLogFrom(map)).catch((e) => console.warn("save_app_settings failed", e));
   }, [responsesFontSize, responseGap, autoRefreshInterval, autoRefreshEnabled, autoScrollEnabled, smoothScroll, maxOpenTabs, logRetentionDays, boardLogMode, boardLogDays, boardLogMaxMb, tabSiteColors, tabWidthFixed, boardTabWidth, threadTabWidth, autoUpdateCheck, lastUpdateCheck, knownLatestVersion, updateNoticeSeen, viewerComposeTarget, webviewCacheMb, overlayEnabled, overlayPort, latestPanelHeight, latestPanelOpen, viewerFontFamily, viewerFontSize, viewerFontBold, viewerShow, latestShow, viewerCards, viewerAllResponses, viewerThumbs, viewerTwitchClickToLoad, twitchSpeakName, twitchBadgesEnabled, twitchEmoteSize, twitchGiantEmoteSize, twitchEmoteSpeak, twitchEmoteMax, subtitleEmoteSize, subtitleGiantEmoteSize, boardEmotesEnabled, twitchTeachEnabled, twitchTeachAnnounce, twitchMaxQueuedArrivals, twitchMaxTtsBacklog, youtubeMethod, youtubeApiInterval, youtubeSpeakName, youtubeTargetOn, youtubeTargetHours, youtubeDailyQuota, youtubeWriteReserve, chatSendConfirm, imageSaveFolder, bbsmenuUrl, shitarabaHost, jpnknHost,
       mainAlwaysOnBottom, cssAllowExternalUrls, streamMaskEnabled, ngAboneSpeakEnabled,
       ttsMode, ttsEnabled, ttsMaxReadLength, ttsUrlOmitEnabled, ttsBoardMode, sapiVoiceIndex, sapiRate, sapiVolume,
@@ -8742,7 +9273,10 @@ export default function App() {
   // 「設定を保存」を待たず入力した時点で即座に保存する (NG・辞書・ハイライトの登録と同じ扱い)
   useEffect(() => {
     if (!isTauriRuntime() || !appSettingsLoadedRef.current) return;
-    void invoke("save_app_settings", { settings: buildAppSettingsMap() }).catch(() => {});
+    // パスの1項目だけを書く (全部を書くと、設定画面で変えている途中のまだ保存していない値までファイルに入ってしまう)
+    void invoke("save_app_settings", { settings: { "Speech.bouyomiPath": bouyomiPath } })
+      .then(() => setSettingsSnapshot((prev) => (prev ? { ...prev, app: { ...prev.app, "Speech.bouyomiPath": bouyomiPath } } : prev)))
+      .catch((e) => console.warn("save bouyomiPath failed", e));
   }, [bouyomiPath]);
 
   // layout_prefs.json に保存する内容
@@ -8835,14 +9369,68 @@ export default function App() {
     if (settingsOpen) setSettingsSnapshot({ layout: buildLayoutPrefsPayload(), app: buildAppSettingsMap() });
     else setSettingsSnapshot(null);
   }, [settingsOpen]);
-  const persistSettingsNow = (layoutObj?: Record<string, unknown>, appMap?: Record<string, string>) => {
+  // 設定ファイルを読めていない間は、設定画面を開かない (開いて変えると、読み込めたときに画面とファイルが食い違うため)
+  useEffect(() => {
+    if (!settingsOpen || !isTauriRuntime() || appSettingsLoadedRef.current) return;
+    setSettingsOpen(false);
+    setAppConfirm({
+      title: "設定画面を開けません",
+      message: "設定ファイル (settings.ini) を読み込めていないため、設定画面を開けません (読み込めないまま変えると、読み込めたときに食い違うため)。\n少し間をおいて自動で読み直します。読み込めたら開けます。",
+      buttons: [{ label: "OK", primary: true, onClick: () => {} }],
+    });
+  }, [settingsOpen]);
+  // 念のため: 設定画面を開いている間に読み直せたら、「保存しない」の戻り先を読み込んだ値にする
+  useEffect(() => {
+    if (appSettingsLoadVersion === 0 || !settingsOpenRef.current) return;
+    setSettingsSnapshot((prev) => (prev ? { ...prev, app: buildAppSettingsMap() } : prev));
+  }, [appSettingsLoadVersion]);
+  // 設定をファイルに書く。書けたら true (そのときだけ「保存済み」にし、ログに使う値も変える)。書けなかったら false (変更は残す)
+  const persistSettingsNow = async (layoutObj?: Record<string, unknown>, appMap?: Record<string, string>): Promise<boolean> => {
     const layout = layoutObj ?? buildLayoutPrefsPayload();
     const app = appMap ?? buildAppSettingsMap();
     if (isTauriRuntime()) {
-      void invoke("save_layout_prefs", { prefs: JSON.stringify(layout) }).catch((e) => console.warn("save_layout_prefs failed", e));
-      void invoke("save_app_settings", { settings: app }).catch((e) => console.warn("save_app_settings failed", e));
+      // 設定ファイルを読み込めていない間は書かない (既定値のままの設定で上書きしてしまうため)
+      if (!appSettingsLoadedRef.current) {
+        setStatus("設定ファイルを読み込めていないため、設定を保存していません (読み込めると保存できるようになります)");
+        setAppConfirm({
+          title: "設定を保存できません",
+          message: "設定ファイルを読み込めていないため、保存していません (保存すると、今の設定でファイル全体を上書きしてしまうため)。\n読み込めると保存できるようになります。変更はそのまま残しています。",
+          buttons: [{ label: "OK", primary: true, onClick: () => {} }],
+        });
+        return false;
+      }
+      // 設定は2つのファイルに分かれている。結果を別々に扱い、書けたほうだけを「保存済み」にする
+      // (書けたほうの値は次の起動で使われるので、今動いている設定・「保存しない」の戻り先もそれに合わせる)
+      const [appRes, layoutRes] = await Promise.allSettled([
+        invoke("save_app_settings", { settings: app }),
+        invoke("save_layout_prefs", { prefs: JSON.stringify(layout) }),
+      ]);
+      const appOk = appRes.status === "fulfilled";
+      const layoutOk = layoutRes.status === "fulfilled";
+      // ログに使う値 (残すスレ・日数・容量) は、settings.ini に書けたときだけ変える
+      if (appOk) commitBoardLogFrom(app);
+      setSettingsSnapshot((prev) => ({ layout: layoutOk || !prev ? layout : prev.layout, app: appOk || !prev ? app : prev.app }));
+      if (!appOk || !layoutOk) {
+        const why = (r: PromiseSettledResult<unknown>) => (r.status === "rejected" ? String(r.reason) : "");
+        const APP_NAME = "settings.ini (ログ・読み上げ・自動更新などの設定)";
+        const LAYOUT_NAME = "layout_prefs.json (画面の配置・文字の大きさなどの設定)";
+        const lines = [
+          ...(appOk ? [`保存しました: ${APP_NAME}`] : [`保存できませんでした: ${APP_NAME}\n  理由: ${why(appRes)}`]),
+          ...(layoutOk ? [`保存しました: ${LAYOUT_NAME}`] : [`保存できませんでした: ${LAYOUT_NAME}\n  理由: ${why(layoutRes)}`]),
+        ];
+        console.warn("save settings failed", why(appRes), why(layoutRes));
+        setStatus(appOk || layoutOk ? "設定の一部を保存できませんでした。保存できなかった分の変更は残しています" : `設定を保存できませんでした (${why(appRes) || why(layoutRes)})。変更はそのまま残しています`);
+        setAppConfirm({
+          title: appOk || layoutOk ? "設定の一部を保存できませんでした" : "設定を保存できませんでした",
+          message: `${lines.join("\n")}\n\n保存できなかった分の変更はそのまま残しています。原因を取り除いてから、もう一度「設定を保存」を押してください。`,
+          buttons: [{ label: "OK", primary: true, onClick: () => {} }],
+        });
+        return false;
+      }
+      return true;
     }
     setSettingsSnapshot({ layout, app });
+    return true;
   };
   const settingsBackupName = () => {
     const d = new Date();
@@ -8892,12 +9480,14 @@ export default function App() {
       await invoke("save_settings_backup", { name: settingsBackupName(), json: JSON.stringify(buildSettingsBundle(layout, app, true)) });
     } catch (e) { console.warn("save_settings_backup failed", e); }
   };
-  const saveSettingsNow = async () => {
+  // 「設定を保存」。書けたときだけ「保存しました」と出す (書けなかったら、変更と保存ボタンをそのまま残す)
+  const saveSettingsNow = async (): Promise<boolean> => {
     const prev = settingsSnapshot;
     if (prev) await createSettingsBackup(prev.layout, prev.app);
-    persistSettingsNow();
-    setStatus("設定を保存しました");
+    const ok = await persistSettingsNow();
+    if (ok) setStatus("設定を保存しました");
     if (settingsCategory === "presets" || settingsCategory === "reset") void refreshSettingsFiles();
+    return ok;
   };
   const discardSettingsChanges = () => {
     const snap = settingsSnapshot;
@@ -8906,19 +9496,22 @@ export default function App() {
     applyAppSettings({ ...snap.app, "Speech.bouyomiPath": bouyomiPath });
     applyLayoutPrefs(JSON.stringify({ ...snap.layout, settingsSearchHistory }));
   };
-  const requestCloseSettings = () => {
+  // 設定画面を閉じる (変更があれば保存するかを確かめる)。after は閉じたあとにする操作 (キャンセルしたときはしない)
+  const requestCloseSettings = (after?: () => void) => {
     if (!settingsDirty) {
       // 検索履歴など「変更」扱いしない項目を書き出しておく
-      persistSettingsNow();
+      void persistSettingsNow();
       setSettingsOpen(false);
+      after?.();
       return;
     }
     setAppConfirm({
       title: "設定が保存されていません",
       message: "変更した設定を保存しますか？\n「保存しない」を選ぶと、開いたときの値に戻ります。",
       buttons: [
-        { label: "保存して閉じる", primary: true, onClick: () => { void saveSettingsNow(); setSettingsOpen(false); } },
-        { label: "保存しないで閉じる", danger: true, onClick: () => { discardSettingsChanges(); setSettingsOpen(false); } },
+        // 保存できなかったときは閉じない (変更を残して、もう一度保存できるようにする)
+        { label: "保存して閉じる", primary: true, onClick: () => { void saveSettingsNow().then((ok) => { if (ok) { setSettingsOpen(false); after?.(); } }); } },
+        { label: "保存しないで閉じる", danger: true, onClick: () => { discardSettingsChanges(); setSettingsOpen(false); after?.(); } },
         { label: "キャンセル", onClick: () => {} },
       ],
     });
@@ -8933,7 +9526,7 @@ export default function App() {
       title: "設定が保存されていません",
       message: "変更した設定を保存してから移動しますか？\n「保存しない」を選ぶと、開いたときの値に戻ります。",
       buttons: [
-        { label: "保存して移動", primary: true, onClick: () => { void saveSettingsNow(); switchSettingsCategory(cat); } },
+        { label: "保存して移動", primary: true, onClick: () => { void saveSettingsNow().then((ok) => { if (ok) switchSettingsCategory(cat); }); } },
         { label: "保存しないで移動", danger: true, onClick: () => { discardSettingsChanges(); switchSettingsCategory(cat); } },
         { label: "キャンセル", onClick: () => {} },
       ],
@@ -8953,7 +9546,7 @@ export default function App() {
     const app = { ...buildAppSettingsMap(), ...appIn };
     applyAppSettings(app);
     applyLayoutPrefs(JSON.stringify(layout));
-    persistSettingsNow(layout, app);
+    void persistSettingsNow(layout, app); // 書けなかったときは persistSettingsNow が知らせる
     if (withLists && b.lists && typeof b.lists === "object") {
       const l = b.lists as Record<string, unknown>;
       const ng = l.ngFilters as Partial<NgFilters> | undefined;
@@ -9003,7 +9596,7 @@ export default function App() {
     const layout = { ...buildLayoutPrefsPayload(), ...stripVolatilePrefs(defaults), settingsSearchHistory: [] as string[] };
     applyAppSettings(defaultsApp);
     applyLayoutPrefs(JSON.stringify(layout));
-    persistSettingsNow(layout, defaultsApp);
+    void persistSettingsNow(layout, defaultsApp); // 書けなかったときは persistSettingsNow が知らせる
     if (resetIncludeLists) {
       void persistNgFilters({ words: [], ids: [], names: [], mails: [], thread_words: [], image_words: [], invisible: "off" });
       persistIdHighlights({});
@@ -9626,11 +10219,11 @@ export default function App() {
                       </div>
                       {arrivalCardsEnabled && (ogpCardsEnabled || tweetCardsEnabled)
                         ? /* カード付き描画: 本文は renderResponseBody でサニタイズ済み (画像は非表示のまま) */
-                          <div className="new-arrival-body" ref={newArrivalBodyRef} style={{ fontSize: `${newArrivalFontSize}px` }} dangerouslySetInnerHTML={{ __html: arrivalEmoteHtml(currentArrivalItem, renderResponseBody(currentArrivalItem.text, { hideImages: true, ogpCards: ogpCardsEnabled, tweetCards: tweetCardsEnabled, ogpAllow: ogpDomainFilters.allow, ogpBlock: ogpDomainFilters.block }).__html) }} />
+                          <div className="new-arrival-body" ref={newArrivalBodyRef} style={{ fontSize: `${newArrivalFontSize}px` }} dangerouslySetInnerHTML={{ __html: arrivalEmoteHtml(currentArrivalItem, renderResponseBody(trimBreakSpaces(currentArrivalItem.text), { hideImages: true, ogpCards: ogpCardsEnabled, tweetCards: tweetCardsEnabled, ogpAllow: ogpDomainFilters.allow, ogpBlock: ogpDomainFilters.block }).__html) }} />
                         : arrivalHasEmotes(currentArrivalItem)
                           ? /* スタンプがあるときだけ HTML で描く (本文は renderResponseBody でサニタイズ済み) */
-                            <div className="new-arrival-body" ref={newArrivalBodyRef} style={{ fontSize: `${newArrivalFontSize}px` }} dangerouslySetInnerHTML={{ __html: arrivalEmoteHtml(currentArrivalItem, renderResponseBody(currentArrivalItem.text, { hideImages: true }).__html) }} />
-                          : <div className="new-arrival-body" ref={newArrivalBodyRef} style={{ fontSize: `${newArrivalFontSize}px` }}>{decodeHtmlEntities(currentArrivalItem.text)}</div>}
+                            <div className="new-arrival-body" ref={newArrivalBodyRef} style={{ fontSize: `${newArrivalFontSize}px` }} dangerouslySetInnerHTML={{ __html: arrivalEmoteHtml(currentArrivalItem, renderResponseBody(trimBreakSpaces(currentArrivalItem.text), { hideImages: true }).__html) }} />
+                          : <div className="new-arrival-body" ref={newArrivalBodyRef} style={{ fontSize: `${newArrivalFontSize}px` }}>{decodeHtmlEntities(trimBreakSpaces(currentArrivalItem.text))}</div>}
                     </div>
                   )}
                 </div>
@@ -11907,7 +12500,7 @@ export default function App() {
         </div>
       )}
       {settingsOpen && (
-        <div className="lightbox-overlay" onClick={requestCloseSettings}>
+        <div className="lightbox-overlay" onClick={() => requestCloseSettings()}>
           <div className="settings-panel settings-panel-wide" onClick={(e) => e.stopPropagation()}>
             <header className="settings-header">
               <strong>設定</strong>
@@ -11931,7 +12524,7 @@ export default function App() {
               <span className="settings-header-actions">
                 {settingsDirty && <span className="settings-dirty-note">未保存の変更があります</span>}
                 <button className="primary" disabled={!settingsDirty} onClick={() => void saveSettingsNow()} title="値の設定をファイルに保存します (NG・辞書などの登録内容は登録した時点で保存済み)">設定を保存</button>
-                <button onClick={requestCloseSettings}>閉じる</button>
+                <button onClick={() => requestCloseSettings()}>閉じる</button>
               </span>
             </header>
             <div className="settings-2col">
@@ -12031,7 +12624,7 @@ export default function App() {
                   <span>文字サイズ (スレ)</span>
                   <input type="number" value={threadsFontSize} min={8} max={20} onChange={(e) => setThreadsFontSize(Number(e.target.value))} />
                 </label>
-                <label className="settings-row" title="カスタムCSS内の url(http…) による外部サーバーへの画像参照を許可します。信頼できないCSSを貼り付ける場合はオフのままを推奨">
+                <label className="settings-row" title="カスタムCSS内の url(http…) による外部サーバーへの画像参照を許可します。信頼できないCSSを貼り付ける場合は、オフのままにすることをおすすめします">
                   <span>カスタムCSSの外部URL参照を許可 (非推奨)</span>
                   <input
                     type="checkbox"
@@ -12102,7 +12695,7 @@ export default function App() {
                   <input type="checkbox" checked={restoreSession} onChange={(e) => setRestoreSession(e.target.checked)} />
                   <span>起動時に前回のタブと板を復元</span>
                 </label>
-                <label className="settings-row" title="このブラウザ本体のウィンドウを常に他の全ウィンドウの下に表示します(常に最前面の逆)。書き込みの浮遊ウィンドウ・OBS連携ウィンドウ・字幕ウィンドウには適用されません">
+                <label className="settings-row" title="このブラウザ本体のウィンドウを常に他の全ウィンドウの下に表示します(常に最前面の逆)。書き込みの浮遊ウィンドウ・字幕ウィンドウには適用されません">
                   <input type="checkbox" checked={mainAlwaysOnBottom} onChange={(e) => setMainAlwaysOnBottom(e.target.checked)} />
                   <span>常に最背面に表示</span>
                 </label>
@@ -12123,8 +12716,8 @@ export default function App() {
                   )}
                 </div>
                 <p className="settings-hint">
-                  板一覧(bbsmenu)の取得先です。5ch側でbbsmenu.jsonの置き場所が変わった場合などに、ここを書き換えることで対応できます。
-                  変更後にここへ載っている板へアクセスできるよう、通信先の許可リストにもこの取得元の内容が自動的に反映されます。
+                  板一覧(bbsmenu)の取得先です。5ch側でbbsmenu.jsonの置き場所が変わった場合などは、ここを書き換えれば対応できます。
+                  変更後もここに載っている板へアクセスできるよう、この取得元の内容は通信先の許可リストにも自動で反映されます。
                 </p>
               </fieldset>
               <fieldset>
@@ -12178,7 +12771,7 @@ export default function App() {
                   )}
                 </div>
                 <p className="settings-hint">
-                  したらば・JPNKNが将来ドメインを変更した場合に、ここを書き換えることで対応できます。通常は変更する必要はありません。
+                  したらば・JPNKNが将来ドメインを変更した場合は、ここを書き換えれば対応できます。通常は変更する必要はありません。
                 </p>
               </fieldset>
               </section>
@@ -12315,7 +12908,7 @@ export default function App() {
                 {(ogpCardsEnabled || tweetCardsEnabled) && (
                   <div className="settings-row settings-row-stack">
                     <div className="settings-note">
-                      カード表示の通信先ドメイン。ブロックは常に除外、許可は空なら全ドメイン・登録があればそのドメインのみ通信します。
+                      カード表示の通信先ドメインです。ブロックに入れたドメインとは常に通信しません。許可が空なら全ドメインと、登録があればそのドメインとだけ通信します。
                       私有ネットワーク・ローカルアドレスへは設定に関わらず通信しません。
                     </div>
                     <div className="lf-d-flex-gap4-ai-center">
@@ -12883,6 +13476,7 @@ export default function App() {
                   <button onClick={() => {
                     const v = ttsMuteNewValue.trim();
                     if (!v) return;
+                    if (refuseUnusableRegex(v)) return;
                     const skipWhole = ttsMuteNewKind === "words" ? ttsMuteNewSkipWhole : true;
                     setTtsMuteDict((prev) => ({ ...prev, [ttsMuteNewKind]: [...prev[ttsMuteNewKind], { value: v, skipWhole }] }));
                     setTtsMuteNewValue(""); setTtsMuteNewSkipWhole(false);
@@ -13234,7 +13828,7 @@ export default function App() {
                 <span>登録項目のマスク: {streamMaskEnabled ? "オン (登録内容を伏せて表示中)" : "オフ"}</span>
                 <button onClick={() => requestSwitchSettingsCategory("display")}>設定 &gt; 表示 で切り替え</button>
               </div>
-              <label className="settings-row lf-mb8" title="OFFにすると、通常あぼ～んのレスは前置き含め完全に読み上げをスキップします(透明あぼ～んと同じ扱い)">
+              <label className="settings-row lf-mb8" title="OFFにすると、通常あぼ～んのレスはレス番号の前置きも含めて読み上げません (透明あぼ～んと同じ扱い)">
                 <input type="checkbox" checked={ngAboneSpeakEnabled} onChange={(e) => setNgAboneSpeakEnabled(e.target.checked)} />
                 <span>通常あぼ～んを「あぼーん」と読み上げる</span>
               </label>
@@ -13471,7 +14065,7 @@ export default function App() {
               <fieldset>
                 <legend>掲示板のログ</legend>
                 <p className="settings-hint">
-                  開いたスレのレスを、データフォルダの logs に1スレ1ファイルで残します (配信ログビュワー用の JSONL と、ほかの専ブラ用の dat)。
+                  開いたスレのレスを、データフォルダの logs に1スレ1ファイルで残します (掲示板ログアーカイブ用の JSONL と、ほかの専ブラ用の dat)。
                   新しいレスを取得するたびに書き足します。ほかの人の名前・発言がこの PC に残ります。外部へは送りません。
                 </p>
                 <div className="settings-row board-log-mode">
@@ -13518,7 +14112,7 @@ export default function App() {
                       if (n === 0 || (cur !== 0 && n > cur)) { setBoardLogMaxMb(n); return; }
                       setAppConfirm({
                         title: "ログの容量の上限を小さくします",
-                        message: `「設定を保存」すると、全部のログが${n}MB を超えている分が、古いスレから消えます (元に戻せません)。よろしいですか?`,
+                        message: `「設定を保存」すると、ログの合計が${n}MB を超えた分は、古いスレから消えます (元に戻せません)。よろしいですか?`,
                         buttons: [
                           { label: "小さくする", primary: true, onClick: () => setBoardLogMaxMb(n) },
                           { label: "やめる", onClick: () => setBoardLogMaxMbDraft(String(cur)) },
@@ -13580,7 +14174,14 @@ export default function App() {
                               <input type="checkbox" checked={tabLogOn(t, boardLogMode)} disabled={boardLogMode !== "selected"} onChange={() => toggleTabLog(t.threadUrl)} />ログ
                             </label>
                           )}
-                          <button onClick={() => { setSettingsOpen(false); onTabClick(i); }}>開く</button>
+                          <button onClick={() => {
+                            // ほかの閉じ方と同じく、保存していない変更があれば確かめてから閉じる (確かめている間にタブが動いても、同じタブを開く)
+                            const url = t.threadUrl;
+                            requestCloseSettings(() => {
+                              const idx = threadTabsRef.current.findIndex((x) => x.threadUrl === url);
+                              if (idx >= 0) onTabClick(idx);
+                            });
+                          }}>開く</button>
                           <button className="ng-remove" onClick={() => closeTab(i)} title="タブを閉じる">×</button>
                         </li>
                       );
@@ -13600,7 +14201,7 @@ export default function App() {
               </p>
               <fieldset>
                 <legend>ビュワーの文字</legend>
-                <p className="settings-hint">ビュワーと下の「スレの最新レス」欄の文字です (OBS 表示の文字は「OBS 表示」のレイアウトで変えます)。</p>
+                <p className="settings-hint">ビュワーと「スレの最新レス」欄の文字です (OBS 表示の文字は「OBS 表示」のレイアウトで変えます)。</p>
                 <label className="settings-row">
                   <span>文字サイズ (0=レスの文字サイズに合わせる)</span>
                   <input type="number" value={viewerFontSize} min={0} max={48} step={1} onChange={(e) => { const n = Math.round(Number(e.target.value)); setViewerFontSize(n >= 8 && n <= 48 ? n : 0); }} className="lf-w60" />
@@ -13758,7 +14359,7 @@ export default function App() {
                 <div className="settings-row">
                   <input type="text" readOnly value={overlayUrl} className="lf-grow" onFocus={(e) => e.currentTarget.select()} />
                   <button onClick={() => { void navigator.clipboard.writeText(overlayUrl); setStatus("OBS 表示の URL をコピーしました"); }}>コピー</button>
-                  <button disabled={!overlayEnabled} onClick={() => { if (isTauriRuntime()) void invoke("overlay_publish", { items: [{ source: "5ch", site: "5ch", no: 1, name: "テスト", uid: "TEST0000", text: "OBS 表示のテストです", color: "" }, { source: "twitch", site: "Twitch", no: null, name: "テスト", uid: "", text: "Twitch のテストです", color: "#1e90ff" }] }).catch((e) => console.warn("overlay_publish failed", e)); }}>テスト表示</button>
+                  <button disabled={!overlayEnabled || broadcastHalted} title={broadcastHalted ? "読み上げ・字幕・OBS を止めている間は使えません" : undefined} onClick={() => { if (isTauriRuntime() && !outputBlocked()) void invoke("overlay_publish", { items: [{ source: "5ch", site: "5ch", no: 1, name: "テスト", uid: "TEST0000", text: "OBS 表示のテストです", color: "" }, { source: "twitch", site: "Twitch", no: null, name: "テスト", uid: "", text: "Twitch のテストです", color: "#1e90ff" }] }).catch((e) => console.warn("overlay_publish failed", e)); }}>テスト表示</button>
                 </div>
               </fieldset>
               <fieldset>
@@ -13836,7 +14437,7 @@ export default function App() {
               <section className="settings-section" data-section="main">
                 {settingsSectionHeading("twitch", "main")}
               <p className="settings-hint">
-                アドレスバーに twitch.tv/チャンネル名 を入れて移動すると、そのチャンネルのチャットを Twitch タブに表示します (ログイン不要・受信のみ)。
+                アドレスバーに twitch.tv/チャンネル名 を入れて移動すると、そのチャンネルのチャットを Twitch タブに表示します (受信はログイン不要。書き込みは「ログイン」の節)。
               </p>
               <fieldset>
                 <legend>読み上げ</legend>
@@ -13917,7 +14518,7 @@ export default function App() {
                   <span>バッジの画像とチャンネルポイントの報酬名を取得する</span>
                 </label>
                 <p className="settings-hint">
-                  Twitch のサイトの非公式の取得口 (gql.twitch.tv) から、バッジ画像と報酬名を取得します (送るのはチャンネル名だけ)。仕様変更で使えなくなることがあります。
+                  Twitch のサイトの非公式の取得口 (gql.twitch.tv) から、バッジ画像と報酬名を取得します (送るのはチャンネル名だけ)。Twitch 側の仕様変更で使えなくなることがあります。
                 </p>
               </fieldset>
               </section>
@@ -14059,7 +14660,7 @@ export default function App() {
                 {settingsSectionHeading("youtube", "main")}
               <p className="settings-hint">
                 アドレスバーに YouTube のライブ配信の URL (youtube.com/watch?v=… / youtube.com/live/… / youtu.be/…) を入れて移動すると、
-                その配信のチャットを YouTube タブに表示します (受信のみ)。チャンネルの URL・アーカイブ・普通の動画には対応していません。
+                その配信のチャットを YouTube タブに表示します (書き込みは「書き込み」の節)。チャンネルの URL・アーカイブ・普通の動画には対応していません。
               </p>
               <fieldset>
                 <legend>取得方法</legend>

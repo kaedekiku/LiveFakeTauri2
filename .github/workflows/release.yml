@@ -23,12 +23,18 @@ jobs:
         run: npm ci
         working-directory: apps/desktop
 
-      # プライベート版だけのコードの目印 (REQUIREMENTS 15.1) が apps/ と crates/ にあればリリースしない
+      # プライベート版だけのコードの目印 (REQUIREMENTS 15.1) が apps/ と crates/ にあればリリースしない。
+      # 決まりの目印のほかに、書き方の違う目印も拾う (どれか1つでもあれば失敗させる)
       - name: Check no private-only code
         shell: bash
         run: |
-          MARK="$(printf 'private \xe3\x83\x96\xe3\x83\xa9\xe3\x83\xb3\xe3\x83\x81\xe9\x99\x90\xe5\xae\x9a')"
-          if git grep -n -F "$MARK" -- apps crates; then echo "private-only code found"; exit 1; fi
+          found=0
+          check() { if git grep -n -F "$1" -- apps crates; then found=1; fi; }
+          check "$(printf 'private \xe3\x83\x96\xe3\x83\xa9\xe3\x83\xb3\xe3\x83\x81\xe9\x99\x90\xe5\xae\x9a')"
+          check "$(printf 'private \xe3\x83\x96\xe3\x83\xa9\xe3\x83\xb3\xe3\x83\x81\xe5\xb0\x82\xe7\x94\xa8')"
+          check "$(printf 'private\xe5\xb0\x82\xe7\x94\xa8')"
+          check "$(printf 'main \xe3\x81\xb8\xe3\x81\xaf\xe7\xb5\xb6\xe5\xaf\xbe\xe3\x81\xab')"
+          if [ "$found" = 1 ]; then echo "private-only code found"; exit 1; fi
 
       - name: Check third-party license list is up to date
         run: python scripts/generate_third_party_licenses.py --check

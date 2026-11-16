@@ -106,7 +106,15 @@ fn auth_path() -> Option<std::path::PathBuf> {
 }
 
 fn load_auth() -> Option<AuthData> {
-    let stored = std::fs::read_to_string(auth_path()?).ok()?;
+    load_auth_at(&auth_path()?)
+}
+
+fn load_auth_at(path: &std::path::Path) -> Option<AuthData> {
+    // ログアウトしたときに消せなかったファイルは読まない (読むと、ログアウトしたのにログインした状態に戻る)
+    if !crate::auth_file::usable_at_start(path) {
+        return None;
+    }
+    let stored = std::fs::read_to_string(path).ok()?;
     if !stored.starts_with("dpapi:") {
         return None;
     }
@@ -114,7 +122,7 @@ fn load_auth() -> Option<AuthData> {
     let a: AuthData = serde_json::from_str(&plain).ok()?;
     // 以前のクライアント ID で発行されたログイン情報は使えないので捨てる (ログインし直しになる)
     if a.client_id != CLIENT_ID {
-        let _ = std::fs::remove_file(auth_path()?);
+        let _ = std::fs::remove_file(path);
         return None;
     }
     Some(a)
@@ -151,10 +159,15 @@ fn save_auth(a: &AuthData) -> Result<(), String> {
     if !enc.starts_with("dpapi:") {
         return Err("ログイン情報を暗号化できないため保存しませんでした (次回の起動ではログインし直しになります)".into());
     }
-    let path = auth_path().ok_or("データフォルダが見つかりません")?;
+    save_auth_text_at(&auth_path().ok_or("データフォルダが見つかりません")?, &enc)
+}
+
+fn save_auth_text_at(path: &std::path::Path, enc: &str) -> Result<(), String> {
     let tmp = path.with_extension("bin.tmp");
     std::fs::write(&tmp, enc).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
+    std::fs::rename(&tmp, path).map_err(|e| e.to_string())?;
+    // 前のログアウトで置いた目印が残っていると、次の起動でこのログインまで捨ててしまう
+    crate::auth_file::clear_mark(path)
 }
 
 #[derive(Deserialize)]
@@ -210,6 +223,38 @@ async fn refresh(http: &reqwest::Client, a: &AuthData) -> Result<AuthData, Strin
     }
     let t: TokenResponse = serde_json::from_slice(&r.bytes().await.map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     Ok(AuthData { access_token: t.access_token, refresh_token: t.refresh_token, expires_at: now() + t.expires_in, ..a.clone() })
+}
+
+const TOKEN_URL: &str = "https://id.twitch.tv/oauth2/token";
+const REVOKE_URL: &str = "https://id.twitch.tv/oauth2/revoke";
+
+/// Twitch 側の許可を取り消す (窓口のアドレスは、決まった値を呼ぶ側が渡す。試験では手元の受け口に替える)。
+/// 無効なトークンの取り消しは 400 Invalid token で断られる (公式の説明)。期限の切れたアクセストークンも同じ扱いと見て、
+/// 切れていたら先に更新して、新しいトークンを取り消す (アクセストークンの取り消しで更新用のトークンも無効になるかは、説明に記載がない)。
+/// 更新が「無効」と断られたときは、許可はもう残っていない (取り消すものが無い) ので、取り消し済みとして扱う
+async fn revoke_at(http: &reqwest::Client, a: &AuthData, token_url: &str, revoke_url: &str) -> crate::auth_file::Revoked {
+    use crate::auth_file::Revoked;
+    let mut token = a.access_token.clone();
+    if a.expires_at <= now() + 60 {
+        let r = http
+            .post(token_url)
+            .form(&[("client_id", CLIENT_ID), ("grant_type", "refresh_token"), ("refresh_token", a.refresh_token.as_str())])
+            .send()
+            .await;
+        match r {
+            Ok(r) if r.status().is_success() => match r.bytes().await.ok().and_then(|b| serde_json::from_slice::<TokenResponse>(&b).ok()) {
+                Some(t) => token = t.access_token,
+                None => return Revoked::Unknown,
+            },
+            // 更新を断られた (取り消された・期限切れ): 使える許可は残っていない
+            Ok(r) if matches!(r.status().as_u16(), 400 | 401) => return Revoked::Done,
+            _ => return Revoked::Unknown,
+        }
+    }
+    match http.post(revoke_url).form(&[("client_id", CLIENT_ID), ("token", token.as_str())]).send().await {
+        Ok(r) if r.status().is_success() => Revoked::Done,
+        _ => Revoked::Unknown,
+    }
 }
 
 /// ログインの状態 (Tauri の State として持つ。タスクとは Arc で共有する)
@@ -495,20 +540,24 @@ impl Inner {
             t.abort();
         }
         self.eventsub_connected.store(false, Ordering::SeqCst);
+        use crate::auth_file::{Removed, Revoked};
         let a = lock(&self.auth).take();
-        if let Some(a) = a {
-            let _ = self
-                .http()
-                .post("https://id.twitch.tv/oauth2/revoke")
-                .form(&[("client_id", CLIENT_ID), ("token", a.access_token.as_str())])
-                .send()
-                .await;
-        }
-        if let Some(p) = auth_path() {
-            let _ = std::fs::remove_file(p);
-        }
-        self.set_status(|s| *s = AuthStatus { state: "none".into(), ..Default::default() });
-        self.log("ログアウトしました");
+        // Twitch 側の取り消しと、この PC のファイルの削除は、結果を別々に持つ (どちらかが失敗しても、済んだことにしない)
+        let revoked = match a {
+            Some(a) => revoke_at(&self.http(), &a, TOKEN_URL, REVOKE_URL).await,
+            None => Revoked::NotNeeded,
+        };
+        let removed = auth_path().map(|p| crate::auth_file::remove_or_mark(&p)).unwrap_or(Removed::Gone);
+        let message = crate::auth_file::logout_message("Twitch", revoked, &removed);
+        self.log(&format!(
+            "ログアウトしました (Twitch 側の取り消し: {revoked:?} / この PC のファイル: {})",
+            match removed {
+                Removed::Gone => "消した",
+                Removed::Marked => "消せなかったので目印を置いた",
+                Removed::Left(_) => "消せなかった",
+            }
+        ));
+        self.set_status(|s| *s = AuthStatus { state: "none".into(), message, ..Default::default() });
     }
 
     async fn helix_get(self: &Arc<Self>, url: &str) -> Result<Value, String> {
@@ -1006,6 +1055,66 @@ mod tests {
         assert!(!login_ok("a b"));
         assert_eq!(automatic_reward_name("gigantify_an_emote"), "スタンプを巨大化");
         assert_eq!(automatic_reward_name("new_kind<x>"), "new_kindx");
+    }
+
+    // Twitch 側の取り消し: 成功・失敗・つながらない。期限の切れたトークンは、更新してから取り消す
+    #[test]
+    fn revoke_reports_what_twitch_answered() {
+        use crate::auth_file::{test_http, Revoked};
+        let http = reqwest::Client::builder().timeout(Duration::from_secs(30)).build().unwrap();
+        let auth = |expires_at: u64| AuthData { access_token: "old".into(), refresh_token: "ref".into(), expires_at, user_id: "1".into(), login: "x".into(), client_id: CLIENT_ID.into(), scopes: vec![] };
+        let (valid, expired) = (auth(now() + 3600), auth(1));
+        let run = |a: &AuthData, base: &str| tauri::async_runtime::block_on(revoke_at(&http, a, &format!("{base}/token"), &format!("{base}/revoke")));
+        const TOKEN_OK: &str = r#"{"access_token":"new","refresh_token":"ref2","expires_in":14400}"#;
+        // 期限内: 取り消しの応答どおり
+        let ok = test_http::serve(|p| if p == "/revoke" { (200, "") } else { (500, "") });
+        assert_eq!(run(&valid, &ok), Revoked::Done);
+        let refused = test_http::serve(|p| if p == "/revoke" { (400, r#"{"status":400,"message":"Invalid token"}"#) } else { (500, "") });
+        assert_eq!(run(&valid, &refused), Revoked::Unknown, "取り消しを断られたのに、済んだことにしない");
+        let down = test_http::serve(|_| (503, ""));
+        assert_eq!(run(&valid, &down), Revoked::Unknown);
+        assert_eq!(run(&valid, &test_http::unreachable()), Revoked::Unknown, "つながらないのに、済んだことにしない");
+        // 期限切れ: 更新してから取り消す (更新できれば取り消せる)
+        let refresh_ok = test_http::serve(|p| if p == "/token" { (200, TOKEN_OK) } else { (200, "") });
+        assert_eq!(run(&expired, &refresh_ok), Revoked::Done);
+        // 期限切れで、更新も断られた: 許可は残っていない
+        let refresh_refused = test_http::serve(|p| if p == "/token" { (400, r#"{"status":400,"message":"Invalid refresh token"}"#) } else { (500, "") });
+        assert_eq!(run(&expired, &refresh_refused), Revoked::Done);
+        // 期限切れで、更新の窓口が応えない・つながらない: 済んだことにしない
+        assert_eq!(run(&expired, &down), Revoked::Unknown);
+        assert_eq!(run(&expired, &test_http::unreachable()), Revoked::Unknown);
+        // 更新はできたが、取り消しを断られた
+        let revoke_fails = test_http::serve(|p| if p == "/token" { (200, TOKEN_OK) } else { (400, "") });
+        assert_eq!(run(&expired, &revoke_fails), Revoked::Unknown);
+    }
+
+    // ログアウトしたときにファイルを消せなくても (使用中)、次の起動でログインした状態に戻らない。
+    // そのあとログインし直したものは、次の起動で読める
+    #[cfg(windows)]
+    #[test]
+    fn logout_with_locked_file_does_not_come_back() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = std::env::temp_dir().join(format!("livefake-twitch-logout-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("twitch-auth.bin");
+        let a = AuthData { access_token: "tok".into(), refresh_token: "ref".into(), expires_at: 1, user_id: "1".into(), login: "x".into(), client_id: CLIENT_ID.into(), scopes: vec![] };
+        let enc = core_proxy::protect_password(&serde_json::to_string(&a).unwrap());
+        save_auth_text_at(&path, &enc).unwrap();
+        assert!(load_auth_at(&path).is_some(), "(前提) 保存したログイン情報は読める");
+        // ログアウト: ファイルが使用中で消せない
+        let lock = std::fs::OpenOptions::new().read(true).share_mode(0).open(&path).unwrap();
+        let removed = crate::auth_file::remove_or_mark(&path);
+        assert_ne!(removed, crate::auth_file::Removed::Gone, "消せていないのに、消えたことにしない");
+        assert!(!crate::auth_file::logout_message("Twitch", crate::auth_file::Revoked::Done, &removed).is_empty());
+        drop(lock);
+        // 次の起動: ログインした状態に戻らない
+        assert!(load_auth_at(&path).is_none(), "ログアウトしたログイン情報を読み直さない");
+        assert!(!path.exists());
+        // ログインし直したものは、次の起動で読める
+        save_auth_text_at(&path, &enc).unwrap();
+        assert!(load_auth_at(&path).is_some());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[cfg(windows)]

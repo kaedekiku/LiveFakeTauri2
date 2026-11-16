@@ -21,6 +21,7 @@ use std::collections::{HashMap, HashSet};
 use std::process::Command;
 use tauri::{AppHandle, Emitter, Manager};
 
+mod auth_file;
 mod twitch_auth;
 mod twitch_badges;
 mod youtube;
@@ -208,9 +209,10 @@ async fn twitch_user_emotes(auth: tauri::State<'_, twitch_auth::TwitchAuthState>
 
 /// Twitch からログアウトする (Twitch 側の許可も取り消し、保存したログイン情報を消す)
 #[tauri::command]
-async fn twitch_logout(state: tauri::State<'_, twitch_auth::TwitchAuthState>) -> Result<(), String> {
+async fn twitch_logout(state: tauri::State<'_, twitch_auth::TwitchAuthState>) -> Result<twitch_auth::AuthStatus, String> {
     state.logout().await;
-    Ok(())
+    // 済んでいないこと (Twitch 側の取り消し・この PC のファイルの削除) があれば、message に入っている
+    Ok(state.status())
 }
 
 /// Twitch のバッジ画像・チャンネルポイント報酬名の取得 (非公式の取得口 gql.twitch.tv) のオンオフ
@@ -1421,7 +1423,18 @@ fn open_folder_in_explorer(dir: &std::path::Path) -> Result<(), String> {
 // 開いたスレ (設定で選んだスレ) のレスを、data/logs/<5ch|shitaraba|jpnkn>/<板>/<スレ番号>.jsonl (配信ログビュワー用) と
 // .dat (5ch と同じ形・Shift_JIS。ほかの専ブラ用) に書き足す。日数・容量を過ぎたものは古いものから消す。
 // パスは、対応している掲示板のスレの URL から取り出し、形を確かめた板名とスレ番号だけで作る (ほかの場所には書かない)。外部へは送らない
-static BOARD_LOG_LOCK: Mutex<Option<HashMap<std::path::PathBuf, u32>>> = Mutex::new(None);
+/// 書き足し・削除のどちらも、この鍵を持っている間だけファイルに触る (調べてから消すまでの間に書き足されないように)
+static BOARD_LOG_LOCK: Mutex<Option<BoardLogState>> = Mutex::new(None);
+#[derive(Default)]
+struct BoardLogState {
+    /// JSONL に書いてある最後のレス番号 (ファイルごと)
+    last: HashMap<std::path::PathBuf, u32>,
+    /// dat の行数と JSONL のレスの数が合うかを確かめたファイル (起動ごとに1回)
+    dat_checked: HashSet<std::path::PathBuf>,
+    /// dat が合わないが、直すのに要るレスがそろわなかったファイルと、足りないレス番号 (この起動の間は書き足しを続け、
+    /// 画面側が足りない番号を手元にそろえてスレ全体を渡したらやり直す。次の起動では、もう一度はじめから確かめる)
+    dat_pending: HashMap<std::path::PathBuf, Vec<u32>>,
+}
 /// 1ファイルの大きさの上限 (1スレ1000レスなら数MB。超えたらそのファイルには書かない)
 const BOARD_LOG_FILE_MAX: u64 = 64 * 1024 * 1024;
 
@@ -1456,6 +1469,8 @@ struct BoardLogAppendResult {
     written: usize,
     /// ログのファイルを新しく作ったが、最初のレスから書けていない (画面側は、スレ全体を渡し直す)
     need_full: bool,
+    /// dat を直す待ちのとき、直すのに足りないレス番号 (画面側は、これが手元に全部そろったら一度だけスレ全体を渡す)
+    repair_missing: Vec<u32>,
 }
 
 fn board_log_dir_path() -> Result<std::path::PathBuf, String> {
@@ -1507,82 +1522,26 @@ fn board_log_now() -> String {
     chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f%:z").to_string()
 }
 
-/// JSONL に書いてある最後のレス番号 (無ければ 0)
-fn board_log_last_no(path: &std::path::Path) -> u32 {
-    let Ok(text) = std::fs::read_to_string(path) else { return 0 };
-    text.lines()
+/// JSONL に書いてあるレス番号 (小さい順・重複なし)。読めなかったときはエラー (0件として扱うと、次に書くとき重複する)
+fn board_log_jsonl_nos(path: &std::path::Path) -> Result<Vec<u32>, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("ログを読めませんでした: {e}"))?;
+    let mut nos: Vec<u32> = text
+        .lines()
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
         .filter_map(|v| v.get("no").and_then(|n| n.as_u64()))
-        .max()
-        .unwrap_or(0) as u32
+        .filter_map(|n| u32::try_from(n).ok())
+        .collect();
+    nos.sort_unstable();
+    nos.dedup();
+    Ok(nos)
 }
 
-/// スレのレスをログに書き足す (書いていないレス番号のものだけ)。
-/// 新しくファイルを作るときに、渡されたレスが最初からでなければ書かずに need_full を返す (full = true なら、そのまま書く)
-#[tauri::command(async)]
-fn board_log_append(thread_url: String, title: String, board: String, responses: Vec<BoardLogRes>, full: Option<bool>) -> Result<BoardLogAppendResult, String> {
-    use std::io::Write;
-    let Some((site_dir, board_dir, key)) = board_log_location(&thread_url) else {
-        return Err("ログを残せるスレの URL ではありません".into());
-    };
-    let dir = board_log_dir_path()?.join(site_dir).join(&board_dir);
-    let jsonl = dir.join(format!("{key}.jsonl"));
-    let dat = dir.join(format!("{key}.dat"));
-    let mut guard = BOARD_LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let last_map = guard.get_or_insert_with(HashMap::new);
-    let jsonl_exists = jsonl.is_file();
-    let last = if jsonl_exists { *last_map.entry(jsonl.clone()).or_insert_with(|| board_log_last_no(&jsonl)) } else { 0 };
-    let mut rows: Vec<&BoardLogRes> = responses.iter().filter(|r| r.no > last && r.no <= 100_000).collect();
-    rows.sort_by_key(|r| r.no);
-    rows.dedup_by_key(|r| r.no);
-    if rows.is_empty() {
-        return Ok(BoardLogAppendResult { written: 0, need_full: false });
-    }
-    if !jsonl_exists && !full.unwrap_or(false) && rows.first().map(|r| r.no > 1).unwrap_or(false) {
-        return Ok(BoardLogAppendResult { written: 0, need_full: true });
-    }
-    if std::fs::metadata(&jsonl).map(|m| m.len()).unwrap_or(0) >= BOARD_LOG_FILE_MAX {
-        return Err("ログのファイルが上限に達したため、書いていません".into());
-    }
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let at = board_log_now();
-    let title = board_log_clip(&title, 300);
-    let src = match site_dir { "shitaraba" => "shitaraba", "jpnkn" => "jpnkn", _ => "5ch" };
-    let mut out = String::new();
-    if !jsonl_exists {
-        out.push_str(&serde_json::json!({ "v": 1, "type": "start", "at": at, "title": title, "url": thread_url }).to_string());
-        out.push('\n');
-    }
-    for r in &rows {
-        let mut m = serde_json::Map::new();
-        m.insert("v".into(), 1.into());
-        m.insert("at".into(), at.clone().into());
-        m.insert("src".into(), src.into());
-        let mut put = |k: &str, v: String| {
-            if !v.is_empty() {
-                m.insert(k.into(), v.into());
-            }
-        };
-        put("where", title.clone());
-        put("url", thread_url.clone());
-        put("board", board_log_clip(&board, 200));
-        put("name", board_log_clip(&r.name_text, 300));
-        put("uid", board_log_clip(&r.uid, 200));
-        put("mail", board_log_clip(&r.mail, 300));
-        put("posted", board_log_clip(&r.posted, 200));
-        put("text", board_log_clip(&r.text, 20000));
-        m.insert("no".into(), r.no.into());
-        out.push_str(&serde_json::Value::Object(m).to_string());
-        out.push('\n');
-    }
-    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&jsonl).map_err(|e| e.to_string())?;
-    f.write_all(out.as_bytes()).map_err(|e| e.to_string())?;
-    // dat: 5ch と同じ1行1レスの形 (名前<>メール<>日付 ID<>本文<>スレタイ。スレタイは1行目だけ)
-    let dat_exists = std::fs::metadata(&dat).map(|m| m.len() > 0).unwrap_or(false);
-    let mut dat_text = String::new();
+/// dat の行 (5ch と同じ1行1レスの形: 名前<>メール<>日付 ID<>本文<>スレタイ。スレタイは1行目だけ)
+fn board_log_dat_lines(rows: &[&BoardLogRes], title: &str, title_on_first: bool) -> String {
+    let mut text = String::new();
     for (i, r) in rows.iter().enumerate() {
-        let t = if !dat_exists && i == 0 { board_log_dat_field(&title) } else { String::new() };
-        dat_text.push_str(&format!(
+        let t = if title_on_first && i == 0 { board_log_dat_field(title) } else { String::new() };
+        text.push_str(&format!(
             "{}<>{}<>{}<>{}<>{}\n",
             board_log_dat_field(&r.name),
             board_log_dat_field(&r.mail),
@@ -1591,22 +1550,449 @@ fn board_log_append(thread_url: String, title: String, board: String, responses:
             t
         ));
     }
-    if std::fs::metadata(&dat).map(|m| m.len()).unwrap_or(0) < BOARD_LOG_FILE_MAX {
-        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&dat).map_err(|e| e.to_string())?;
-        f.write_all(&core_fetch::encode_shift_jis(&dat_text)).map_err(|e| e.to_string())?;
+    text
+}
+
+/// dat の行数と JSONL のレスの数を比べる (前の版で片方だけ消えた・書けなかった組を見つける)
+enum DatCheck {
+    /// 合っている、または直したので、このまま書き足す
+    Done,
+    /// 合っていない。スレ全体を渡してもらえれば作り直せる
+    NeedFull,
+    /// 合っていないが、渡されたレスでは足りないので直せない (直す待ち)。足りないレス番号
+    Short(Vec<u32>),
+}
+
+/// 合っていなければ、渡されたスレ全体のレスから dat を作り直す (JSONL にある番号が全部そろうときだけ。JSONL は変えない)
+fn board_log_check_dat(jsonl: &std::path::Path, dat: &std::path::Path, nos: &[u32], responses: &[BoardLogRes], full: bool, title: &str, max: u64) -> Result<DatCheck, String> {
+    let dat_lines = std::fs::read(dat).map(|b| b.iter().filter(|&&c| c == b'\n').count()).unwrap_or(0);
+    if nos.is_empty() || dat_lines == nos.len() {
+        return Ok(DatCheck::Done);
+    }
+    if !full {
+        return Ok(DatCheck::NeedFull);
+    }
+    let by_no: HashMap<u32, &BoardLogRes> = responses.iter().map(|r| (r.no, r)).collect();
+    let missing: Vec<u32> = nos.iter().copied().filter(|n| !by_no.contains_key(n)).collect();
+    if !missing.is_empty() {
+        eprintln!("board log: dat を作り直すためのレスがそろっていません ({} 件足りない: {})", missing.len(), jsonl.display());
+        return Ok(DatCheck::Short(missing));
+    }
+    let rows: Vec<&BoardLogRes> = nos.iter().filter_map(|n| by_no.get(n).copied()).collect();
+    let bytes = core_fetch::encode_shift_jis(&board_log_dat_lines(&rows, title, true));
+    if bytes.len() as u64 > max {
+        // 上限を超えて作り直せない (足りない番号は無いので、画面側からは頼み直さない)
+        return Ok(DatCheck::Short(Vec::new()));
+    }
+    // 別の名前に書いてから置き換える (途中で失敗しても、元の dat は残る)
+    let tmp = dat.with_extension("dat.tmp");
+    if let Err(e) = std::fs::write(&tmp, &bytes).and_then(|_| std::fs::rename(&tmp, dat)) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("dat を作り直せませんでした: {e}"));
+    }
+    Ok(DatCheck::Done)
+}
+
+/// ファイルに書き足す。書けなかったときは書く前の状態に戻す (前から無かったファイルは消す・あったファイルは元の長さに切り詰める)
+fn board_log_append_bytes(path: &std::path::Path, bytes: &[u8], before: Option<u64>) -> Result<(), String> {
+    use std::io::Write;
+    let result = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .and_then(|mut f| f.write_all(bytes).and_then(|_| f.flush()));
+    if let Err(e) = result {
+        board_log_restore(path, before);
+        return Err(e.to_string());
+    }
+    Ok(())
+}
+
+/// 書き足す前の状態に戻す (失敗しても、ほかに手は無いので知らせるだけ)
+fn board_log_restore(path: &std::path::Path, before: Option<u64>) {
+    let r = match before {
+        None => match std::fs::remove_file(path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            other => other,
+        },
+        Some(len) => std::fs::OpenOptions::new().write(true).open(path).and_then(|f| f.set_len(len)),
+    };
+    if let Err(e) = r {
+        eprintln!("board log: 書く前の状態に戻せませんでした: {e}");
+    }
+}
+
+/// JSONL と dat に書き足す。両方とも「今の大きさ + これから書く分」が上限に収まるときだけ書き、
+/// dat を先に書いて、JSONL を書けなかったら dat も書く前に戻す (どちらか片方だけ書いた状態を残さない)
+fn board_log_write_pair(jsonl: &std::path::Path, jsonl_bytes: &[u8], dat: &std::path::Path, dat_bytes: &[u8], max: u64) -> Result<(), String> {
+    let jsonl_before = std::fs::metadata(jsonl).ok().map(|m| m.len());
+    let dat_before = std::fs::metadata(dat).ok().map(|m| m.len());
+    if jsonl_before.unwrap_or(0) + jsonl_bytes.len() as u64 > max || dat_before.unwrap_or(0) + dat_bytes.len() as u64 > max {
+        return Err("ログのファイルが上限 (1ファイル 64MB) を超えるため、書いていません".into());
+    }
+    board_log_append_bytes(dat, dat_bytes, dat_before)?;
+    if let Err(e) = board_log_append_bytes(jsonl, jsonl_bytes, jsonl_before) {
+        board_log_restore(dat, dat_before);
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// JSONL の1行 (1レス)
+fn board_log_jsonl_line(r: &BoardLogRes, at: &str, src: &str, title: &str, thread_url: &str, board: &str) -> String {
+    let mut m = serde_json::Map::new();
+    m.insert("v".into(), 1.into());
+    m.insert("at".into(), at.into());
+    m.insert("src".into(), src.into());
+    let mut put = |k: &str, v: String| {
+        if !v.is_empty() {
+            m.insert(k.into(), v.into());
+        }
+    };
+    put("where", title.to_string());
+    put("url", thread_url.to_string());
+    put("board", board_log_clip(board, 200));
+    put("name", board_log_clip(&r.name_text, 300));
+    put("uid", board_log_clip(&r.uid, 200));
+    put("mail", board_log_clip(&r.mail, 300));
+    put("posted", board_log_clip(&r.posted, 200));
+    put("text", board_log_clip(&r.text, 20000));
+    m.insert("no".into(), r.no.into());
+    serde_json::Value::Object(m).to_string()
+}
+
+/// dat の1行のスレタイの欄 (5つ目の欄) を入れ替える (並べ直したとき、スレタイを1行目だけにするため)
+fn board_log_dat_set_title(line: &[u8], title_field: &[u8]) -> Vec<u8> {
+    let mut seps = 0;
+    let mut i = 0;
+    while i + 1 < line.len() {
+        if line[i] == b'<' && line[i + 1] == b'>' {
+            seps += 1;
+            if seps == 4 {
+                let mut v = line[..i + 2].to_vec();
+                v.extend_from_slice(title_field);
+                return v;
+            }
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    line.to_vec()
+}
+
+/// 書いてあるログに抜けがあり、スレ全体を渡されたとき: JSONL と dat を番号順に作り直す。
+/// 元からある行はそのまま使い (書いた時刻なども変えない)、抜けていたレスと新しいレスだけを作る。
+/// 一時ファイルに書いてから、元の組を「消す予定」の名前に移して置き換える。途中で失敗したら元の組に戻す (何も変えない)
+#[allow(clippy::too_many_arguments)]
+fn board_log_rebuild_in_order(dir: &std::path::Path, key: &str, jsonl: &std::path::Path, dat: &std::path::Path, responses: &[BoardLogRes], have: &HashSet<u32>, thread_url: &str, title: &str, board: &str, site_dir: &str) -> Result<usize, String> {
+    let jsonl_text = std::fs::read_to_string(jsonl).map_err(|e| format!("ログを読めませんでした: {e}"))?;
+    let dat_bytes = std::fs::read(dat).map_err(|e| format!("dat を読めませんでした: {e}"))?;
+    let mut header: Vec<String> = Vec::new();
+    let mut records: Vec<(u32, String)> = Vec::new();
+    for l in jsonl_text.lines().filter(|l| !l.trim().is_empty()) {
+        match serde_json::from_str::<serde_json::Value>(l).ok().and_then(|v| v.get("no").and_then(|n| n.as_u64())) {
+            Some(n) => records.push((n as u32, l.to_string())),
+            None => header.push(l.to_string()),
+        }
+    }
+    let dat_lines: Vec<&[u8]> = dat_bytes.split(|&c| c == b'\n').filter(|l| !l.is_empty()).collect();
+    if dat_lines.len() != records.len() {
+        // dat と JSONL が食い違っている (dat を直す処理に任せる): 並べ直さない
+        return Err("ログの dat と JSONL の件数が合わないため、抜けを補えませんでした".into());
+    }
+    let at = board_log_now();
+    let src = match site_dir { "shitaraba" => "shitaraba", "jpnkn" => "jpnkn", _ => "5ch" };
+    let mut merged: Vec<(u32, String, Vec<u8>)> = records.into_iter().zip(dat_lines).map(|((n, j), d)| (n, j, d.to_vec())).collect();
+    let mut added = 0;
+    let mut seen: HashSet<u32> = have.clone();
+    for r in responses.iter().filter(|r| r.no <= 100_000) {
+        if seen.insert(r.no) {
+            let d = core_fetch::encode_shift_jis(&board_log_dat_lines(&[r], title, false));
+            let d = d.strip_suffix(b"\n").unwrap_or(&d).to_vec();
+            merged.push((r.no, board_log_jsonl_line(r, &at, src, title, thread_url, board), d));
+            added += 1;
+        }
+    }
+    merged.sort_by_key(|(n, _, _)| *n);
+    let title_field = core_fetch::encode_shift_jis(&board_log_dat_field(title));
+    let mut new_jsonl = String::new();
+    for h in &header {
+        new_jsonl.push_str(h);
+        new_jsonl.push('\n');
+    }
+    let mut new_dat: Vec<u8> = Vec::new();
+    for (i, (_, j, d)) in merged.iter().enumerate() {
+        new_jsonl.push_str(j);
+        new_jsonl.push('\n');
+        new_dat.extend_from_slice(&board_log_dat_set_title(d, if i == 0 { &title_field } else { b"" }));
+        new_dat.push(b'\n');
+    }
+    if new_jsonl.len() as u64 > BOARD_LOG_FILE_MAX || new_dat.len() as u64 > BOARD_LOG_FILE_MAX {
+        return Err("ログのファイルが上限 (1ファイル 64MB) を超えるため、抜けを補えませんでした".into());
+    }
+    let jsonl_tmp = dir.join(format!("{key}.jsonl.tmp"));
+    let dat_tmp = dir.join(format!("{key}.dat.tmp"));
+    // 元の組は <番号>.jsonl.prev / <番号>.dat.prev に移す (途中で止まっても、次の起動の削除の前に戻せるように。
+    // 削除の処理が片付ける名前 (.jsonl.del など) にはしない)
+    let jsonl_old = dir.join(format!("{key}.jsonl.prev"));
+    let dat_old = dir.join(format!("{key}.dat.prev"));
+    let cleanup_tmp = || {
+        let _ = std::fs::remove_file(&jsonl_tmp);
+        let _ = std::fs::remove_file(&dat_tmp);
+    };
+    let done = dir.join(format!("{key}.rebuilt"));
+    if done.exists() {
+        if let Err(e) = std::fs::remove_file(&done) {
+            return Err(format!("前回の作り直しで残った目印のファイル ({key}.rebuilt) を消せなかったため、番号順の作り直しをやめました: {e}"));
+        }
+    }
+    if let Err(e) = std::fs::write(&jsonl_tmp, new_jsonl.as_bytes()).and_then(|_| std::fs::write(&dat_tmp, &new_dat)) {
+        cleanup_tmp();
+        return Err(format!("抜けを補うログを書けませんでした: {e}"));
+    }
+    // 元の組を「消す予定」の名前に移す (使用中なら移せないので、何も変えずにやめる)
+    if let Err(e) = std::fs::rename(dat, &dat_old) {
+        cleanup_tmp();
+        return Err(format!("ログを置き換えられませんでした: {e}"));
+    }
+    if let Err(e) = std::fs::rename(jsonl, &jsonl_old) {
+        let _ = std::fs::rename(&dat_old, dat);
+        cleanup_tmp();
+        return Err(format!("ログを置き換えられませんでした: {e}"));
+    }
+    let placed = std::fs::rename(&dat_tmp, dat).and_then(|_| std::fs::rename(&jsonl_tmp, jsonl));
+    if let Err(e) = placed {
+        // 途中まで置いたものを外し、元の組に戻す
+        let _ = std::fs::remove_file(dat);
+        let _ = std::fs::remove_file(jsonl);
+        let back = std::fs::rename(&dat_old, dat).and_then(|_| std::fs::rename(&jsonl_old, jsonl));
+        if let Err(e2) = back {
+            eprintln!("board log: 元のログに戻せませんでした (別名で残っています): {e2}");
+        }
+        cleanup_tmp();
+        return Err(format!("ログを置き換えられませんでした: {e}"));
+    }
+    // 置き終えた印を書いてから、元の組を消す (消し残しても、次に書き足す・整理するときに、印を見て消し直せるように)
+    board_log_finish_rebuild(dir, key);
+    Ok(added)
+}
+
+/// 番号順の作り直しで、新しい組を置き終えたあとの片付け: 「置き終えた」印 (<番号>.rebuilt) を書いてから、元の組を消す。
+/// 両方消せたら印も消す。印を書けなければ元の組は消さない (4つのファイルがそろった状態は「置き終えた」と分かる)
+fn board_log_finish_rebuild(dir: &std::path::Path, key: &str) {
+    let done = dir.join(format!("{key}.rebuilt"));
+    let jprev = dir.join(format!("{key}.jsonl.prev"));
+    let dprev = dir.join(format!("{key}.dat.prev"));
+    if !done.exists() {
+        if let Err(e) = std::fs::write(&done, b"") {
+            eprintln!("board log: 置き終えた印を書けませんでした (元の組は次に片付けます): {e}");
+            return;
+        }
+    }
+    let _ = std::fs::remove_file(&dprev);
+    let _ = std::fs::remove_file(&jprev);
+    if !jprev.exists() && !dprev.exists() {
+        let _ = std::fs::remove_file(&done);
+    }
+}
+
+/// 番号順の作り直しが途中で止まっていたら、完全な組に戻す (元の組か、置き終えた新しい組のどちらか)。
+/// 書き足し・削除と同じ鍵を持っているときに呼ぶ。途中の一時ファイルも片付ける。
+/// 戻せなかったとき (使用中など) はエラー: 呼んだ側は、そのスレのログに書き足さず、整理でも触らない
+/// (戻さずに書き足すと、新しい組と取り違えて元の組を消してしまうため)
+fn board_log_recover(dir: &std::path::Path, key: &str) -> Result<(), String> {
+    let jsonl = dir.join(format!("{key}.jsonl"));
+    let dat = dir.join(format!("{key}.dat"));
+    let jprev = dir.join(format!("{key}.jsonl.prev"));
+    let dprev = dir.join(format!("{key}.dat.prev"));
+    let held = |e: std::io::Error| format!("ログ ({key}) の作り直しの途中から戻せませんでした (使用中など)。戻せるまで、このスレのログへの書き足しを止めています: {e}");
+    let done = dir.join(format!("{key}.rebuilt"));
+    // 元の組は「dat → JSONL」の順に移すので、JSONL と dat がどちらもあるのに元の組の名残があるのは、新しい組を置き終えたあとだけ
+    // (前の版の片付けで、古い dat だけ消し残した状態も含む)
+    if done.exists() || (jsonl.exists() && dat.exists() && (jprev.exists() || dprev.exists())) {
+        // 新しい組を両方置き終えたあと (元の組を消し終える前) に止まった: 新しい組のまま、元の組の名残を消す。
+        // 消せなかった分 (使用中など) は、印を残して次の回に消し直す (新しい組はそろっているので、書き足しは続ける)
+        board_log_finish_rebuild(dir, key);
+    } else if jprev.exists() || dprev.exists() {
+        // 置き終える前に止まった: 元の組に戻す。置きかけの新しい dat を外すのは、元の JSONL も移したあと (= 新しい dat を置いた段階) だけ
+        if dprev.exists() {
+            if dat.exists() {
+                if !jprev.exists() {
+                    return Err(format!("ログ ({key}) の作り直しの途中の状態が分かりません。このスレのログへの書き足しを止めています"));
+                }
+                std::fs::remove_file(&dat).map_err(held)?;
+            }
+            std::fs::rename(&dprev, &dat).map_err(held)?;
+        }
+        if jprev.exists() && !jsonl.exists() {
+            std::fs::rename(&jprev, &jsonl).map_err(held)?;
+        }
+        if jprev.exists() || dprev.exists() {
+            return Err(format!("ログ ({key}) の作り直しの途中から戻せませんでした。このスレのログへの書き足しを止めています"));
+        }
+    }
+    let _ = std::fs::remove_file(dir.join(format!("{key}.jsonl.tmp")));
+    let _ = std::fs::remove_file(dir.join(format!("{key}.dat.tmp")));
+    Ok(())
+}
+
+/// スレのレスをログに書き足す (書いていないレス番号のものだけ)。
+/// 新しくファイルを作るときに、渡されたレスが最初からでなければ書かずに need_full を返す (full = true なら、そのまま書く)
+#[tauri::command(async)]
+fn board_log_append(thread_url: String, title: String, board: String, responses: Vec<BoardLogRes>, full: Option<bool>) -> Result<BoardLogAppendResult, String> {
+    board_log_append_in(&board_log_dir_path()?, thread_url, title, board, responses, full)
+}
+
+/// board_log_append の中身 (logs のフォルダを受け取る。テストでは一時フォルダを渡す)
+fn board_log_append_in(base: &std::path::Path, thread_url: String, title: String, board: String, responses: Vec<BoardLogRes>, full: Option<bool>) -> Result<BoardLogAppendResult, String> {
+    let Some((site_dir, board_dir, key)) = board_log_location(&thread_url) else {
+        return Err("ログを残せるスレの URL ではありません".into());
+    };
+    let dir = base.join(site_dir).join(&board_dir);
+    let jsonl = dir.join(format!("{key}.jsonl"));
+    let dat = dir.join(format!("{key}.dat"));
+    let mut guard = BOARD_LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let state = guard.get_or_insert_with(BoardLogState::default);
+    board_log_recover(&dir, &key)?;
+    let jsonl_exists = jsonl.is_file();
+    let title = board_log_clip(&title, 300);
+    // この起動で初めて触るログ (と、直す待ちのログにスレ全体を渡されたとき): 書いてあるレス番号を読み、dat の行数と合うかを確かめる。
+    // 読めなかったら何も覚えずにエラーにする (次の回に読み直す)
+    let retry_pending = full.unwrap_or(false) && state.dat_pending.contains_key(&jsonl);
+    if jsonl_exists && (!state.dat_checked.contains(&jsonl) || retry_pending) {
+        let nos = board_log_jsonl_nos(&jsonl)?;
+        // 直す待ちのログは、この起動の間はスレ全体を頼み直さない (毎回スレ全体を送らせないため)
+        let full_now = full.unwrap_or(false);
+        match board_log_check_dat(&jsonl, &dat, &nos, &responses, full_now, &title, BOARD_LOG_FILE_MAX)? {
+            DatCheck::NeedFull if !state.dat_pending.contains_key(&jsonl) => {
+                return Ok(BoardLogAppendResult { written: 0, need_full: true, repair_missing: Vec::new() });
+            }
+            DatCheck::NeedFull => {}
+            DatCheck::Short(missing) => { state.dat_pending.insert(jsonl.clone(), missing); }
+            DatCheck::Done => { state.dat_pending.remove(&jsonl); }
+        }
+        state.last.insert(jsonl.clone(), nos.last().copied().unwrap_or(0));
+        state.dat_checked.insert(jsonl.clone());
+    }
+    let last = if jsonl_exists {
+        match state.last.get(&jsonl) {
+            Some(n) => *n,
+            None => {
+                let n = board_log_jsonl_nos(&jsonl)?.last().copied().unwrap_or(0);
+                state.last.insert(jsonl.clone(), n);
+                n
+            }
+        }
+    } else {
+        0
+    };
+    // スレ全体を渡されたとき: 書いてある番号と照らし合わせ、抜け (あとで取れた古いレス) があれば、2つのファイルを番号順に作り直す
+    if jsonl_exists && full.unwrap_or(false) && !state.dat_pending.contains_key(&jsonl) {
+        let nos = board_log_jsonl_nos(&jsonl)?;
+        let have: HashSet<u32> = nos.iter().copied().collect();
+        if responses.iter().any(|r| r.no < last && r.no <= 100_000 && !have.contains(&r.no)) {
+            let added = board_log_rebuild_in_order(&dir, &key, &jsonl, &dat, &responses, &have, &thread_url, &title, &board, site_dir)?;
+            let max_no = responses.iter().map(|r| r.no).filter(|n| *n <= 100_000).max().unwrap_or(last).max(last);
+            state.last.insert(jsonl.clone(), max_no);
+            state.dat_checked.insert(jsonl.clone());
+            return Ok(BoardLogAppendResult { written: added, need_full: false, repair_missing: Vec::new() });
+        }
+    }
+    let mut rows: Vec<&BoardLogRes> = responses.iter().filter(|r| r.no > last && r.no <= 100_000).collect();
+    rows.sort_by_key(|r| r.no);
+    rows.dedup_by_key(|r| r.no);
+    // 直す待ちのログなら、足りないレス番号を毎回返す (画面側が、そろったときに一度だけスレ全体を渡せるように)
+    let missing_of = |st: &BoardLogState| -> Vec<u32> { st.dat_pending.get(&jsonl).map(|m| m.iter().copied().take(2000).collect()).unwrap_or_default() };
+    if rows.is_empty() {
+        return Ok(BoardLogAppendResult { written: 0, need_full: false, repair_missing: missing_of(state) });
+    }
+    if !jsonl_exists && !full.unwrap_or(false) && rows.first().map(|r| r.no > 1).unwrap_or(false) {
+        return Ok(BoardLogAppendResult { written: 0, need_full: true, repair_missing: Vec::new() });
+    }
+    let at = board_log_now();
+    let src = match site_dir { "shitaraba" => "shitaraba", "jpnkn" => "jpnkn", _ => "5ch" };
+    let mut out = String::new();
+    if !jsonl_exists {
+        out.push_str(&serde_json::json!({ "v": 1, "type": "start", "at": at, "title": title, "url": thread_url }).to_string());
+        out.push('\n');
+    }
+    for r in &rows {
+        out.push_str(&board_log_jsonl_line(r, &at, src, &title, &thread_url, &board));
+        out.push('\n');
+    }
+    // JSONL が無いのに dat が残っているとき (前の版・削除の途中で止まった): 残っていた dat は消さずに別名
+    // (<スレ番号>.<日時>.dat.bak) へ移してから新しく作る。作るのに失敗したら元の名前に戻す。
+    // 渡されたレスで元の行を全部作り直せたときだけ別名のほうを消し、足りなければ過去の分として残す (日数・容量の削除の対象)
+    let mut backup: Option<std::path::PathBuf> = None;
+    if !jsonl_exists && dat.is_file() {
+        let bak = dir.join(format!("{key}.{}.dat.bak", chrono::Local::now().format("%Y%m%d%H%M%S%3f")));
+        std::fs::rename(&dat, &bak).map_err(|e| format!("前の dat を別名にできませんでした: {e}"))?;
+        backup = Some(bak);
+        state.dat_pending.remove(&jsonl);
+    }
+    let dat_exists = std::fs::metadata(&dat).map(|m| m.len() > 0).unwrap_or(false);
+    let dat_text = board_log_dat_lines(&rows, &title, !dat_exists);
+    // JSONL と dat は「両方書けた」か「どちらも書いていない」かのどちらかにする (片方だけだと、次の回に重複・欠落する)
+    let written = std::fs::create_dir_all(&dir)
+        .map_err(|e| e.to_string())
+        .and_then(|_| board_log_write_pair(&jsonl, out.as_bytes(), &dat, &core_fetch::encode_shift_jis(&dat_text), BOARD_LOG_FILE_MAX));
+    if let Err(e) = written {
+        if let Some(bak) = &backup {
+            if let Err(e2) = std::fs::rename(bak, &dat) {
+                eprintln!("board log: 別名にした dat を戻せませんでした: {e2}");
+            }
+        }
+        return Err(e);
+    }
+    // 別名のほうを消すのは、元の dat の各行が新しい dat にそのまま入っているときだけ (行数や番号の数では判断しない。
+    // 欠番のある dat だと、同じ行数でも別のレスになるため)。そうでなければ、日数・容量の決まりで消えるまで残す
+    if let Some(bak) = backup {
+        let old = std::fs::read(&bak).unwrap_or_default();
+        let new = std::fs::read(&dat).unwrap_or_default();
+        // 同じ行が複数あるとき (同じ中身の投稿) も取りこぼさないよう、行ごとの数まで照らし合わせる
+        let mut counts: HashMap<&[u8], i64> = HashMap::new();
+        for l in new.split(|&c| c == b'\n').filter(|l| !l.is_empty()) {
+            *counts.entry(l).or_insert(0) += 1;
+        }
+        let mut covered = !old.is_empty();
+        for l in old.split(|&c| c == b'\n').filter(|l| !l.is_empty()) {
+            let c = counts.entry(l).or_insert(0);
+            *c -= 1;
+            if *c < 0 {
+                covered = false;
+            }
+        }
+        if covered {
+            let _ = std::fs::remove_file(&bak);
+        }
+    }
+    if !jsonl_exists {
+        // 削除の途中で止まった「消す予定」の JSONL (消せなくても、日数・容量の削除のときに片付ける)
+        let _ = std::fs::remove_file(jsonl.with_extension("jsonl.del"));
     }
     let max_no = rows.last().map(|r| r.no).unwrap_or(last);
-    last_map.insert(jsonl.clone(), max_no.max(last));
-    Ok(BoardLogAppendResult { written: rows.len(), need_full: false })
+    state.last.insert(jsonl.clone(), max_no.max(last));
+    // 新しく作ったログは、作った時点で dat と合っている
+    state.dat_checked.insert(jsonl.clone());
+    Ok(BoardLogAppendResult { written: rows.len(), need_full: false, repair_missing: missing_of(state) })
 }
 
 /// 日数・容量を過ぎたログを消す (最後に書いた時刻が古いスレから)。days・max_mb が 0 なら、その決まりは使わない。
 /// 消すのは logs の下の 5ch・shitaraba・jpnkn の板のフォルダの中の .jsonl・.dat だけ (ほかのファイル・フォルダには触らない)
 #[tauri::command(async)]
 fn board_log_prune(days: u32, max_mb: u32) -> Result<usize, String> {
-    let base = board_log_dir_path()?;
+    board_log_prune_in(&board_log_dir_path()?, days, max_mb)
+}
+
+/// board_log_prune の中身 (logs のフォルダを受け取る。テストでは一時フォルダを渡す)
+fn board_log_prune_in(base: &std::path::Path, days: u32, max_mb: u32) -> Result<usize, String> {
+    let base = base.to_path_buf();
+    // 調べ始めてから消し終わるまで、書き足しと同じ鍵を持つ (調べたあとに書き足したスレを、古い時刻のまま消さないように)
+    let mut guard = BOARD_LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // スレごと (板のフォルダ + スレ番号) に、ファイルと最後に書いた時刻と大きさをまとめる
-    struct Item { files: Vec<std::path::PathBuf>, modified: std::time::SystemTime, size: u64 }
+    #[derive(Default)]
+    struct Item { jsonl: Option<std::path::PathBuf>, dat: Option<std::path::PathBuf>, modified: Option<std::time::SystemTime>, size: u64 }
     let mut items: HashMap<std::path::PathBuf, Item> = HashMap::new();
     for site in ["5ch", "shitaraba", "jpnkn"] {
         let Ok(boards) = std::fs::read_dir(base.join(site)) else { continue };
@@ -1614,23 +2000,67 @@ fn board_log_prune(days: u32, max_mb: u32) -> Result<usize, String> {
             if !b.file_type().map(|t| t.is_dir()).unwrap_or(false) || !board_log_name_ok(&b.file_name().to_string_lossy(), 80) {
                 continue;
             }
+            // 番号順の作り直しが途中で止まっていたら、片付ける前に完全な組に戻す (戻さずに片付けると JSONL を失う)。
+            // 戻せなかったスレのファイルには、この回は触らない
+            let mut held: HashSet<String> = HashSet::new();
+            if let Ok(pre) = std::fs::read_dir(b.path()) {
+                let keys: HashSet<String> = pre
+                    .flatten()
+                    .filter_map(|f| {
+                        let n = f.file_name().to_string_lossy().into_owned();
+                        n.strip_suffix(".jsonl.prev").or_else(|| n.strip_suffix(".dat.prev")).or_else(|| n.strip_suffix(".rebuilt")).filter(|k| !k.is_empty() && k.len() <= 20 && k.bytes().all(|c| c.is_ascii_digit())).map(str::to_string)
+                    })
+                    .collect();
+                for k in keys {
+                    if let Err(e) = board_log_recover(&b.path(), &k) {
+                        eprintln!("board log: {e}");
+                        held.insert(k);
+                    }
+                }
+            }
             let Ok(files) = std::fs::read_dir(b.path()) else { continue };
             for f in files.flatten() {
                 if !f.file_type().map(|t| t.is_file()).unwrap_or(false) {
                     continue;
                 }
                 let name = f.file_name().to_string_lossy().into_owned();
+                if name.split('.').next().map(|k| held.contains(k)).unwrap_or(false) {
+                    continue;
+                }
+                let digits = |t: &str| !t.is_empty() && t.len() <= 20 && t.bytes().all(|c| c.is_ascii_digit());
+                // 前の削除で消し残った「消す予定」のファイル (<番号>.jsonl.del) と、dat を作り直す途中の一時ファイル
+                // (<番号>.dat.tmp) は片付ける (書き足しと同じ鍵を持っているので、作り直しの途中ではない)
+                if let Some(stem) = name.strip_suffix(".jsonl.del").or_else(|| name.strip_suffix(".dat.tmp")).or_else(|| name.strip_suffix(".jsonl.tmp")) {
+                    if digits(stem) {
+                        let _ = std::fs::remove_file(f.path());
+                    }
+                    continue;
+                }
+                // 作り直す前の dat を別名で残したもの (<番号>.<日時>.dat.bak): 1つずつ、日数・容量の決まりで消す
+                if let Some(stem) = name.strip_suffix(".dat.bak") {
+                    if let Some((a, b2)) = stem.split_once('.') {
+                        if digits(a) && digits(b2) {
+                            if let Ok(meta) = f.metadata() {
+                                let item = items.entry(f.path()).or_default();
+                                item.dat = Some(f.path());
+                                item.size += meta.len();
+                                item.modified = Some(meta.modified().unwrap_or(std::time::UNIX_EPOCH));
+                            }
+                        }
+                    }
+                    continue;
+                }
                 let Some((stem, ext)) = name.rsplit_once('.') else { continue };
                 if !(ext == "jsonl" || ext == "dat") || stem.is_empty() || stem.len() > 20 || !stem.bytes().all(|c| c.is_ascii_digit()) {
                     continue;
                 }
                 let Ok(meta) = f.metadata() else { continue };
                 let modified = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
-                let item = items.entry(b.path().join(stem)).or_insert(Item { files: Vec::new(), modified, size: 0 });
-                item.files.push(f.path());
+                let item = items.entry(b.path().join(stem)).or_default();
+                if ext == "jsonl" { item.jsonl = Some(f.path()); } else { item.dat = Some(f.path()); }
                 item.size += meta.len();
-                if modified > item.modified {
-                    item.modified = modified;
+                if item.modified.map(|m| modified > m).unwrap_or(true) {
+                    item.modified = Some(modified);
                 }
             }
         }
@@ -1640,29 +2070,60 @@ fn board_log_prune(days: u32, max_mb: u32) -> Result<usize, String> {
     let now = std::time::SystemTime::now();
     let mut total: u64 = list.iter().map(|i| i.size).sum();
     let max = (max_mb as u64) * 1024 * 1024;
-    let _guard = BOARD_LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut removed = 0;
     for item in &list {
-        let too_old = days > 0 && now.duration_since(item.modified).map(|d| d.as_secs() > days as u64 * 86400).unwrap_or(false);
+        let modified = item.modified.unwrap_or(std::time::UNIX_EPOCH);
+        let too_old = days > 0 && now.duration_since(modified).map(|d| d.as_secs() > days as u64 * 86400).unwrap_or(false);
         let too_big = max > 0 && total > max;
         if !(too_old || too_big) {
             continue;
         }
-        for f in &item.files {
-            if std::fs::remove_file(f).is_ok() {
-                removed += 1;
-            }
+        // JSONL と dat は組で消す (片方でも消せなければ、両方残して次の機会にやり直す)
+        if board_log_remove_pair(item.jsonl.as_deref(), item.dat.as_deref()) {
+            removed += item.jsonl.iter().count() + item.dat.iter().count();
+            total = total.saturating_sub(item.size);
         }
-        total = total.saturating_sub(item.size);
     }
-    drop(_guard);
-    // 書き足し用に覚えている最後のレス番号は、消したファイルの分を忘れる
+    // 覚えている最後のレス番号・確かめ済みの印は、消したファイルの分を忘れる
     if removed > 0 {
-        if let Some(map) = BOARD_LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
-            map.retain(|p, _| p.is_file());
+        if let Some(state) = guard.as_mut() {
+            state.last.retain(|p, _| p.is_file());
+            state.dat_checked.retain(|p| p.is_file());
         }
     }
     Ok(removed)
+}
+
+/// スレのログ (JSONL と dat) を組で消す。片方でも消せなければ両方残して false を返す (片方だけ消えた状態を残さない)。
+/// JSONL を先に「消す予定」の名前に変え (使用中なら変えられない)、dat を消せたら JSONL も消す。dat を消せなければ名前を戻す
+fn board_log_remove_pair(jsonl: Option<&std::path::Path>, dat: Option<&std::path::Path>) -> bool {
+    let pending = match jsonl {
+        Some(j) => {
+            let del = j.with_extension("jsonl.del");
+            if std::fs::rename(j, &del).is_err() {
+                return false;
+            }
+            Some((j, del))
+        }
+        None => None,
+    };
+    if let Some(d) = dat {
+        if let Err(e) = std::fs::remove_file(d) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                if let Some((j, del)) = &pending {
+                    if let Err(e) = std::fs::rename(del, j) {
+                        eprintln!("board log: 消す予定にしたログを戻せませんでした: {e}");
+                    }
+                }
+                return false;
+            }
+        }
+    }
+    if let Some((_, del)) = pending {
+        // 消せなくても、次の削除のときに片付ける
+        let _ = std::fs::remove_file(&del);
+    }
+    true
 }
 
 /// 掲示板のログのフォルダ (無ければ作る) をエクスプローラーで開く
@@ -1695,6 +2156,589 @@ mod board_log_tests {
         let sj = core_fetch::encode_shift_jis("テスト😀");
         assert_eq!(core_fetch::decode_shift_jis(&sj), "テスト&#128512;");
     }
+
+    fn test_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("livefake_board_log_test_{}_{}", name, std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("test dir");
+        dir
+    }
+
+    fn len(p: &std::path::Path) -> Option<u64> {
+        std::fs::metadata(p).ok().map(|m| m.len())
+    }
+
+    #[test]
+    fn write_pair_writes_both() {
+        let dir = test_dir("both");
+        let (j, d) = (dir.join("1.jsonl"), dir.join("1.dat"));
+        board_log_write_pair(&j, b"{\"no\":1}\n", &d, b"a<>b<>c<>d<>t\n", 1024).expect("write");
+        board_log_write_pair(&j, b"{\"no\":2}\n", &d, b"a<>b<>c<>e<>\n", 1024).expect("write");
+        assert_eq!(std::fs::read_to_string(&j).expect("jsonl"), "{\"no\":1}\n{\"no\":2}\n");
+        assert_eq!(std::fs::read_to_string(&d).expect("dat").lines().count(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_pair_over_limit_writes_neither() {
+        let dir = test_dir("limit");
+        let (j, d) = (dir.join("1.jsonl"), dir.join("1.dat"));
+        board_log_write_pair(&j, b"0123456789", &d, b"0123456789", 20).expect("first");
+        // dat だけが上限を超える: どちらも書かない
+        assert!(board_log_write_pair(&j, b"x", &d, b"0123456789AB", 20).is_err());
+        assert_eq!((len(&j), len(&d)), (Some(10), Some(10)));
+        // JSONL だけが上限を超える: どちらも書かない
+        assert!(board_log_write_pair(&j, b"0123456789AB", &d, b"x", 20).is_err());
+        assert_eq!((len(&j), len(&d)), (Some(10), Some(10)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    // テストで読み取り専用にしたファイルを元に戻すため (Unix で誰でも書けるようになる、という注意はこのテストには当たらない)
+    #[allow(clippy::permissions_set_readonly_false)]
+    fn write_pair_rolls_back_dat_when_jsonl_fails() {
+        let dir = test_dir("rollback");
+        let (j, d) = (dir.join("1.jsonl"), dir.join("1.dat"));
+        board_log_write_pair(&j, b"{\"no\":1}\n", &d, b"line1\n", 1024).expect("first");
+        // JSONL を書けなくする (読み取り専用): dat も書く前の長さに戻る
+        let mut perm = std::fs::metadata(&j).expect("meta").permissions();
+        perm.set_readonly(true);
+        std::fs::set_permissions(&j, perm.clone()).expect("readonly");
+        assert!(board_log_write_pair(&j, b"{\"no\":2}\n", &d, b"line2\n", 1024).is_err());
+        assert_eq!(std::fs::read_to_string(&d).expect("dat"), "line1\n");
+        assert_eq!(std::fs::read_to_string(&j).expect("jsonl"), "{\"no\":1}\n");
+        perm.set_readonly(false);
+        std::fs::set_permissions(&j, perm).expect("writable");
+        // 書けるようになれば、同じ分を二重にせずに書ける
+        board_log_write_pair(&j, b"{\"no\":2}\n", &d, b"line2\n", 1024).expect("retry");
+        assert_eq!(std::fs::read_to_string(&j).expect("jsonl"), "{\"no\":1}\n{\"no\":2}\n");
+        assert_eq!(std::fs::read_to_string(&d).expect("dat"), "line1\nline2\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn remove_pair_removes_both() {
+        let dir = test_dir("rm_both");
+        let (j, d) = (dir.join("1.jsonl"), dir.join("1.dat"));
+        std::fs::write(&j, "a").expect("jsonl");
+        std::fs::write(&d, "b").expect("dat");
+        assert!(board_log_remove_pair(Some(&j), Some(&d)));
+        assert!(!j.exists() && !d.exists() && !dir.join("1.jsonl.del").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn remove_pair_keeps_both_when_dat_cannot_be_removed() {
+        let dir = test_dir("rm_keep");
+        let (j, d) = (dir.join("1.jsonl"), dir.join("1.dat"));
+        std::fs::write(&j, "a").expect("jsonl");
+        // dat を消せない (同じ名前のフォルダがあって中身もある): JSONL も元の名前のまま残る
+        std::fs::create_dir_all(d.join("x")).expect("dir in the way");
+        assert!(!board_log_remove_pair(Some(&j), Some(&d)));
+        assert_eq!(std::fs::read_to_string(&j).expect("jsonl kept"), "a");
+        assert!(!dir.join("1.jsonl.del").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn res(no: u32) -> BoardLogRes {
+        BoardLogRes {
+            no,
+            name: format!("n{no}"),
+            mail: String::new(),
+            date_and_id: "2026/11/16 ID:abc".into(),
+            body: format!("b{no}"),
+            name_text: format!("n{no}"),
+            uid: "abc".into(),
+            posted: "2026/11/16".into(),
+            text: format!("b{no}"),
+        }
+    }
+
+    #[test]
+    fn check_dat_rebuilds_mismatched_dat_from_full_rows() {
+        let dir = test_dir("check_dat");
+        let (j, d) = (dir.join("1.jsonl"), dir.join("1.dat"));
+        std::fs::write(&j, "{\"type\":\"start\"}\n{\"no\":1}\n{\"no\":2}\n{\"no\":3}\n").expect("jsonl");
+        std::fs::write(&d, "only3<><><>b3<>\n").expect("dat");
+        let nos = board_log_jsonl_nos(&j).expect("nos");
+        assert_eq!(nos, vec![1, 2, 3]);
+        // 行数が合わない: 途中のレスしか無いときは、スレ全体を頼む
+        assert!(matches!(board_log_check_dat(&j, &d, &nos, &[res(4)], false, "t", 1 << 20).expect("check"), DatCheck::NeedFull));
+        // スレ全体があれば、JSONL の番号の分で dat を作り直す (JSONL は変えない)
+        let all = vec![res(1), res(2), res(3), res(4)];
+        assert!(matches!(board_log_check_dat(&j, &d, &nos, &all, true, "t", 1 << 20).expect("check"), DatCheck::Done));
+        let text = std::fs::read_to_string(&d).expect("dat");
+        assert_eq!(text.lines().count(), 3);
+        assert!(text.starts_with("n1<><>2026/11/16 ID:abc<>b1<>t\n") && text.ends_with("b3<>\n"));
+        assert!(!dir.join("1.dat.tmp").exists());
+        // 足りないレスがあれば作り直さない (直す待ち。そのまま書き足しに進む)
+        std::fs::write(&d, "x<><><>y<>\n").expect("dat");
+        assert!(matches!(board_log_check_dat(&j, &d, &nos, &[res(1), res(3)], true, "t", 1 << 20).expect("check"), DatCheck::Short(ref m) if m == &vec![2]));
+        assert_eq!(std::fs::read_to_string(&d).expect("dat"), "x<><><>y<>\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn jsonl_nos_errors_when_unreadable() {
+        let dir = test_dir("nos_err");
+        // 読めない (ファイルの場所にフォルダがある): 0件ではなくエラー
+        std::fs::create_dir_all(dir.join("1.jsonl")).expect("dir");
+        assert!(board_log_jsonl_nos(&dir.join("1.jsonl")).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    const URL: &str = "https://mao.5ch.io/test/read.cgi/ngt/9240230711/";
+
+    fn append(base: &std::path::Path, rows: &[u32], full: bool) -> Result<BoardLogAppendResult, String> {
+        board_log_append_in(base, URL.into(), "t".into(), "ngt".into(), rows.iter().map(|n| res(*n)).collect(), Some(full))
+    }
+
+    fn files(base: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+        let d = base.join("5ch").join("ngt");
+        (d.join("9240230711.jsonl"), d.join("9240230711.dat"))
+    }
+
+    fn jsonl_nos_of(p: &std::path::Path) -> Vec<u32> {
+        std::fs::read_to_string(p).expect("jsonl").lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter_map(|v| v.get("no").and_then(|n| n.as_u64()).map(|n| n as u32))
+            .collect()
+    }
+
+    fn dat_lines_of(p: &std::path::Path) -> usize {
+        std::fs::read(p).expect("dat").iter().filter(|&&c| c == b'\n').count()
+    }
+
+    #[test]
+    fn append_after_read_error_does_not_duplicate() {
+        let base = test_dir("append_readerr");
+        let (j, d) = files(&base);
+        assert_eq!(append(&base, &[1, 2], true).expect("first").written, 2);
+        // 別の起動のつもりで覚えた番号を忘れさせ、JSONL を読めなくする (読み取り専用ではなく、名前を変えて無くす代わりにフォルダにする)
+        if let Some(st) = BOARD_LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner()).as_mut() { st.last.remove(&j); st.dat_checked.remove(&j); }
+        let saved = std::fs::read(&j).expect("save");
+        std::fs::remove_file(&j).expect("rm");
+        std::fs::create_dir_all(&j).expect("dir in the way");
+        assert!(append(&base, &[1, 2, 3], true).is_err());
+        // 読めるようになったら、重複せずに 3 だけ足す
+        std::fs::remove_dir_all(&j).expect("rmdir");
+        std::fs::write(&j, saved).expect("restore");
+        append(&base, &[1, 2, 3], true).expect("retry");
+        assert_eq!(jsonl_nos_of(&j), vec![1, 2, 3]);
+        assert_eq!(dat_lines_of(&d), 3);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn append_replaces_leftover_dat_when_jsonl_is_missing() {
+        let base = test_dir("append_datonly");
+        let (j, d) = files(&base);
+        std::fs::create_dir_all(d.parent().expect("parent")).expect("dir");
+        // dat だけが残っている (前の版・削除の途中で止まった): 足さずに作り直す
+        std::fs::write(&d, "old1<><><>x<>t\nold2<><><>y<>\n").expect("dat");
+        std::fs::write(j.with_extension("jsonl.del"), "{}\n").expect("del");
+        append(&base, &[1, 2, 3], true).expect("write");
+        assert_eq!(jsonl_nos_of(&j), vec![1, 2, 3]);
+        assert_eq!(dat_lines_of(&d), 3);
+        assert!(!j.with_extension("jsonl.del").exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn append_repairs_dat_later_when_rows_become_available() {
+        let base = test_dir("append_pending");
+        let (j, d) = files(&base);
+        append(&base, &[1, 2, 3], true).expect("first");
+        // 別の起動のつもり: dat が1行に減っている
+        std::fs::write(&d, "n1<><><>b1<>t\n").expect("dat");
+        if let Some(st) = BOARD_LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner()).as_mut() { st.last.remove(&j); st.dat_checked.remove(&j); st.dat_pending.remove(&j); }
+        // 新しいレスだけ: スレ全体を頼む
+        assert!(append(&base, &[4], false).expect("need full").need_full);
+        // スレ全体を渡されたが、2 が無い: 直す待ちにして、書き足しは続ける (スレ全体を頼み直さない)
+        let r = append(&base, &[1, 3, 4], true).expect("short");
+        assert!(!r.need_full && r.written == 1);
+        assert!(!append(&base, &[5], false).expect("append").need_full);
+        assert_eq!(jsonl_nos_of(&j), vec![1, 2, 3, 4, 5]);
+        // あとでレスが全部そろって渡されたら、dat を JSONL に合わせて作り直す
+        append(&base, &[1, 2, 3, 4, 5], true).expect("repair");
+        assert_eq!(dat_lines_of(&d), 5);
+        assert_eq!(jsonl_nos_of(&j), vec![1, 2, 3, 4, 5]);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    fn bak_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let mut v: Vec<_> = std::fs::read_dir(dir).expect("dir").flatten().map(|e| e.path())
+            .filter(|p| p.to_string_lossy().ends_with(".dat.bak")).collect();
+        v.sort();
+        v
+    }
+
+    #[cfg(windows)]
+    fn lock_exclusive(path: &std::path::Path) -> std::fs::File {
+        use std::os::windows::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new().read(true).share_mode(0).open(path).expect("lock")
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn locked_prev_holds_append_and_prune() {
+        // 作り直しの途中 (元の組を .prev に移したあと) で止まり、次の起動で .jsonl.prev がロックされている
+        let (base, j, d) = interrupted_rebuild("recover_locked", 3);
+        let dir = d.parent().expect("p").to_path_buf();
+        let jprev = dir.join("9240230711.jsonl.prev");
+        let lock = lock_exclusive(&jprev);
+        // 戻せない間は書き足さない (4 番だけの新しい JSONL を作らない)
+        assert!(append(&base, &[4], false).is_err(), "戻せない間は書き足しをエラーにする");
+        assert!(!j.exists(), "4 番だけの JSONL を作らない");
+        // 整理しても、元の組を消さない
+        board_log_prune_in(&base, 0, 0).expect("prune");
+        assert!(jprev.exists(), "整理で元の JSONL を消さない");
+        drop(lock);
+        // ロックが外れたら、元の組 (1・3) に戻してから書き足す
+        append(&base, &[4], false).expect("after unlock");
+        assert_eq!(jsonl_nos_of(&j), vec![1, 3, 4]);
+        assert_eq!(dat_lines_of(&d), 3);
+        assert!(!jprev.exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn locked_old_dat_after_rebuild_keeps_logging() {
+        // 新しい組 (1・2・3) を置き終えたあと、元の組を消す前に止まった。次の起動で古い dat (.dat.prev) が使用中
+        let (base, j, d) = interrupted_rebuild("rebuilt_lock", 5);
+        let dir = d.parent().expect("p").to_path_buf();
+        let dprev = dir.join("9240230711.dat.prev");
+        let lock = lock_exclusive(&dprev);
+        append(&base, &[4], false).expect("古い dat が使用中でも、新しい組には書き足せる");
+        assert_eq!(jsonl_nos_of(&j), vec![1, 2, 3, 4]);
+        board_log_prune_in(&base, 0, 0).expect("prune");
+        drop(lock);
+        // ロックが外れたあとも書き足せ、古い組の消し残しと印が片付く
+        append(&base, &[5], false).expect("解除後も書き足せる");
+        assert_eq!(jsonl_nos_of(&j), vec![1, 2, 3, 4, 5]);
+        assert_eq!(dat_lines_of(&d), 5);
+        let names: Vec<String> = std::fs::read_dir(&dir).expect("dir").flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        assert!(names.iter().all(|n| !n.contains(".prev") && !n.contains(".rebuilt")), "{names:?}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn old_version_leftover_dat_prev_is_cleaned() {
+        // 前の版の片付けで、古い dat (.dat.prev) だけ消し残した状態 (新しい組 1・2・3 はそろっている)
+        let (base, j, d) = interrupted_rebuild("rebuilt_legacy", 5);
+        let dir = d.parent().expect("p").to_path_buf();
+        std::fs::remove_file(dir.join("9240230711.jsonl.prev")).expect("jprev");
+        append(&base, &[4], false).expect("新しい組に書き足せる");
+        assert_eq!(jsonl_nos_of(&j), vec![1, 2, 3, 4]);
+        let names: Vec<String> = std::fs::read_dir(&dir).expect("dir").flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        assert!(names.iter().all(|n| !n.contains(".prev") && !n.contains(".rebuilt")), "{names:?}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn tabs_copy_failure_holds_file_and_tells_screen() {
+        let out = r#"{"tabs":[],"activeIndex":0,"dropped":1}"#.to_string();
+        let mut held = false;
+        let res = keep_copy_or_hold(out.clone(), || Err("書けません".into()), || held = true);
+        assert!(held, "写しを残せなければ、上書きしない");
+        let v: serde_json::Value = serde_json::from_str(&res).expect("json");
+        assert_eq!(v["copyFailed"], true, "画面へ知らせる");
+        let mut held2 = false;
+        assert_eq!(keep_copy_or_hold(out.clone(), || Ok("copy".into()), || held2 = true), out);
+        assert!(!held2);
+    }
+
+    #[test]
+    fn session_tabs_invalid_entries_are_dropped() {
+        let raw = r#"{"tabs":[{"threadUrl":"https://a/1/","title":"A"},null,{"title":"URL なし"},{"threadUrl":"https://b/2/","title":5}],"activeIndex":3}"#;
+        let (out, dropped) = sanitize_session_tabs(raw, "threadUrl");
+        assert_eq!(dropped, 2, "null と URL の無い1件を外す");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("json");
+        let tabs = v["tabs"].as_array().expect("tabs");
+        assert_eq!(tabs.len(), 2);
+        assert_eq!(tabs[1]["title"], "", "題名が文字列でなければ空にする");
+        assert_eq!(v["activeIndex"], 1, "表示していたタブ (4件目) の位置を、外した分だけずらす");
+        assert_eq!(v["dropped"], 2);
+        // 正常な一覧はそのまま
+        let ok = r#"{"tabs":[{"threadUrl":"https://a/1/","title":"A"}],"activeIndex":0}"#;
+        assert_eq!(sanitize_session_tabs(ok, "threadUrl"), (ok.to_string(), 0));
+        // 板のタブ (boardUrl)
+        let (_, d2) = sanitize_session_tabs(r#"{"tabs":[{"boardUrl":"https://a/b/","title":"B"},null],"activeIndex":0}"#, "boardUrl");
+        assert_eq!(d2, 1);
+    }
+
+    #[test]
+    fn leftover_dat_is_kept_as_backup_when_rows_do_not_cover_it() {
+        let base = test_dir("bak_keep");
+        let (j, d) = files(&base);
+        let dir = d.parent().expect("parent").to_path_buf();
+        std::fs::create_dir_all(&dir).expect("dir");
+        std::fs::write(&d, "o1<><><>x<>t\no2<><><>y<>\no3<><><>z<>\n").expect("dat");
+        // 手元に 1 番しか無い: 新しく作ってよいが、元の 3 行は別名で残す (消さない)
+        let r = append(&base, &[1], true).expect("write");
+        assert!(!r.need_full);
+        assert_eq!(jsonl_nos_of(&j), vec![1]);
+        assert_eq!(dat_lines_of(&d), 1);
+        let baks = bak_files(&dir);
+        assert_eq!(baks.len(), 1, "元の dat を別名で残す");
+        assert_eq!(dat_lines_of(&baks[0]), 3);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// アプリが作るのと同じ形の dat (行の中身が一字一句そろう)
+    fn dat_of(nos: &[u32]) -> Vec<u8> {
+        let rows: Vec<BoardLogRes> = nos.iter().map(|n| res(*n)).collect();
+        let refs: Vec<&BoardLogRes> = rows.iter().collect();
+        core_fetch::encode_shift_jis(&board_log_dat_lines(&refs, "t", true))
+    }
+
+    #[test]
+    fn leftover_dat_backup_is_removed_when_rows_cover_it() {
+        let base = test_dir("bak_cover");
+        let (j, d) = files(&base);
+        let dir = d.parent().expect("parent").to_path_buf();
+        std::fs::create_dir_all(&dir).expect("dir");
+        std::fs::write(&d, dat_of(&[1, 2])).expect("dat");
+        // 元の各行が新しい dat にそのまま入る: 別名は残さない
+        append(&base, &[1, 2, 3], true).expect("write");
+        assert_eq!(jsonl_nos_of(&j), vec![1, 2, 3]);
+        assert_eq!(dat_lines_of(&d), 3);
+        assert!(bak_files(&dir).is_empty());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn leftover_dat_and_partial_rows_asks_for_full() {
+        let base = test_dir("bak_needfull");
+        let (j, d) = files(&base);
+        std::fs::create_dir_all(d.parent().expect("parent")).expect("dir");
+        std::fs::write(&d, "o1<><><>x<>t\n").expect("dat");
+        // 新しいレスしか無い (スレ全体ではない): まずスレ全体を頼む。何も変えない
+        assert!(append(&base, &[5], false).expect("need").need_full);
+        assert!(!j.exists());
+        assert_eq!(dat_lines_of(&d), 1);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn leftover_dat_is_untouched_when_rebuild_fails() {
+        let base = test_dir("bak_locked");
+        let (j, d) = files(&base);
+        let dir = d.parent().expect("parent").to_path_buf();
+        std::fs::create_dir_all(&dir).expect("dir");
+        std::fs::write(&d, dat_of(&[1, 2])).expect("dat");
+        let del = j.with_extension("jsonl.del");
+        std::fs::write(&del, "{}\n").expect("del");
+        // 残っていた dat がロックされていて別名にできない: 何も変えずにエラー (元の dat は消えない)
+        let lock = lock_exclusive(&d);
+        assert!(append(&base, &[1, 2], true).is_err());
+        drop(lock);
+        assert_eq!(dat_lines_of(&d), 2);
+        assert!(!j.exists());
+        assert!(bak_files(&dir).is_empty());
+        // ロックが外れれば作り直せる (元の 2 行は手元のレスで作り直せるので、別名は残らない)
+        append(&base, &[1, 2], true).expect("retry");
+        assert_eq!(jsonl_nos_of(&j), vec![1, 2]);
+        assert_eq!(dat_lines_of(&d), 2);
+        assert!(!del.exists());
+        assert!(bak_files(&dir).is_empty());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn leftover_dat_with_gaps_keeps_backup() {
+        let base = test_dir("bak_gaps");
+        let (j, d) = files(&base);
+        let dir = d.parent().expect("parent").to_path_buf();
+        std::fs::create_dir_all(&dir).expect("dir");
+        // 古い dat は 1 番と 3 番の 2 行 (欠番あり)。手元には 1 番と 2 番: 行数は同じでも、3 番は作り直せない
+        let old1 = String::from_utf8(core_fetch::encode_shift_jis(&board_log_dat_lines(&[&res(1)], "t", true))).unwrap_or_default();
+        let old3 = String::from_utf8(core_fetch::encode_shift_jis(&board_log_dat_lines(&[&res(3)], "t", false))).unwrap_or_default();
+        std::fs::write(&d, format!("{old1}{old3}")).expect("dat");
+        append(&base, &[1, 2], true).expect("write");
+        assert_eq!(jsonl_nos_of(&j), vec![1, 2]);
+        let baks = bak_files(&dir);
+        assert_eq!(baks.len(), 1, "3 番の行を作り直せていないので、別名を残す");
+        assert!(std::fs::read_to_string(&baks[0]).expect("bak").contains("b3"));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn later_full_rows_fill_gaps_in_number_order() {
+        let base = test_dir("fill_gaps");
+        let (j, d) = files(&base);
+        // 1 番と 3 番だけが書かれている (2 番は手元に無かった)
+        append(&base, &[1, 3], true).expect("first");
+        assert_eq!(jsonl_nos_of(&j), vec![1, 3]);
+        // あとで 1〜4 番がそろってスレ全体を渡された: 抜けていた 2 番も、番号順に補う
+        append(&base, &[1, 2, 3, 4], true).expect("fill");
+        assert_eq!(jsonl_nos_of(&j), vec![1, 2, 3, 4]);
+        assert_eq!(dat_lines_of(&d), 4);
+        let text = std::fs::read_to_string(&d).expect("dat");
+        let bodies: Vec<&str> = text.lines().map(|l| l.split("<>").nth(3).unwrap_or("")).collect();
+        assert_eq!(bodies, vec!["b1", "b2", "b3", "b4"], "dat も番号順");
+        let titles: Vec<&str> = text.lines().map(|l| l.split("<>").nth(4).unwrap_or("")).collect();
+        assert_eq!(titles, vec!["t", "", "", ""], "スレタイは 1 行目だけ");
+        assert!(bak_files(d.parent().expect("p")).is_empty());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn fill_gaps_keeps_old_pair_when_rebuild_fails() {
+        let base = test_dir("fill_fail");
+        let (j, d) = files(&base);
+        append(&base, &[1, 3], true).expect("first");
+        let before_j = std::fs::read(&j).expect("j");
+        let before_d = std::fs::read(&d).expect("d");
+        // dat がロックされていて置き換えられない: 何も変えずにエラー
+        let lock = lock_exclusive(&d);
+        assert!(append(&base, &[1, 2, 3, 4], true).is_err());
+        drop(lock);
+        assert_eq!(std::fs::read(&j).expect("j"), before_j);
+        assert_eq!(std::fs::read(&d).expect("d"), before_d);
+        // ロックが外れれば補える
+        append(&base, &[1, 2, 3, 4], true).expect("retry");
+        assert_eq!(jsonl_nos_of(&j), vec![1, 2, 3, 4]);
+        assert_eq!(dat_lines_of(&d), 4);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn leftover_dat_with_duplicate_lines_keeps_backup() {
+        let base = test_dir("bak_dup");
+        let (_j, d) = files(&base);
+        let dir = d.parent().expect("parent").to_path_buf();
+        std::fs::create_dir_all(&dir).expect("dir");
+        // 2 番と 3 番がまったく同じ中身の投稿 (同じ行が2つ。1行目はスレタイが付くので避ける)。古い dat は 1・2・3 の3行
+        let same = |no: u32| BoardLogRes { no, name: "同じ".into(), mail: String::new(), date_and_id: "2026/11/16 ID:x".into(), body: "同じ本文".into(), name_text: "同じ".into(), uid: "x".into(), posted: "2026/11/16".into(), text: "同じ本文".into() };
+        let rows_old = [res(1), same(2), same(3)];
+        let refs: Vec<&BoardLogRes> = rows_old.iter().collect();
+        std::fs::write(&d, core_fetch::encode_shift_jis(&board_log_dat_lines(&refs, "t", true))).expect("dat");
+        // 手元には 1 番と 2 番だけ: 新しい dat は 2 行。同じ行は 1 回しか入らないので、別名は残す
+        let r = board_log_append_in(&base, URL.into(), "t".into(), "ngt".into(), vec![res(1), same(2)], Some(true)).expect("write");
+        assert!(!r.need_full);
+        assert_eq!(bak_files(&dir).len(), 1, "同じ行の数まで照らし合わせ、足りなければ別名を残す");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 番号順に作り直す途中で止まった状態を作る (止まった段階: 2 = dat だけ移した / 3 = 両方移した / 4 = 新しい dat を置いた / 5 = 両方置いた)
+    fn interrupted_rebuild(name: &str, step: u32) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+        let base = test_dir(name);
+        let (j, d) = files(&base);
+        append(&base, &[1, 3], true).expect("first");
+        let dir = d.parent().expect("p").to_path_buf();
+        let (jprev, dprev) = (dir.join("9240230711.jsonl.prev"), dir.join("9240230711.dat.prev"));
+        let new_j = b"{\"type\":\"start\"}\n{\"no\":1}\n{\"no\":2}\n{\"no\":3}\n";
+        let new_d = b"a<><><>1<>t\na<><><>2<>\na<><><>3<>\n";
+        std::fs::write(dir.join("9240230711.jsonl.tmp"), new_j).expect("jt");
+        std::fs::write(dir.join("9240230711.dat.tmp"), new_d).expect("dt");
+        if step >= 2 { std::fs::rename(&d, &dprev).expect("2"); }
+        if step >= 3 { std::fs::rename(&j, &jprev).expect("3"); }
+        if step >= 4 { std::fs::rename(dir.join("9240230711.dat.tmp"), &d).expect("4"); }
+        if step >= 5 { std::fs::rename(dir.join("9240230711.jsonl.tmp"), &j).expect("5"); }
+        (base, j, d)
+    }
+
+    #[test]
+    fn interrupted_rebuild_is_recovered_on_prune() {
+        for step in [2u32, 3, 4] {
+            let (base, j, d) = interrupted_rebuild(&format!("recover_{step}"), step);
+            // 日数・容量とも無制限で削除を動かす (起動したときと同じ): 元の組 (1・3) に戻り、何も失わない
+            board_log_prune_in(&base, 0, 0).expect("prune");
+            assert_eq!(jsonl_nos_of(&j), vec![1, 3], "段階 {step}: JSONL が元に戻る");
+            assert_eq!(dat_lines_of(&d), 2, "段階 {step}: dat が元に戻る");
+            let names: Vec<String> = std::fs::read_dir(d.parent().expect("p")).expect("dir").flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+            assert!(names.iter().all(|n| !n.contains(".prev") && !n.contains(".tmp")), "段階 {step}: 途中のファイルが残らない: {names:?}");
+            let _ = std::fs::remove_dir_all(&base);
+        }
+        // 両方置き終わったあと (消す前) に止まった: 新しい組 (1・2・3) のまま、元の組の名残を片付ける
+        let (base, j, d) = interrupted_rebuild("recover_5", 5);
+        board_log_prune_in(&base, 0, 0).expect("prune");
+        assert_eq!(jsonl_nos_of(&j), vec![1, 2, 3]);
+        assert_eq!(dat_lines_of(&d), 3);
+        let names: Vec<String> = std::fs::read_dir(d.parent().expect("p")).expect("dir").flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        assert!(names.iter().all(|n| !n.contains(".prev") && !n.contains(".tmp")), "{names:?}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn short_repair_reports_missing_numbers() {
+        let base = test_dir("repair_missing");
+        let (j, d) = files(&base);
+        append(&base, &[1, 2, 3], true).expect("first");
+        std::fs::write(&d, "n1<><><>b1<>t\n").expect("dat");
+        if let Some(st) = BOARD_LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner()).as_mut() { st.last.remove(&j); st.dat_checked.remove(&j); st.dat_pending.remove(&j); }
+        assert!(append(&base, &[4], false).expect("need full").need_full);
+        // 2 が足りない: 足りない番号を画面側に返す (画面側は、そろったらスレ全体を一度だけ渡す)
+        let r = append(&base, &[1, 3, 4], true).expect("short");
+        assert_eq!(r.repair_missing, vec![2]);
+        // ふだんの書き足しでも、直す待ちの間は足りない番号を返し続ける
+        let r2 = append(&base, &[5], false).expect("append");
+        assert_eq!(r2.repair_missing, vec![2]);
+        // そろって渡されたら直り、足りない番号は空になる
+        let r3 = append(&base, &[1, 2, 3, 4, 5], true).expect("repair");
+        assert!(r3.repair_missing.is_empty());
+        assert_eq!(dat_lines_of(&d), 5);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn prune_handles_backup_and_temp_files() {
+        let base = test_dir("prune_bak");
+        let dir = base.join("5ch").join("ngt");
+        std::fs::create_dir_all(&dir).expect("dir");
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(10 * 86400);
+        let set_old = |p: &std::path::Path| { std::fs::File::options().write(true).open(p).expect("open").set_modified(old).expect("mtime"); };
+        // 古い別名の dat・作り直し途中の一時ファイル・消す予定の JSONL・新しいログの組
+        let bak = dir.join("100.20261101000000000.dat.bak");
+        std::fs::write(&bak, "a<><><>b<>\n").expect("bak");
+        set_old(&bak);
+        std::fs::write(dir.join("100.dat.tmp"), "x").expect("tmp");
+        std::fs::write(dir.join("100.jsonl.del"), "x").expect("del");
+        std::fs::write(dir.join("200.jsonl"), "{}\n").expect("jsonl");
+        std::fs::write(dir.join("200.dat"), "a<><><>b<>\n").expect("dat");
+        // 名前の形が違うものには触らない
+        std::fs::write(dir.join("memo.txt"), "keep").expect("other");
+        board_log_prune_in(&base, 5, 0).expect("prune");
+        assert!(!bak.exists(), "日数を過ぎた別名の dat は消す");
+        assert!(!dir.join("100.dat.tmp").exists() && !dir.join("100.jsonl.del").exists(), "途中のファイルは片付ける");
+        assert!(dir.join("200.jsonl").exists() && dir.join("200.dat").exists(), "新しいログは残す");
+        assert!(dir.join("memo.txt").exists(), "ほかのファイルには触らない");
+        // 容量: 別名の dat も数に入る
+        let bak2 = dir.join("300.20261101000000000.dat.bak");
+        std::fs::write(&bak2, vec![b'a'; 2 * 1024 * 1024]).expect("big bak");
+        set_old(&bak2);
+        board_log_prune_in(&base, 0, 1).expect("prune size");
+        assert!(!bak2.exists(), "容量の上限にも別名の dat を数える (古いものから消す)");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn write_pair_removes_new_dat_when_jsonl_fails() {
+        let dir = test_dir("newfile");
+        let (j, d) = (dir.join("1.jsonl"), dir.join("1.dat"));
+        // JSONL の場所にフォルダがあって書けない: 新しく作った dat は消える
+        std::fs::create_dir_all(&j).expect("dir in the way");
+        assert!(board_log_write_pair(&j, b"{\"no\":1}\n", &d, b"line1\n", 1024).is_err());
+        assert!(!d.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// 起動してから「あるのに読めなかった」データファイルの名前 (その起動の間は上書きしない。画面側が知らせる)
+#[tauri::command]
+fn data_unreadable_files() -> Vec<String> {
+    let base = core_store::portable_data_dir().ok();
+    // 壊れていたファイルは名前の後ろに印を付ける (画面側で分けて知らせる)
+    let broken = core_store::broken_paths().into_iter().map(|p| { let mut s = p.into_os_string(); s.push("\u{1}broken"); std::path::PathBuf::from(s) });
+    core_store::unreadable_paths()
+        .into_iter()
+        .chain(broken)
+        .map(|p| base.as_ref().and_then(|b| p.strip_prefix(b).ok()).map(|r| r.to_string_lossy().into_owned()).unwrap_or_else(|| p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()))
+        .collect()
 }
 
 /// データフォルダをエクスプローラーで開く (Web ページを開く命令は http(s) しか受け付けないため、別に用意する)
@@ -1939,10 +2983,8 @@ fn load_generic_json(filename: String) -> Result<serde_json::Value, String> {
     if !ALLOWED.contains(&filename.as_str()) {
         return Err(format!("Filename not allowed: {}", filename));
     }
-    match core_store::load_json::<serde_json::Value>(&filename) {
-        Ok(data) => Ok(data),
-        Err(_) => Ok(serde_json::Value::Null),
-    }
+    // あるのに読めないときはエラー (無い・壊れていたときは null)。読めなかったファイルは、その起動の間は上書きしない
+    Ok(core_store::load_json_opt::<serde_json::Value>(&filename).map_err(|e| e.to_string())?.unwrap_or(serde_json::Value::Null))
 }
 
 // --- NG filter persistence ---
@@ -1983,11 +3025,16 @@ struct NgFilters {
 
 #[tauri::command]
 fn load_ng_filters() -> Result<NgFilters, String> {
+    // あるのに読めない (ロック中など) ときはエラーにする (画面側は、読めるまで配信への出力を止めて読み直す)。
+    // 無いときは空の NG (初めて使うとき)
     // Try new name first, fall back to old name and migrate
-    if let Ok(data) = core_store::load_json::<NgFilters>("ng-settings.json") {
+    // 壊れている・形が違うときもエラー (空として通さない。古い名前のファイルで上書きもしない)
+    // 中身のある JSON なのに知っている項目が1つも無いときも同じ (知らない形を空として読まない)
+    const KNOWN: &[&str] = &["words", "ids", "names", "mails", "thread_words", "image_words", "invisible"];
+    if let Some(data) = core_store::load_json_strict_known_opt::<NgFilters>("ng-settings.json", KNOWN).map_err(|e| e.to_string())? {
         return Ok(data);
     }
-    if let Ok(data) = core_store::load_json::<NgFilters>("ng_filters.json") {
+    if let Some(data) = core_store::load_json_strict_known_opt::<NgFilters>("ng_filters.json", KNOWN).map_err(|e| e.to_string())? {
         // Migrate: save under new name, keep old file for safety
         let _ = core_store::save_json("ng-settings.json", &data);
         return Ok(data);
@@ -2228,10 +3275,10 @@ struct TtsMuteDict {
 
 #[tauri::command]
 fn load_tts_mute_dict() -> Result<TtsMuteDict, String> {
-    match core_store::load_json::<TtsMuteDict>("tts-mute-dict.json") {
-        Ok(data) => Ok(data),
-        Err(_) => Ok(TtsMuteDict::default()),
-    }
+    // あるのに読めないときはエラー (画面側は、読めるまで配信への出力を止めて読み直す)。無いときは空
+    // 壊れている・形が違うときもエラー (空として通すと、読ませない語を読み上げるため)
+    // 中身のある JSON なのに知っている項目が1つも無いときも同じ (知らない形を空として読み、空で上書きしないように)
+    Ok(core_store::load_json_strict_known_opt::<TtsMuteDict>("tts-mute-dict.json", &["names", "words", "ids"]).map_err(|e| e.to_string())?.unwrap_or_default())
 }
 
 #[tauri::command]
@@ -2651,12 +3698,78 @@ fn save_session_tabs(data: String) -> Result<(), String> {
     core_store::save_json("session_tabs.json", &data).map_err(|e| e.to_string())
 }
 
+/// 保存したタブの一覧を1件ずつ確かめる。URL (url_key: threadUrl / boardUrl) が文字列でないもの (null など) は外し、
+/// 題名が文字列でなければ空にする。表示していたタブの位置も、外した分だけずらす。
+/// 戻り値は (確かめたあとの一覧の JSON。外した件数を "dropped" に入れる, 外した件数)
+fn sanitize_session_tabs(raw: &str, url_key: &str) -> (String, usize) {
+    let Ok(mut v) = serde_json::from_str::<serde_json::Value>(raw) else { return (String::new(), 0) };
+    let Some(tabs) = v.get("tabs").and_then(|t| t.as_array()).cloned() else { return (String::new(), 0) };
+    let active = v.get("activeIndex").and_then(|a| a.as_u64()).unwrap_or(0) as usize;
+    let mut kept: Vec<serde_json::Value> = Vec::new();
+    let mut new_active = 0usize;
+    for (i, t) in tabs.into_iter().enumerate() {
+        let ok = t.get(url_key).and_then(|u| u.as_str()).map(|u| !u.trim().is_empty()).unwrap_or(false);
+        if !ok {
+            continue;
+        }
+        let mut t = t;
+        if let Some(obj) = t.as_object_mut() {
+            if !obj.get("title").map(|x| x.is_string()).unwrap_or(false) {
+                obj.insert("title".into(), serde_json::Value::String(String::new()));
+            }
+        }
+        if i <= active {
+            new_active = kept.len();
+        }
+        kept.push(t);
+    }
+    let total = v.get("tabs").and_then(|t| t.as_array()).map(|a| a.len()).unwrap_or(0);
+    let dropped = total - kept.len();
+    if dropped == 0 {
+        return (raw.to_string(), 0);
+    }
+    if let Some(obj) = v.as_object_mut() {
+        obj.insert("tabs".into(), serde_json::Value::Array(kept));
+        obj.insert("activeIndex".into(), serde_json::json!(new_active));
+        obj.insert("dropped".into(), serde_json::json!(dropped));
+    }
+    (v.to_string(), dropped)
+}
+
+/// 使えない分を外した一覧を返す前に、元のファイルの写しを残す。残せなかったら、その起動の間はファイルを上書きせず、
+/// 一覧に "copyFailed": true を入れて画面へ知らせる (画面は「写しを残せなかったので、このファイルには保存しません」と知らせる)
+fn keep_copy_or_hold(out: String, keep: impl FnOnce() -> Result<String, String>, hold: impl FnOnce()) -> String {
+    if let Err(e) = keep() {
+        eprintln!("写しを残せませんでした (この起動の間は上書きしません): {e}");
+        hold();
+        if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&out) {
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert("copyFailed".into(), serde_json::Value::Bool(true));
+                return v.to_string();
+            }
+        }
+    }
+    out
+}
+
+/// 保存したタブの一覧を読み、1件ずつ確かめる (外したものがあれば、元のファイルの写しを残す)
+fn load_session_tabs_file(file: &str, url_key: &str) -> String {
+    let raw = core_store::load_json_string_checked(file, |v| v.get("tabs").map(|t| t.is_array()).unwrap_or(false)).unwrap_or_default();
+    if raw.is_empty() {
+        return raw;
+    }
+    let (out, dropped) = sanitize_session_tabs(&raw, url_key);
+    if dropped == 0 {
+        return out;
+    }
+    keep_copy_or_hold(out, || core_store::keep_dated_copy(file).map_err(|e| e.to_string()), || core_store::hold_overwrite(file))
+}
+
 #[tauri::command]
 fn load_session_tabs() -> Result<String, String> {
-    match core_store::load_json::<String>("session_tabs.json") {
-        Ok(data) => Ok(data),
-        Err(_) => Ok(String::new()),
-    }
+    // 中のタブの一覧まで読めて初めて「読めた」とする (中だけ壊れていたら、写しを残して空を返す)。
+    // 一覧の中の壊れた1件 (null など) は外して、残りを戻す (外したら写しを残し、件数を画面へ渡す)
+    Ok(load_session_tabs_file("session_tabs.json", "threadUrl"))
 }
 
 #[tauri::command]
@@ -2666,18 +3779,12 @@ fn save_session_board_tabs(data: String) -> Result<(), String> {
 
 #[tauri::command]
 fn load_session_board_tabs() -> Result<String, String> {
-    match core_store::load_json::<String>("session_board_tabs.json") {
-        Ok(data) => Ok(data),
-        Err(_) => Ok(String::new()),
-    }
+    Ok(load_session_tabs_file("session_board_tabs.json", "boardUrl"))
 }
 
 #[tauri::command]
 fn load_layout_prefs() -> Result<String, String> {
-    match core_store::load_json::<String>("layout_prefs.json") {
-        Ok(data) => Ok(data),
-        Err(_) => Ok(String::new()),
-    }
+    Ok(core_store::load_json_string_checked("layout_prefs.json", |v| v.is_object()).unwrap_or_default())
 }
 
 #[tauri::command]
@@ -2902,9 +4009,27 @@ fn proxy_payload_from_ini(map: &HashMap<String, String>) -> ProxySettingsPayload
     }
 }
 
-/// 起動時: 保存してあるプロキシの設定を通信に反映する
+/// 読めなかった設定ファイルを、通信の前に読み直す (読めたら、保存してあるプロキシの設定を返す)。
+/// 読めなかったことの覚えは変えない (画面が持っている既定値で、設定ファイルを上書きできるようにしないため)
+fn reload_proxy_settings() -> Option<core_proxy::ProxySettings> {
+    let map = core_store::peek_settings_ini().ok()?.unwrap_or_default();
+    let payload = proxy_payload_from_ini(&map);
+    let _ = core_store::append_log(&format!("proxy: 設定ファイルを読めるようになったので、保存してある設定を反映しました enabled={}", payload.enabled));
+    Some(payload.to_settings())
+}
+
+/// 起動時: 保存してあるプロキシの設定を通信に反映する。
+/// 設定ファイルがあるのに読めないとき (ほかのプログラムが使用中など) は、プロキシを使う設定かどうかが分からないので、
+/// 読めるまで掲示板との通信を通さない (既定値の「使わない」で通信して、接続元を伝えてしまわないように)
 fn init_proxy_settings() {
-    let map = core_store::load_settings_ini().unwrap_or_default();
+    let map = match core_store::load_settings_ini() {
+        Ok(map) => map,
+        Err(e) => {
+            let _ = core_store::append_log_level("WARN", &format!("proxy: 設定ファイルを読めないため、読めるまで掲示板との通信を止めます: {e}"));
+            core_proxy::hold_until_readable(reload_proxy_settings);
+            return;
+        }
+    };
     let payload = proxy_payload_from_ini(&map);
     if payload.enabled {
         let _ = core_store::append_log(&format!(
@@ -2920,7 +4045,9 @@ fn init_proxy_settings() {
 
 #[tauri::command]
 fn load_proxy_settings() -> Result<ProxySettingsPayload, String> {
-    let map = core_store::load_settings_ini().unwrap_or_default();
+    // 読めないときに既定値 (使わない) を「保存してある設定」として返さない (画面からそのまま保存されると、設定が消えるため)
+    // 「起動したときに読めなかった」の覚えは変えない読み方をする (ここで読めたことにすると、画面の既定値で設定ファイルを上書きできるようになる)
+    let map = core_store::peek_settings_ini().map_err(|e| format!("設定ファイル (settings.ini) を読めませんでした: {e}"))?.unwrap_or_default();
     Ok(proxy_payload_from_ini(&map))
 }
 
@@ -3073,6 +4200,11 @@ async fn tts_stop() -> Result<(), String> {
     queue.clear();
     // Also stop SAPI if it's running (フラグを立てるだけで即座に返るため、スレッド分離は不要)
     let _ = core_tts::sapi_stop();
+    // 棒読みちゃんにすでに渡した文章も止める (残りを取り消し、今の行を飛ばす)。最後に止めてから何も渡していなければ、何もしない。
+    // RemoteTalk.exe の終わりを待つので、別のスレッドで行う
+    if let Ok(Err(e)) = tauri::async_runtime::spawn_blocking(core_tts::bouyomi_stop).await {
+        let _ = core_store::append_log_level("WARN", &format!("tts: 棒読みちゃんに停止を伝えられませんでした: {e}"));
+    }
     Ok(())
 }
 
@@ -4213,6 +5345,7 @@ pub fn run() {
             open_data_folder,
             board_log_append,
             board_log_prune,
+            data_unreadable_files,
             board_log_open_folder,
             twitch_sync,
             twitch_set_badges,
@@ -4500,8 +5633,58 @@ mod settings_name_tests {
         assert!(super::validate_settings_name(&"あ".repeat(65)).is_err());
     }
 
+    /// EMBER_DATA_DIR (プロセス全体の環境変数) を触る試験どうしが、同時に走らないようにする
+    static DATA_DIR_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    // 保存してあるプロキシの設定を読めない間は、掲示板との通信を通さない (プロキシなしで出ていかない)。
+    // 読めるようになったら、保存し直さなくても設定どおりに通信する
+    #[cfg(windows)]
+    #[test]
+    fn unreadable_settings_do_not_drop_the_proxy() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let _env = DATA_DIR_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("livefake-proxy-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("EMBER_DATA_DIR", &dir);
+        let ini = dir.join("settings.ini");
+        let builder = || reqwest::Client::builder().timeout(std::time::Duration::from_secs(30));
+        let via_proxy = || core_proxy::transport_url("https://mi.5ch.io/x", core_proxy::ProxyRole::Receive) == "http://mi.5ch.net/x";
+
+        // 初回 (ファイルが無い): プロキシなしで通信できる
+        super::init_proxy_settings();
+        assert!(core_proxy::apply(builder(), core_proxy::ProxyRole::Receive).is_ok());
+        assert!(!via_proxy());
+
+        // プロキシを有効にした設定を、ほかのプログラムが使用中 (読めない)
+        std::fs::write(&ini, "[Proxy]\nProxyEnabled=true\nProxyType=http\nHttpMode=true\nProxyHost=127.0.0.1\nProxyPort=8080\nSendHost=127.0.0.1\nSendPort=8080\n").unwrap();
+        let lock = std::fs::OpenOptions::new().read(true).share_mode(0).open(&ini).unwrap();
+        super::init_proxy_settings();
+        assert!(core_proxy::apply(builder(), core_proxy::ProxyRole::Receive).is_err(), "読めない間は、読み込みの通信を通さない");
+        assert!(core_proxy::apply(builder(), core_proxy::ProxyRole::Send).is_err(), "読めない間は、書き込みの通信を通さない");
+        // 設定画面には、既定値 (無効) を「保存してある設定」として返さない
+        assert!(super::load_proxy_settings().is_err());
+
+        // 使用中でなくなったら、保存し直さなくても、次の通信からプロキシを使う
+        drop(lock);
+        assert!(core_proxy::apply(builder(), core_proxy::ProxyRole::Receive).is_ok());
+        assert!(core_proxy::apply(builder(), core_proxy::ProxyRole::Send).is_ok());
+        assert!(via_proxy(), "読めるようになったら、保存してある設定 (プロキシを使う) で通信する");
+        assert!(super::load_proxy_settings().unwrap().enabled);
+
+        // 対照: はっきり無効にしてある設定なら、プロキシなしで通信できる
+        std::fs::write(&ini, "[Proxy]\nProxyEnabled=false\nProxyHost=127.0.0.1\nProxyPort=8080\n").unwrap();
+        super::init_proxy_settings();
+        assert!(core_proxy::apply(builder(), core_proxy::ProxyRole::Receive).is_ok());
+        assert!(!via_proxy());
+
+        std::env::remove_var("EMBER_DATA_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn settings_files_roundtrip_and_backup_rotation() {
+        let _env = DATA_DIR_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("livefake-settings-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();

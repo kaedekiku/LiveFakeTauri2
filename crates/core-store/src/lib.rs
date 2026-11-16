@@ -30,6 +30,113 @@ static SAVE_LOCK: Mutex<()> = Mutex::new(());
 /// 一時ファイル名を一意化するためのカウンタ (同名 `.tmp` の衝突防止)。
 static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// 起動してから読もうとして「あるのに読めなかった」データファイル (ロック中など)。
+/// その起動の間は上書きしない (「無い」と同じに扱って空・既定値で上書きすると、中身を失うため)。
+/// あとで読めたら外す。「無い」ファイル・形の壊れたファイルは対象にしない
+static UNREADABLE: Mutex<Option<std::collections::HashSet<PathBuf>>> = Mutex::new(None);
+/// 起動してから読もうとして「中身が壊れていて読めなかった」データファイル (写し <名前>.broken-<秒> を残してある)
+static BROKEN: Mutex<Option<std::collections::HashSet<PathBuf>>> = Mutex::new(None);
+/// その起動の間は上書きしないと決めたデータファイル (hold_overwrite)
+static HELD: Mutex<Option<std::collections::HashSet<PathBuf>>> = Mutex::new(None);
+
+/// 中身が壊れていて読めなかったファイルの写しを、同じフォルダに残す (起動ごとに1回。上書きされても手で直せるように)。
+/// 写しを残せなかったときは、その起動の間は元のファイルを上書きしない (読めなかったファイルと同じ扱い)
+fn keep_broken_copy(path: &std::path::Path, bytes: &[u8]) {
+    let mut g = BROKEN.lock().unwrap_or_else(|e| e.into_inner());
+    let set = g.get_or_insert_with(Default::default);
+    if set.contains(path) {
+        return;
+    }
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let mut name = path.as_os_str().to_os_string();
+    name.push(format!(".broken-{secs}"));
+    match write_atomic(&PathBuf::from(name), bytes) {
+        Ok(()) => {
+            set.insert(path.to_path_buf());
+        }
+        Err(e) => {
+            eprintln!("core-store: 壊れたファイルの写しを残せませんでした (上書きしないようにします): {e}");
+            drop(g);
+            mark_unreadable(path, false);
+        }
+    }
+}
+
+fn mark_unreadable(path: &std::path::Path, readable: bool) {
+    let mut g = UNREADABLE.lock().unwrap_or_else(|e| e.into_inner());
+    let set = g.get_or_insert_with(Default::default);
+    if readable {
+        set.remove(path);
+    } else {
+        set.insert(path.to_path_buf());
+    }
+}
+
+fn is_unreadable(path: &std::path::Path) -> bool {
+    UNREADABLE.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|s| s.contains(path)).unwrap_or(false)
+        || HELD.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|s| s.contains(path)).unwrap_or(false)
+}
+
+/// 読み取りの結果を覚える (読めた・無い → 外す。あるのに読めない → 覚える)
+fn note_read<T>(path: &std::path::Path, result: &std::io::Result<T>) {
+    match result {
+        Ok(_) => mark_unreadable(path, true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => mark_unreadable(path, true),
+        Err(_) => mark_unreadable(path, false),
+    }
+}
+
+fn refuse_if_unreadable(path: &std::path::Path) -> Result<(), StoreError> {
+    if is_unreadable(path) {
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        return Err(StoreError::Other(format!(
+            "{name} は起動したときに読み込めなかったため、上書きしていません (起動し直すと読み直します)"
+        )));
+    }
+    Ok(())
+}
+
+/// 一時ファイルに書いて fsync し、本体に置き換える (途中で止まっても、本体は前か後の完全な内容のまま)
+fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> Result<(), StoreError> {
+    let path = path.to_path_buf();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let seq = TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut tmp_name = path.as_os_str().to_os_string();
+    tmp_name.push(format!(".{}.{}.tmp", std::process::id(), seq));
+    let tmp_path = PathBuf::from(tmp_name);
+
+    let write_result = (|| -> Result<(), StoreError> {
+        {
+            let mut file = fs::File::create(&tmp_path)?;
+            file.write_all(bytes)?;
+            file.sync_all()?;
+        }
+        // Windows ではウイルス対策ソフトやクラウド同期が一瞬だけ本体ファイルを掴んでいて
+        // リネームが失敗することがあるため、短い間隔で数回だけ再試行する。
+        let mut last_err: Option<std::io::Error> = None;
+        for attempt in 0..4u32 {
+            match fs::rename(&tmp_path, &path) {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    last_err = Some(e);
+                    if attempt < 3 {
+                        std::thread::sleep(std::time::Duration::from_millis(20 * (attempt as u64 + 1)));
+                    }
+                }
+            }
+        }
+        Err(StoreError::Io(last_err.unwrap_or_else(|| std::io::Error::other("rename failed"))))
+    })();
+
+    if write_result.is_err() {
+        // 失敗した一時ファイルを残さない (削除失敗は無視してよい)。
+        let _ = fs::remove_file(&tmp_path);
+    }
+    write_result
+}
+
 fn default_data_dir() -> Result<PathBuf, StoreError> {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
@@ -88,55 +195,169 @@ pub fn init_portable_layout() -> Result<PathBuf, StoreError> {
 /// JSONになって復元不能になることがない。一時ファイルはアプリ専用データフォルダ内に作成するため
 /// (共有の一時フォルダを使わない)、シンボリックリンク攻撃等の心配もない。
 pub fn save_json<T: Serialize>(relative_path: &str, value: &T) -> Result<(), StoreError> {
-    let path = portable_data_dir()?.join(relative_path);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    save_json_path(&portable_data_dir()?.join(relative_path), value)
+}
 
+/// save_json の中身 (保存先のパスを受け取る。テストでは一時フォルダのパスを渡す)
+fn save_json_path<T: Serialize>(path: &std::path::Path, value: &T) -> Result<(), StoreError> {
     let bytes = serde_json::to_vec_pretty(value)?;
-
     // 同一ファイルへの並行書き込みを直列化する (Poison してもデータ自体は壊れないので続行)。
     let _guard = SAVE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-
-    let seq = TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let mut tmp_name = path.as_os_str().to_os_string();
-    tmp_name.push(format!(".{}.{}.tmp", std::process::id(), seq));
-    let tmp_path = PathBuf::from(tmp_name);
-
-    let write_result = (|| -> Result<(), StoreError> {
-        {
-            let mut file = fs::File::create(&tmp_path)?;
-            file.write_all(&bytes)?;
-            file.sync_all()?;
-        }
-        // Windows ではウイルス対策ソフトやクラウド同期が一瞬だけ本体ファイルを掴んでいて
-        // リネームが失敗することがあるため、短い間隔で数回だけ再試行する。
-        let mut last_err: Option<std::io::Error> = None;
-        for attempt in 0..4u32 {
-            match fs::rename(&tmp_path, &path) {
-                Ok(()) => return Ok(()),
-                Err(e) => {
-                    last_err = Some(e);
-                    if attempt < 3 {
-                        std::thread::sleep(std::time::Duration::from_millis(20 * (attempt as u64 + 1)));
-                    }
-                }
-            }
-        }
-        Err(StoreError::Io(last_err.unwrap_or_else(|| std::io::Error::other("rename failed"))))
-    })();
-
-    if write_result.is_err() {
-        // 失敗した一時ファイルを残さない (削除失敗は無視してよい)。
-        let _ = fs::remove_file(&tmp_path);
-    }
-    write_result
+    refuse_if_unreadable(path)?;
+    write_atomic(path, &bytes)
 }
 
 pub fn load_json<T: DeserializeOwned>(relative_path: &str) -> Result<T, StoreError> {
+    load_json_path(&portable_data_dir()?.join(relative_path))
+}
+
+/// load_json の中身 (読むファイルのパスを受け取る)
+fn load_json_path<T: DeserializeOwned>(path: &std::path::Path) -> Result<T, StoreError> {
+    let read = fs::read(path);
+    note_read(path, &read);
+    let bytes = read?;
+    match serde_json::from_slice(&bytes) {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            // 中身が壊れていて読めない: 写しを残してから、無いのと同じに扱う (本体はこのあと上書きされうる)
+            keep_broken_copy(path, &bytes);
+            Err(e.into())
+        }
+    }
+}
+
+
+/// 起動してから「あるのに読めなかった」データファイル (その起動の間は上書きしない)
+/// 読めたら Some、無い・中身が壊れていた (写しを残した) ら None、あるのに読めない (ロック中など) ならエラー。
+/// 「無い」と「読めない」を分けたい読み込み (配信へ出す前に効かせる辞書など) に使う
+pub fn load_json_opt<T: DeserializeOwned>(relative_path: &str) -> Result<Option<T>, StoreError> {
+    match load_json(relative_path) {
+        Ok(v) => Ok(Some(v)),
+        Err(StoreError::Io(e)) if e.kind() != std::io::ErrorKind::NotFound => Err(StoreError::Io(e)),
+        Err(_) => Ok(None),
+    }
+}
+
+/// 配信の前に効かせる辞書 (NG・読み上げない辞書など) を読む。
+/// 無いときだけ None (空として使う)。あるのに読めない・中身が壊れている・形が違うときはエラー
+/// (空として通すと、効かせるはずの語がそのまま配信へ出るため)。壊れていたら写しを残し、読めるまで上書きしない
+pub fn load_json_strict_opt<T: DeserializeOwned>(relative_path: &str) -> Result<Option<T>, StoreError> {
+    load_json_strict_opt_path(&portable_data_dir()?.join(relative_path))
+}
+
+fn load_json_strict_opt_path<T: DeserializeOwned>(path: &std::path::Path) -> Result<Option<T>, StoreError> {
+    match load_json_path(path) {
+        Ok(v) => Ok(Some(v)),
+        Err(StoreError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(StoreError::Io(e)) => Err(StoreError::Io(e)),
+        Err(e) => {
+            // 壊れている・形が違う (写しは load_json_path が残した): 読めるまで上書きしない
+            mark_unreadable(path, false);
+            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            Err(StoreError::Other(format!(
+                "{name} の中身が壊れているか、形が違います (写しを「{name}.broken-数字」として残しました)。直すか消すと、自動で読み直して再開します ({e})"
+            )))
+        }
+    }
+}
+
+/// 配信の前に効かせる辞書で、項目を省略できるもの (NG・読み上げない辞書) を読む。load_json_strict_opt と同じに加えて、
+/// 中身のある JSON なのに知っている項目 (known) が1つも無いときも、壊れたファイルと同じに扱う
+/// (項目がすべて省略できるので、知らない形でも空として読めてしまい、効かないまま配信へ出たり、空で上書きしたりするため)。
+/// 古い形式 (項目の一部だけ) と、空の {} は読める
+pub fn load_json_strict_known_opt<T: DeserializeOwned>(relative_path: &str, known: &[&str]) -> Result<Option<T>, StoreError> {
+    load_json_strict_known_opt_path(&portable_data_dir()?.join(relative_path), known)
+}
+
+fn load_json_strict_known_opt_path<T: DeserializeOwned>(path: &std::path::Path, known: &[&str]) -> Result<Option<T>, StoreError> {
+    let Some(v) = load_json_strict_opt_path::<serde_json::Value>(path)? else {
+        return Ok(None);
+    };
+    // オブジェクト ({...}) だけを読む。配列は、項目を順に並べたものとして別の項目に読めてしまうので読まない
+    let shape_ok = match &v {
+        serde_json::Value::Object(m) => m.is_empty() || m.keys().any(|k| known.contains(&k.as_str())),
+        _ => false,
+    };
+    let parsed: Result<T, StoreError> = if shape_ok {
+        serde_json::from_value(v).map_err(StoreError::from)
+    } else {
+        Err(StoreError::Other(if v.is_object() {
+            format!("読み込める項目 ({}) が1つもありません", known.join("・"))
+        } else {
+            "{ } で囲んだ形ではありません".to_string()
+        }))
+    };
+    parsed.map(Some).map_err(|e| {
+        if let Ok(bytes) = fs::read(path) {
+            keep_broken_copy(path, &bytes);
+        }
+        mark_unreadable(path, false);
+        broken_dict_error(path, e)
+    })
+}
+
+/// 配信の前に効かせる辞書が壊れている・形が違うときの知らせ
+fn broken_dict_error(path: &std::path::Path, e: StoreError) -> StoreError {
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    StoreError::Other(format!(
+        "{name} の中身が壊れているか、形が違います (写しを「{name}.broken-数字」として残しました)。直すか消すと、自動で読み直して再開します ({e})"
+    ))
+}
+
+/// その起動の間、このデータファイルを上書きしない (使えない分を外して使い続けるのに、元のファイルの写しを残せなかったときなど)。
+/// 起動時の「読み込めなかったファイル」の知らせには載せない (呼んだ側が知らせる)
+pub fn hold_overwrite(relative_path: &str) {
+    if let Ok(dir) = portable_data_dir() {
+        hold_overwrite_path(&dir.join(relative_path));
+    }
+}
+
+fn hold_overwrite_path(path: &std::path::Path) {
+    HELD.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Default::default).insert(path.to_path_buf());
+}
+
+/// データファイルの写しを「<名前>.broken-<秒>」として残す (一部だけ使えなかったファイルを、使える分だけにして使い続けるとき)。
+/// 起動時の「壊れていた」の知らせには載せない (呼んだ側が、使えなかった分を知らせる)。戻り値は写しの名前
+pub fn keep_dated_copy(relative_path: &str) -> Result<String, StoreError> {
     let path = portable_data_dir()?.join(relative_path);
-    let content = fs::read(path)?;
-    Ok(serde_json::from_slice(&content)?)
+    let bytes = fs::read(&path)?;
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let mut name = path.as_os_str().to_os_string();
+    name.push(format!(".broken-{secs}"));
+    let copy = PathBuf::from(name);
+    write_atomic(&copy, &bytes)?;
+    Ok(copy.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())
+}
+
+/// JSON の文字列を中に持つファイル (タブの一覧・画面の設定) を読む。中の JSON が valid でなければ、写しを残して空を返す
+pub fn load_json_string_checked(relative_path: &str, valid: impl Fn(&serde_json::Value) -> bool) -> Result<String, StoreError> {
+    load_json_string_checked_path(&portable_data_dir()?.join(relative_path), valid)
+}
+
+fn load_json_string_checked_path(path: &std::path::Path, valid: impl Fn(&serde_json::Value) -> bool) -> Result<String, StoreError> {
+    let s = load_json_path::<String>(path)?;
+    // 外側は読めても、中の JSON (タブの一覧など) が壊れていたら、壊れたファイルと同じに扱う (写しを残し、空として返す)
+    let ok = serde_json::from_str::<serde_json::Value>(&s).map(|v| valid(&v)).unwrap_or(false);
+    if ok {
+        return Ok(s);
+    }
+    if let Ok(bytes) = fs::read(path) {
+        keep_broken_copy(path, &bytes);
+    }
+    Ok(String::new())
+}
+
+/// 中身が壊れていて読めなかったデータファイル (写しを残してある。画面側が知らせる)
+pub fn broken_paths() -> Vec<PathBuf> {
+    let mut v: Vec<PathBuf> = BROKEN.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|s| s.iter().cloned().collect()).unwrap_or_default();
+    v.sort();
+    v
+}
+
+pub fn unreadable_paths() -> Vec<PathBuf> {
+    let mut v: Vec<PathBuf> = UNREADABLE.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|s| s.iter().cloned().collect()).unwrap_or_default();
+    v.sort();
+    v
 }
 
 /// Append a timestamped log line to `eventlog/{YYYY-MM-DD}.log`.
@@ -465,29 +686,59 @@ fontSize=13
 
 /// Load `settings.ini` from the portable data directory. Returns the flat map.
 pub fn load_settings_ini() -> Result<HashMap<String, String>, StoreError> {
-    let path = portable_data_dir()?.join("settings.ini");
-    let text = if path.exists() {
-        fs::read_to_string(&path)?
-    } else {
-        // Create default file
-        fs::write(&path, DEFAULT_SETTINGS_INI)?;
-        DEFAULT_SETTINGS_INI.to_string()
+    load_settings_ini_path(&portable_data_dir()?.join("settings.ini"))
+}
+
+fn load_settings_ini_path(path: &std::path::Path) -> Result<HashMap<String, String>, StoreError> {
+    let path = path.to_path_buf();
+    let read = fs::read_to_string(&path);
+    note_read(&path, &read);
+    let text = match read {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // Create default file
+            write_atomic(&path, DEFAULT_SETTINGS_INI.as_bytes())?;
+            DEFAULT_SETTINGS_INI.to_string()
+        }
+        Err(e) => return Err(e.into()),
     };
     let ini = IniFile::parse(&text);
     Ok(ini.to_flat_map())
 }
 
+/// `settings.ini` を読むだけ (無ければ作らない。「読めなかった」の覚えも変えない)。無ければ None。
+/// 起動したときに読めなかったファイルを、あとで読み直して確かめるときに使う
+/// (load_settings_ini で読み直すと「読めた」と覚え直し、画面が持っている既定値で上書きできるようになってしまう)
+pub fn peek_settings_ini() -> Result<Option<HashMap<String, String>>, StoreError> {
+    peek_settings_ini_path(&portable_data_dir()?.join("settings.ini"))
+}
+
+fn peek_settings_ini_path(path: &std::path::Path) -> Result<Option<HashMap<String, String>>, StoreError> {
+    match fs::read_to_string(path) {
+        Ok(text) => Ok(Some(IniFile::parse(&text).to_flat_map())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
 /// Save a flat map to `settings.ini`, merging with existing content.
 pub fn save_settings_ini(updates: &HashMap<String, String>) -> Result<(), StoreError> {
-    let path = portable_data_dir()?.join("settings.ini");
-    let mut ini = if path.exists() {
-        IniFile::parse(&fs::read_to_string(&path)?)
-    } else {
-        IniFile::parse(DEFAULT_SETTINGS_INI)
+    save_settings_ini_path(&portable_data_dir()?.join("settings.ini"), updates)
+}
+
+fn save_settings_ini_path(path: &std::path::Path, updates: &HashMap<String, String>) -> Result<(), StoreError> {
+    let path = path.to_path_buf();
+    let _guard = SAVE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    // 起動したときに読めなかった設定ファイルは上書きしない (既定値で全体を上書きしてしまうため)
+    refuse_if_unreadable(&path)?;
+    let mut ini = match fs::read_to_string(&path) {
+        Ok(t) => IniFile::parse(&t),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => IniFile::parse(DEFAULT_SETTINGS_INI),
+        Err(e) => return Err(e.into()),
     };
     ini.apply_flat_map(updates);
-    fs::write(&path, ini.to_string_pretty())?;
-    Ok(())
+    // 一時ファイルに書いてから置き換える (途中で止まっても、壊れた設定ファイルを残さない)
+    write_atomic(&path, ini.to_string_pretty().as_bytes())
 }
 
 #[cfg(test)]
@@ -521,6 +772,192 @@ mod tests {
         ini.apply_flat_map(&updates);
         assert_eq!(ini.get("App", "autoReloadIntervalSec"), Some("30"));
         assert_eq!(ini.get("Speech", "enabled"), Some("false"));
+    }
+
+    fn guard_test_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("livefake_core_store_guard_{}_{}", name, std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Windows: 共有なしで開いて、ほかからは読めなくする (GPT の試験と同じロックのしかた)
+    #[cfg(windows)]
+    fn lock_exclusive(path: &std::path::Path) -> fs::File {
+        use std::os::windows::fs::OpenOptionsExt;
+        fs::OpenOptions::new().read(true).share_mode(0).open(path).unwrap()
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn json_unreadable_at_load_is_not_overwritten() {
+        let dir = guard_test_dir("json");
+        let path = dir.join("tabs.json");
+        save_json_path(&path, &vec!["a", "b"]).unwrap();
+        let lock = lock_exclusive(&path);
+        // 読めない: 「無い」(空) ではなくエラー
+        assert!(load_json_path::<Vec<String>>(&path).is_err());
+        drop(lock);
+        // 読めなかったファイルは、その起動の間は上書きしない
+        assert!(save_json_path(&path, &Vec::<String>::new()).is_err());
+        assert_eq!(load_json_path::<Vec<String>>(&path).unwrap(), vec!["a", "b"]);
+        assert!(!unreadable_paths().contains(&path), "読めたら一覧から外れる");
+        // 読めたあとは保存できる
+        save_json_path(&path, &vec!["c"]).unwrap();
+        assert_eq!(load_json_path::<Vec<String>>(&path).unwrap(), vec!["c"]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn broken_json_is_kept_as_copy() {
+        let dir = guard_test_dir("broken");
+        let path = dir.join("session_tabs.json");
+        fs::write(&path, b"\"{\\\"tabs\\\":[1,2").unwrap(); // 末尾が欠けた JSON
+        assert!(load_json_path::<String>(&path).is_err());
+        // 壊れていた中身は写しとして残る (手で直せるように)
+        let copies: Vec<_> = fs::read_dir(&dir).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with("session_tabs.json.broken-")).collect();
+        assert_eq!(copies.len(), 1, "写しを1つ残す");
+        assert_eq!(fs::read(copies[0].path()).unwrap(), b"\"{\\\"tabs\\\":[1,2");
+        assert!(broken_paths().contains(&path), "知らせる一覧に入る");
+        // 写しがあるので、本体は保存してよい (アプリはそのまま使える)
+        save_json_path(&path, &"{}".to_string()).unwrap();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn broken_copy_failure_blocks_overwrite() {
+        let dir = guard_test_dir("broken_copyfail");
+        let path = dir.join("tabs2.json");
+        fs::write(&path, b"[1,2").unwrap();
+        // 写しの置き場所をふさぐ (同じ名前のフォルダを、この先数秒ぶん置いておく)
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        for s in now.saturating_sub(1)..now + 6 {
+            fs::create_dir_all(dir.join(format!("tabs2.json.broken-{s}"))).unwrap();
+        }
+        assert!(load_json_path::<Vec<u32>>(&path).is_err());
+        // 写しを残せなかったので、元のファイルは上書きしない
+        assert!(save_json_path(&path, &Vec::<u32>::new()).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"[1,2");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn inner_json_broken_is_kept_as_copy() {
+        let dir = guard_test_dir("inner_broken");
+        let path = dir.join("session_tabs2.json");
+        // 外側は正しい JSON の文字列だが、中のタブの一覧が壊れている
+        save_json_path(&path, &"{\"tabs\":5}".to_string()).unwrap();
+        let v = load_json_string_checked_path(&path, |v| v.get("tabs").map(|t| t.is_array()).unwrap_or(false)).unwrap();
+        assert_eq!(v, "", "壊れた中身は返さない (空として扱う)");
+        let copies: Vec<_> = fs::read_dir(&dir).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with("session_tabs2.json.broken-")).collect();
+        assert_eq!(copies.len(), 1, "写しを残す");
+        assert!(broken_paths().contains(&path));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn strict_load_missing_is_none_and_broken_is_error() {
+        let dir = guard_test_dir("strict");
+        let path = dir.join("dict2.json");
+        // 無い: 空として使う (初めて使うとき)
+        assert!(matches!(load_json_strict_opt_path::<Vec<u32>>(&path), Ok(None)));
+        // 壊れている: エラー (空として通さない)。写しを残し、元のファイルは上書きしない
+        fs::write(&path, b"[1,2").unwrap();
+        let e = load_json_strict_opt_path::<Vec<u32>>(&path);
+        assert!(e.is_err(), "壊れた辞書は空として通さない");
+        assert!(e.err().map(|e| e.to_string()).unwrap_or_default().contains("dict2.json"));
+        assert!(fs::read_dir(&dir).unwrap().flatten().any(|e| e.file_name().to_string_lossy().starts_with("dict2.json.broken-")));
+        assert!(save_json_path(&path, &Vec::<u32>::new()).is_err(), "壊れている間は上書きしない");
+        assert_eq!(fs::read(&path).unwrap(), b"[1,2");
+        // 形が違う (JSON としては読める): 同じくエラー
+        fs::write(&path, b"{\"a\":1}").unwrap();
+        assert!(load_json_strict_opt_path::<Vec<u32>>(&path).is_err());
+        // 直したら読めて、保存もできる
+        fs::write(&path, b"[1,2]").unwrap();
+        assert_eq!(load_json_strict_opt_path::<Vec<u32>>(&path).unwrap(), Some(vec![1, 2]));
+        assert!(save_json_path(&path, &vec![1u32, 2, 3]).is_ok());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[derive(serde::Deserialize, Default, Debug)]
+    struct DictLike {
+        #[serde(default)]
+        words: Vec<String>,
+        #[serde(default)]
+        ids: Vec<String>,
+    }
+
+    #[test]
+    fn strict_known_rejects_unknown_shape() {
+        let dir = guard_test_dir("strict_known");
+        let path = dir.join("dict3.json");
+        let known = ["words", "ids"];
+        // 知らない形 (一段深い): 空として通さない。写しを残し、上書きしない
+        fs::write(&path, br#"{"dictionary":{"words":["a"]}}"#).unwrap();
+        assert!(load_json_strict_known_opt_path::<DictLike>(&path, &known).is_err(), "知らない形は空として通さない");
+        assert!(fs::read_dir(&dir).unwrap().flatten().any(|e| e.file_name().to_string_lossy().starts_with("dict3.json.broken-")));
+        assert!(save_json_path(&path, &Vec::<u32>::new()).is_err(), "読めるまで上書きしない");
+        // 空の {}・古い形式 (一部の項目だけ)・知らない項目が混ざっていても知っている項目があるもの は読める
+        fs::write(&path, b"{}").unwrap();
+        assert!(load_json_strict_known_opt_path::<DictLike>(&path, &known).unwrap().is_some());
+        fs::write(&path, br#"{"words":["a"]}"#).unwrap();
+        assert_eq!(load_json_strict_known_opt_path::<DictLike>(&path, &known).unwrap().unwrap().words, vec!["a".to_string()]);
+        fs::write(&path, br#"{"ids":["x"],"extra":1}"#).unwrap();
+        assert_eq!(load_json_strict_known_opt_path::<DictLike>(&path, &known).unwrap().unwrap().ids, vec!["x".to_string()]);
+        // 無い: None
+        let _ = fs::remove_file(&path);
+        assert!(load_json_strict_known_opt_path::<DictLike>(&path, &known).unwrap().is_none());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn strict_known_rejects_array_and_held_file_is_not_overwritten() {
+        let dir = guard_test_dir("strict_array");
+        let path = dir.join("dict4.json");
+        let known = ["words", "ids"];
+        // 配列: 項目を順に並べたものとして読めてしまう (words に入るはずの語が別の項目に入る) ので、読まない
+        fs::write(&path, br#"[["a"],["b"]]"#).unwrap();
+        assert!(load_json_strict_known_opt_path::<DictLike>(&path, &known).is_err(), "配列の辞書は読まない");
+        assert!(save_json_path(&path, &Vec::<u32>::new()).is_err(), "読めるまで上書きしない");
+        // 上書きしないと決めたファイル
+        let held = dir.join("tabs5.json");
+        fs::write(&held, b"\"old\"").unwrap();
+        hold_overwrite_path(&held);
+        assert!(save_json_path(&held, &"new".to_string()).is_err(), "上書きしない");
+        assert_eq!(fs::read(&held).unwrap(), b"\"old\"");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn json_missing_is_not_blocked() {
+        let dir = guard_test_dir("missing");
+        let path = dir.join("none.json");
+        assert!(load_json_path::<Vec<String>>(&path).is_err());
+        // 無いファイルは、作ってよい
+        save_json_path(&path, &vec!["x"]).unwrap();
+        assert_eq!(load_json_path::<Vec<String>>(&path).unwrap(), vec!["x"]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn ini_unreadable_at_load_is_not_overwritten() {
+        let dir = guard_test_dir("ini");
+        let path = dir.join("settings.ini");
+        fs::write(&path, "[App]\nboardLogMode=off\n").unwrap();
+        let lock = lock_exclusive(&path);
+        assert!(load_settings_ini_path(&path).is_err());
+        drop(lock);
+        let mut up = HashMap::new();
+        up.insert("App.boardLogMode".to_string(), "all".to_string());
+        assert!(save_settings_ini_path(&path, &up).is_err());
+        assert!(fs::read_to_string(&path).unwrap().contains("boardLogMode=off"));
+        // 読めたあとは保存でき、途中の一時ファイルは残らない
+        assert_eq!(load_settings_ini_path(&path).unwrap().get("App.boardLogMode").map(|s| s.as_str()), Some("off"));
+        save_settings_ini_path(&path, &up).unwrap();
+        assert!(fs::read_to_string(&path).unwrap().contains("boardLogMode=all"));
+        assert!(fs::read_dir(&dir).unwrap().flatten().all(|e| !e.file_name().to_string_lossy().ends_with(".tmp")));
+        let _ = fs::remove_dir_all(&dir);
     }
 
     // EMBER_DATA_DIR はプロセス全体の環境変数なので、この crate 内で他にそれを触るテストが

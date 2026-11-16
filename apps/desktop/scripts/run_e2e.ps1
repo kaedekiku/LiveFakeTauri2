@@ -8,6 +8,31 @@ $ErrorActionPreference = "Stop"
 # WebView2 remote debugging via CDP
 $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=$DebugPort"
 
+# Refuse to run when something already answers on the debug port: the tests would attach to that app
+# (and write test values into ITS data) instead of the one started below.
+try {
+  $busy = Invoke-WebRequest -Uri "http://127.0.0.1:$DebugPort/json/version" -UseBasicParsing -TimeoutSec 2
+  if ($busy.StatusCode -eq 200) {
+    Write-Host "e2e: port $DebugPort is already answering (another app with remote debugging?). Close it or pass -DebugPort. Nothing was started."
+    exit 1
+  }
+} catch {
+  # nothing is listening: OK
+}
+
+# Data folder: always a fresh, empty folder made for this run (never the everyday / development data).
+# The tests overwrite favorites, NG filters and read status, so they must not share a data folder.
+# A marker is planted in it; e2e_playwright.mjs checks the marker before its first write.
+$dataRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\..\..\target\e2e-data"))
+$dataDir = Join-Path $dataRoot ("run-" + [Guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
+$marker = "e2e-marker-" + [Guid]::NewGuid().ToString("N")
+$markerJson = '{"boards":[{"boardName":"' + $marker + '","url":"https://e2e-marker.invalid/"}],"threads":[]}'
+[System.IO.File]::WriteAllText((Join-Path $dataDir "favorites.json"), $markerJson, (New-Object System.Text.UTF8Encoding($false)))
+$env:EMBER_DATA_DIR = $dataDir
+$env:E2E_DATA_MARKER = $marker
+Write-Host "e2e: data folder for this run: $dataDir"
+
 # Use the test identifier (tauri.test.conf.json) so this can run while the everyday LiveFake is open
 Write-Host "e2e: starting cargo tauri dev (test identifier, CDP port=$DebugPort)..."
 
@@ -55,6 +80,16 @@ try {
   $global:E2E_EXIT = $LASTEXITCODE
 } finally {
   try { & $cleanup } catch { Write-Host "e2e: cleanup error (ignored): $_" }
+}
+
+# Remove the data folder of this run only when the tests passed (keep it for inspection otherwise)
+if ($global:E2E_EXIT -eq 0 -and $dataDir.StartsWith($dataRoot + [System.IO.Path]::DirectorySeparatorChar) -and (Test-Path -LiteralPath $dataDir)) {
+  for ($i = 0; $i -lt 20; $i++) {
+    try { Remove-Item -LiteralPath $dataDir -Recurse -Force -ErrorAction Stop; break } catch { Start-Sleep -Milliseconds 500 }
+  }
+  if (Test-Path -LiteralPath $dataDir) { Write-Host "e2e: could not remove $dataDir (still in use); remove it later" }
+} else {
+  Write-Host "e2e: data folder kept: $dataDir"
 }
 
 Write-Host "e2e: test exit code=$($global:E2E_EXIT)"

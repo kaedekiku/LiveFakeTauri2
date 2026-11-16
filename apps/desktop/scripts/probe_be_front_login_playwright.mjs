@@ -1,6 +1,7 @@
 ﻿import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright';
+import { bodySummary } from './probe_redact.mjs';
 
 const desktopDir = process.cwd();
 const root = path.resolve(desktopDir, '..', '..');
@@ -74,7 +75,8 @@ const report = {
     has_login_word: /ログイン|login/i.test(text || ''),
     has_logout_word: /ログアウト|logout/i.test(text || ''),
     has_ng_exact: (loginPostBody || '').trim() === 'NG',
-    login_post_body_preview: loginPostBody ? loginPostBody.slice(0, 200) : null,
+    // 応答の本文は残さない (長さと NG かどうかだけ)
+    login_post_body: bodySummary(loginPostBody),
   },
   cookies: cookies.map(c => ({ name: c.name, domain: c.domain, path: c.path, secure: c.secure, httpOnly: c.httpOnly })),
   events,
@@ -85,6 +87,6 @@ fs.writeFileSync(outPath, JSON.stringify(report, null, 2), 'utf8');
 console.log(`WROTE: ${outPath}`);
 console.log(`FINAL_URL: ${finalUrl}`);
 console.log(`COOKIES: ${report.cookies.map(c => c.name).join(',') || '(none)'}`);
-console.log(`LOGIN_POST_BODY: ${(loginPostBody || '').slice(0,120)}`);
+console.log(`LOGIN_POST_BODY: ${JSON.stringify(bodySummary(loginPostBody))}`);
 
 await browser.close();

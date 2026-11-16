@@ -6,7 +6,10 @@
  * server responses from 5ch.io.
  *
  * Environment:
- *   E2E_CDP_URL  - CDP endpoint (default: http://127.0.0.1:9248)
+ *   E2E_CDP_URL      - CDP endpoint (default: http://127.0.0.1:9248)
+ *   E2E_DATA_MARKER  - 起動スクリプト (run_e2e.ps1 / run_e2e.sh) が、この回のために作った空の保存先に置いた目印。
+ *                      この試験はお気に入り・NG・既読を上書きして最後に空にするので、つないだアプリが
+ *                      その保存先を使っていることを確かめてから始める (確かめられなければ、何も書かずに止める)
  */
 import process from "node:process";
 import { chromium } from "playwright";
@@ -36,6 +39,17 @@ try {
 
   // Capture console/errors
   page.on("pageerror", (err) => console.log(`e2e [pageerror]: ${err.message}`));
+
+  // --- 0. 保存先の確認 (最初の書き込み・取得より前) ---
+  // つないだアプリが、この回のために作った保存先を使っていること。ふだんのデータを上書きしないため
+  const dataMarker = process.env.E2E_DATA_MARKER?.trim();
+  assert(dataMarker, "E2E_DATA_MARKER がありません。npm run test:e2e (run_e2e.ps1 / run_e2e.sh) から実行してください。何も書き込まずに止めます");
+  const markerFavs = await page.evaluate(() => window.__TAURI_INTERNALS__.invoke("load_favorites", {}));
+  assert(
+    Array.isArray(markerFavs?.boards) && markerFavs.boards.some((b) => b?.boardName === dataMarker),
+    "つないだアプリは、試験用の保存先を使っていません (目印が読めません)。何も書き込まずに止めます"
+  );
+  console.log("e2e: [PASS] app uses the data folder made for this run");
 
   // --- 1. Runtime detection ---
   const statusText = await page.$eval(".status-bar", (el) => el.textContent || "");

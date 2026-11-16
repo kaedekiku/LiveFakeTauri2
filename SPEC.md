@@ -264,7 +264,7 @@ OBS 表示から削除された発言を消す `overlay_retract`
 ### コマンド
 `load_commands` `save_commands` (プログラムは登録済みか、この起動中に `pick_command_program` で選んだ .exe だけ) `pick_command_program` `run_command` (id と置き換える値だけを受け取り、
 プログラムの場所は `data/commands.json` から読む)。処理は `src-tauri/src/user_commands.rs`。シェルを通さずに起動し、引数は登録した時点の区切りのまま置き換える。
-`$LINK` が家庭内・自分の PC のアドレスを指すときは実行しない。実行したもの・断ったものは日別ログ (`eventlog`) に残す。
+`$LINK` が家庭内・自分の PC のアドレスを指すときは実行しない。実行したもの・断ったものは日別ログ (`eventlog`) に残す (名前・成否・開いた先のホスト・引数の個数まで。値は残さない)。
 登録の `confirm` (既定 true) が true なら、画面が実行の前に確認ダイアログを出す
 
 ---

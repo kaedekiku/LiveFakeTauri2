@@ -304,7 +304,8 @@
     paused = false;
     renderStatus();
 
-    if (e.bodyHtml) {
+    // 処理済みの本文 (bodyHtml) が届いたら、空でもそのまま使う (伏せた結果が空のときに、元の本文へ戻さない)
+    if (typeof e.bodyHtml === "string") {
       bodyEl.innerHTML = e.bodyHtml;
     } else {
       bodyEl.textContent = e.body || "";
