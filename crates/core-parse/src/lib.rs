@@ -133,6 +133,8 @@ pub fn parse_read_cgi_html(html: &str) -> ReadCgiResult {
     //   <span class="uid">ID:xxx</span>
     //   <div class="post-content">BODY</div>
     // </div>
+    // read.cgi 7.8 (2026-10) からは、開始タグに itemprop などの属性が付き、日時は <time class="date" …>、
+    // ID は <button class="uid" …>ID:xxx<span class="uid-count">…</span></button> になった。どちらの書き方も読む
     if html.contains("class=\"clear post\"") || html.contains("class=\"post\"") {
         let split_tag = if html.contains("class=\"clear post\"") {
             "class=\"clear post\""
@@ -140,26 +142,27 @@ pub fn parse_read_cgi_html(html: &str) -> ReadCgiResult {
             "class=\"post\""
         };
         for chunk in html.split(split_tag).skip(1) {
-            let name = extract_between(chunk, "class=\"postusername\">", "</span>")
-                .or_else(|| extract_between(chunk, "class=\"name\">", "</span>"))
+            let name = extract_class_content(chunk, "postusername", &["</span>"])
+                .or_else(|| extract_class_content(chunk, "name", &["</span>"]))
                 .unwrap_or_default();
-            let date = extract_between(chunk, "class=\"date\">", "</span>")
+            let date = extract_class_content(chunk, "date", &["</time>", "</span>"])
                 .unwrap_or_default();
-            let uid = extract_between(chunk, "class=\"uid\">", "</span>")
+            // ID のあとに続く投稿数 (<span class="uid-count">) は入れない
+            let uid = extract_class_content(chunk, "uid", &["<span", "</button>", "</span>"])
                 .unwrap_or_default();
             let date_id = if uid.is_empty() {
                 strip_html_tags(&date)
             } else {
                 format!("{} {}", strip_html_tags(&date), strip_html_tags(&uid))
             };
-            let body = extract_between(chunk, "class=\"post-content\">", "</div>")
-                .or_else(|| extract_between(chunk, "class=\"message\">", "</div>"))
-                .or_else(|| extract_between(chunk, "class=\"msg\">", "</div>"))
+            let body = extract_class_content(chunk, "post-content", &["</div>"])
+                .or_else(|| extract_class_content(chunk, "message", &["</div>"]))
+                .or_else(|| extract_class_content(chunk, "msg", &["</div>"]))
                 .unwrap_or_default();
             if !body.is_empty() || !name.is_empty() {
                 out.push(DatEntry {
                     name: strip_html_tags(&name),
-                    mail: String::new(),
+                    mail: mail_from_name_html(&name),
                     date_and_id: date_id,
                     body: sanitize_dat_body(&body),
                 });
@@ -195,6 +198,37 @@ pub fn parse_read_cgi_html(html: &str) -> ReadCgiResult {
     }
 
     ReadCgiResult { title, entries: out }
+}
+
+/// `class="<class>"` を持つ要素の中身 (開始タグの終わりから、`closes` のうちいちばん早く現れるものまで)。
+/// 開始タグの class のあとに属性 (itemprop など) が付いていても読む
+fn extract_class_content(s: &str, class: &str, closes: &[&str]) -> Option<String> {
+    let marker = format!("class=\"{class}\"");
+    let rest = &s[s.find(&marker)? + marker.len()..];
+    let inner = &rest[rest.find('>')? + 1..];
+    let end = closes.iter().filter_map(|c| inner.find(c)).min()?;
+    Some(inner[..end].to_string())
+}
+
+/// 名前の HTML の中のリンクから、メール欄を取り出す (無ければ空)。
+/// `mailto:sage` の形と、Cloudflare のメール保護の形 (`/cdn-cgi/l/email-protection#<16進>`。先頭の 1 バイトで残りを XOR してある) を読む
+fn mail_from_name_html(name_html: &str) -> String {
+    if let Some(m) = extract_between(name_html, "href=\"mailto:", "\"") {
+        return strip_html_tags(&m);
+    }
+    let Some(hex) = extract_between(name_html, "email-protection#", "\"") else { return String::new() };
+    let bytes: Option<Vec<u8>> = (0..hex.len() / 2).map(|i| hex.get(i * 2..i * 2 + 2).and_then(|h| u8::from_str_radix(h, 16).ok())).collect();
+    match bytes {
+        Some(b) if b.len() >= 2 && hex.len() % 2 == 0 => {
+            let decoded: Vec<u8> = b[1..].iter().map(|x| x ^ b[0]).collect();
+            // 制御文字・タグの文字が入っていたら使わない (メール欄として表示するため)
+            match String::from_utf8(decoded) {
+                Ok(t) if !t.chars().any(|c| c.is_control() || c == '<' || c == '>') => t,
+                _ => String::new(),
+            }
+        }
+        _ => String::new(),
+    }
 }
 
 fn extract_between(s: &str, start: &str, end: &str) -> Option<String> {
@@ -481,6 +515,53 @@ pub fn parse_jpnkn_responses(body: &[u8]) -> (Vec<(u32, DatEntry)>, Option<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 2026-10 の read.cgi 7.8 からの HTML と同じ形 (開始タグに itemprop などの属性が付く・日時は <time>・ID は <button>・
+    /// メール欄は Cloudflare のメール保護の形)。中身は試験用
+    pub(crate) const READ_CGI_78_HTML: &str = concat!(
+        r#"<html><head><title>てすとスレ
+</title></head><body><div class="thread">"#,
+        r#"<div id="1" data-date="NG" data-userid="ID:AAAA/bbb0" data-id="1" class="clear post"><div open="" class="post-header"><div>"#,
+        r#"<details class="post-menu" name="post-actions"><summary aria-label="投稿メニュー"></summary><form action="https://donguri.5ch.io/confirm" method="GET"><input type="hidden" name="date" value="2026/11/15(日) 10:22:00.34"><button type="submit">x</button></form></details>"#,
+        r#"<button type="button" class="postid">1</button><span class="postusername" itemprop="author" itemscope="" itemtype="https://schema.org/Person"><meta itemprop="name" content="&#12394;"><b>ななし</b></span></div>"#,
+        r#"<span class="post-meta"><time class="date" itemprop="datePublished" datetime="2026-11-15T10:22:00.34+09:00">2026/11/15(日) 10:22:00.34</time><button type="button" class="uid" disabled="">ID:AAAA/bbb0<span class="uid-count" title="このスレッド内の投稿数"> [2]</span></button></span></div>"#,
+        r#"<div class="post-content" itemprop="text"> 1行目 <br> 2行目 <a href="http://jump.5ch.io/?https://example.com/a" rel="nofollow" target="_blank">https://example.com/a</a> </div></div>"#,
+        r#"<div id="2" data-date="NG" data-userid="ID:AAAA/bbb0" data-id="2" class="clear post" itemprop="comment" itemscope="" itemtype="https://schema.org/Comment"><link itemprop="url" href="https://mao.5ch.io/test/read.cgi/x/1/#2"><div open="" class="post-header"><div>"#,
+        r#"<details class="post-menu" name="post-actions"><summary></summary></details><button type="button" class="postid">2</button><span class="postusername" itemprop="author" itemscope="" itemtype="https://schema.org/Person"><meta itemprop="name" content="&#12394;"><b><a rel="nofollow" href="/cdn-cgi/l/email-protection#4536242220">さげ</a></b></span></div>"#,
+        r#"<span class="post-meta"><time class="date" itemprop="datePublished" datetime="2026-11-15T10:22:40+09:00">2026/11/15(日) 10:22:40.00</time><button type="button" class="uid" disabled="">ID:AAAA/bbb0<span class="uid-count" title="このスレッド内の投稿数"> [2]</span></button></span></div>"#,
+        r#"<div class="post-content" itemprop="text"> ふたつめ </div></div></div></body></html>"#
+    );
+
+    #[test]
+    fn parse_read_cgi_78_layout() {
+        let got = parse_read_cgi_html(READ_CGI_78_HTML);
+        assert_eq!(got.title.as_deref(), Some("てすとスレ"));
+        assert_eq!(got.entries.len(), 2, "今の 5ch の HTML から、レスを読める");
+        assert_eq!(got.entries[0].name, "ななし");
+        assert_eq!(got.entries[0].mail, "");
+        assert_eq!(got.entries[0].date_and_id, "2026/11/15(日) 10:22:00.34 ID:AAAA/bbb0", "ID のあとの投稿数は入れない");
+        assert!(got.entries[0].body.contains("1行目") && got.entries[0].body.contains("2行目") && got.entries[0].body.contains("https://example.com/a"), "{}", got.entries[0].body);
+        assert!(!got.entries[0].body.contains("投稿メニュー") && !got.entries[0].body.contains("itemprop"), "{}", got.entries[0].body);
+        assert_eq!(got.entries[1].name, "さげ");
+        assert_eq!(got.entries[1].mail, "sage", "メール欄 (Cloudflare のメール保護の形) を読む");
+        assert_eq!(got.entries[1].date_and_id, "2026/11/15(日) 10:22:40.00 ID:AAAA/bbb0");
+        assert!(got.entries[1].body.contains("ふたつめ"));
+    }
+
+    // 前の書き方 (開始タグが class だけ・<span>) も、これまでどおり読める
+    #[test]
+    fn parse_read_cgi_old_layout_still_works() {
+        let html = concat!(
+            r#"<title>ふるいスレ</title><div id="1" class="clear post"><span class="postusername"><b><a href="mailto:sage">ななし</a></b></span>"#,
+            r#"<span class="date">2025/01/02(木) 03:04:05.06</span><span class="uid">ID:zzzz</span><div class="post-content"> ほんぶん <br> つづき </div></div>"#
+        );
+        let got = parse_read_cgi_html(html);
+        assert_eq!(got.entries.len(), 1);
+        assert_eq!(got.entries[0].name, "ななし");
+        assert_eq!(got.entries[0].mail, "sage");
+        assert_eq!(got.entries[0].date_and_id, "2025/01/02(木) 03:04:05.06 ID:zzzz");
+        assert!(got.entries[0].body.contains("ほんぶん") && got.entries[0].body.contains("つづき"));
+    }
 
     #[test]
     fn parse_subject_line_works() {

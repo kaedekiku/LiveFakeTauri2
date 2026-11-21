@@ -13,15 +13,15 @@ ZIP を展開するだけで、インストールせずに使えます。
 
 ---
 
-## 最新の更新 (v0.0.132)
+## 最新の更新 (v0.0.133)
 
 <!-- リリースのたびに、下の印の間を書き換えます。印の間がそのまま GitHub のリリースページの本文になります (CHANGELOG.md にも転記)。 -->
 <!-- release-notes:start -->
 > **v0.0.121 以前をお使いの方へ: セキュリティ対策のため、最新版への更新をおすすめします。**
 
-### セキュリティ
+### 修正
 
-- セキュリティの更新
+- 5ch のスレが「parse failed: no responses found in HTML」と出て読めないことがあるのを直しました。プロキシ (2chAPIProxy など) を通しているときに起きていました
 
 詳しい内容は [CHANGELOG](https://github.com/kaedekiku/LiveFakeTauri2/blob/main/CHANGELOG.md)、使い方は [説明書](https://github.com/kaedekiku/LiveFakeTauri2/blob/main/docs/USER_MANUAL.md) を参照してください。
 <!-- release-notes:end -->

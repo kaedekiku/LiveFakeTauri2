@@ -10,6 +10,8 @@ core-parse = { path = "../core-parse" }
 core-proxy = { path = "../core-proxy" }
 reqwest = { version = "0.12", default-features = false, features = ["cookies", "json", "rustls-tls"] }
 encoding_rs = "0.8"
+# gzip で圧縮されたまま返ってきた応答 (ローカルのプロキシ経由の dat など) を展開する。画像の部品 (png) 経由で、すでにビルドに入っている
+flate2 = "1"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

@@ -156,7 +156,7 @@ pub async fn fetch_subject_threads(
     if !status.is_success() {
         return Err(FetchError::HttpStatus(status));
     }
-    let bytes = response.bytes().await?;
+    let bytes = read_body(response).await?;
     let (decoded, _, _) = SHIFT_JIS.decode(&bytes);
     let body = decoded.into_owned();
 
@@ -1432,6 +1432,58 @@ pub fn resolve_dat_url_from_thread_url(thread_url: &str) -> Result<String, Fetch
     Ok(format!("{}://{}/{}/dat/{}.dat", parsed.scheme(), host, board, key))
 }
 
+/// 展開したあとの応答の大きさの上限 (これを超える圧縮データは読まない。小さな圧縮データで大きく膨らませる手口への備え)
+const MAX_INFLATED_BODY: u64 = 32 * 1024 * 1024;
+
+/// 応答の本文が gzip で圧縮されたままなら、展開する (圧縮されていなければそのまま返す)。
+/// この crate の通信は圧縮を頼んでいないが、ローカルのプロキシ (2chAPIProxy など) を通すと、頼んでいなくても
+/// `Content-Encoding: gzip` の dat が返ることがある (2026-11 に確認)。展開しないと 1 行も読めない。
+/// gzip の印 (1f 8b 08) は、Shift_JIS・EUC-JP・UTF-8 の文章や HTML の先頭には現れない
+fn gunzip_if_needed(bytes: Vec<u8>) -> Result<Vec<u8>, FetchError> {
+    use std::io::Read;
+    if !bytes.starts_with(&[0x1f, 0x8b, 0x08]) {
+        return Ok(bytes);
+    }
+    let mut out = Vec::new();
+    let mut decoder = flate2::read::MultiGzDecoder::new(bytes.as_slice()).take(MAX_INFLATED_BODY + 1);
+    match decoder.read_to_end(&mut out) {
+        Ok(_) if out.len() as u64 > MAX_INFLATED_BODY => Err(FetchError::Parse("compressed response is too large".into())),
+        Ok(_) => Ok(out),
+        // gzip として読めなければ、受け取ったままを返す (これまでと同じ扱い)
+        Err(_) => Ok(bytes),
+    }
+}
+
+/// 応答の本文を読む (gzip で圧縮されたままなら展開する)
+async fn read_body(response: reqwest::Response) -> Result<Vec<u8>, FetchError> {
+    gunzip_if_needed(response.bytes().await?.to_vec())
+}
+
+/// dat の本文 (Shift_JIS) からレスを読む。戻り値の 2 つ目は、1 行目にあるスレのタイトル
+fn responses_from_dat_bytes(bytes: &[u8], limit: usize) -> (Vec<ThreadResponse>, Option<String>) {
+    let (decoded, _, _) = SHIFT_JIS.decode(bytes);
+    let mut out = Vec::new();
+    let mut dat_title: Option<String> = None;
+    for (idx, line) in decoded.lines().enumerate() {
+        if idx == 0 {
+            dat_title = parse_dat_title(line);
+        }
+        if let Some(row) = parse_dat_line(line) {
+            out.push(ThreadResponse {
+                response_no: (idx + 1) as u32,
+                name: row.name,
+                mail: row.mail,
+                date_and_id: row.date_and_id,
+                body: row.body,
+            });
+            if out.len() >= limit {
+                break;
+            }
+        }
+    }
+    (out, dat_title)
+}
+
 /// Returns (responses, optional_title). Title is only set when fetched from read.cgi HTML fallback.
 pub async fn fetch_thread_responses(
     client: &Client,
@@ -1443,29 +1495,8 @@ pub async fn fetch_thread_responses(
     let status = response.status();
 
     if status.is_success() {
-        let bytes = response.bytes().await?;
-        let (decoded, _, _) = SHIFT_JIS.decode(&bytes);
-        let body = decoded.into_owned();
-
-        let mut out = Vec::new();
-        let mut dat_title: Option<String> = None;
-        for (idx, line) in body.lines().enumerate() {
-            if idx == 0 {
-                dat_title = parse_dat_title(line);
-            }
-            if let Some(row) = parse_dat_line(line) {
-                out.push(ThreadResponse {
-                    response_no: (idx + 1) as u32,
-                    name: row.name,
-                    mail: row.mail,
-                    date_and_id: row.date_and_id,
-                    body: row.body,
-                });
-                if out.len() >= limit {
-                    break;
-                }
-            }
-        }
+        let bytes = read_body(response).await?;
+        let (out, dat_title) = responses_from_dat_bytes(&bytes, limit);
         if !out.is_empty() {
             return Ok((out, dat_title));
         }
@@ -1476,7 +1507,7 @@ pub async fn fetch_thread_responses(
     if !html_response.status().is_success() {
         return Err(FetchError::HttpStatus(html_response.status()));
     }
-    let html_bytes = html_response.bytes().await?;
+    let html_bytes = read_body(html_response).await?;
     let (html_decoded, _, _) = SHIFT_JIS.decode(&html_bytes);
     let html_body = html_decoded.into_owned();
 
@@ -1611,7 +1642,7 @@ pub async fn fetch_shitaraba_thread_list(
     if !response.status().is_success() {
         return Err(FetchError::HttpStatus(response.status()));
     }
-    let bytes = response.bytes().await?;
+    let bytes = read_body(response).await?;
     let entries = core_parse::parse_shitaraba_thread_list(&bytes);
     Ok(entries.into_iter().take(limit).map(|e| SubjectThread {
         thread_url: format!("https://jbbs.shitaraba.net/bbs/read.cgi/{}/{}/{}/", category, board_id, e.thread_key),
@@ -1663,7 +1694,7 @@ pub async fn fetch_shitaraba_responses(
     if !resp.status().is_success() {
         return Err(FetchError::HttpStatus(resp.status()));
     }
-    let bytes = resp.bytes().await?;
+    let bytes = read_body(resp).await?;
     let (entries, title) = core_parse::parse_shitaraba_html_responses(&bytes);
     let title = title.map(|t| strip_shitaraba_title_suffix(&t, &thread_key));
     Ok((entries.into_iter().take(limit).map(|(no, e)| ThreadResponse {
@@ -1724,7 +1755,7 @@ pub async fn post_shitaraba_reply(
 
     let status = resp.status().as_u16();
     let ct = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).map(|s| s.to_string());
-    let resp_bytes = resp.bytes().await?;
+    let resp_bytes = read_body(resp).await?;
     let resp_text = core_parse::decode_euc_jp(&resp_bytes);
 
     let contains_error = resp_text.contains("ERROR") || resp_text.contains("エラー");
@@ -1789,7 +1820,7 @@ pub async fn fetch_jpnkn_thread_list(
     if !response.status().is_success() {
         return Err(FetchError::HttpStatus(response.status()));
     }
-    let bytes = response.bytes().await?;
+    let bytes = read_body(response).await?;
     let entries = core_parse::parse_jpnkn_thread_list(&bytes);
     Ok(entries.into_iter().take(limit).map(|e| SubjectThread {
         thread_url: format!("https://bbs.jpnkn.com/test/read.cgi/{}/{}/", board, e.thread_key),
@@ -1811,7 +1842,7 @@ pub async fn fetch_jpnkn_responses(
     if !response.status().is_success() {
         return Err(FetchError::HttpStatus(response.status()));
     }
-    let bytes = response.bytes().await?;
+    let bytes = read_body(response).await?;
     let (entries, title) = core_parse::parse_jpnkn_responses(&bytes);
     Ok((entries.into_iter().take(limit).map(|(no, e)| ThreadResponse {
         response_no: no,
@@ -1906,7 +1937,7 @@ pub async fn post_jpnkn_reply(
 
     let status = resp.status().as_u16();
     let ct = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).map(|s| s.to_string());
-    let resp_bytes = resp.bytes().await?;
+    let resp_bytes = read_body(resp).await?;
     let (resp_text, _, _) = SHIFT_JIS.decode(&resp_bytes);
 
     let contains_error = resp_text.contains("ERROR") || resp_text.contains("エラー");
@@ -1993,7 +2024,7 @@ async fn decode_5ch_response(
     let redir = resp.headers().get("location")
         .and_then(|v| v.to_str().ok())
         .and_then(|s| checked_post_url(resp.url().as_str(), s).ok());
-    let bytes = resp.bytes().await?;
+    let bytes = read_body(resp).await?;
     let (body, _, _) = SHIFT_JIS.decode(&bytes);
     Ok((status, ct, body.into_owned(), redir))
 }
@@ -2495,7 +2526,7 @@ pub async fn create_shitaraba_thread(
 
     let status = resp.status().as_u16();
     let ct = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).map(|s| s.to_string());
-    let resp_bytes = resp.bytes().await?;
+    let resp_bytes = read_body(resp).await?;
     let resp_text = core_parse::decode_euc_jp(&resp_bytes);
 
     let contains_error = resp_text.contains("ERROR") || resp_text.contains("エラー");
@@ -2566,7 +2597,7 @@ pub async fn create_jpnkn_thread(
 
     let status = resp.status().as_u16();
     let ct = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).map(|s| s.to_string());
-    let resp_bytes = resp.bytes().await?;
+    let resp_bytes = read_body(resp).await?;
     let (resp_text, _, _) = SHIFT_JIS.decode(&resp_bytes);
 
     let contains_error = resp_text.contains("ERROR") || resp_text.contains("エラー");
@@ -2790,6 +2821,7 @@ pub async fn submit_post_finalize_from_confirm(
 
 #[cfg(test)]
 mod tests {
+    use super::{gunzip_if_needed, read_body, responses_from_dat_bytes, Client, MAX_INFLATED_BODY, SHIFT_JIS};
     use super::{
         content_type_is_html, cookie_names_for_url, decode_html_entities, detect_meta_charset,
         detect_site_type, extract_bbsmenu_hosts, extract_tweet_id, is_allowed_url, is_public_ip,
@@ -3422,6 +3454,68 @@ mod tests {
     fn resolve_subject_url_rejects_unsupported_path() {
         let err = resolve_subject_url_from_thread_url("https://mao.5ch.io/test/").expect_err("unsupported path");
         assert!(err.to_string().contains("unsupported url"));
+    }
+
+    fn gzip(data: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        e.write_all(data).unwrap();
+        e.finish().unwrap()
+    }
+
+    // gzip で圧縮されたまま返ってきた dat (ローカルのプロキシ経由で起きる) から、レスを読める
+    #[test]
+    fn gzipped_dat_is_read() {
+        let (dat, _, _) = SHIFT_JIS.encode("ななし<>sage<>2026/11/21(土) 12:00:00.00 ID:abcd<> ほんぶん <>てすとスレ\nななし<><>2026/11/21(土) 12:00:01.00 ID:abcd<> ふたつめ <>\n");
+        let plain = dat.to_vec();
+        // 対照: 圧縮されていない dat は、そのまま読める
+        let (rows, title) = responses_from_dat_bytes(&gunzip_if_needed(plain.clone()).unwrap(), 1000);
+        assert_eq!((rows.len(), title.as_deref()), (2, Some("てすとスレ")));
+        let gz = gzip(&plain);
+        assert!(gz.starts_with(&[0x1f, 0x8b, 0x08]) && gz != plain);
+        let (rows, title) = responses_from_dat_bytes(&gunzip_if_needed(gz).unwrap(), 1000);
+        assert_eq!(rows.len(), 2, "圧縮されたままの dat から、レスを読める");
+        assert_eq!(title.as_deref(), Some("てすとスレ"));
+        assert_eq!(rows[1].response_no, 2);
+        // gzip の印で始まるが壊れているデータは、受け取ったままを返す (止まらない)
+        let broken = vec![0x1f, 0x8b, 0x08, 0x00, 0xff, 0xff];
+        assert_eq!(gunzip_if_needed(broken.clone()).unwrap(), broken);
+    }
+
+    // 展開すると上限を超える圧縮データは読まない
+    #[test]
+    fn oversized_gzip_is_refused() {
+        let big = gzip(&vec![b'a'; (MAX_INFLATED_BODY + 1024) as usize]);
+        assert!(big.len() < 1024 * 1024, "(前提) 圧縮したものは小さい: {}", big.len());
+        assert!(gunzip_if_needed(big).is_err());
+        let ok = gzip(&vec![b'a'; 1024 * 1024]);
+        assert_eq!(gunzip_if_needed(ok).unwrap().len(), 1024 * 1024);
+    }
+
+    // 頼んでいないのに Content-Encoding: gzip で返ってきた応答を、本文の読み取りで展開する (手元の受け口で確かめる)
+    #[tokio::test]
+    async fn read_body_inflates_unrequested_gzip() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let body = gzip("1<>2<>3<>4<>5\n".as_bytes());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let served = body.clone();
+        tokio::spawn(async move {
+            for _ in 0..2 {
+                let Ok((mut sock, _)) = listener.accept().await else { return };
+                let mut buf = [0u8; 2048];
+                let _ = sock.read(&mut buf).await;
+                let head = format!("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", served.len());
+                let _ = sock.write_all(head.as_bytes()).await;
+                let _ = sock.write_all(&served).await;
+            }
+        });
+        let client = Client::builder().timeout(std::time::Duration::from_secs(30)).no_proxy().build().unwrap();
+        // (前提) この crate の通信は圧縮を展開しないので、受け取った本文は圧縮されたまま
+        let raw = client.get(format!("http://{addr}/x.dat")).send().await.unwrap().bytes().await.unwrap().to_vec();
+        assert_eq!(raw, body);
+        let got = read_body(client.get(format!("http://{addr}/x.dat")).send().await.unwrap()).await.unwrap();
+        assert_eq!(got, b"1<>2<>3<>4<>5\n");
     }
 
     #[test]
