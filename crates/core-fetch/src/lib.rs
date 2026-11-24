@@ -669,7 +669,7 @@ fn resolve_url(base: &str, maybe_relative: &str) -> String {
 }
 
 /// HTML エンティティ (`&amp;` `&#39;` `&#x3042;` 等) を文字に戻す。未知のものはそのまま残す。
-fn decode_html_entities(input: &str) -> String {
+pub fn decode_html_entities(input: &str) -> String {
     if !input.contains('&') {
         return input.to_string();
     }
@@ -1457,6 +1457,11 @@ fn gunzip_if_needed(bytes: Vec<u8>) -> Result<Vec<u8>, FetchError> {
 /// 応答の本文を読む (gzip で圧縮されたままなら展開する)
 async fn read_body(response: reqwest::Response) -> Result<Vec<u8>, FetchError> {
     gunzip_if_needed(response.bytes().await?.to_vec())
+}
+
+/// dat の本文 (Shift_JIS) からレスを読む (残したログ・ほかの専ブラの dat を開くとき用。取得のときと同じ読み方)
+pub fn parse_dat_bytes(bytes: &[u8], limit: usize) -> (Vec<ThreadResponse>, Option<String>) {
+    responses_from_dat_bytes(bytes, limit)
 }
 
 /// dat の本文 (Shift_JIS) からレスを読む。戻り値の 2 つ目は、1 行目にあるスレのタイトル

@@ -188,7 +188,8 @@ const devDelayed = async <T,>(name: string, p: Promise<T>): Promise<T> => {
 
 const saveToFile = (filename: string, data: unknown) => {
   if (isTauriRuntime()) {
-    invoke("save_generic_json", { filename, data }).catch(() => {});
+    // 断られた・書けなかったときは黙って捨てない (名前が許可の一覧に無い・起動時に読めなかったファイル、など)
+    invoke("save_generic_json", { filename, data }).catch((e) => console.warn(`save_generic_json failed: ${filename}`, e));
   }
 };
 const loadFromFile = async <T,>(filename: string): Promise<T | null> => {
@@ -196,7 +197,7 @@ const loadFromFile = async <T,>(filename: string): Promise<T | null> => {
   try {
     const v = await devDelayed(filename, invoke<T | null>("load_generic_json", { filename }));
     return v;
-  } catch { return null; }
+  } catch (e) { console.warn(`load_generic_json failed: ${filename}`, e); return null; }
 };
 
 type ResizeDragState =
@@ -300,6 +301,20 @@ const formatAgo = (at: number | undefined, now: number): string => {
 };
 // Twitch・YouTube のチャットのタブ (流れていくだけなので、取得・巡回・栞・書き込みはしない)
 const isChatUrl = (url: string) => isTwitchUrl(url) || isYoutubeUrl(url);
+// ----- ログのタブ (残した掲示板のログを、読むだけのタブで開く) -----
+// タブの URL は専用の形 lflog://<サイト>/<板>/<スレ番号> (外のファイルは lflog://file/<番号>)。http(s) ではないので、取得・書き込みの命令は Rust 側でも断る
+const isLogUrl = (url: string) => url.trim().toLowerCase().startsWith("lflog:");
+// 掲示板の生きたスレのタブか (取得・書き込み・ログの書き足し・栞や位置の保存の対象)。チャットのタブとログのタブは違う
+const isBoardThreadUrl = (url: string) => !isChatUrl(url) && !isLogUrl(url);
+const LOG_TAB_TITLE_PREFIX = "[ログ] ";
+const LOG_SITE_LABEL: Record<string, string> = { "5ch": "5ch", shitaraba: "したらば", jpnkn: "JPNKN", file: "ファイル" };
+const formatLogTime = (secs: number): string => {
+  if (!secs) return "-";
+  const d = new Date(secs * 1000);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}/${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+};
+const formatLogSize = (bytes: number): string => (bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`);
 // レス表示欄をキーでスクロールする操作 (位置の合わせ直しを止める)
 const SCROLL_KEYS = new Set(["PageUp", "PageDown", "ArrowUp", "ArrowDown", "Home", "End", " "]);
 // YouTube の絵文字の画像 (YouTube の画像配信サーバーのものだけ使う。Rust 側でも確かめている)
@@ -3973,7 +3988,7 @@ export default function App() {
     saveToFile("scroll-positions.json", threadScrollPositions.current);
   };
   const saveBookmark = (url: string, responseNo: number) => {
-    if (isChatUrl(url)) return; // Twitch・YouTube のチャットは流れていくだけなので栞は残さない
+    if (isChatUrl(url) || isLogUrl(url)) return; // Twitch・YouTube のチャットは流れていくだけなので栞は残さない。ログのタブも残さない
     bookmarkCacheRef.current[url] = responseNo;
     persistBookmarks();
   };
@@ -3998,7 +4013,7 @@ export default function App() {
   };
   const getVisibleResponseNo = (): number => getVisibleAnchor().no;
   const saveScrollPos = (url: string, responseNo?: number) => {
-    if (isChatUrl(url)) return;
+    if (isChatUrl(url) || isLogUrl(url)) return;
     const no = responseNo ?? getVisibleResponseNo();
     // 1番 (一番上) も覚える (覚えないと、前に覚えた途中の位置が残る)
     if (no < 1) return;
@@ -4237,6 +4252,8 @@ export default function App() {
   };
 
   const openThreadInTab = (url: string, title: string) => {
+    // ログのタブの URL は、取得の経路に入れない (ログを読み直して開く)
+    if (isLogUrl(url)) { void openLogTab(url); return; }
     beforeViewSwitch();
     setActivePaneView("responses");
     setResponseSearchQuery("");
@@ -4352,7 +4369,9 @@ export default function App() {
     flushScrollSave();
     if (index === activeTabIndex) cancelScrollAlign();
     const closing = threadTabs[index];
-    closedTabsRef.current.push({ threadUrl: closing.threadUrl, title: closing.title });
+    // ログのタブは、閉じたタブを開き直す一覧に入れない (開き直すと、取得の経路に入るため)
+    if (isLogUrl(closing.threadUrl)) logSourceUrlRef.current.delete(closing.threadUrl);
+    else closedTabsRef.current.push({ threadUrl: closing.threadUrl, title: closing.title });
     if (closedTabsRef.current.length > 20) closedTabsRef.current.shift();
     // 本文を表示し終える前 (起動時の読み込み待ちなど) に閉じたときは、栞・位置を保存しない
     // (まだ位置を決めていないので、初めの値 (1番) で栞を上書きしてしまう)
@@ -4538,9 +4557,11 @@ export default function App() {
   const fetchThreadListFromCurrent = async (targetThreadUrl?: string) => {
     // Switching to the thread-list view unmounts the responses pane —
     // capture the active tab's scroll state before it's destroyed.
+    const url = (targetThreadUrl ?? threadUrl).trim();
+    // ログのタブからは、スレ一覧を取りに行かない (元の板が分からないので)
+    if (isLogUrl(url)) { setStatus("ログのタブです。スレ一覧は、板か掲示板のスレのタブから開いてください"); return; }
     saveActiveTabScrollState();
     setShowFavoritesOnly(false);
-    const url = (targetThreadUrl ?? threadUrl).trim();
     if (!url) return;
     // Clear stale thread list when switching to a different board
     if (activeBoardUrlRef.current !== url) {
@@ -4596,7 +4617,7 @@ export default function App() {
   // Fetch responses for a background tab (updates cache + new arrivals, no UI update)
   const fetchBackgroundTabResponses = async (tabUrl: string, tabTitle: string) => {
     // Twitch・YouTube のタブはチャットを受信して積むので、巡回はしない
-    if (!isTauriRuntime() || isChatUrl(tabUrl)) return;
+    if (!isTauriRuntime() || isChatUrl(tabUrl) || isLogUrl(tabUrl)) return; // ログのタブも巡回しない (読むだけ)
     try {
       const cached = tabCacheRef.current.get(tabUrl);
       const prevResponses = cached?.responses ?? [];
@@ -4733,6 +4754,14 @@ export default function App() {
   const fetchResponsesFromCurrent = async (targetThreadUrl?: string, opts?: { keepSelection?: boolean; resetScroll?: boolean }) => {
     const url = (targetThreadUrl ?? threadUrl).trim();
     if (!url) return;
+    // ログのタブは読むだけ (取得しない)。開いたときに読んだ分を表示する
+    if (isLogUrl(url)) {
+      const rows = tabCacheRef.current.get(url)?.responses ?? [];
+      setFetchedResponses(rows);
+      setResponseListProbe(`log rows=${rows.length}`);
+      if (!opts?.keepSelection) setStatus(`ログのタブです (${rows.length}レス)。更新・書き込みはできません`);
+      return;
+    }
     // Twitch・YouTube のタブはチャットを受信して積むだけなので、取得はせず手元にある分を表示する
     if (isChatUrl(url)) {
       const rows = tabCacheRef.current.get(url)?.responses ?? [];
@@ -5396,6 +5425,99 @@ export default function App() {
     ? (viewerTargetOpen ? viewerComposeTarget : "")
     : (threadTabs[activeTabIndex]?.threadUrl ?? "");
   const activeComposeTitle = threadTabs.find((t) => t.threadUrl === activeComposeUrl)?.title ?? "";
+  // 書き込み欄を出すか (ログのタブを表示している間は出さない)
+  const composeShown = composeOpen && !isLogUrl(activeComposeUrl);
+  // ===== ログを開く (掲示板のログの 2 回目。決まりは REQUIREMENTS の「ログを開く・書き出す」) =====
+  // ログのタブは読むだけ: 取得・自動更新・書き込み・ログの書き足し・栞や位置の保存・前回のタブの保存の対象にしない。
+  // 新着の判定を通らないので、読み上げ・字幕・OBS 表示・新着レスペイン・ビュワーへは流れない
+  type LogEntry = { tabUrl: string; site: string; board: string; key: string; title: string; url: string; lastNo: number; modified: number; size: number };
+  type LogThread = { tabUrl: string; title: string; url: string; responses: ThreadResponseItem[]; truncated: boolean };
+  const [logDialogOpen, setLogDialogOpen] = useState(false);
+  const [logList, setLogList] = useState<LogEntry[]>([]);
+  const [logListMsg, setLogListMsg] = useState("");
+  const [logFilter, setLogFilter] = useState("");
+  // ログのタブの、元のスレの URL (表示とコピー用。取得には使わない)
+  const logSourceUrlRef = useRef<Map<string, string>>(new Map());
+  const refreshLogList = async () => {
+    if (!isTauriRuntime()) { setLogListMsg("ログの一覧は、アプリとして起動したときに使えます"); return; }
+    setLogListMsg("読み込んでいます…");
+    try {
+      const list = await invoke<LogEntry[]>("board_log_list");
+      setLogList(Array.isArray(list) ? list : []);
+      setLogListMsg("");
+    } catch (e) {
+      console.warn("board_log_list failed", e);
+      setLogListMsg(`ログの一覧を読めませんでした: ${String(e)}`);
+    }
+  };
+  const openLogDialog = () => { setLogFilter(""); setLogDialogOpen(true); void refreshLogList(); };
+  const logFilterWords = logFilter.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const filteredLogList = logFilterWords.length === 0 ? logList : logList.filter((e) => { const hay = `${e.title} ${e.board} ${e.site} ${e.key}`.toLowerCase(); return logFilterWords.every((w) => hay.includes(w)); });
+  const filteredLogCount = filteredLogList.length;
+  const shownLogList = filteredLogList.slice(0, 500);
+  // ログのタブを開く (取得の経路は通さない。読んだレスを、タブの手元の控えと表示にだけ入れる)
+  const openLogTab = async (tabUrl: string) => {
+    if (!isTauriRuntime() || !isLogUrl(tabUrl)) return;
+    let log: LogThread;
+    try {
+      log = await invoke<LogThread>("board_log_read", { tabUrl });
+    } catch (e) {
+      console.warn("board_log_read failed", e);
+      setStatus(`ログを開けませんでした: ${String(e)}`);
+      setAppConfirm({ title: "ログを開けませんでした", message: String(e), buttons: [{ label: "OK", primary: true, onClick: () => {} }] });
+      return;
+    }
+    const url = log.tabUrl;
+    if (!isLogUrl(url) || !Array.isArray(log.responses)) return;
+    const rows = log.responses.filter((r) => r && typeof r.responseNo === "number" && typeof r.body === "string")
+      .map((r) => ({ responseNo: r.responseNo, name: String(r.name ?? ""), mail: String(r.mail ?? ""), dateAndId: String(r.dateAndId ?? ""), body: r.body }));
+    const title = `${LOG_TAB_TITLE_PREFIX}${log.title || "(題名なし)"}`;
+    const tabs = threadTabsRef.current;
+    const existing = tabs.findIndex((t) => t.threadUrl === url);
+    if (existing < 0 && tabs.length >= maxOpenTabsRef.current) { setStatus(`タブ上限 (${maxOpenTabsRef.current}) に達しました`); return; }
+    beforeViewSwitch();
+    setActivePaneView("responses");
+    setResponseSearchQuery("");
+    setResponseSearchMode(null);
+    setSearchMatchIndex(0);
+    // 今のタブの位置を覚える (ふつうのタブの切り替えと同じ)
+    const cur = tabs[activeTabIndexRef.current];
+    if (cur && cur.threadUrl !== url) {
+      const cached = tabCacheRef.current.get(cur.threadUrl);
+      if (cached) cached.newResponseStart = newResponseStart;
+      saveActiveTabScrollState();
+      saveBookmark(cur.threadUrl, selectedResponse);
+    }
+    logSourceUrlRef.current.set(url, typeof log.url === "string" ? log.url : "");
+    tabCacheRef.current.set(url, { responses: rows, selectedResponse: 1 });
+    const nextTabs = existing >= 0 ? tabs.map((t, i) => (i === existing ? { ...t, title } : t)) : [...tabs, { threadUrl: url, title }];
+    const nextIndex = existing >= 0 ? existing : nextTabs.length - 1;
+    setThreadTabs(nextTabs);
+    threadTabsRef.current = nextTabs;
+    activeTabIndexRef.current = nextIndex;
+    setActiveTabIndex(nextIndex);
+    setNewResponseStart(null);
+    setFetchedResponses(rows);
+    suppressResponseSelScrollRef.current = true;
+    setSelectedResponse(1);
+    setThreadUrl(url);
+    setLocationInput(url);
+    settleResponsePane();
+    scrollToResponseNo(1);
+    setLogDialogOpen(false);
+    setStatus(`ログを開きました: ${log.title || url} (${rows.length}レス${log.truncated ? "。10万件で切っています" : ""})`);
+  };
+  const openLogFromFile = async () => {
+    if (!isTauriRuntime()) return;
+    try {
+      const picked = await invoke<{ tabUrl: string; name: string } | null>("board_log_pick_file");
+      if (picked?.tabUrl) await openLogTab(picked.tabUrl);
+    } catch (e) {
+      console.warn("board_log_pick_file failed", e);
+      setAppConfirm({ title: "ファイルを開けませんでした", message: String(e), buttons: [{ label: "OK", primary: true, onClick: () => {} }] });
+    }
+  };
+
   const composeTargetUrlRef = useRef("");
   composeTargetUrlRef.current = activeComposeUrl;
   // 選んでいた送信先のタブが閉じられたら「未選択」に戻す (タブが 0 個の起動直後は、復元を待つので触らない)
@@ -5635,6 +5757,10 @@ export default function App() {
       setComposeResult({ ok: false, message: activePaneView === "viewer" && threadTabs.length > 0 ? "書き込み欄の「送信先」を選んでください" : "スレのタブを開くと書き込めます" });
       return;
     }
+    if (isLogUrl(activeComposeUrl)) {
+      setComposeResult({ ok: false, message: "ログのタブには書き込めません" });
+      return;
+    }
     if (isChatUrl(activeComposeUrl)) {
       const where = isTwitchUrl(activeComposeUrl) ? "Twitch" : "YouTube";
       setAppConfirm({
@@ -5670,6 +5796,7 @@ export default function App() {
   // スレッドタイトルバーの「書き込み」から浮遊ウィンドウ (別 OS ウィンドウ) を開く。
   // 下部の書き込みパネルとは独立で、名前・スレ情報などの初期値だけを渡す
   const openComposePopup = () => {
+    if (isLogUrl(threadTabs[activeTabIndex]?.threadUrl ?? threadUrl)) { setStatus("ログのタブには書き込めません"); return; }
     if (isChatUrl(threadTabs[activeTabIndex]?.threadUrl ?? threadUrl)) {
       // チャットへは、送り先を取り違えないよう下の書き込み欄からだけ送る
       setComposeOpen(true);
@@ -5981,7 +6108,7 @@ export default function App() {
   const isTabTtsOff = (url: string) => threadTabsRef.current.some((t) => t.threadUrl === url && t.ttsOff);
   // ビュワーの「選んだスレを流す」の対象か (設定 > 接続 の「ビュワー」のチェック・タブの右クリックで切り替える)
   // 掲示板のログを残すタブか (設定の「ログを残すスレ」とタブごとのチェック)
-  const tabLogOn = (t: ThreadTab, mode: BoardLogMode) => !isChatUrl(t.threadUrl) && (mode === "all" || (mode === "selected" && t.logOn === true));
+  const tabLogOn = (t: ThreadTab, mode: BoardLogMode) => isBoardThreadUrl(t.threadUrl) && (mode === "all" || (mode === "selected" && t.logOn === true));
   // ログを書く・消すのに使う「保存した (確定した) 値」。変えるのは、起動して設定を読み込んだときと、設定ファイルへの書き込みが
   // 成功したときだけ (設定画面で選んでいる途中の値・保存に失敗した値は使わない)。読み込むまでは null で、ログを書かない・消さない
   type BoardLogCommitted = { mode: BoardLogMode; days: number; maxMb: number };
@@ -6020,11 +6147,36 @@ export default function App() {
     posted: r.dateAndId.replace(/\s+ID:\S+/g, "").replace(/\s+BE[:：]\d+[^\s]*/gi, "").trim(),
     text: decodeHtmlEntities(r.body.replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]*>/g, "")).trim(),
   });
+  // ===== スレの書き出し (メニューの ファイル > 表示中のスレを書き出す) =====
+  // 書き出せるのは、掲示板のスレのタブとログのタブ (Twitch・YouTube のチャットは書き出さない)。保存先は Rust 側の画面で選ぶ
+  const [exportDialogOpen, setExportDialogOpen] = useState(false);
+  const [exportMsg, setExportMsg] = useState("");
+  const exportTargetUrl = threadTabs[activeTabIndex]?.threadUrl ?? "";
+  const exportable = !!exportTargetUrl && !isChatUrl(exportTargetUrl) && (tabCacheRef.current.get(exportTargetUrl)?.responses.length ?? 0) > 0;
+  const openExportDialog = () => { setExportMsg(""); setExportDialogOpen(true); };
+  const exportActiveThread = async (format: "dat" | "txt" | "html") => {
+    const url = threadTabsRef.current[activeTabIndexRef.current]?.threadUrl ?? "";
+    const rows = tabCacheRef.current.get(url)?.responses ?? [];
+    if (!isTauriRuntime() || !url || isChatUrl(url) || rows.length === 0) { setExportMsg("書き出せるスレを表示していません"); return; }
+    const tab = threadTabsRef.current.find((t) => t.threadUrl === url);
+    const title = (tab?.title ?? "").startsWith(LOG_TAB_TITLE_PREFIX) ? (tab?.title ?? "").slice(LOG_TAB_TITLE_PREFIX.length) : (tab?.title ?? "");
+    // ログのタブは、元のスレの URL を書く (専用の URL は書かない)
+    const sourceUrl = isLogUrl(url) ? (logSourceUrlRef.current.get(url) ?? "") : url;
+    setExportMsg("保存先を選んでください…");
+    try {
+      const name = await invoke<string | null>("export_thread", { format, title, url: sourceUrl, responses: rows.map(toBoardLogRes) });
+      if (name) { setExportMsg(""); setExportDialogOpen(false); setStatus(`書き出しました: ${name} (${rows.length}レス)`); }
+      else setExportMsg("書き出しませんでした (保存先を選びませんでした)");
+    } catch (e) {
+      console.warn("export_thread failed", e);
+      setExportMsg(`書き出せませんでした: ${String(e)}`);
+    }
+  };
   // スレのレスをログに書き足す (表のタブ・裏のタブの取得のたび、保存分から開いたとき)。
   // この起動で書けた最後のレス番号より後のレスだけを渡す (この起動でまだ書いていないスレと、まだ渡していない古い番号が手元に来たスレは、
   // 持っているスレ全体を渡して抜けを補う)
   const writeBoardLog = (url: string, title: string, rows: ThreadResponseItem[], opts?: { force?: boolean; full?: boolean }) => {
-    if (!isTauriRuntime() || rows.length === 0 || isChatUrl(url)) return;
+    if (!isTauriRuntime() || rows.length === 0 || !isBoardThreadUrl(url)) return;
     // 設定を読み込むまでは書かない (保存した「ログを残すスレ」が分からないため)
     if (!committedBoardLog()) return;
     if (!opts?.force && !isTabLogOn(url)) return;
@@ -6063,7 +6215,7 @@ export default function App() {
   };
   const toggleTabLog = (url: string) => {
     const tab = threadTabsRef.current.find((t) => t.threadUrl === url);
-    if (!tab || isChatUrl(url)) return;
+    if (!tab || !isBoardThreadUrl(url)) return;
     const on = tab.logOn !== true;
     setThreadTabs((prev) => prev.map((t) => (t.threadUrl === url ? { ...t, logOn: on } : t)));
     // 残すようにしたら、いま持っているレスをすぐ書く (保存した「ログを残すスレ」が「選んだスレだけ」のときだけ)
@@ -7172,6 +7324,7 @@ export default function App() {
   };
 
   const clearThreadCacheOnly = (url: string) => {
+    if (isLogUrl(url)) return; // ログのタブは控えを持たない (手元の分を消すと、中身が空になる)
     invoke("delete_thread_cache", { threadUrl: url }).catch(() => {});
     tabCacheRef.current.delete(url);
     delete threadFetchTimesRef.current[url];
@@ -7194,12 +7347,15 @@ export default function App() {
 
   const reloadResponses = () => {
     runOnActiveThread((url) => {
+      // ログのタブの再読み込みは、ログのファイルを読み直す (取得はしない)
+      if (isLogUrl(url)) { void openLogTab(url); return; }
       void fetchResponsesFromCurrent(url, { resetScroll: true });
     });
   };
 
   const reloadResponsesAfterCachePurge = () => {
     runOnActiveThread((url) => {
+      if (isLogUrl(url)) { void openLogTab(url); return; }
       clearThreadCacheOnly(url);
       void fetchResponsesFromCurrent(url, { resetScroll: true });
     });
@@ -7370,9 +7526,12 @@ export default function App() {
     document.body.style.userSelect = "none";
     document.body.style.cursor = "col-resize";
   };
+  // 板一覧の欄の位置は、スクロールが止まってから保存する (スクロールのたびにファイルへ書かない)
+  const boardTreeScrollSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onBoardTreeScroll: UIEventHandler<HTMLDivElement> = (event) => {
     const top = event.currentTarget.scrollTop;
-    saveToFile("board-tree-scroll.json", top);
+    if (boardTreeScrollSaveTimerRef.current) clearTimeout(boardTreeScrollSaveTimerRef.current);
+    boardTreeScrollSaveTimerRef.current = setTimeout(() => { boardTreeScrollSaveTimerRef.current = null; saveToFile("board-tree-scroll.json", top); }, 800);
   };
   const scrollSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scrollSavePendingRef = useRef<(() => void) | null>(null);
@@ -7389,7 +7548,7 @@ export default function App() {
     if (scrollSaveTimerRef.current) clearTimeout(scrollSaveTimerRef.current);
     scrollSavePendingRef.current = () => {
       const url = threadUrl.trim();
-      if (!url || isChatUrl(url)) return; // Twitch・YouTube のチャットは位置を残さない
+      if (!url || isChatUrl(url) || isLogUrl(url)) return; // Twitch・YouTube のチャット・ログのタブは位置を残さない
       const container = responseScrollRef.current;
       if (!container) return;
       const atBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 5;
@@ -7923,13 +8082,22 @@ export default function App() {
         if (Array.isArray(d) && d.length > 0) setExpandedCategories(new Set(d));
       });
       loadFromFile<BoardCategory[]>("board-categories.json").then((d) => {
-        if (Array.isArray(d) && d.length > 0) setBoardCategories(d);
+        // 控えの形を確かめてから使う (形の違うものは捨てる。板一覧は取得し直せる)
+        if (!Array.isArray(d)) return;
+        const cats = d
+          .filter((c): c is BoardCategory => !!c && typeof c === "object" && typeof c.categoryName === "string" && Array.isArray(c.boards))
+          .map((c) => ({ categoryName: c.categoryName, boards: c.boards.filter((b) => !!b && typeof b === "object" && typeof b.boardName === "string" && typeof b.url === "string" && /^https?:\/\//.test(b.url)).map((b) => ({ boardName: b.boardName, url: b.url })) }))
+          .filter((c) => c.boards.length > 0);
+        // 取得のほうが先に終わっていたら、古い控えで上書きしない
+        if (cats.length > 0) setBoardCategories((prev) => (prev.length > 0 ? prev : cats));
       });
       loadFromFile<number>("board-tree-scroll.json").then((d) => {
         if (typeof d === "number" && Number.isFinite(d) && d >= 0) boardTreeScrollRestoreRef.current = d;
       });
       loadFromFile<{ w: number; h: number }>("new-thread-dialog-size.json").then((d) => {
-        if (d && typeof d.w === "number" && typeof d.h === "number") setNewThreadDialogSize(d);
+        // 画面に収まる範囲の数だけ使う
+        const okSize = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n) && n >= 320 && n <= 4000;
+        if (d && okSize(d.w) && okSize(d.h)) setNewThreadDialogSize({ w: d.w, h: d.h });
       });
     }
     // Load highlights
@@ -7976,7 +8144,10 @@ export default function App() {
 
   useEffect(() => {
     if (!tabRestoreReady) return;
-    const data = JSON.stringify({ tabs: threadTabs, activeIndex: activeTabIndex });
+    // ログのタブは保存しない (次の起動で復元しない)。表示していたタブの位置は、外した分だけずらす
+    const keptTabs = threadTabs.filter((t) => !isLogUrl(t.threadUrl));
+    const keptActive = Math.max(0, Math.min(keptTabs.length - 1, activeTabIndex - threadTabs.slice(0, Math.max(0, activeTabIndex)).filter((t) => isLogUrl(t.threadUrl)).length));
+    const data = JSON.stringify({ tabs: keptTabs, activeIndex: keptActive });
     if (isTauriRuntime()) {
       invoke("save_session_tabs", { data }).catch((e) => console.warn("save_session_tabs failed", e));
     }
@@ -9735,6 +9906,8 @@ export default function App() {
           { label: "ファイル", items: [
             { text: "書き込み", action: () => { setComposeOpen(true); setComposeBody(""); setComposeResult(null); } },
             { text: "書き込み履歴", action: () => setPostHistoryOpen(true) },
+            { text: "ログを開く", action: () => openLogDialog() },
+            { text: "表示中のスレを書き出す", action: () => openExportDialog() },
             ...(navigator.userAgent.includes("Windows") ? [
               { text: "sep" },
               { text: "終了", action: () => { if (isTauriRuntime()) { void invoke("quit_app"); } } },
@@ -10248,7 +10421,7 @@ export default function App() {
                 <button onClick={() => setLatestItems([])}>クリア</button>
               </div>
               <div className="viewer-latest-list" ref={latestListRef}>
-                {viewerAllResponses && threadTabs.some((t) => t.viewerOn !== false && !isChatUrl(t.threadUrl)) && <div className="viewer-latest-note">選んだスレのレスはビュワーに流しています</div>}
+                {viewerAllResponses && threadTabs.some((t) => t.viewerOn !== false && isBoardThreadUrl(t.threadUrl)) && <div className="viewer-latest-note">選んだスレのレスはビュワーに流しています</div>}
                 {latestItems.length === 0 ? (
                   <div className="viewer-empty">まだありません</div>
                 ) : latestItems.map((it) => (
@@ -10402,7 +10575,7 @@ export default function App() {
               <div
                 key={tab.threadUrl}
                 title={tab.title}
-                className={`thread-tab tab ${siteClassOf(tab.threadUrl)} ${i === activeTabIndex ? "active" : ""} ${tabDragIndex !== null && tabDragIndex !== i ? "drag-target" : ""}`}
+                className={`thread-tab tab ${siteClassOf(tab.threadUrl)} ${isLogUrl(tab.threadUrl) ? "log-tab" : ""} ${i === activeTabIndex ? "active" : ""} ${tabDragIndex !== null && tabDragIndex !== i ? "drag-target" : ""}`}
                 onClick={() => { if (tabDragSuppressClickRef.current) return; onTabClick(i); }}
                 onDoubleClick={() => { void fetchResponsesFromCurrent(tab.threadUrl, { keepSelection: true }); }}
                 onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); closeTab(i); } }}
@@ -11226,7 +11399,7 @@ export default function App() {
         aria-label="書き込み"
         style={composeOpen ? { height: composePanelPx } : undefined}
       >
-        {composeOpen && (
+        {composeShown && (
           <div
             className="compose-resize-handle"
             onMouseDown={(e) => {
@@ -11245,7 +11418,7 @@ export default function App() {
           }}
         >
           {composeOpen ? <ChevronDown size={13} /> : <ChevronUp size={13} />}
-          {composeOpen && !chatTarget && (
+          {composeShown && !chatTarget && (
             <>
               <button className={`compose-mode-btn ${!composePreview ? "active" : ""}`} onClick={() => setComposePreview(false)}>本文</button>
               <button className={`compose-mode-btn ${composePreview ? "active" : ""}`} onClick={() => setComposePreview(true)}>プレビュー</button>
@@ -11254,7 +11427,7 @@ export default function App() {
           {chatTarget && !composeOpen && <span className="compose-chat-target compose-chat-target-closed">送信先: <b>{chatTargetLabel(chatTarget)}</b></span>}
           {!chatTarget && !composeOpen && <span className="compose-chat-target compose-chat-target-closed">送信先: <b>{activeComposeUrl ? composeTargetLabelOf(activeComposeUrl, activeComposeTitle) : "なし"}</b></span>}
         </header>
-        {composeOpen && activePaneView === "viewer" && (
+        {composeShown && activePaneView === "viewer" && (
           <div className="compose-row compose-target-select">
             <span className="compose-label">送信先</span>
             <select value={viewerTargetOpen ? viewerComposeTarget : ""} onChange={(e) => setViewerComposeTarget(e.target.value)} aria-label="書き込みの送信先">
@@ -11264,7 +11437,7 @@ export default function App() {
             <span className="compose-target-hint">ビュワーでは、ここで選んだ所に書き込みます (スレのタブの選択とは別)</span>
           </div>
         )}
-        {composeOpen && chatTarget && (
+        {composeShown && chatTarget && (
           <div className="compose-chat-body">
             {(() => {
               const targetEl = (
@@ -11787,7 +11960,7 @@ export default function App() {
           </>)}
           {hasContext && <hr className="menu-sep" />}
           {/* ----- 返信・配信ホワイトリスト ----- */}
-          {!isChatUrl(curUrl) && <button onClick={() => void runResponseAction("quote")}>ここにレス</button>}
+          {isBoardThreadUrl(curUrl) && <button onClick={() => void runResponseAction("quote")}>ここにレス</button>}
           {twitchMsgId && (
             <button onClick={() => {
               const r = fetchedResponses.find((x) => x.responseNo === responseMenu.responseId);
@@ -11797,7 +11970,7 @@ export default function App() {
               window.setTimeout(() => composeTextareaRef.current?.focus(), 0);
             }}>このコメントに返信</button>
           )}
-          <button onClick={() => void runResponseAction("quote-with-name")}>名前付き引用</button>
+          {!isLogUrl(curUrl) && <button onClick={() => void runResponseAction("quote-with-name")}>名前付き引用</button>}
           {wlId && (
             <button onClick={() => {
               if (broadcastWhitelist[wlId]) removeFromWhitelist(wlId); else addToWhitelist([wlId]);
@@ -11839,7 +12012,7 @@ export default function App() {
           </>)}
           <hr className="menu-sep" />
           {/* ----- このレスから (レス番号上のみ)・AA ----- */}
-          {onResNo && ttsMode !== "off" && (
+          {onResNo && ttsMode !== "off" && !isLogUrl(curUrl) && (
             <button onClick={() => {
               const startNo = responseMenu.responseId;
               const items = visibleResponseItems.filter((r) => r.id >= startNo);
@@ -11864,26 +12037,34 @@ export default function App() {
           )}
           {/* このレスから新着として流す（レス番号上のみ）: 自動更新で届いた新着と同じ経路で、新着レスペイン・字幕へ流す。
               配信ホワイトリストの ID のレスはビュワー・OBS 表示にも流れる (本物の新着と同じ扱い)。読み上げはしない */}
-          {onResNo && (
+          {onResNo && !isLogUrl(curUrl) && (
             <button onClick={() => {
               const startNo = responseMenu.responseId;
               const items = visibleResponseItems.filter((r) => r.id >= startNo);
               const curThreadUrl = threadTabs[activeTabIndex]?.threadUrl ?? threadUrl;
               const tabTitle = threadTabs[activeTabIndex]?.title ?? "";
               setResponseMenu(null);
-              const arrivals: ArrivalItem[] = items
-                .filter((item) => showsArrivalResNo(curThreadUrl, item.id))
-                .map((item) => makeArrival({ responseNo: item.id, name: item.name, mail: item.mail, dateAndId: item.time, body: item.text }, tabTitle, curThreadUrl, fetchedResponses));
+              const picked = items.filter((item) => showsArrivalResNo(curThreadUrl, item.id));
+              const rows = fetchedResponses;
               if (broadcastHaltedRef.current) { setStatus("読み上げ・字幕・OBS を止めているため、新着として流しません (再開してから選んでください)"); return; }
-              setStatus(`レス ${startNo} から新着として流します (${arrivals.length}件)`);
-              if (arrivals.length === 0) return;
-              const queueWasEmpty = arrivalQueueRef.current.length === 0;
-              if (!outputBlocked()) arrivalQueueRef.current.push(...arrivals); // 出力を止めている間 (止めている間に受け取ったもの) は新着レスペインにも積まない
-              setArrivalQueueCount(arrivalQueueRef.current.length);
-              pushBroadcastArrivals(arrivals);
-              if (!arrivalPausedRef.current && !arrivalTimerRef.current && (currentArrivalItemRef.current === null || queueWasEmpty)) {
-                advanceToNextArrival();
-              }
+              setStatus(`レス ${startNo} から新着として流します (${picked.length}件)`);
+              if (picked.length === 0) return;
+              // 自動更新で届いた新着と同じく、正規表現 (NG ワードなど) の結果がそろってから流す (inArrivalOrder)。
+              // そろう前に作ると、正規表現の NG に当たるレスが、あぼ～んにならずに本文のまま流れる
+              // (スレの表示はタグの付いた本文で判定し、新着はタグを除いた本文で判定するので、表示の結果は使い回せない)。
+              // 透明あぼ～んも、新着と同じ本文 (タグを除いたもの) で判定して除く
+              inArrivalOrder(() => picked
+                .filter((item) => getNgResult({ name: item.name, mail: item.mail, time: item.time, text: item.text.replace(/<[^>]*>/g, "") }, curThreadUrl)?.mode !== "hide")
+                .map((item) => makeArrival({ responseNo: item.id, name: item.name, mail: item.mail, dateAndId: item.time, body: item.text }, tabTitle, curThreadUrl, rows)), (arrivals) => {
+                if (arrivals.length === 0) return;
+                const queueWasEmpty = arrivalQueueRef.current.length === 0;
+                if (!outputBlocked()) arrivalQueueRef.current.push(...arrivals); // 出力を止めている間 (止めている間に受け取ったもの) は新着レスペインにも積まない
+                setArrivalQueueCount(arrivalQueueRef.current.length);
+                pushBroadcastArrivals(arrivals);
+                if (!arrivalPausedRef.current && !arrivalTimerRef.current && (currentArrivalItemRef.current === null || queueWasEmpty)) {
+                  advanceToNextArrival();
+                }
+              });
             }} disabled={broadcastHalted} title={broadcastHalted
               ? "読み上げ・字幕・OBS を止めているため使えません (メニュー欄の右端の「停止中」を押して再開してから選んでください)"
               : "このレスから後を、新着レスとして新着レスペイン・字幕に流します (配信ホワイトリストの ID のレスはビュワー・OBS 表示にも流れます)"}>このレスから新着として流す</button>
@@ -12074,12 +12255,12 @@ export default function App() {
               {threadTabs[tabMenu.tabIndex].ttsOff ? "このタブの読み上げをオンにする" : "このタブの読み上げをオフにする"}
             </button>
           )}
-          {threadTabs[tabMenu.tabIndex] && !isChatUrl(threadTabs[tabMenu.tabIndex].threadUrl) && boardLogMode === "selected" && (
+          {threadTabs[tabMenu.tabIndex] && isBoardThreadUrl(threadTabs[tabMenu.tabIndex].threadUrl) && boardLogMode === "selected" && (
             <button onClick={() => { toggleTabLog(threadTabs[tabMenu.tabIndex].threadUrl); setTabMenu(null); }} title="このスレのログ (data\\logs) を残す・やめる">
               {threadTabs[tabMenu.tabIndex].logOn === true ? "このスレのログを残さない" : "このスレのログを残す"}
             </button>
           )}
-          {threadTabs[tabMenu.tabIndex] && !isChatUrl(threadTabs[tabMenu.tabIndex].threadUrl) && (
+          {threadTabs[tabMenu.tabIndex] && isBoardThreadUrl(threadTabs[tabMenu.tabIndex].threadUrl) && (
             <button onClick={() => { toggleTabViewer(threadTabs[tabMenu.tabIndex].threadUrl); setTabMenu(null); }} title="ビュワーの「選んだスレを流す」の対象にする・やめる">
               {threadTabs[tabMenu.tabIndex].viewerOn !== false ? "ビュワーに流さない" : "ビュワーに流す"}
             </button>
@@ -15021,6 +15202,67 @@ export default function App() {
                   {newThreadResult.message}
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+      {exportDialogOpen && (
+        <div className="lightbox-overlay" onClick={() => setExportDialogOpen(false)}>
+          <div className="settings-panel export-panel" onClick={(e) => e.stopPropagation()}>
+            <header className="settings-header">
+              <strong>表示中のスレを書き出す</strong>
+              <button onClick={() => setExportDialogOpen(false)}>閉じる</button>
+            </header>
+            <div className="export-body">
+              {exportable ? (
+                <>
+                  <p className="settings-hint">表示しているタブのレスを、選んだ形式でファイルに書き出します。保存先は、次に出る画面で選びます。</p>
+                  <div className="export-buttons">
+                    <button onClick={() => void exportActiveThread("dat")} title="5ch と同じ形の dat (Shift_JIS)。ほかの専ブラで開けます">dat</button>
+                    <button onClick={() => void exportActiveThread("txt")} title="文字だけのテキスト (UTF-8)">テキスト</button>
+                    <button onClick={() => void exportActiveThread("html")} title="ブラウザで開ける HTML (UTF-8)。画像やスクリプトは入れず、文字だけを書きます">HTML</button>
+                  </div>
+                </>
+              ) : (
+                <p className="settings-hint">書き出せるのは、掲示板のスレのタブとログのタブです。レスを表示しているタブを選んでから開いてください (Twitch・YouTube のチャットは書き出しません)。</p>
+              )}
+              {exportMsg && <p className="overlay-layout-msg">{exportMsg}</p>}
+            </div>
+          </div>
+        </div>
+      )}
+      {logDialogOpen && (
+        <div className="lightbox-overlay" onClick={() => setLogDialogOpen(false)}>
+          <div className="settings-panel log-open-panel" onClick={(e) => e.stopPropagation()}>
+            <header className="settings-header">
+              <strong>ログを開く ({logList.length}件)</strong>
+              <button onClick={() => setLogDialogOpen(false)}>閉じる</button>
+            </header>
+            <div className="log-open-tools">
+              <input className="log-open-filter" value={logFilter} onChange={(e) => setLogFilter(e.target.value)} placeholder="題名・板で絞り込み" />
+              <button onClick={() => void refreshLogList()} title="残したログの一覧を読み直します">読み直す</button>
+              <button onClick={() => void openLogFromFile()} title="ログのフォルダの外にある .dat (5ch と同じ形) や .jsonl を選んで開きます">ファイルから開く…</button>
+            </div>
+            <p className="settings-hint">残したログを、読むだけのタブで開きます。ログのタブは自動で更新せず、書き込み・読み上げ・字幕・OBS 表示・新着レスペインには使いません。</p>
+            <div className="log-open-body">
+              {logListMsg ? (
+                <p className="lf-p8-c-sub">{logListMsg}</p>
+              ) : shownLogList.length === 0 ? (
+                <p className="lf-p8-c-sub">{logList.length === 0 ? "残したログはまだありません (設定 > 接続とログ の「ログを残すスレ」で残せます)" : "当てはまるログがありません"}</p>
+              ) : (
+                shownLogList.map((e) => (
+                  <div key={e.tabUrl} className="log-open-item" title={e.url || e.tabUrl} onDoubleClick={() => void openLogTab(e.tabUrl)}>
+                    <span className="log-open-site">{LOG_SITE_LABEL[e.site] ?? e.site}</span>
+                    <span className="log-open-board">{e.board}</span>
+                    <span className="log-open-title">{e.title || `(題名なし) ${e.key}`}</span>
+                    <span className="log-open-count">{e.lastNo > 0 ? `${e.lastNo}` : "-"}</span>
+                    <span className="log-open-time">{formatLogTime(e.modified)}</span>
+                    <span className="log-open-size">{formatLogSize(e.size)}</span>
+                    <button onClick={() => void openLogTab(e.tabUrl)}>開く</button>
+                  </div>
+                ))
+              )}
+              {shownLogList.length < filteredLogCount && <p className="lf-p8-c-sub">先頭の {shownLogList.length} 件を出しています (全 {filteredLogCount} 件)。絞り込むと見つけやすくなります</p>}
             </div>
           </div>
         </div>

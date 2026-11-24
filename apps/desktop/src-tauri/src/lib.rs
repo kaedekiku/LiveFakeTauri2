@@ -482,9 +482,9 @@ struct FetchResponsesResult {
 /// で許可リストに追加登録される (既存のハードコードされた許可リストを置き換えるのではなく上乗せ)。
 async fn fetch_bbsmenu_cached() -> Result<serde_json::Value, String> {
 
-    let configured_url = core_store::load_settings_ini()
-        .ok()
-        .and_then(|m| m.get("App.bbsmenuUrl").cloned())
+    let configured_url = settings_for_use()
+        .get("App.bbsmenuUrl")
+        .cloned()
         .filter(|u| !u.trim().is_empty())
         .filter(|u| u.starts_with("http://") || u.starts_with("https://"))
         .unwrap_or_else(|| BBSMENU_URL.to_string());
@@ -1268,7 +1268,7 @@ async fn save_image_to_folder(url: String, folder: String) -> Result<String, Str
     validate_public_http_url(&url)?;
     // 呼んだ側が指定したフォルダならどこにでも書ける、とはしない
     {
-        let settings = core_store::load_settings_ini().unwrap_or_default();
+        let settings = settings_for_use();
         let configured = settings.get("App.imageSaveFolder").map(String::as_str);
         let picked = PICKED_FOLDERS.lock().map(|l| l.clone()).unwrap_or_default();
         if !image_folder_allowed(&folder, configured, &picked) {
@@ -1449,7 +1449,7 @@ struct BoardLogRes {
     /// 掲示板の「日付 ID」の欄そのまま (dat 用)
     #[serde(default)]
     date_and_id: String,
-    /// 本文 (掲示板の HTML のまま。dat 用)
+    /// 本文 (取得したときの形のまま。dat 用)。改行は `<br>` ではなく改行の文字で、実体参照の &gt; なども文字に戻っている。タグは残っている
     #[serde(default)]
     body: String,
     /// 以下は JSONL 用 (タグを除いた文字)
@@ -1518,6 +1518,13 @@ fn board_log_dat_field(s: &str) -> String {
     board_log_clip(s, 20000).replace(['\r', '\n'], " ").replace("<>", "&lt;&gt;")
 }
 
+/// dat の本文の欄。改行は `<br>` にする。
+/// 取得したレスの本文は、`<br>` を改行の文字に変えて持っている (core-parse)。空白にして書くと、読み戻したときに行がつながる
+/// (v0.0.131〜v0.0.133 はそう書いていた。その版が書いた dat は board_log_fix_dat_breaks で改行を戻す)
+fn board_log_dat_body(s: &str) -> String {
+    board_log_clip(s, 20000).replace("<>", "&lt;&gt;").replace('\r', " ").replace('\n', "<br>")
+}
+
 fn board_log_now() -> String {
     chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f%:z").to_string()
 }
@@ -1546,7 +1553,7 @@ fn board_log_dat_lines(rows: &[&BoardLogRes], title: &str, title_on_first: bool)
             board_log_dat_field(&r.name),
             board_log_dat_field(&r.mail),
             board_log_dat_field(&r.date_and_id),
-            board_log_dat_field(&r.body),
+            board_log_dat_body(&r.body),
             t
         ));
     }
@@ -1978,7 +1985,8 @@ fn board_log_append_in(base: &std::path::Path, thread_url: String, title: String
     Ok(BoardLogAppendResult { written: rows.len(), need_full: false, repair_missing: missing_of(state) })
 }
 
-/// 日数・容量を過ぎたログを消す (最後に書いた時刻が古いスレから)。days・max_mb が 0 なら、その決まりは使わない。
+/// 日数・容量を過ぎたログを消す (最後に書いた時刻が古いスレから。容量を超えたときは、別名で残した dat を先に消す)。
+/// days・max_mb が 0 なら、その決まりは使わない。
 /// 消すのは logs の下の 5ch・shitaraba・jpnkn の板のフォルダの中の .jsonl・.dat だけ (ほかのファイル・フォルダには触らない)
 #[tauri::command(async)]
 fn board_log_prune(days: u32, max_mb: u32) -> Result<usize, String> {
@@ -1992,7 +2000,7 @@ fn board_log_prune_in(base: &std::path::Path, days: u32, max_mb: u32) -> Result<
     let mut guard = BOARD_LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // スレごと (板のフォルダ + スレ番号) に、ファイルと最後に書いた時刻と大きさをまとめる
     #[derive(Default)]
-    struct Item { jsonl: Option<std::path::PathBuf>, dat: Option<std::path::PathBuf>, modified: Option<std::time::SystemTime>, size: u64 }
+    struct Item { jsonl: Option<std::path::PathBuf>, dat: Option<std::path::PathBuf>, modified: Option<std::time::SystemTime>, size: u64, bak: bool }
     let mut items: HashMap<std::path::PathBuf, Item> = HashMap::new();
     for site in ["5ch", "shitaraba", "jpnkn"] {
         let Ok(boards) = std::fs::read_dir(base.join(site)) else { continue };
@@ -2043,6 +2051,7 @@ fn board_log_prune_in(base: &std::path::Path, days: u32, max_mb: u32) -> Result<
                             if let Ok(meta) = f.metadata() {
                                 let item = items.entry(f.path()).or_default();
                                 item.dat = Some(f.path());
+                                item.bak = true;
                                 item.size += meta.len();
                                 item.modified = Some(meta.modified().unwrap_or(std::time::UNIX_EPOCH));
                             }
@@ -2066,7 +2075,8 @@ fn board_log_prune_in(base: &std::path::Path, days: u32, max_mb: u32) -> Result<
         }
     }
     let mut list: Vec<Item> = items.into_values().collect();
-    list.sort_by_key(|i| i.modified);
+    // 控え (別名の dat) を先に、その中と残りは古いものから並べる: 容量を超えたとき、控えのせいで本物のログを消さない
+    list.sort_by_key(|i| (!i.bak, i.modified));
     let now = std::time::SystemTime::now();
     let mut total: u64 = list.iter().map(|i| i.size).sum();
     let max = (max_mb as u64) * 1024 * 1024;
@@ -2134,9 +2144,1313 @@ fn board_log_open_folder() -> Result<(), String> {
     open_folder_in_explorer(&dir)
 }
 
+// ===== ログを開く (掲示板のログの 2 回目。決まりは REQUIREMENTS の「ログを開く・書き出す」) =====
+
+/// ログのタブの URL の頭。`lflog://<サイト>/<板>/<スレ番号>` (外のファイルは `lflog://file/<番号>`)。
+/// http(s) ではないので、取得・書き込みの命令は断る (is_allowed_url)。ログの書き足し・スレの控えの保存も断る
+const LOG_TAB_SCHEME: &str = "lflog://";
+/// 読むログのファイルの大きさの上限
+const BOARD_LOG_READ_MAX_BYTES: u64 = 64 * 1024 * 1024;
+/// 読むレスの数の上限
+const BOARD_LOG_READ_MAX_RES: usize = 100_000;
+/// 一覧に出すログの数の上限
+const BOARD_LOG_LIST_MAX: usize = 20_000;
+const BOARD_LOG_SITES: [&str; 3] = ["5ch", "shitaraba", "jpnkn"];
+
+/// ログのタブの URL か (画面が渡してきた URL を、取得・保存の命令で断るために使う)
+fn is_log_tab_url(url: &str) -> bool {
+    url.trim_start().get(..6).is_some_and(|h| h.eq_ignore_ascii_case("lflog:"))
+}
+
+fn board_log_key_ok(key: &str) -> bool {
+    !key.is_empty() && key.len() <= 20 && key.bytes().all(|b| b.is_ascii_digit())
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BoardLogEntry {
+    /// 開くときに渡す URL (`lflog://…`)
+    tab_url: String,
+    site: String,
+    board: String,
+    key: String,
+    title: String,
+    /// 元のスレの URL (表示とコピー用。取得には使わない)
+    url: String,
+    /// 最後のレス番号 (ファイルの末尾から読む。分からなければ 0)
+    last_no: u32,
+    /// 最後に書いた時刻 (UNIX 秒)
+    modified: u64,
+    /// JSONL と dat を合わせた大きさ (バイト)
+    size: u64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BoardLogThread {
+    tab_url: String,
+    title: String,
+    /// 元のスレの URL (分からなければ空)
+    url: String,
+    responses: Vec<ThreadResponseItem>,
+    /// 上限 (10 万件) で切ったか
+    truncated: bool,
+}
+
+/// ファイルの先頭 `max` バイトまでを読む
+fn read_head(path: &std::path::Path, max: u64) -> Vec<u8> {
+    use std::io::Read;
+    let mut buf = Vec::new();
+    if let Ok(f) = std::fs::File::open(path) {
+        let _ = f.take(max).read_to_end(&mut buf);
+    }
+    buf
+}
+
+/// ファイルの末尾 `max` バイトまでを読む
+fn read_tail(path: &std::path::Path, max: u64) -> Vec<u8> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut buf = Vec::new();
+    if let Ok(mut f) = std::fs::File::open(path) {
+        let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+        if f.seek(SeekFrom::Start(len.saturating_sub(max))).is_ok() {
+            let _ = f.take(max).read_to_end(&mut buf);
+        }
+    }
+    buf
+}
+
+/// JSONL の 1 行目 (start の行) から、スレの題名と URL を読む (先頭の 16 KB だけ読む)
+fn board_log_head(jsonl: &std::path::Path) -> (String, String) {
+    let head = read_head(jsonl, 16 * 1024);
+    let text = String::from_utf8_lossy(&head);
+    let first = text.lines().next().unwrap_or("");
+    let v: serde_json::Value = serde_json::from_str(first).unwrap_or(serde_json::Value::Null);
+    let get = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+    // 題名は start の行の title。前の版で start の行が無いものは、レスの行の where
+    let title = if v.get("type").and_then(|t| t.as_str()) == Some("start") { get("title") } else { get("where") };
+    (board_log_clip(&title, 300), board_log_clip(&get("url"), 500))
+}
+
+/// JSONL の末尾から、最後のレス番号を読む (末尾の 64 KB だけ読む。読めなければ 0)
+fn board_log_tail_no(jsonl: &std::path::Path) -> u32 {
+    let tail = read_tail(jsonl, 64 * 1024);
+    let text = String::from_utf8_lossy(&tail);
+    text.lines()
+        .rev()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter_map(|v| v.get("no").and_then(|n| n.as_u64()))
+        .filter_map(|n| u32::try_from(n).ok())
+        .next()
+        .unwrap_or(0)
+}
+
+fn modified_secs(path: &std::path::Path) -> u64 {
+    std::fs::metadata(path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// 残したログの一覧 (新しく書いたものが先)。各ファイルは先頭と末尾だけを読む
+fn board_log_list_in(base: &std::path::Path) -> Vec<BoardLogEntry> {
+    let mut out = Vec::new();
+    for site in BOARD_LOG_SITES {
+        let Ok(boards) = std::fs::read_dir(base.join(site)) else { continue };
+        for board_dir in boards.flatten() {
+            let board = board_dir.file_name().to_string_lossy().into_owned();
+            if !board_log_name_ok(&board, 80) || !board_dir.path().is_dir() {
+                continue;
+            }
+            let Ok(files) = std::fs::read_dir(board_dir.path()) else { continue };
+            for f in files.flatten() {
+                let name = f.file_name().to_string_lossy().into_owned();
+                // 作り直しの途中のファイル (.jsonl.prev など) は拾わない
+                let Some(key) = name.strip_suffix(".jsonl") else { continue };
+                if !board_log_key_ok(key) {
+                    continue;
+                }
+                let jsonl = f.path();
+                let dat = jsonl.with_extension("dat");
+                let (title, url) = board_log_head(&jsonl);
+                let size = std::fs::metadata(&jsonl).map(|m| m.len()).unwrap_or(0) + std::fs::metadata(&dat).map(|m| m.len()).unwrap_or(0);
+                out.push(BoardLogEntry {
+                    tab_url: format!("{LOG_TAB_SCHEME}{site}/{board}/{key}"),
+                    site: site.to_string(),
+                    board: board.clone(),
+                    key: key.to_string(),
+                    title,
+                    url,
+                    last_no: board_log_tail_no(&jsonl),
+                    modified: modified_secs(&jsonl).max(modified_secs(&dat)),
+                    size,
+                });
+                if out.len() >= BOARD_LOG_LIST_MAX {
+                    break;
+                }
+            }
+        }
+    }
+    out.sort_by(|a, b| b.modified.cmp(&a.modified).then_with(|| a.tab_url.cmp(&b.tab_url)));
+    out
+}
+
+/// 文字を HTML の本文として安全な形にする (外のファイルの JSONL の文字を、レスの本文・名前に入れるとき用)
+fn html_text(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+}
+
+fn file_within_limit(path: &std::path::Path) -> Result<(), String> {
+    let len = std::fs::metadata(path).map_err(|e| format!("ログを読めませんでした: {e}"))?.len();
+    if len > BOARD_LOG_READ_MAX_BYTES {
+        return Err(format!("ファイルが大きすぎます ({} MB まで)", BOARD_LOG_READ_MAX_BYTES / 1024 / 1024));
+    }
+    Ok(())
+}
+
+fn to_items(rows: Vec<core_fetch::ThreadResponse>) -> Vec<ThreadResponseItem> {
+    rows.into_iter()
+        .map(|r| ThreadResponseItem { response_no: r.response_no, name: r.name, mail: r.mail, date_and_id: r.date_and_id, body: r.body })
+        .collect()
+}
+
+/// dat (5ch と同じ形・Shift_JIS) からレスを読む。`nos` (JSONL に書いてあるレス番号。ファイルの並びのまま) と数が合えば、その番号を付ける
+/// (欠番のあるスレで番号がずれないように)。合わなければ、行の順に 1 から付ける
+fn board_log_rows_from_dat(dat: &std::path::Path, nos: &[u32]) -> Result<(Vec<ThreadResponseItem>, Option<String>, bool), String> {
+    file_within_limit(dat)?;
+    let bytes = std::fs::read(dat).map_err(|e| format!("ログを読めませんでした: {e}"))?;
+    Ok(board_log_rows_from_dat_bytes(&bytes, nos))
+}
+
+fn board_log_rows_from_dat_bytes(bytes: &[u8], nos: &[u32]) -> (Vec<ThreadResponseItem>, Option<String>, bool) {
+    let (mut rows, title) = core_fetch::parse_dat_bytes(bytes, BOARD_LOG_READ_MAX_RES + 1);
+    let truncated = rows.len() > BOARD_LOG_READ_MAX_RES;
+    rows.truncate(BOARD_LOG_READ_MAX_RES);
+    if !truncated && nos.len() == rows.len() {
+        for (r, no) in rows.iter_mut().zip(nos) {
+            r.response_no = *no;
+        }
+        rows.sort_by_key(|r| r.response_no);
+    }
+    (to_items(rows), title, truncated)
+}
+
+// ===== 前の版が書いた dat の改行を戻す =====
+// v0.0.131〜v0.0.133 は、本文の改行を空白にして dat に書いていた (JSONL の本文には改行が残っている)。
+// dat の本文のうち「改行だった空白」を、JSONL の本文と照らして見つけ、`<br>` に戻す。
+// dat にしか無いもの (タグ・< > で囲んだ文字・名前の HTML・BE) を残すため、本文を JSONL から作り直すことはしない。
+// 照らし合わせが通らない行には触らない。
+
+/// 画面側が JSONL の本文 (text) を作るときの切り詰め (JavaScript の trim) が除く文字
+fn js_trims(c: char) -> bool {
+    matches!(c, '\t' | '\n' | '\u{b}' | '\u{c}' | '\r' | ' ' | '\u{a0}' | '\u{1680}' | '\u{2000}'..='\u{200a}' | '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}' | '\u{3000}' | '\u{feff}')
+}
+
+/// `&` で始まる文字参照を1つ読む (画面側の decodeHtmlEntities が戻すものだけ)。戻り値は (文字, 読んだ文字数)
+fn board_log_entity_at(s: &[char]) -> Option<(char, usize)> {
+    let semi = s.iter().take(12).position(|c| *c == ';')?;
+    let name: String = s[1..semi].iter().collect();
+    let ch = match name.as_str() {
+        "amp" => '&',
+        "lt" => '<',
+        "gt" => '>',
+        "quot" => '"',
+        "nbsp" => '\u{a0}',
+        _ => {
+            let cp = if let Some(hex) = name.strip_prefix("#x") {
+                if hex.is_empty() || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    return None;
+                }
+                u32::from_str_radix(hex, 16).ok()?
+            } else {
+                let dec = name.strip_prefix('#')?;
+                if dec.is_empty() || !dec.bytes().all(|b| b.is_ascii_digit()) {
+                    return None;
+                }
+                dec.parse::<u32>().ok()?
+            };
+            if cp == 0 {
+                return None;
+            }
+            char::from_u32(cp)?
+        }
+    };
+    Some((ch, semi + 1))
+}
+
+/// dat の本文に、画面側が JSONL の本文を作るときと同じ手順 (タグを除く → 文字参照を戻す) を当てる。
+/// 戻り値は (文字, その文字が dat の本文の何文字目か)。文字参照から作った文字は None
+fn board_log_plain_with_pos(body: &[char]) -> Vec<(char, Option<usize>)> {
+    const EMPTY_TAG: [char; 8] = ['&', 'l', 't', ';', '&', 'g', 't', ';'];
+    let mut out = Vec::with_capacity(body.len());
+    let mut i = 0;
+    while i < body.len() {
+        let c = body[i];
+        // 本文の "<>" は、dat に書くときに &lt;&gt; へ置き換えてある (画面側では、中身の無いタグとして除かれる)
+        if c == '&' && body[i..].starts_with(&EMPTY_TAG) {
+            i += EMPTY_TAG.len();
+            continue;
+        }
+        if c == '<' {
+            if let Some(j) = body[i + 1..].iter().position(|x| *x == '>') {
+                i += j + 2;
+                continue;
+            }
+        } else if c == '&' {
+            if let Some((ch, len)) = board_log_entity_at(&body[i..]) {
+                out.push((ch, None));
+                i += len;
+                continue;
+            }
+        }
+        out.push((c, Some(i)));
+        i += 1;
+    }
+    out
+}
+
+/// dat の本文 (改行が空白になっている) と JSONL の本文を照らし、改行だった空白の位置 (本文の何文字目か) を返す。
+/// 1文字でも合わなければ None (その行には触らない)
+fn board_log_break_positions(body: &[char], text: &str) -> Option<Vec<usize>> {
+    let plain = board_log_plain_with_pos(body);
+    let start = plain.iter().position(|(c, _)| !js_trims(*c)).unwrap_or(plain.len());
+    let end = plain.iter().rposition(|(c, _)| !js_trims(*c)).map(|i| i + 1).unwrap_or(start);
+    let plain = &plain[start..end];
+    let mut marks = Vec::new();
+    let mut it = plain.iter();
+    for t in text.chars() {
+        let (c, pos) = it.next()?;
+        if t == '\n' {
+            if *c != ' ' {
+                return None;
+            }
+            marks.push((*pos)?);
+        } else if *c != t {
+            return None;
+        }
+    }
+    if it.next().is_some() {
+        return None;
+    }
+    Some(marks)
+}
+
+/// Shift_JIS の本文の、文字ごとの始まりの位置 (バイト)。dat は LiveFake が Shift_JIS にして書いたものなので、1 バイト目で長さが決まる
+fn sjis_char_offsets(bytes: &[u8]) -> Vec<usize> {
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        out.push(i);
+        i += if matches!(bytes[i], 0x81..=0x9f | 0xe0..=0xfc) { 2 } else { 1 };
+    }
+    out
+}
+
+/// dat の 1 行の欄の区切り ("<>") の位置。Shift_JIS の 2 バイト目に `<` `>` は現れないので、バイトのまま探せる
+fn dat_separators(line: &[u8]) -> Vec<usize> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 1 < line.len() {
+        if line[i] == b'<' && line[i + 1] == b'>' {
+            out.push(i);
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// `<br>` を空白 1 つに置き換える (改行を戻した本文が、元の本文から改行のほかは変わっていないことの確かめ用)
+fn br_to_space(body: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(body.len());
+    let mut i = 0;
+    while i < body.len() {
+        if body[i..].starts_with(b"<br>") {
+            out.push(b' ');
+            i += 4;
+        } else {
+            out.push(body[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+fn contains_ignore_ascii_case(hay: &[u8], needle: &[u8]) -> bool {
+    hay.windows(needle.len()).any(|w| w.eq_ignore_ascii_case(needle))
+}
+
+struct DatBreakFix {
+    bytes: Vec<u8>,
+    /// 改行を戻した行の数
+    fixed: usize,
+    /// JSONL の本文には改行があるのに、照らし合わせが通らず、戻せなかった行の数
+    unmatched: usize,
+}
+
+/// dat 全体に当てる。dat の行と JSONL のレスは、ファイルの並びの順に対応させる (番号順の作り直し・読み込みと同じ)。
+/// 数が合わなければ None (どの行がどのレスか決められないので触らない。dat を直す既存の仕組みに任せる)。
+/// `text_when_unmatched`: 照らし合わせが通らない行の本文を、JSONL の本文から作る (表示のときだけ。ファイルに書くときは使わない)
+fn board_log_fix_dat_breaks(dat: &[u8], jsonl: &str, text_when_unmatched: bool) -> Option<DatBreakFix> {
+    let texts: Vec<String> = jsonl
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|v| v.get("no").and_then(|n| n.as_u64()).and_then(|n| u32::try_from(n).ok()).is_some())
+        .map(|v| v.get("text").and_then(|t| t.as_str()).unwrap_or("").to_string())
+        .collect();
+    if dat.split(|&c| c == b'\n').filter(|l| !l.is_empty()).count() != texts.len() {
+        return None;
+    }
+    let mut out = DatBreakFix { bytes: Vec::with_capacity(dat.len() + 64), fixed: 0, unmatched: 0 };
+    let mut texts = texts.iter();
+    for (n, line) in dat.split(|&c| c == b'\n').enumerate() {
+        if n > 0 {
+            out.bytes.push(b'\n');
+        }
+        if line.is_empty() {
+            continue;
+        }
+        let text = texts.next().map(String::as_str).unwrap_or("");
+        let seps = dat_separators(line);
+        // 改行の無いレス・欄の数が違う行・もう <br> がある行 (直したあとの版が書いた行) は、そのまま
+        if !text.contains('\n') || seps.len() != 4 || contains_ignore_ascii_case(&line[seps[2] + 2..seps[3]], b"<br") {
+            out.bytes.extend_from_slice(line);
+            continue;
+        }
+        let body = &line[seps[2] + 2..seps[3]];
+        let fixed_body = (|| {
+            let chars: Vec<char> = core_fetch::decode_shift_jis(body).chars().collect();
+            let offsets = sjis_char_offsets(body);
+            if offsets.len() != chars.len() {
+                return None;
+            }
+            let marks = board_log_break_positions(&chars, text)?;
+            let mut new_body = Vec::with_capacity(body.len() + marks.len() * 3);
+            let mut from = 0;
+            for m in marks {
+                let at = offsets[m];
+                if body[at] != b' ' {
+                    return None;
+                }
+                new_body.extend_from_slice(&body[from..at]);
+                new_body.extend_from_slice(b"<br>");
+                from = at + 1;
+            }
+            new_body.extend_from_slice(&body[from..]);
+            // 歯止め: 足した <br> を空白に戻すと、元の本文とバイト単位で同じになる (ならなければ触らない)
+            if br_to_space(&new_body) != body {
+                return None;
+            }
+            Some(new_body)
+        })();
+        match fixed_body {
+            Some(b) => {
+                out.bytes.extend_from_slice(&line[..seps[2] + 2]);
+                out.bytes.extend_from_slice(&b);
+                out.bytes.extend_from_slice(&line[seps[3]..]);
+                out.fixed += 1;
+            }
+            None => {
+                out.unmatched += 1;
+                if text_when_unmatched {
+                    let from_text = text.lines().map(html_text).collect::<Vec<_>>().join("<br>");
+                    out.bytes.extend_from_slice(&line[..seps[2] + 2]);
+                    out.bytes.extend_from_slice(&core_fetch::encode_shift_jis(&from_text));
+                    out.bytes.extend_from_slice(&line[seps[3]..]);
+                } else {
+                    out.bytes.extend_from_slice(line);
+                }
+            }
+        }
+    }
+    Some(out)
+}
+
+#[derive(Debug, Default, PartialEq)]
+struct BoardLogBreakRepair {
+    /// 調べたログ (JSONL と dat の両方があるもの) の数
+    logs: usize,
+    /// dat を書き直したログの数
+    fixed_logs: usize,
+    fixed_rows: usize,
+    unmatched_rows: usize,
+    /// dat の行と JSONL のレスの数が合わない・大きすぎるなどで、触らなかったログの数
+    skipped_logs: usize,
+    /// 使用中などで、書き直せなかったログの数 (次の起動でやり直す)
+    failed_logs: usize,
+}
+
+/// logs のフォルダにある dat の改行を戻す。1 つずつ、書き足し・整理と同じ鍵を取って行う。
+/// 書き直す前の dat は <スレ番号>.<日時>.dat.bak として残す (日数・容量の整理の対象)。直す行が無いログには触らない (何度流しても同じ結果)
+fn board_log_repair_breaks_in(base: &std::path::Path) -> BoardLogBreakRepair {
+    let mut res = BoardLogBreakRepair::default();
+    for site in BOARD_LOG_SITES {
+        let Ok(boards) = std::fs::read_dir(base.join(site)) else { continue };
+        for board_dir in boards.flatten() {
+            let board = board_dir.file_name().to_string_lossy().into_owned();
+            if !board_log_name_ok(&board, 80) || !board_dir.path().is_dir() {
+                continue;
+            }
+            let dir = board_dir.path();
+            let Ok(files) = std::fs::read_dir(&dir) else { continue };
+            let keys: Vec<String> = files
+                .flatten()
+                .filter_map(|f| f.file_name().to_string_lossy().strip_suffix(".jsonl").map(str::to_string))
+                .filter(|k| board_log_key_ok(k))
+                .collect();
+            for key in keys {
+                let _guard = BOARD_LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+                let (jsonl, dat) = (dir.join(format!("{key}.jsonl")), dir.join(format!("{key}.dat")));
+                if board_log_recover(&dir, &key).is_err() {
+                    res.failed_logs += 1;
+                    continue;
+                }
+                if !jsonl.is_file() || !dat.is_file() {
+                    continue;
+                }
+                res.logs += 1;
+                if file_within_limit(&jsonl).is_err() || file_within_limit(&dat).is_err() {
+                    res.skipped_logs += 1;
+                    continue;
+                }
+                let (Ok(dat_bytes), Ok(jsonl_bytes)) = (std::fs::read(&dat), std::fs::read(&jsonl)) else {
+                    res.failed_logs += 1;
+                    continue;
+                };
+                let Some(fix) = board_log_fix_dat_breaks(&dat_bytes, &String::from_utf8_lossy(&jsonl_bytes), false) else {
+                    res.skipped_logs += 1;
+                    continue;
+                };
+                res.unmatched_rows += fix.unmatched;
+                if fix.fixed == 0 {
+                    continue;
+                }
+                if fix.bytes.len() as u64 > BOARD_LOG_FILE_MAX {
+                    res.skipped_logs += 1;
+                    continue;
+                }
+                // 別の名前に書き、元の dat の写しを残してから置き換える (途中で失敗しても、元の dat はそのまま残る)
+                let tmp = dir.join(format!("{key}.dat.tmp"));
+                let bak = dir.join(format!("{key}.{}.dat.bak", chrono::Local::now().format("%Y%m%d%H%M%S%3f")));
+                // ログの日時は変えない: 一覧の並びと、日数・容量の整理の順番は、最後に書いた時刻で決めている。
+                // 日時を付けられなくても、書き直しは進める (中身は正しい。並びがずれるだけ)
+                let kept_time = std::fs::metadata(&dat).and_then(|m| m.modified()).ok();
+                let keep_time = |p: &std::path::Path| {
+                    let Some(t) = kept_time else { return };
+                    if let Err(e) = std::fs::File::options().write(true).open(p).and_then(|f| f.set_modified(t)) {
+                        eprintln!("board log: 日時を元のままにできませんでした ({}): {e}", p.display());
+                    }
+                };
+                let placed = std::fs::write(&tmp, &fix.bytes)
+                    .map(|_| keep_time(&tmp))
+                    .and_then(|_| std::fs::copy(&dat, &bak).map(|_| keep_time(&bak)))
+                    .and_then(|_| std::fs::rename(&tmp, &dat));
+                if let Err(e) = placed {
+                    let _ = std::fs::remove_file(&tmp);
+                    let _ = std::fs::remove_file(&bak);
+                    eprintln!("board log: dat の改行を戻せませんでした ({}): {e}", dat.display());
+                    res.failed_logs += 1;
+                    continue;
+                }
+                res.fixed_logs += 1;
+                res.fixed_rows += fix.fixed;
+            }
+        }
+    }
+    res
+}
+
+/// 起動のあとに 1 回、保存済みの dat の改行を戻す。全部済んだら印のファイルを置き、次の起動からは調べない。
+/// 書き直せなかったログがあれば印を置かず、次の起動でやり直す
+fn board_log_repair_breaks_once() {
+    let (Ok(base), Ok(data)) = (board_log_dir_path(), core_store::portable_data_dir()) else { return };
+    let marker = data.join(BOARD_LOG_BREAKS_MARKER);
+    if marker.exists() {
+        return;
+    }
+    // ログがまだ無ければ、直すものは無い (これから書く dat は改行が入る)
+    let res = if base.is_dir() { board_log_repair_breaks_in(&base) } else { BoardLogBreakRepair::default() };
+    if res.logs > 0 {
+        let _ = core_store::append_log(&format!(
+            "board log: dat line breaks restored (logs {} / rewritten {} / rows {} / unmatched rows {} / untouched logs {} / failed {})",
+            res.logs, res.fixed_logs, res.fixed_rows, res.unmatched_rows, res.skipped_logs, res.failed_logs
+        ));
+    }
+    if res.failed_logs == 0 {
+        if let Err(e) = std::fs::write(&marker, b"") {
+            eprintln!("board log: 済んだ印を書けませんでした (次の起動でもう一度調べます): {e}");
+        }
+    }
+}
+const BOARD_LOG_BREAKS_MARKER: &str = "board-log-dat-br.done";
+
+/// JSONL (LiveFake・掲示板ログアーカイブの形) からレスを読む。文字は HTML として解釈されないようにしてから渡す
+fn board_log_rows_from_jsonl(jsonl: &std::path::Path) -> Result<(Vec<ThreadResponseItem>, String, String, bool), String> {
+    file_within_limit(jsonl)?;
+    let bytes = std::fs::read(jsonl).map_err(|e| format!("ログを読めませんでした: {e}"))?;
+    let text = String::from_utf8_lossy(&bytes);
+    let (mut title, mut url) = (String::new(), String::new());
+    let mut rows: Vec<ThreadResponseItem> = Vec::new();
+    let mut truncated = false;
+    for line in text.lines() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        let get = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("");
+        if title.is_empty() {
+            title = board_log_clip(if v.get("type").and_then(|t| t.as_str()) == Some("start") { get("title") } else { get("where") }, 300);
+        }
+        if url.is_empty() {
+            url = board_log_clip(get("url"), 500);
+        }
+        let Some(no) = v.get("no").and_then(|n| n.as_u64()).and_then(|n| u32::try_from(n).ok()) else { continue };
+        if rows.len() >= BOARD_LOG_READ_MAX_RES {
+            truncated = true;
+            break;
+        }
+        let (posted, uid) = (get("posted").trim(), get("uid").trim());
+        let date_and_id = if uid.is_empty() { posted.to_string() } else { format!("{posted} ID:{uid}").trim().to_string() };
+        rows.push(ThreadResponseItem {
+            response_no: no,
+            name: html_text(get("name")),
+            mail: html_text(get("mail")),
+            date_and_id: html_text(&date_and_id),
+            body: get("text").lines().map(html_text).collect::<Vec<_>>().join(" <br> "),
+        });
+    }
+    rows.sort_by_key(|r| r.response_no);
+    rows.dedup_by_key(|r| r.response_no);
+    Ok((rows, title, url, truncated))
+}
+
+/// JSONL に書いてあるレス番号を、ファイルの並びのまま返す
+fn board_log_jsonl_nos_in_order(jsonl: &std::path::Path) -> Vec<u32> {
+    if file_within_limit(jsonl).is_err() {
+        return Vec::new();
+    }
+    let Ok(bytes) = std::fs::read(jsonl) else { return Vec::new() };
+    String::from_utf8_lossy(&bytes)
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter_map(|v| v.get("no").and_then(|n| n.as_u64()))
+        .filter_map(|n| u32::try_from(n).ok())
+        .collect()
+}
+
+/// 残したログを読む。受け取るのはサイト・板・スレ番号だけで、形を確かめてからパスを組み立てる
+fn board_log_read_in(base: &std::path::Path, site: &str, board: &str, key: &str) -> Result<BoardLogThread, String> {
+    if !BOARD_LOG_SITES.contains(&site) || !board_log_name_ok(board, 80) || !board_log_key_ok(key) {
+        return Err("ログの指定が正しくありません".into());
+    }
+    let dir = base.join(site).join(board);
+    let (jsonl, dat) = (dir.join(format!("{key}.jsonl")), dir.join(format!("{key}.dat")));
+    let tab_url = format!("{LOG_TAB_SCHEME}{site}/{board}/{key}");
+    if dat.is_file() {
+        let (head_title, url) = board_log_head(&jsonl);
+        let nos = board_log_jsonl_nos_in_order(&jsonl);
+        file_within_limit(&dat)?;
+        let mut bytes = std::fs::read(&dat).map_err(|e| format!("ログを読めませんでした: {e}"))?;
+        // 前の版が書いた dat は、本文の改行が空白になっている。表示の前に、JSONL と照らして戻す
+        // (ここではファイルを書き換えない。書き換えるのは board_log_repair_breaks_in)
+        if file_within_limit(&jsonl).is_ok() {
+            if let Some(fix) = std::fs::read(&jsonl).ok().and_then(|j| board_log_fix_dat_breaks(&bytes, &String::from_utf8_lossy(&j), true)) {
+                bytes = fix.bytes;
+            }
+        }
+        let (responses, dat_title, truncated) = board_log_rows_from_dat_bytes(&bytes, &nos);
+        let title = if head_title.is_empty() { dat_title.unwrap_or_default() } else { head_title };
+        return Ok(BoardLogThread { tab_url, title, url, responses, truncated });
+    }
+    if jsonl.is_file() {
+        let (responses, title, url, truncated) = board_log_rows_from_jsonl(&jsonl)?;
+        return Ok(BoardLogThread { tab_url, title, url, responses, truncated });
+    }
+    Err("ログのファイルが見つかりません".into())
+}
+
+/// この起動中に「ファイルから開く」で選んだファイル (番号 = 並びの位置)。画面からはパスを受け取らず、ここにあるものだけを読む
+static PICKED_LOG_FILES: Mutex<Vec<std::path::PathBuf>> = Mutex::new(Vec::new());
+
+fn log_file_kind(path: &std::path::Path) -> Option<&'static str> {
+    let ext = path.extension()?.to_string_lossy().to_ascii_lowercase();
+    match ext.as_str() {
+        "dat" => Some("dat"),
+        "jsonl" => Some("jsonl"),
+        _ => None,
+    }
+}
+
+fn remember_picked_log_file(path: std::path::PathBuf) -> usize {
+    let mut list = PICKED_LOG_FILES.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(i) = list.iter().position(|p| *p == path) {
+        return i;
+    }
+    list.push(path);
+    list.len() - 1
+}
+
+/// ログのフォルダの外のファイル (.dat / .jsonl) を読む。信用しない入力として扱う (大きさ・件数の上限。JSONL の文字は HTML にしない)
+fn board_log_read_external(path: &std::path::Path, tab_url: String) -> Result<BoardLogThread, String> {
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    match log_file_kind(path) {
+        Some("dat") => {
+            let (responses, title, truncated) = board_log_rows_from_dat(path, &[])?;
+            if responses.is_empty() {
+                return Err("レスを読み取れませんでした (5ch と同じ形の dat ではないようです)".into());
+            }
+            Ok(BoardLogThread { tab_url, title: title.filter(|t| !t.trim().is_empty()).unwrap_or(name), url: String::new(), responses, truncated })
+        }
+        Some("jsonl") => {
+            let (responses, title, url, truncated) = board_log_rows_from_jsonl(path)?;
+            if responses.is_empty() {
+                return Err("レスを読み取れませんでした (掲示板のログの JSONL ではないようです)".into());
+            }
+            // 元のスレの URL は、対応している掲示板のものだけを残す (表示とコピー用)
+            let url = if is_allowed_url(&url) { url } else { String::new() };
+            Ok(BoardLogThread { tab_url, title: if title.trim().is_empty() { name } else { title }, url, responses, truncated })
+        }
+        _ => Err("開けるのは .dat と .jsonl だけです".into()),
+    }
+}
+
+/// 残したログの一覧
+#[tauri::command(async)]
+fn board_log_list() -> Result<Vec<BoardLogEntry>, String> {
+    Ok(board_log_list_in(&board_log_dir_path()?))
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BoardLogPicked {
+    tab_url: String,
+    name: String,
+}
+
+/// 「ファイルから開く」: ファイルを選ぶ画面を出し、選んだ .dat / .jsonl を、この起動中に開けるものとして覚える
+#[tauri::command(async)]
+fn board_log_pick_file() -> Result<Option<BoardLogPicked>, String> {
+    let Some(picked) = open_file_dialog("ログ (*.dat;*.jsonl)".to_string(), "*.dat;*.jsonl".to_string())? else { return Ok(None) };
+    let path = std::path::PathBuf::from(&picked);
+    if log_file_kind(&path).is_none() {
+        return Err("開けるのは .dat と .jsonl だけです".into());
+    }
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let id = remember_picked_log_file(path);
+    Ok(Some(BoardLogPicked { tab_url: format!("{LOG_TAB_SCHEME}file/{id}"), name }))
+}
+
+/// ログのタブの中身を読む (`lflog://<サイト>/<板>/<スレ番号>` か `lflog://file/<番号>`)
+#[tauri::command(async)]
+fn board_log_read(tab_url: String) -> Result<BoardLogThread, String> {
+    let rest = tab_url.trim().strip_prefix(LOG_TAB_SCHEME).ok_or("ログのタブの URL ではありません")?;
+    let segs: Vec<&str> = rest.split('/').collect();
+    match segs.as_slice() {
+        ["file", id] => {
+            let id: usize = id.parse().map_err(|_| "ログの指定が正しくありません".to_string())?;
+            let path = PICKED_LOG_FILES.lock().unwrap_or_else(|e| e.into_inner()).get(id).cloned().ok_or("このファイルは、もう一度「ファイルから開く」で選んでください")?;
+            board_log_read_external(&path, format!("{LOG_TAB_SCHEME}file/{id}"))
+        }
+        [site, board, key] => board_log_read_in(&board_log_dir_path()?, site, board, key),
+        _ => Err("ログの指定が正しくありません".into()),
+    }
+}
+
+// ===== スレの書き出し (dat・テキスト・HTML) =====
+
+/// 書き出すレスの数の上限
+const EXPORT_MAX_RES: usize = 100_000;
+
+/// レスの HTML (掲示板の本文・名前) を、文字に落とす: <br> は改行にし、ほかのタグは取り除き、実体参照は文字に戻す。
+/// 書き出しでは、この文字をもう一度エスケープして出す (元の HTML をそのまま出さない)
+fn export_plain(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    while let Some(start) = rest.find('<') {
+        out.push_str(&rest[..start]);
+        let after = &rest[start..];
+        match after.find('>') {
+            Some(end) => {
+                let tag = after[1..end].trim().to_ascii_lowercase();
+                if tag == "br" || tag == "br/" || tag == "br /" {
+                    out.push('\n');
+                }
+                rest = &after[end + 1..];
+            }
+            // 閉じていない「<」は、文字として残す
+            None => {
+                out.push_str(after);
+                rest = "";
+            }
+        }
+    }
+    out.push_str(rest);
+    core_fetch::decode_html_entities(&out)
+        .lines()
+        .map(|l| l.trim().to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .chars()
+        .filter(|c| !c.is_control() || *c == '\n')
+        .collect()
+}
+
+/// HTML の本文・属性に入れても安全な形にする
+fn export_escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;")
+}
+
+/// 書き出すファイルの中身を作る (format: dat / txt / html)
+fn export_bytes(format: &str, title: &str, url: &str, rows: &[BoardLogRes]) -> Result<Vec<u8>, String> {
+    if rows.is_empty() {
+        return Err("書き出すレスがありません".into());
+    }
+    if rows.len() > EXPORT_MAX_RES {
+        return Err(format!("レスが多すぎます ({EXPORT_MAX_RES} 件まで)"));
+    }
+    let title_plain = board_log_clip(&export_plain(title).replace('\n', " "), 300);
+    // 元のスレの URL は、対応している掲示板のものだけを書く
+    let url_plain = if is_allowed_url(url) { url.trim().to_string() } else { String::new() };
+    match format {
+        "dat" => {
+            let refs: Vec<&BoardLogRes> = rows.iter().collect();
+            Ok(core_fetch::encode_shift_jis(&board_log_dat_lines(&refs, &title_plain, true)))
+        }
+        "txt" => {
+            let mut out = format!("{title_plain}\n");
+            if !url_plain.is_empty() {
+                out.push_str(&format!("{url_plain}\n"));
+            }
+            out.push('\n');
+            for r in rows {
+                let mail = export_plain(&r.mail).replace('\n', " ");
+                out.push_str(&format!(
+                    "{} 名前：{}{} 投稿日：{}\n{}\n\n",
+                    r.no,
+                    export_plain(&r.name).replace('\n', " "),
+                    if mail.is_empty() { String::new() } else { format!(" [{mail}]") },
+                    export_plain(&r.date_and_id).replace('\n', " "),
+                    export_plain(&r.body)
+                ));
+            }
+            Ok(out.into_bytes())
+        }
+        "html" => {
+            // スクリプト・外部の画像やスタイルは入れない。CSP の meta で、外部の読み込みも止める
+            let mut out = String::from("<!doctype html>\n<html lang=\"ja\">\n<head>\n<meta charset=\"utf-8\">\n<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n");
+            out.push_str(&format!("<title>{}</title>\n", export_escape(&title_plain)));
+            out.push_str("<style>\nbody { font-family: sans-serif; line-height: 1.6; margin: 16px; max-width: 900px; }\nh1 { font-size: 1.2em; }\n.src { color: #555; font-size: 0.9em; word-break: break-all; }\narticle { margin: 0 0 14px; }\nheader { color: #333; font-size: 0.9em; }\n.no { font-weight: 700; }\n.name { color: #060; font-weight: 700; }\n.body { margin: 2px 0 0 1.5em; word-break: break-word; }\n@media (prefers-color-scheme: dark) { body { background: #1b1b1b; color: #ddd; } header { color: #bbb; } .name { color: #7c7; } .src { color: #999; } }\n</style>\n</head>\n<body>\n");
+            out.push_str(&format!("<h1>{}</h1>\n", export_escape(&title_plain)));
+            if !url_plain.is_empty() {
+                out.push_str(&format!("<p class=\"src\">{}</p>\n", export_escape(&url_plain)));
+            }
+            for r in rows {
+                let mail = export_plain(&r.mail).replace('\n', " ");
+                let body = export_plain(&r.body).lines().map(export_escape).collect::<Vec<_>>().join("<br>\n");
+                out.push_str(&format!(
+                    "<article id=\"r{no}\">\n<header><span class=\"no\">{no}</span> <span class=\"name\">{name}</span>{mail} <span class=\"date\">{date}</span></header>\n<div class=\"body\">{body}</div>\n</article>\n",
+                    no = r.no,
+                    name = export_escape(&export_plain(&r.name).replace('\n', " ")),
+                    mail = if mail.is_empty() { String::new() } else { format!(" [<span class=\"mail\">{}</span>]", export_escape(&mail)) },
+                    date = export_escape(&export_plain(&r.date_and_id).replace('\n', " ")),
+                ));
+            }
+            out.push_str("</body>\n</html>\n");
+            Ok(out.into_bytes())
+        }
+        _ => Err("書き出しの形式が正しくありません".into()),
+    }
+}
+
+/// 書き出すファイルの名前の初めの値 (題名から、ファイル名に使えない文字を除く)
+fn export_default_name(title: &str, ext: &str) -> String {
+    let base: String = export_plain(title)
+        .chars()
+        .filter(|c| !c.is_control() && !matches!(c, '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|'))
+        .take(60)
+        .collect();
+    let base = base.trim().trim_matches('.').to_string();
+    format!("{}.{ext}", if base.is_empty() { "thread".to_string() } else { base })
+}
+
+/// 保存先を選ぶ画面を出す (選ばなければ None)。Windows 以外では使えない
+#[allow(clippy::needless_return)] // OS ごとの分岐で return をそろえている
+fn save_file_dialog(filter_name: &str, filter_ext: &str, default_name: &str, def_ext: &str) -> Result<Option<String>, String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::ffi::OsStringExt;
+        #[repr(C)]
+        #[allow(non_snake_case, clippy::upper_case_acronyms)]
+        struct OPENFILENAMEW {
+            lStructSize: u32,
+            hwndOwner: usize,
+            hInstance: usize,
+            lpstrFilter: *const u16,
+            lpstrCustomFilter: *mut u16,
+            nMaxCustFilter: u32,
+            nFilterIndex: u32,
+            lpstrFile: *mut u16,
+            nMaxFile: u32,
+            lpstrFileTitle: *mut u16,
+            nMaxFileTitle: u32,
+            lpstrInitialDir: *const u16,
+            lpstrTitle: *const u16,
+            Flags: u32,
+            nFileOffset: u16,
+            nFileExtension: u16,
+            lpstrDefExt: *const u16,
+            lCustData: usize,
+            lpfnHook: usize,
+            lpTemplateName: *const u16,
+            pvReserved: usize,
+            dwReserved: u32,
+            FlagsEx: u32,
+        }
+        extern "system" {
+            fn GetSaveFileNameW(lpofn: *mut OPENFILENAMEW) -> i32;
+        }
+        let to_wide = |s: &str| -> Vec<u16> { s.encode_utf16().chain(std::iter::once(0)).collect() };
+        let filter_wide: Vec<u16> = format!("{filter_name}\0{filter_ext}\0").encode_utf16().chain(std::iter::once(0)).collect();
+        let title_wide = to_wide("書き出す場所を選択");
+        let ext_wide = to_wide(def_ext);
+        let mut file_buf: Vec<u16> = vec![0u16; 1024];
+        for (i, c) in default_name.encode_utf16().take(file_buf.len() - 1).enumerate() {
+            file_buf[i] = c;
+        }
+        let mut ofn: OPENFILENAMEW = unsafe { std::mem::zeroed() };
+        ofn.lStructSize = std::mem::size_of::<OPENFILENAMEW>() as u32;
+        ofn.lpstrFilter = filter_wide.as_ptr();
+        ofn.lpstrFile = file_buf.as_mut_ptr();
+        ofn.nMaxFile = file_buf.len() as u32;
+        ofn.lpstrTitle = title_wide.as_ptr();
+        ofn.lpstrDefExt = ext_wide.as_ptr();
+        ofn.Flags = 0x00000002 | 0x00000800 | 0x00000008; // OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR
+        let result = unsafe { GetSaveFileNameW(&mut ofn) };
+        if result == 0 {
+            return Ok(None);
+        }
+        let len = file_buf.iter().position(|&c| c == 0).unwrap_or(file_buf.len());
+        let path = std::ffi::OsString::from_wide(&file_buf[..len]).to_string_lossy().to_string();
+        if path.is_empty() {
+            return Ok(None);
+        }
+        return Ok(Some(path));
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (filter_name, filter_ext, default_name, def_ext);
+        Err("この環境では書き出せません".into())
+    }
+}
+
+/// 開いているスレを書き出す。保存先は、ここで出す画面で利用者が選ぶ (画面からパスは受け取らない)。
+/// 戻り値は、書き出したファイルの名前 (選ばなかったときは None)
+#[tauri::command(async)]
+fn export_thread(format: String, title: String, url: String, responses: Vec<BoardLogRes>) -> Result<Option<String>, String> {
+    let (filter_name, ext) = match format.as_str() {
+        "dat" => ("dat (5ch と同じ形・Shift_JIS)", "dat"),
+        "txt" => ("テキスト (UTF-8)", "txt"),
+        "html" => ("HTML (UTF-8)", "html"),
+        _ => return Err("書き出しの形式が正しくありません".into()),
+    };
+    let bytes = export_bytes(&format, &title, &url, &responses)?;
+    let Some(path) = save_file_dialog(filter_name, &format!("*.{ext}"), &export_default_name(&title, ext), ext)? else { return Ok(None) };
+    let path = std::path::PathBuf::from(path);
+    // 選んだ形式の拡張子のファイルにだけ書く (ほかの種類のファイルを上書きしない)
+    if !path.extension().is_some_and(|e| e.eq_ignore_ascii_case(ext)) {
+        return Err(format!("ファイルの名前は .{ext} で終わるようにしてください"));
+    }
+    std::fs::write(&path, bytes).map_err(|e| format!("書き出せませんでした: {e}"))?;
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let _ = core_store::append_log(&format!("export_thread: {format} {} レス", responses.len()));
+    Ok(Some(name))
+}
+
 #[cfg(test)]
 mod board_log_tests {
     use super::*;
+
+    fn log_res(no: u32, name: &str, mail: &str, date_and_id: &str, body: &str) -> BoardLogRes {
+        BoardLogRes { no, name: name.into(), mail: mail.into(), date_and_id: date_and_id.into(), body: body.into(), name_text: name.into(), uid: "abcd".into(), posted: "2026/11/23(月) 12:00:00.00".into(), text: body.replace(" <br> ", "\n") }
+    }
+
+    // ログのタブの URL は、取得・書き込み・ログの書き足し・スレの控えの保存が断る (画面側の止め忘れへの歯止め)
+    #[test]
+    fn log_tab_url_is_refused_by_fetch_and_save() {
+        for u in ["lflog://5ch/news4vip/1234567890", "lflog://file/0", "LFLOG://5ch/a/1", "  lflog://jpnkn/a/1"] {
+            assert!(is_log_tab_url(u), "{u}");
+            assert!(!core_fetch::is_allowed_url(u), "取得・書き込みの命令が断る: {u}");
+            assert!(core_fetch::detect_site_type(u).is_none(), "{u}");
+            assert!(board_log_location(u).is_none(), "ログを書き足さない: {u}");
+            assert!(save_thread_cache(u.to_string(), "t".into(), "[]".into()).is_err(), "スレの控えに保存しない: {u}");
+        }
+        let dir = test_dir("refuse");
+        assert!(board_log_append_in(&dir, "lflog://5ch/news4vip/1234567890".into(), "t".into(), "b".into(), vec![log_res(1, "n", "", "d", "x")], Some(true)).is_err());
+        assert!(std::fs::read_dir(&dir).unwrap().next().is_none(), "何も書いていない");
+        // 対照: ふつうのスレの URL は、ログのタブの URL ではない
+        assert!(!is_log_tab_url("https://mao.5ch.io/test/read.cgi/ngt/1/"));
+        // 前回のタブの保存からは、ログのタブを外す (表示していたタブの位置もずらす)
+        let saved = strip_log_tabs(r#"{"tabs":[{"threadUrl":"lflog://5ch/a/1","title":"ログ"},{"threadUrl":"https://mao.5ch.io/test/read.cgi/ngt/1/","title":"スレ"},{"threadUrl":"lflog://file/0","title":"外"}],"activeIndex":2}"#);
+        let v: serde_json::Value = serde_json::from_str(&saved).unwrap();
+        assert_eq!(v["tabs"].as_array().unwrap().len(), 1);
+        assert_eq!(v["tabs"][0]["title"], "スレ");
+        assert_eq!(v["activeIndex"], 0);
+        // ログのタブが無ければ、そのまま (壊れた形も、そのまま渡して前からの確かめに任せる)
+        let plain = r#"{"tabs":[{"threadUrl":"https://mao.5ch.io/test/read.cgi/ngt/1/","title":"スレ"}],"activeIndex":0}"#;
+        assert_eq!(strip_log_tabs(plain), plain);
+        assert_eq!(strip_log_tabs("{broken"), "{broken");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // 書いたログを一覧に出し、読み戻すと、書いたレスと同じになる (5ch・したらば・JPNKN。Shift_JIS に無い文字・欠番も)
+    #[test]
+    fn written_log_is_listed_and_read_back() {
+        let dir = test_dir("readback");
+        let cases = [
+            ("https://mao.5ch.io/test/read.cgi/ngt/1700000001/", "5ch", "ngt", "1700000001"),
+            ("https://jbbs.shitaraba.net/bbs/read.cgi/game/12345/1700000002/", "shitaraba", "game_12345", "1700000002"),
+            ("https://bbs.jpnkn.com/test/read.cgi/abc/1700000003/", "jpnkn", "abc", "1700000003"),
+        ];
+        for (url, site, board, key) in cases {
+            let rows = vec![
+                log_res(1, "ななし", "sage", "2026/11/23(月) 12:00:00.00 ID:abcd", " 1行目 <br> 2行目 😀 "),
+                log_res(3, "<b>とりっぷ</b>", "", "2026/11/23(月) 12:00:02.00 ID:efgh", " &gt;&gt;1 <a href=\"https://example.com/\">https://example.com/</a> "),
+                log_res(4, "ななし", "", "2026/11/23(月) 12:00:03.00 ID:abcd", " おわり "),
+            ];
+            board_log_append_in(&dir, url.into(), "てすとスレ".into(), "板".into(), rows, Some(true)).expect("append");
+            let got = board_log_read_in(&dir, site, board, key).expect("read");
+            assert_eq!(got.tab_url, format!("lflog://{site}/{board}/{key}"));
+            assert_eq!(got.title, "てすとスレ");
+            assert_eq!(got.url, url);
+            assert!(!got.truncated);
+            assert_eq!(got.responses.iter().map(|r| r.response_no).collect::<Vec<_>>(), vec![1, 3, 4], "欠番があっても、番号がずれない ({site})");
+            assert_eq!(got.responses[0].name, "ななし");
+            assert_eq!(got.responses[0].mail, "sage");
+            assert_eq!(got.responses[0].date_and_id, "2026/11/23(月) 12:00:00.00 ID:abcd");
+            assert!(got.responses[0].body.contains("1行目") && got.responses[0].body.contains("2行目") && got.responses[0].body.contains("&#128512;"), "{}", got.responses[0].body);
+            // 取得したときと同じ読み方を通るので、取得したレスと同じ形になる (アンカーの > は文字に戻る)
+            assert!(got.responses[1].body.contains(">>1") && got.responses[1].body.contains("https://example.com/"), "{}", got.responses[1].body);
+            assert_eq!(got.responses[1].name, "<b>とりっぷ</b>");
+            assert!(got.responses[2].body.contains("おわり"));
+        }
+        let list = board_log_list_in(&dir);
+        assert_eq!(list.len(), 3);
+        let e = list.iter().find(|e| e.site == "5ch").expect("5ch");
+        assert_eq!((e.board.as_str(), e.key.as_str(), e.title.as_str(), e.last_no), ("ngt", "1700000001", "てすとスレ", 4));
+        assert_eq!(e.tab_url, "lflog://5ch/ngt/1700000001");
+        assert_eq!(e.url, "https://mao.5ch.io/test/read.cgi/ngt/1700000001/");
+        assert!(e.size > 0 && e.modified > 0);
+        // 作り直しの途中の残りのファイルは、一覧に出さない・読むのにも使わない
+        let d5 = dir.join("5ch").join("ngt");
+        std::fs::write(d5.join("1700000001.jsonl.prev"), "{\"no\":99}\n").unwrap();
+        std::fs::write(d5.join("1700000001.dat.prev"), "x<>y<>z<>w<>\n").unwrap();
+        std::fs::write(d5.join("1700000001.rebuilt"), "").unwrap();
+        std::fs::write(d5.join("memo.txt"), "x").unwrap();
+        assert_eq!(board_log_list_in(&dir).len(), 3);
+        assert_eq!(board_log_read_in(&dir, "5ch", "ngt", "1700000001").unwrap().responses.len(), 3);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // 読む場所は、形を確かめたサイト・板・スレ番号だけで決める (フォルダの外を読ませない)
+    #[test]
+    fn log_read_refuses_bad_names() {
+        let dir = test_dir("badname");
+        std::fs::write(dir.join("secret.dat"), "a<>b<>c<>d<>t\n").unwrap();
+        for (site, board, key) in [("..", "ngt", "1"), ("5ch", "..", "1"), ("5ch", "ngt", "../secret"), ("5ch", "a/b", "1"), ("5ch", "ngt", "1a"), ("other", "ngt", "1"), ("5ch", "", "1"), ("5ch", "ngt", "")] {
+            assert!(board_log_read_in(&dir, site, board, key).is_err(), "{site}/{board}/{key}");
+        }
+        assert!(board_log_read("lflog://5ch/../secret".into()).is_err());
+        assert!(board_log_read("lflog://file/999999".into()).is_err(), "選んでいないファイルは読まない");
+        assert!(board_log_read("lflog://file/../x".into()).is_err());
+        assert!(board_log_read("https://mao.5ch.io/test/read.cgi/ngt/1/".into()).is_err());
+        assert!(board_log_read_in(&dir, "5ch", "ngt", "1").is_err(), "無いログ");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // 書き出し: HTML は本文を文字に落としてからエスケープする (元の HTML・スクリプト・イベントの属性・危ないリンクを出さない)
+    #[test]
+    fn export_html_is_inert() {
+        let rows = vec![
+            log_res(1, "<b>ななし</b><script>alert(1)</script>", "sage\"><img src=x onerror=alert(2)>", "2026/11/23(月) 12:00:00.00 ID:abcd", " 1行目 <br> <a href=\"javascript:alert(3)\">リンク</a> <img src=x onerror=alert(4)> "),
+            log_res(2, "ななし", "", "2026/11/23 ID:efgh", " &lt;script&gt;alert(5)&lt;/script&gt; &amp;lt;b&amp;gt; <br> 2行目 😀 "),
+        ];
+        let html = String::from_utf8(export_bytes("html", "題<script>名</script>", "https://mao.5ch.io/test/read.cgi/ngt/1/", &rows).unwrap()).unwrap();
+        assert!(html.contains("<meta charset=\"utf-8\">"));
+        assert!(html.contains("Content-Security-Policy") && html.contains("default-src 'none'"));
+        // 出すタグは、ひな形の決まったものだけ。本文・名前・題名から来た「<」は 1 つも無い
+        let mut rest = html.clone();
+        for tag in ["<!doctype html>", "<html lang=\"ja\">", "</html>", "<head>", "</head>", "<body>", "</body>", "<title>", "</title>", "<style>", "</style>", "<h1>", "</h1>", "</article>", "<header>", "</header>", "</span>", "</div>", "</p>", "<br>",
+            "<meta charset=\"utf-8\">", "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'\">", "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">",
+            "<article id=\"r1\">", "<article id=\"r2\">", "<span class=\"no\">", "<span class=\"name\">", "<span class=\"mail\">", "<span class=\"date\">", "<div class=\"body\">", "<p class=\"src\">"] {
+            rest = rest.replace(tag, "");
+        }
+        assert!(!rest.contains('<'), "本文から来たタグが残っている: {}", rest.chars().filter(|c| *c == '<').count());
+        let lower = html.to_ascii_lowercase();
+        assert!(!lower.contains("<script") && !lower.contains("<img") && !lower.contains("<a ") && !lower.contains("javascript:alert"), "{html}");
+        assert!(!lower.contains(" src=x") || lower.contains("&lt;") || !lower.contains("<img"), "{html}");
+        // 文字として書いてあったタグは、文字のまま読める
+        assert!(html.contains("&lt;script&gt;alert(5)&lt;/script&gt;") && html.contains("&amp;lt;b&amp;gt;"), "{html}");
+        // 対照: 中身は出る
+        assert!(html.contains("1行目") && html.contains("リンク") && html.contains("2行目") && html.contains("😀") && html.contains("ななし") && html.contains("ID:abcd"));
+        assert!(html.contains("https://mao.5ch.io/test/read.cgi/ngt/1/"));
+        // 対応していない場所の URL・ログのタブの URL は書かない
+        let other = String::from_utf8(export_bytes("html", "t", "javascript:alert(1)", &rows).unwrap()).unwrap();
+        assert!(!other.contains("javascript:alert(1)") && !other.contains("class=\"src\">"));
+        assert!(!String::from_utf8(export_bytes("html", "t", "lflog://5ch/a/1", &rows).unwrap()).unwrap().contains("lflog"));
+    }
+
+    // 取得したレスの本文は、改行を <br> ではなく改行の文字で持つ (取得のとき core-parse が変える。実体参照の &gt; なども文字に戻っている)。
+    // その形の本文をログに書いて読み戻すと、改行が残る (前の版は改行を空白にして dat に書いていて、読み戻すと行がつながった)
+    fn real_res(no: u32, body: &str, text: &str) -> BoardLogRes {
+        BoardLogRes { no, name: "ななし".into(), mail: "".into(), date_and_id: format!("2026/11/24(火) 12:00:0{no}.00 ID:real{no}"), body: body.into(), name_text: "ななし".into(), uid: format!("real{no}"), posted: format!("2026/11/24(火) 12:00:0{no}.00"), text: text.into() }
+    }
+    fn real_rows() -> Vec<BoardLogRes> {
+        vec![
+            real_res(1, " 1行目 \n 2行目 😀 \n  \n 4行目 ", "1行目 \n 2行目 😀 \n  \n 4行目"),
+            real_res(2, " <a href=\"../test/read.cgi/ngt/1/1\" target=\"_blank\">>>1</a> \n <丶｀∀´> わらい \n a < b ", ">>1 \n  わらい \n a < b"),
+            real_res(3, " 1行だけ ", "1行だけ"),
+            real_res(4, "行頭と行末に空白なし\nしたらば・JPNKN の形\nA&B \"C\" <>D", "行頭と行末に空白なし\nしたらば・JPNKN の形\nA&B \"C\" D"),
+        ]
+    }
+
+    #[test]
+    fn written_log_keeps_line_breaks() {
+        let dir = test_dir("linebreaks");
+        let url = "https://mao.5ch.io/test/read.cgi/ngt/1700000011/";
+        board_log_append_in(&dir, url.into(), "かいぎょうスレ".into(), "板".into(), real_rows(), Some(true)).expect("append");
+        let dat = std::fs::read(dir.join("5ch").join("ngt").join("1700000011.dat")).expect("dat");
+        assert_eq!(dat.iter().filter(|&&c| c == b'\n').count(), 4, "dat は 1 行 1 レスのまま");
+        let got = board_log_read_in(&dir, "5ch", "ngt", "1700000011").expect("read");
+        let bodies: Vec<&str> = got.responses.iter().map(|r| r.body.as_str()).collect();
+        assert_eq!(bodies[0], " 1行目 \n 2行目 &#128512; \n  \n 4行目 ", "改行が残る (Shift_JIS に無い文字は文字参照になる)");
+        assert_eq!(bodies[1], " <a href=\"../test/read.cgi/ngt/1/1\" target=\"_blank\">>>1</a> \n <丶｀∀´> わらい \n a < b ", "タグ・< > で囲んだ文字も、そのまま残る");
+        assert_eq!(bodies[2], " 1行だけ ");
+        assert_eq!(bodies[3], "行頭と行末に空白なし\nしたらば・JPNKN の形\nA&B \"C\" <>D");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn export_keeps_line_breaks() {
+        let rows = real_rows();
+        let (back, _) = core_fetch::parse_dat_bytes(&export_bytes("dat", "かいぎょうスレ", "", &rows).unwrap(), 100);
+        assert_eq!(back.len(), 4);
+        assert_eq!(back[0].body, " 1行目 \n 2行目 &#128512; \n  \n 4行目 ");
+        assert_eq!(back[3].body, "行頭と行末に空白なし\nしたらば・JPNKN の形\nA&B \"C\" <>D");
+        let txt = String::from_utf8(export_bytes("txt", "かいぎょうスレ", "", &rows).unwrap()).unwrap();
+        assert!(txt.contains("1行目\n2行目 😀\n\n4行目\n"), "{txt}");
+        let html = String::from_utf8(export_bytes("html", "かいぎょうスレ", "", &rows).unwrap()).unwrap();
+        assert!(html.contains("1行目<br>\n2行目 😀<br>\n<br>\n4行目"), "{html}");
+    }
+
+    // 前の版 (改行を空白にして書いた) の dat を作る: 今の版で書いた dat の <br> を空白に戻すと、前の版が書いたものと同じになる
+    fn write_old_format_log(dir: &std::path::Path, key: &str, rows: Vec<BoardLogRes>) -> (std::path::PathBuf, Vec<u8>, Vec<u8>) {
+        let url = format!("https://mao.5ch.io/test/read.cgi/ngt/{key}/");
+        board_log_append_in(dir, url, "かいぎょうスレ".into(), "板".into(), rows, Some(true)).expect("append");
+        let dat = dir.join("5ch").join("ngt").join(format!("{key}.dat"));
+        let new = std::fs::read(&dat).expect("dat");
+        let old = br_to_space(&new);
+        assert_ne!(old, new, "(前提) 改行のあるレスがある");
+        std::fs::write(&dat, &old).expect("old dat");
+        (dat, old, new)
+    }
+    fn dat_bak_files(dat: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let mut v: Vec<_> = std::fs::read_dir(dat.parent().unwrap()).unwrap().flatten().map(|f| f.path()).filter(|p| p.to_string_lossy().ends_with(".dat.bak")).collect();
+        v.sort();
+        v
+    }
+
+    // 前の版が書いた dat (改行が空白) を「ログを開く」で読むと、改行が戻っている。読むだけでは、ファイルを書き換えない
+    #[test]
+    fn old_dat_is_shown_with_line_breaks() {
+        let dir = test_dir("oldshow");
+        let (dat, old, _) = write_old_format_log(&dir, "1700000021", real_rows());
+        let got = board_log_read_in(&dir, "5ch", "ngt", "1700000021").expect("read");
+        assert_eq!(got.responses[0].body, " 1行目 \n 2行目 &#128512; \n  \n 4行目 ");
+        assert_eq!(got.responses[1].body, " <a href=\"../test/read.cgi/ngt/1/1\" target=\"_blank\">>>1</a> \n <丶｀∀´> わらい \n a < b ", "タグ・< > で囲んだ文字は残る");
+        assert_eq!(got.responses[2].body, " 1行だけ ");
+        assert_eq!(got.responses[3].body, "行頭と行末に空白なし\nしたらば・JPNKN の形\nA&B \"C\" <>D");
+        assert_eq!(std::fs::read(&dat).unwrap(), old, "読むだけでは書き換えない");
+        assert!(dat_bak_files(&dat).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // 保存済みの dat の改行を戻す: 今の版が書く dat とバイト単位で同じになる。元の dat は別名で残る。2 回目は何もしない
+    #[test]
+    fn old_dat_line_breaks_are_restored_on_disk() {
+        let dir = test_dir("oldfix");
+        let (dat, old, new) = write_old_format_log(&dir, "1700000022", real_rows());
+        let jsonl_before = std::fs::read(dat.with_extension("jsonl")).unwrap();
+        let res = board_log_repair_breaks_in(&dir);
+        assert_eq!(res, BoardLogBreakRepair { logs: 1, fixed_logs: 1, fixed_rows: 3, unmatched_rows: 0, skipped_logs: 0, failed_logs: 0 });
+        assert_eq!(std::fs::read(&dat).unwrap(), new, "今の版が書く dat と同じになる");
+        assert_eq!(std::fs::read(dat.with_extension("jsonl")).unwrap(), jsonl_before, "JSONL は変えない");
+        let baks = dat_bak_files(&dat);
+        assert_eq!(baks.len(), 1, "元の dat を別名で残す");
+        assert_eq!(std::fs::read(&baks[0]).unwrap(), old);
+        assert!(baks[0].file_name().unwrap().to_string_lossy().starts_with("1700000022."));
+        assert!(!dat.with_extension("dat.tmp").exists());
+        // 2 回目: 直す行が無いので、書き直さない・控えも増やさない
+        let again = board_log_repair_breaks_in(&dir);
+        assert_eq!(again, BoardLogBreakRepair { logs: 1, ..Default::default() });
+        assert_eq!(std::fs::read(&dat).unwrap(), new);
+        assert_eq!(dat_bak_files(&dat).len(), 1);
+        // 一覧・読み込み・書き足しは、今までどおり動く (控えのファイルを拾わない)
+        assert_eq!(board_log_list_in(&dir).len(), 1);
+        assert_eq!(board_log_read_in(&dir, "5ch", "ngt", "1700000022").unwrap().responses.len(), 4);
+        let more = vec![real_res(5, "あとから\n書き足し", "あとから\n書き足し")];
+        let r = board_log_append_in(&dir, "https://mao.5ch.io/test/read.cgi/ngt/1700000022/".into(), "かいぎょうスレ".into(), "板".into(), more, None).expect("append");
+        assert_eq!((r.written, r.need_full), (1, false));
+        let got = board_log_read_in(&dir, "5ch", "ngt", "1700000022").unwrap();
+        assert_eq!(got.responses.iter().map(|r| r.response_no).collect::<Vec<_>>(), vec![1, 2, 3, 4, 5]);
+        assert_eq!(got.responses[4].body, "あとから\n書き足し");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // 改行を戻しても、ログの日時は変えない (一覧の並びと、日数・容量の整理の順番は、最後に書いた時刻で決めるため)
+    #[test]
+    fn dat_line_break_fix_keeps_file_time() {
+        let dir = test_dir("oldtime");
+        let (dat, _, new) = write_old_format_log(&dir, "1700000024", real_rows());
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(10 * 86400);
+        for p in [dat.clone(), dat.with_extension("jsonl")] {
+            std::fs::File::options().write(true).open(&p).expect("open").set_modified(old).expect("mtime");
+        }
+        let before = board_log_list_in(&dir)[0].modified;
+        assert_eq!(before, modified_secs(&dat), "(前提) 一覧の日時は、ファイルの日時");
+        let res = board_log_repair_breaks_in(&dir);
+        assert_eq!((res.fixed_logs, res.failed_logs), (1, 0));
+        assert_eq!(std::fs::read(&dat).unwrap(), new);
+        assert_eq!(modified_secs(&dat), before, "書き直した dat の日時は、元のまま");
+        assert_eq!(board_log_list_in(&dir)[0].modified, before, "一覧の日時も変わらない");
+        let baks = dat_bak_files(&dat);
+        assert_eq!(modified_secs(&baks[0]), before, "控えの日時も、元の dat の日時");
+        // 日数の整理は、書き直す前と同じ扱い (9 日なら組も控えも消える。書き直しで日が延びない)
+        board_log_prune_in(&dir, 9, 0).expect("prune");
+        assert!(!dat.exists() && !dat.with_extension("jsonl").exists() && dat_bak_files(&dat).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // 容量を超えたときは、控え (別名の dat) を本物のログより先に消す (控えが増えたせいで、古いログを消さない)
+    #[test]
+    fn prune_removes_backups_before_logs_when_over_size() {
+        let base = test_dir("prune_bak_first");
+        let dir = base.join("5ch").join("ngt");
+        std::fs::create_dir_all(&dir).expect("dir");
+        let now = std::time::SystemTime::now();
+        let set_time = |p: &std::path::Path, days: u64| {
+            std::fs::File::options().write(true).open(p).expect("open").set_modified(now - std::time::Duration::from_secs(days * 86400)).expect("mtime");
+        };
+        // 古いログ (10 日前)・それより新しい控え (5 日前・2 MB)・新しいログ
+        std::fs::write(dir.join("100.jsonl"), "{}\n").expect("jsonl");
+        std::fs::write(dir.join("100.dat"), "a<><><>b<>\n").expect("dat");
+        set_time(&dir.join("100.jsonl"), 10);
+        set_time(&dir.join("100.dat"), 10);
+        let bak = dir.join("200.20261101000000000.dat.bak");
+        std::fs::write(&bak, vec![b'a'; 2 * 1024 * 1024]).expect("bak");
+        set_time(&bak, 5);
+        std::fs::write(dir.join("200.jsonl"), "{}\n").expect("jsonl");
+        std::fs::write(dir.join("200.dat"), "a<><><>b<>\n").expect("dat");
+        board_log_prune_in(&base, 0, 1).expect("prune");
+        assert!(!bak.exists(), "控えを消す");
+        assert!(dir.join("100.jsonl").exists() && dir.join("100.dat").exists(), "控えを消せば上限に収まるので、古いログは残す");
+        assert!(dir.join("200.jsonl").exists() && dir.join("200.dat").exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // 戻せない行・決められないログには触らない
+    #[test]
+    fn dat_line_break_fix_leaves_what_it_cannot_match() {
+        let enc = |s: &str| core_fetch::encode_shift_jis(s);
+        let rec = |no: u32, text: &str| serde_json::json!({ "v": 1, "no": no, "text": text }).to_string();
+        let head = serde_json::json!({ "v": 1, "type": "start", "title": "t" }).to_string();
+        // 1: 戻せる / 2: JSONL の本文と合わない / 3: もう <br> がある (直したあとの版が書いた行) / 4: 改行の無いレス / 5: 文字参照のところの空白は改行にしない
+        let dat = enc("n<>m<>d<>a b c<>t\nn<>m<>d<>x y<>\nn<>m<>d<>p<br>q r<>\nn<>m<>d<>one two<>\nn<>m<>d<>k&#32;l m<>\n");
+        let jsonl = format!("{head}\n{}\n{}\n{}\n{}\n{}\n", rec(1, "a\nb c"), rec(2, "x\nZ"), rec(3, "p\nq\nr"), rec(4, "one two"), rec(5, "k l\nm"));
+        let fix = board_log_fix_dat_breaks(&dat, &jsonl, false).expect("fix");
+        assert_eq!((fix.fixed, fix.unmatched), (2, 1));
+        assert_eq!(fix.bytes, enc("n<>m<>d<>a<br>b c<>t\nn<>m<>d<>x y<>\nn<>m<>d<>p<br>q r<>\nn<>m<>d<>one two<>\nn<>m<>d<>k&#32;l<br>m<>\n"));
+        // もう一度当てても変わらない (戻せない行は数えるだけ)
+        let again = board_log_fix_dat_breaks(&fix.bytes, &jsonl, false).expect("again");
+        assert_eq!((again.fixed, again.unmatched, &again.bytes), (0, 1, &fix.bytes));
+        // 表示のときだけ: 合わない行の本文を JSONL から作る (文字は HTML にしない)
+        let shown = board_log_fix_dat_breaks(&dat, &format!("{head}\n{}\n{}\n{}\n{}\n{}\n", rec(1, "a\nb c"), rec(2, "x\n<b>Z</b>"), rec(3, "p\nq\nr"), rec(4, "one two"), rec(5, "k l\nm")), true).expect("shown");
+        assert!(String::from_utf8_lossy(&shown.bytes).contains("n<>m<>d<>x<br>&lt;b&gt;Z&lt;/b&gt;<>\n"), "{}", String::from_utf8_lossy(&shown.bytes));
+        // dat の行と JSONL のレスの数が合わなければ、どの行がどのレスか決められないので触らない
+        assert!(board_log_fix_dat_breaks(&dat, &format!("{head}\n{}\n", rec(1, "a\nb c")), false).is_none());
+        // 行頭・行末の改行は JSONL に残っていないので戻せないが、ほかは変えない。欄の数が違う行も触らない
+        let dat2 = enc("n<>m<>d<> a b <>\nn<>m<>a b<>\n");
+        let fix2 = board_log_fix_dat_breaks(&dat2, &format!("{}\n{}\n", rec(1, "a\nb"), rec(2, "a\nb")), false).expect("fix2");
+        assert_eq!((fix2.fixed, fix2.bytes), (1, enc("n<>m<>d<> a<br>b <>\nn<>m<>a b<>\n")));
+        // Shift_JIS の 2 バイト文字・Shift_JIS に無い文字 (文字参照)・全角の空白は、位置がずれない
+        let dat3 = enc("n<>m<>d<>日本語 😀　全角 おわり<>\n");
+        let fix3 = board_log_fix_dat_breaks(&dat3, &format!("{}\n", rec(1, "日本語\n😀　全角\nおわり")), false).expect("fix3");
+        assert_eq!((fix3.fixed, fix3.bytes), (1, enc("n<>m<>d<>日本語<br>😀　全角<br>おわり<>\n")));
+    }
+
+    // 書き出し: dat は読み戻せる。テキストは UTF-8 の文字だけ。形式・件数を確かめる
+    #[test]
+    fn export_dat_and_text() {
+        let rows = vec![
+            log_res(1, "ななし", "sage", "2026/11/23(月) 12:00:00.00 ID:abcd", " 1行目 <br> 2行目 😀 "),
+            log_res(2, "<b>とりっぷ</b>", "", "2026/11/23(月) 12:00:01.00 ID:efgh", " &gt;&gt;1 おわり "),
+        ];
+        let dat = export_bytes("dat", "てすとスレ", "", &rows).unwrap();
+        let (back, title) = core_fetch::parse_dat_bytes(&dat, 100);
+        assert_eq!((back.len(), title.as_deref()), (2, Some("てすとスレ")));
+        assert_eq!(back[0].mail, "sage");
+        assert!(back[0].body.contains("1行目") && back[0].body.contains("&#128512;"));
+        let txt = String::from_utf8(export_bytes("txt", "てすとスレ", "https://mao.5ch.io/test/read.cgi/ngt/1/", &rows).unwrap()).unwrap();
+        assert!(txt.starts_with("てすとスレ\nhttps://mao.5ch.io/test/read.cgi/ngt/1/\n\n1 名前：ななし [sage] 投稿日：2026/11/23(月) 12:00:00.00 ID:abcd\n1行目\n2行目 😀\n\n2 名前：とりっぷ 投稿日："), "{txt}");
+        assert!(txt.contains(">>1 おわり") && !txt.contains("<b>") && !txt.contains("<br>"));
+        assert!(export_bytes("exe", "t", "", &rows).is_err());
+        assert!(export_bytes("html", "t", "", &[]).is_err());
+        assert_eq!(export_default_name("a/b:c*?\"<>|d", "html"), "abcd.html");
+        assert_eq!(export_default_name("<b>題</b>..", "dat"), "題.dat");
+        assert_eq!(export_default_name("///", "txt"), "thread.txt");
+        assert_eq!(export_plain("a<br>b<BR/>c <x"), "a\nb\nc <x");
+    }
+
+    // 外のファイル: dat は取得と同じ読み方、JSONL は文字を HTML にしない。知らない形は断る
+    #[test]
+    fn external_log_files_are_read_as_untrusted() {
+        let dir = test_dir("external");
+        let dat = dir.join("よその専ブラ.dat");
+        std::fs::write(&dat, core_fetch::encode_shift_jis("ななし<>sage<>2025/01/02(木) 03:04:05.06 ID:zzzz<> ほんぶん <br> つづき <>よそのスレ\nななし<><>2025/01/02(木) 03:04:06.00 ID:zzzz<> ふたつめ <>\n")).unwrap();
+        let got = board_log_read_external(&dat, "lflog://file/0".into()).expect("dat");
+        assert_eq!((got.title.as_str(), got.responses.len(), got.url.as_str()), ("よそのスレ", 2, ""));
+        assert_eq!(got.responses[1].response_no, 2);
+        assert!(got.responses[0].body.contains("ほんぶん"));
+
+        let jsonl = dir.join("log.jsonl");
+        std::fs::write(&jsonl, concat!(
+            "{\"v\":1,\"type\":\"start\",\"title\":\"<i>だい</i>\",\"url\":\"https://evil.example/x\"}\n",
+            "{\"v\":1,\"no\":2,\"name\":\"<img src=x onerror=alert(1)>\",\"mail\":\"\\\"><script>\",\"posted\":\"2026/01/01\",\"uid\":\"a<b\",\"text\":\"<script>alert(1)</script>\\n2行目 &amp;\"}\n",
+            "not json\n",
+            "{\"v\":1,\"no\":1,\"name\":\"ななし\",\"text\":\"さいしょ\"}\n",
+        )).unwrap();
+        let got = board_log_read_external(&jsonl, "lflog://file/1".into()).expect("jsonl");
+        assert_eq!(got.url, "", "対応していない場所の URL は残さない");
+        assert_eq!(got.responses.iter().map(|r| r.response_no).collect::<Vec<_>>(), vec![1, 2]);
+        let r = &got.responses[1];
+        // 本文の改行は <br> にする。それ以外のタグ・引用符は、文字のまま出るようにしてある
+        let body_without_breaks = r.body.replace(" <br> ", "
+");
+        for field in [&r.name, &r.mail, &r.date_and_id, &body_without_breaks] {
+            assert!(!field.contains('<') && !field.contains('"'), "タグや引用符をそのまま入れない: {field}");
+        }
+        assert!(r.body.contains("&lt;script&gt;alert(1)&lt;/script&gt; <br> 2行目"), "{}", r.body);
+        assert!(r.body.contains("&amp;amp;"), "すでに実体参照の形の文字も、文字のまま出す: {}", r.body);
+        assert_eq!(r.date_and_id, "2026/01/01 ID:a&lt;b");
+
+        let other = dir.join("x.txt");
+        std::fs::write(&other, "a<>b<>c<>d<>t\n").unwrap();
+        assert!(board_log_read_external(&other, "lflog://file/2".into()).is_err(), ".dat と .jsonl だけ");
+        let empty = dir.join("empty.dat");
+        std::fs::write(&empty, "これは dat ではない\n").unwrap();
+        assert!(board_log_read_external(&empty, "lflog://file/3".into()).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn location_from_thread_url() {
@@ -2930,30 +4244,42 @@ fn save_external_boards(boards: Vec<ExternalBoard>) -> Result<(), String> {
 
 // --- Generic JSON persistence (for localStorage migration) ---
 
+/// 画面が名前を指定して読み書きできる JSON のファイル (data フォルダの直下)。ここに無い名前は断る (ほかのファイルを読み書きさせないため)。
+/// 画面で新しいファイルを使うときは、ここにも足す (足し忘れると、保存も読み込みも断られて、設定が残らない)
+const GENERIC_JSON_FILES: &[&str] = &[
+    "bookmarks.json",
+    "scroll-positions.json",
+    "name-history.json",
+    "my-posts.json",
+    "search-history.json",
+    "thread-fetch-times.json",
+    "expanded-categories.json",
+    "ui-state.json",
+    "viewer-whitelist.json",
+    "overlay-appearance.json",
+    "overlay-layouts.json",
+    "viewer-autoadd.json",
+    "twitch-events.json",
+    "twitch-teach.json",
+    "twitch-emotes.json",
+    "youtube-events.json",
+    "post-history.json",
+    "input-history.json",
+    "board-categories.json",
+    "board-tree-scroll.json",
+    "new-thread-dialog-size.json",
+];
+
+/// その名前のファイルを、画面から読み書きしてよいか
+fn generic_json_allowed(filename: &str) -> bool {
+    GENERIC_JSON_FILES.contains(&filename)
+}
+
 /// Save arbitrary JSON data to a named file in the data directory.
 /// Allowed filenames are restricted to prevent path traversal.
 #[tauri::command]
 fn save_generic_json(filename: String, data: serde_json::Value) -> Result<(), String> {
-    const ALLOWED: &[&str] = &[
-        "bookmarks.json",
-        "scroll-positions.json",
-        "name-history.json",
-        "my-posts.json",
-        "search-history.json",
-        "thread-fetch-times.json",
-        "expanded-categories.json",
-        "ui-state.json",
-        "viewer-whitelist.json",
-        "overlay-appearance.json",
-        "overlay-layouts.json",
-        "viewer-autoadd.json",
-        "twitch-events.json",
-        "twitch-teach.json",
-        "twitch-emotes.json",
-        "youtube-events.json",
-        "post-history.json",
-    ];
-    if !ALLOWED.contains(&filename.as_str()) {
+    if !generic_json_allowed(&filename) {
         return Err(format!("Filename not allowed: {}", filename));
     }
     core_store::save_json(&filename, &data).map_err(|e| e.to_string())
@@ -2961,26 +4287,7 @@ fn save_generic_json(filename: String, data: serde_json::Value) -> Result<(), St
 
 #[tauri::command]
 fn load_generic_json(filename: String) -> Result<serde_json::Value, String> {
-    const ALLOWED: &[&str] = &[
-        "bookmarks.json",
-        "scroll-positions.json",
-        "name-history.json",
-        "my-posts.json",
-        "search-history.json",
-        "thread-fetch-times.json",
-        "expanded-categories.json",
-        "ui-state.json",
-        "viewer-whitelist.json",
-        "overlay-appearance.json",
-        "overlay-layouts.json",
-        "viewer-autoadd.json",
-        "twitch-events.json",
-        "twitch-teach.json",
-        "twitch-emotes.json",
-        "youtube-events.json",
-        "post-history.json",
-    ];
-    if !ALLOWED.contains(&filename.as_str()) {
+    if !generic_json_allowed(&filename) {
         return Err(format!("Filename not allowed: {}", filename));
     }
     // あるのに読めないときはエラー (無い・壊れていたときは null)。読めなかったファイルは、その起動の間は上書きしない
@@ -3439,9 +4746,9 @@ struct ThemeCssFile {
 }
 
 fn css_external_urls_allowed() -> bool {
-    core_store::load_settings_ini()
-        .ok()
-        .and_then(|m| m.get("App.cssAllowExternalUrls").cloned())
+    settings_for_use()
+        .get("App.cssAllowExternalUrls")
+        .cloned()
         .map(|v| v == "true")
         .unwrap_or(false)
 }
@@ -3695,7 +5002,28 @@ fn save_layout_prefs(prefs: String) -> Result<(), String> {
 
 #[tauri::command]
 fn save_session_tabs(data: String) -> Result<(), String> {
-    core_store::save_json("session_tabs.json", &data).map_err(|e| e.to_string())
+    // ログのタブは保存しない (画面側でも外している。ここは歯止め)
+    core_store::save_json("session_tabs.json", &strip_log_tabs(&data)).map_err(|e| e.to_string())
+}
+
+/// 保存するタブの一覧 (JSON) から、ログのタブを外す。表示していたタブの位置も、外した分だけずらす。
+/// ログのタブが無い・形が読めないときは、受け取ったまま返す
+fn strip_log_tabs(data: &str) -> String {
+    let Ok(mut v) = serde_json::from_str::<serde_json::Value>(data) else { return data.to_string() };
+    let Some(tabs) = v.get("tabs").and_then(|t| t.as_array()).cloned() else { return data.to_string() };
+    let is_log = |t: &serde_json::Value| t.get("threadUrl").and_then(|u| u.as_str()).is_some_and(is_log_tab_url);
+    if !tabs.iter().any(is_log) {
+        return data.to_string();
+    }
+    let active = v.get("activeIndex").and_then(|a| a.as_u64()).unwrap_or(0) as usize;
+    let before_active = tabs.iter().take(active).filter(|t| is_log(t)).count();
+    let kept: Vec<serde_json::Value> = tabs.into_iter().filter(|t| !is_log(t)).collect();
+    let new_active = active.saturating_sub(before_active).min(kept.len().saturating_sub(1));
+    if let Some(obj) = v.as_object_mut() {
+        obj.insert("tabs".into(), serde_json::Value::Array(kept));
+        obj.insert("activeIndex".into(), serde_json::Value::from(new_active));
+    }
+    v.to_string()
 }
 
 /// 保存したタブの一覧を1件ずつ確かめる。URL (url_key: threadUrl / boardUrl) が文字列でないもの (null など) は外し、
@@ -3789,6 +5117,10 @@ fn load_layout_prefs() -> Result<String, String> {
 
 #[tauri::command]
 fn save_thread_cache(thread_url: String, title: String, responses_json: String) -> Result<(), String> {
+    // ログのタブは、スレの控えに保存しない (元のログを読めば足りる。控えが残ると、次の起動で取得の対象と紛れる)
+    if is_log_tab_url(&thread_url) {
+        return Err("ログのタブは保存しません".into());
+    }
     core_store::save_thread_cache(&thread_url, &title, &responses_json)
         .map_err(|e| format!("{}", e))
 }
@@ -4007,6 +5339,14 @@ fn proxy_payload_from_ini(map: &HashMap<String, String>) -> ProxySettingsPayload
         receive,
         send,
     }
+}
+
+/// settings.ini を、ついでに読む (板一覧の取得元・画像の保存先・CSS の設定など、設定を使うだけの処理用)。
+/// 「起動したときに読めなかった」の覚えは変えない。覚えを外すのは、画面が設定を読み込む `load_app_settings` が読めたときだけ
+/// (ついでに読めただけで外すと、画面がまだ既定値を持っている間に、設定ファイルを上書きできるようになる)。
+/// 読めない・無いときは空 (呼ぶ側は既定値で動く)
+fn settings_for_use() -> HashMap<String, String> {
+    core_store::peek_settings_ini().ok().flatten().unwrap_or_default()
 }
 
 /// 読めなかった設定ファイルを、通信の前に読み直す (読めたら、保存してあるプロキシの設定を返す)。
@@ -4539,9 +5879,9 @@ fn pick_command_program() -> Result<Option<String>, String> {
 /// 設定の「画像の保存先」(画像ウィンドウ用。設定ファイル全体は渡さない)。未設定なら空
 #[tauri::command]
 fn image_save_folder() -> String {
-    core_store::load_settings_ini()
-        .ok()
-        .and_then(|m| m.get("App.imageSaveFolder").cloned())
+    settings_for_use()
+        .get("App.imageSaveFolder")
+        .cloned()
         .unwrap_or_default()
 }
 
@@ -5284,6 +6624,11 @@ pub fn run() {
                 .and_then(|m| m.get("App.logRetentionDays").and_then(|v| v.parse().ok()))
                 .unwrap_or(7);
             let _ = core_store::purge_old_logs(retention);
+            // 前の版 (v0.0.131〜v0.0.133) が残したログの dat に、改行を戻す (1 回だけ。起動を待たせないよう、別のスレッドで少し置いてから)
+            std::thread::spawn(|| {
+                std::thread::sleep(std::time::Duration::from_secs(10));
+                board_log_repair_breaks_once();
+            });
             // したらば/JPNKN のドメイン上書き設定を起動時に反映
             if let Some(m) = startup_settings.as_ref() {
                 apply_domain_overrides_from_settings(m);
@@ -5347,6 +6692,10 @@ pub fn run() {
             board_log_prune,
             data_unreadable_files,
             board_log_open_folder,
+            board_log_list,
+            board_log_pick_file,
+            board_log_read,
+            export_thread,
             twitch_sync,
             twitch_set_badges,
             twitch_auth_status,
@@ -5680,6 +7029,61 @@ mod settings_name_tests {
 
         std::env::remove_var("EMBER_DATA_DIR");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // 設定ファイルを読めなかった覚えは、画面が設定を読み込めたときだけ外す。
+    // ついでに読むだけの処理 (CSS の設定・画像の保存先など) が読めても外さない (画面はまだ既定値を持っているので、保存させない)
+    #[cfg(windows)]
+    #[test]
+    fn incidental_reads_do_not_clear_the_unreadable_mark() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let _env = DATA_DIR_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("livefake-mark-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("EMBER_DATA_DIR", &dir);
+        let ini = dir.join("settings.ini");
+        std::fs::write(&ini, "[App]\nfontSize=20\ncssAllowExternalUrls=true\nimageSaveFolder=C:\\pictures\n").unwrap();
+        let lock = std::fs::OpenOptions::new().read(true).share_mode(0).open(&ini).unwrap();
+        assert!(super::load_app_settings().is_err(), "(前提) 使用中の間は、画面は設定を読めない");
+        drop(lock);
+        // ついでに読むだけの処理は、値を読める (対照)
+        assert!(super::css_external_urls_allowed());
+        assert_eq!(super::image_save_folder(), "C:\\pictures");
+        // 画面はまだ読み直していない (既定値を持っている) ので、保存は断る
+        let mut m = std::collections::HashMap::new();
+        m.insert("App.fontSize".to_string(), "13".to_string());
+        assert!(core_store::save_settings_ini(&m).is_err(), "画面が読み直すまでは、設定ファイルを上書きしない");
+        assert!(std::fs::read_to_string(&ini).unwrap().contains("fontSize=20"));
+        // 画面が読み直せたら、保存できる
+        assert_eq!(super::load_app_settings().unwrap().get("App.fontSize").map(String::as_str), Some("20"));
+        assert!(core_store::save_settings_ini(&m).is_ok());
+        assert!(std::fs::read_to_string(&ini).unwrap().contains("fontSize=13"));
+        std::env::remove_var("EMBER_DATA_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // 画面が保存・読み込みに使うファイルの名前が、許可の一覧にあること (無いと、黙って保存されない)。一覧に無い名前は断ること
+    #[test]
+    fn generic_json_names_used_by_the_screen_are_allowed() {
+        let src = include_str!("../../src/App.tsx");
+        let mut used = std::collections::BTreeSet::new();
+        for marker in ["saveToFile(\"", "loadFromFile(\"", ">(\""] {
+            for part in src.split(marker).skip(1) {
+                let name = part.split('"').next().unwrap_or("");
+                if name.ends_with(".json") && !name.contains('/') {
+                    used.insert(name.to_string());
+                }
+            }
+        }
+        // ">(\"" は loadFromFile<型>("名前") を拾うためのもの。invoke<型>("命令") の名前は .json で終わらないので入らない
+        assert!(used.contains("bookmarks.json") && used.contains("input-history.json"), "(前提) 画面の名前を拾えている: {used:?}");
+        for name in &used {
+            assert!(super::generic_json_allowed(name), "画面が使う {name} が、許可の一覧に無い");
+        }
+        assert!(super::save_generic_json("../settings.ini".into(), serde_json::json!({})).is_err());
+        assert!(super::load_generic_json("settings.ini".into()).is_err());
+        assert!(super::load_generic_json("cookies.json".into()).is_err());
     }
 
     #[test]

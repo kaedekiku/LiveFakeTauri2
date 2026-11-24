@@ -432,6 +432,10 @@ Twitch・YouTube のタブでは、同じ `.compose-window` がチャットの�
 | `.connect-list` → `.connect-lamp` (`.ok` / `.wait` / `.ng`) / `.connect-title` / `.connect-state` / `.connect-fill` / `.connect-count` | 設定 > 接続とログ の開いているタブの一覧 / 状態ランプ / 題名 / 状態の文字 / 埋まり具合のバー / N/1000 |
 | `.board-log-mode` / `.board-log-error` | 設定 > 接続とログ の「ログを残すスレ」の選び方の並び / ログを書けなかったときの文 |
 | `.thread-tab .tab-log-on` | 掲示板のログを残しているスレのタブの印 (「選んだスレだけ」のとき) |
+| `.thread-tab.log-tab` | ログのタブ (ファイル >「ログを開く」で開いた、読むだけのタブ) |
+| `.log-open-panel` / `.log-open-tools` / `.log-open-filter` / `.log-open-body` | 「ログを開く」の画面 / 上の操作の行 / 絞り込みの欄 / 一覧 |
+| `.log-open-item` / `.log-open-site` / `.log-open-board` / `.log-open-title` / `.log-open-count` / `.log-open-time` / `.log-open-size` | 一覧の 1 件 / 掲示板 / 板 / 題名 / 最後のレス番号 / 最後に書いた日時 / 大きさ |
+| `.export-panel` / `.export-body` / `.export-buttons` | 「表示中のスレを書き出す」の画面 / 中身 / 形式のボタンの行 |
 | `.twitch-event-table` | 設定 > Twitch > イベント・設定 > YouTube > イベント の種類ごとの表 |
 | `.youtube-method` | 設定 > YouTube の取得方法の選択肢 |
 | `.proxy-box` / `.proxy-top` / `.proxy-grid` (`.proxy-off`) / `.proxy-label` `.proxy-head` `.proxy-host` `.proxy-port` `.proxy-user` `.proxy-pass` `.proxy-type` | 設定 > プロキシ の枠・上の切り替え・入力欄の並び (オフのときは `.proxy-off`) |

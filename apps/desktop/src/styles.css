@@ -3977,6 +3977,27 @@ button.search-history-btn:hover {
 /* メニューの中の、押せない表示だけの行 (例: 文字サイズ (…): 12px) */
 .menu-dropdown .menu-label { padding: 4px 12px; color: var(--sub, #666); font-size: 0.92em; cursor: default; }
 /* 書き込み履歴: 種類とスレ名 */
+/* ログを開く (メニューの ファイル > ログを開く) */
+.settings-panel.log-open-panel { width: min(960px, 92vw); }
+.log-open-tools { display: flex; gap: 6px; padding: 6px 8px; align-items: center; }
+.log-open-filter { flex: 1; min-width: 120px; }
+.settings-panel > .log-open-body { flex: 1; min-height: 0; overflow-y: auto; padding: 0 8px 8px; }
+.log-open-item { display: flex; gap: 8px; align-items: center; padding: 3px 4px; border-bottom: 1px solid var(--border, #ddd); cursor: default; }
+.log-open-item:hover { background: var(--hover, rgba(0, 0, 0, 0.06)); }
+.log-open-site { flex: 0 0 4.5em; font-size: 0.9em; color: var(--sub, #666); }
+.log-open-board { flex: 0 0 9em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.9em; color: var(--sub, #666); }
+.log-open-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.log-open-count { flex: 0 0 4em; text-align: right; font-variant-numeric: tabular-nums; }
+.log-open-time { flex: 0 0 9.5em; font-size: 0.9em; color: var(--sub, #666); font-variant-numeric: tabular-nums; }
+.log-open-size { flex: 0 0 5em; text-align: right; font-size: 0.9em; color: var(--sub, #666); font-variant-numeric: tabular-nums; }
+.dark .log-open-item { border-bottom-color: var(--border, #444); }
+.dark .log-open-item:hover { background: rgba(255, 255, 255, 0.08); }
+/* 表示中のスレを書き出す (メニューの ファイル > 表示中のスレを書き出す) */
+.settings-panel.export-panel { width: min(520px, 92vw); height: auto; }
+.export-body { padding: 8px 12px 12px; }
+.export-buttons { display: flex; gap: 8px; margin: 8px 0; }
+.export-buttons button { min-width: 6em; padding: 6px 10px; }
+
 .post-history-kind { font-size: 0.9em; color: var(--sub, #666); margin-right: 6px; }
 .post-history-title { font-weight: 700; margin-right: 6px; }
 /* タブの左端の色の線 (設定 > 表示 でオンオフ)。ドラッグ中の印 (border-left) と重ならないよう box-shadow で描く */
